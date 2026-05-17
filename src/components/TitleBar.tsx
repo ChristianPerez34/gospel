@@ -1,4 +1,3 @@
-import { useState } from "react";
 import "./TitleBar.css";
 
 export function TitleBar() {

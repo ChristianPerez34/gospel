@@ -3,6 +3,7 @@ mod llm;
 mod models;
 
 use llm::{LlmError, LlmService};
+use models::ModelInfo;
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -54,19 +55,14 @@ fn get_configured_providers() -> Vec<ProviderStatus> {
 }
 
 #[tauri::command]
-fn get_available_models() -> Vec<String> {
-    models::ModelRegistry::all_providers()
-        .iter()
-        .filter(|&&p| keychain::has_key(p))
-        .flat_map(|&p| models::ModelRegistry::models_for_provider(p))
-        .map(|s| s.to_string())
-        .collect()
+fn get_available_models() -> Vec<ModelInfo> {
+    models::ModelRegistry::get_available_models(|p| keychain::has_key(p))
 }
 
 #[tauri::command]
-async fn complete(prompt: String, model: String) -> Result<String, llm::LlmErrorDto> {
-    let api_key = keychain::retrieve("openai").map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
-    LlmService::completion(&prompt, &model, &api_key)
+async fn complete(provider: String, prompt: String, model: String) -> Result<String, llm::LlmErrorDto> {
+    let api_key = keychain::retrieve(&provider).map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
+    LlmService::completion(&provider, &prompt, &model, &api_key)
         .await
         .map_err(|e| e.to_dto())
 }
@@ -74,7 +70,7 @@ async fn complete(prompt: String, model: String) -> Result<String, llm::LlmError
 #[tauri::command]
 async fn test_connection(provider: String, model: String) -> Result<bool, String> {
     let api_key = keychain::retrieve(&provider).map_err(|e| e.to_string())?;
-    let response = LlmService::completion("Say 'pong' and nothing else.", &model, &api_key).await;
+    let response = LlmService::completion(&provider, "Say 'pong' and nothing else.", &model, &api_key).await;
     match response {
         Ok(_) => Ok(true),
         Err(e) => Err(e.to_string()),
@@ -84,13 +80,14 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
 #[tauri::command]
 async fn complete_streaming(
     app: tauri::AppHandle,
+    provider: String,
     prompt: String,
     model: String,
 ) -> Result<(), llm::LlmErrorDto> {
-    let api_key = keychain::retrieve("openai").map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
+    let api_key = keychain::retrieve(&provider).map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
 
     let app_clone = app.clone();
-    let result = llm::stream_completion(&prompt, &model, &api_key, move |token| {
+    let result = llm::stream_completion(&provider, &prompt, &model, &api_key, move |token| {
         let _ = app_clone.emit("llm-token", token);
     })
     .await;
