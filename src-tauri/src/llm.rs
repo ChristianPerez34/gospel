@@ -46,6 +46,10 @@ pub struct LlmService;
 
 impl LlmService {
     pub async fn completion(prompt: &str, model: &str, api_key: &str) -> Result<String, LlmError> {
+        if api_key.trim().is_empty() {
+            return Err(LlmError::ApiKeyMissing);
+        }
+
         let client =
             openai::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
         let agent = client.agent(model).build();
@@ -66,6 +70,10 @@ pub async fn stream_completion<F>(
 where
     F: FnMut(String),
 {
+    if api_key.trim().is_empty() {
+        return Err(LlmError::ApiKeyMissing);
+    }
+
     let mut full_response = String::new();
 
     let client =
@@ -93,4 +101,31 @@ where
     }
 
     Ok(full_response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn completion_rejects_blank_api_key() {
+        let error = LlmService::completion("hello", "gpt-4o-mini", "  ")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, LlmError::ApiKeyMissing));
+    }
+
+    #[tokio::test]
+    async fn stream_completion_rejects_blank_api_key() {
+        let mut token_count = 0;
+        let error = stream_completion("hello", "gpt-4o-mini", "", |_| {
+            token_count += 1;
+        })
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, LlmError::ApiKeyMissing));
+        assert_eq!(token_count, 0);
+    }
 }
