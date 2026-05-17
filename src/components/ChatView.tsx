@@ -3,11 +3,16 @@ import { MessageBlock } from "./MessageBlock";
 import { ActionCard } from "./ActionCard";
 import "./ChatView.css";
 
+interface StreamingAction {
+  type: "streaming";
+  content: string;
+}
+
 interface ChatViewProps {
   messages: Message[];
   workspacePath: string;
   isThinking: boolean;
-  currentAction?: string;
+  currentAction?: string | StreamingAction;
   statusText?: string;
 }
 
@@ -37,7 +42,9 @@ export function ChatView({
       <div className="chat-view__thinking-bar">
         {isThinking && (
           <span className="chat-view__thinking-text">
-            {currentAction || "Thinking..."}
+            {typeof currentAction === "object" && currentAction?.type === "streaming"
+              ? currentAction.content
+              : (currentAction as string) || "Thinking..."}
           </span>
         )}
       </div>

@@ -11,6 +11,7 @@ interface TopBarProps {
   onSessionTitleChange: (title: string) => void;
   onWorkspaceSwitch: () => void;
   onToggleSessions: () => void;
+  onOpenSettings: () => void;
   sessionsOpen: boolean;
 }
 
@@ -22,6 +23,7 @@ export function TopBar({
   onSessionTitleChange,
   onWorkspaceSwitch,
   onToggleSessions,
+  onOpenSettings,
   sessionsOpen,
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
@@ -112,16 +114,17 @@ export function TopBar({
       <div className="topbar__right">
         <span className="topbar__model-badge">{model}</span>
         <StatusIndicator status={status} />
-        <button className="topbar__overflow" aria-label="More options">
+        <button className="topbar__overflow" aria-label="Settings" onClick={onOpenSettings}>
           <svg
             width="16"
             height="16"
             viewBox="0 0 16 16"
-            fill="currentColor"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.2"
           >
-            <circle cx="8" cy="3.5" r="1.5" />
-            <circle cx="8" cy="8" r="1.5" />
-            <circle cx="8" cy="12.5" r="1.5" />
+            <circle cx="8" cy="8" r="2.5" />
+            <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" strokeLinecap="round" />
           </svg>
         </button>
       </div>
