@@ -1,0 +1,100 @@
+.message-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 720px;
+  width: 100%;
+}
+
+.message-block--user {
+  align-self: flex-end;
+}
+
+.message-block--agent {
+  align-self: flex-start;
+}
+
+.message-block__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.message-block__avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-body);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.message-block__avatar--user {
+  background-color: var(--surface-overlay);
+  color: var(--text-secondary);
+}
+
+.message-block__avatar--agent {
+  background-color: var(--accent-action);
+  color: var(--text-inverse);
+}
+
+.message-block__name {
+  font-size: var(--text-body-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.message-block__time {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.message-block__body {
+  font-size: var(--text-body);
+  line-height: 1.5;
+  color: var(--text-primary);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  word-break: break-word;
+}
+
+.message-block--user .message-block__body {
+  background-color: var(--surface-overlay);
+}
+
+.message-block--agent .message-block__body {
+  background-color: var(--surface-elevated);
+}
+
+.message-block__footer {
+  display: flex;
+  gap: var(--space-1);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out-quart);
+  padding-left: var(--space-1);
+}
+
+.message-block:hover .message-block__footer {
+  opacity: 1;
+}
+
+.message-block__action {
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.message-block__action:hover {
+  background-color: var(--surface-overlay);
+  color: var(--text-secondary);
+}
