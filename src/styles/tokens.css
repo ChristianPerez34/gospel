@@ -1,0 +1,95 @@
+:root {
+  --surface-base: #131318;
+  --surface-elevated: #1e1e24;
+  --surface-overlay: #28282f;
+  --scrim: rgba(0, 0, 0, 0.6);
+
+  --text-primary: #ececf0;
+  --text-secondary: #a0a0ab;
+  --text-muted: #6b6b76;
+  --text-inverse: #1a1a1f;
+
+  --accent-action: #4fe0c0;
+  --accent-structure: #a78bfa;
+  --accent-signal: #f0b040;
+  --accent-data: #e8705a;
+
+  --status-error: #e5484d;
+  --status-warning: #f0b429;
+  --status-success: #46c98a;
+
+  --agent-cyan: #3dc9d6;
+  --agent-violet: #9771da;
+  --agent-amber: #d49e3e;
+  --agent-rose: #db4d68;
+
+  --font-display: "Matter", "Inter", system-ui, -apple-system, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
+
+  --text-display: 36px;
+  --text-heading-lg: 24px;
+  --text-heading: 18px;
+  --text-heading-sm: 16px;
+  --text-body: 14px;
+  --text-body-sm: 13px;
+  --text-caption: 11px;
+  --text-mono: 13px;
+  --text-mono-lg: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+
+  --z-base: 0;
+  --z-sticky-input: 10;
+  --z-panels: 20;
+  --z-drawers: 30;
+  --z-dropdowns: 40;
+  --z-scrim: 45;
+  --z-palette: 50;
+  --z-toast: 60;
+  --z-dialog: 70;
+
+  --titlebar-height: 36px;
+  --topbar-height: 48px;
+  --input-min-height: 56px;
+  --sidebar-width: 280px;
+  --panel-width: 480px;
+  --context-panel-width: 320px;
+}
+
+[data-theme="light"] {
+  --surface-base: #f7f7fa;
+  --surface-elevated: #ffffff;
+  --surface-overlay: #ededf0;
+  --scrim: rgba(0, 0, 0, 0.4);
+
+  --text-primary: #1e1e24;
+  --text-secondary: #4a4a54;
+  --text-muted: #7a7a84;
+  --text-inverse: #ececf0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+  }
+}

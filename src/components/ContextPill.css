@@ -1,0 +1,41 @@
+.context-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  background-color: var(--surface-overlay);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-body-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.context-pill__name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.context-pill__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out-quart),
+    background-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.context-pill:hover .context-pill__remove {
+  opacity: 1;
+}
+
+.context-pill__remove:hover {
+  background-color: var(--surface-elevated);
+  color: var(--text-primary);
+}

@@ -1,0 +1,112 @@
+.workspace-switcher {
+  position: absolute;
+  top: calc(var(--titlebar-height) + var(--topbar-height));
+  left: var(--space-4);
+  width: 320px;
+  max-height: 400px;
+  background-color: var(--surface-elevated);
+  border: 1px solid var(--surface-overlay);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  z-index: var(--z-dropdowns);
+  overflow: hidden;
+}
+
+.workspace-switcher__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--surface-overlay);
+}
+
+.workspace-switcher__search-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.workspace-switcher__search-input {
+  flex: 1;
+  font-family: var(--font-body);
+  font-size: var(--text-body-sm);
+  color: var(--text-primary);
+}
+
+.workspace-switcher__search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.workspace-switcher__list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.workspace-switcher__item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  gap: var(--space-3);
+  text-align: left;
+  transition: background-color var(--duration-fast) var(--ease-out-quart);
+  border-left: 2px solid transparent;
+}
+
+.workspace-switcher__item:hover {
+  background-color: var(--surface-overlay);
+}
+
+.workspace-switcher__item--active {
+  border-left-color: var(--accent-action);
+}
+
+.workspace-switcher__item-name {
+  font-size: var(--text-body);
+  font-weight: 500;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-switcher__item-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.workspace-switcher__item-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+  background-color: var(--surface-overlay);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.workspace-switcher__add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3);
+  border-top: 1px solid var(--surface-overlay);
+  font-size: var(--text-body-sm);
+  color: var(--text-muted);
+  transition: background-color var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.workspace-switcher__add:hover {
+  background-color: var(--surface-overlay);
+  color: var(--text-secondary);
+}
