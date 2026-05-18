@@ -51,24 +51,23 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
   );
 
   const persistProvider = useCallback(
-    async (id: ProviderId) => {
+    async (provider: ProviderConfig | null) => {
+      if (!provider) return;
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const provider = providers.find((p) => p.id === id);
-        if (provider) {
-          await invoke("save_provider_config", { provider });
-        }
+        await invoke("save_provider_config", { provider });
       } catch (e) {
         console.error("Failed to persist provider config:", e);
       }
     },
-    [providers]
+    []
   );
 
   const handleToggle = useCallback(
     (id: ProviderId) => {
-      updateProvider(id, { enabled: !providers.find((p) => p.id === id)!.enabled, status: "idle", testMessage: "" });
-      persistProvider(id);
+      const provider = providers.find((p) => p.id === id)!;
+      updateProvider(id, { enabled: !provider.enabled, status: "idle", testMessage: "" });
+      persistProvider({ ...provider, enabled: !provider.enabled });
     },
     [providers, updateProvider, persistProvider]
   );
@@ -80,8 +79,9 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("set_api_key", { provider: provider.id, apiKey: provider.apiKey.trim() });
+        const updated = { ...provider, status: "success" as const, testMessage: "Key saved" };
         updateProvider(provider.id, { status: "success", testMessage: "Key saved" });
-        await persistProvider(provider.id);
+        persistProvider(updated);
         const result = await invoke<boolean>("test_connection", { provider: provider.id });
         if (result) {
           updateProvider(provider.id, { status: "success", testMessage: "Connected" });

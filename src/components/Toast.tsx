@@ -66,6 +66,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         {toast.action && (
           <button
             className="toast__action-btn"
+            type="button"
             onClick={(e) => { e.stopPropagation(); toast.action!.onClick(); }}
           >
             {toast.action.label}
@@ -74,6 +75,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         {toast.secondaryAction && (
           <button
             className="toast__action-btn toast__action-btn--secondary"
+            type="button"
             onClick={(e) => { e.stopPropagation(); toast.secondaryAction!.onClick(); }}
           >
             {toast.secondaryAction.label}

@@ -35,9 +35,9 @@ export function SettingsModal({ open, onClose, providers, onProvidersChange }: S
 
   return (
     <div className="settings-modal__overlay" onClick={onClose}>
-      <div className="settings-modal settings-modal--with-tabs" onClick={(e) => e.stopPropagation()}>
+      <div className="settings-modal settings-modal--with-tabs" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
         <div className="settings-modal__header">
-          <h2 className="settings-modal__title">Settings</h2>
+          <h2 className="settings-modal__title" id="settings-modal-title">Settings</h2>
           <button className="settings-modal__close" onClick={onClose} aria-label="Close settings" type="button">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />

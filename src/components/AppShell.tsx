@@ -66,9 +66,14 @@ export function AppShell() {
       try {
         const availableModels = await invoke<{ model: string; provider: string }[]>("get_available_models");
         if (availableModels.length > 0) {
-          setModels(buildModelOptions(availableModels, providers));
-          setSelectedModel(availableModels[0].model);
-          setSelectedProvider(availableModels[0].provider);
+          const models = buildModelOptions(availableModels, providers);
+          setModels(models);
+          if (!models.some((m) => m.id === selectedModel)) {
+            setSelectedModel(models[0].model);
+          }
+          if (!availableModels.some((m) => m.provider.toLowerCase() === selectedProvider.toLowerCase())) {
+            setSelectedProvider(availableModels[0].provider);
+          }
           setStatus("connected");
         } else {
           setStatus("idle");
