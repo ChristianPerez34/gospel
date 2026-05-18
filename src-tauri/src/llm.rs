@@ -50,6 +50,14 @@ impl LlmError {
 
 pub struct LlmService;
 
+fn validate_api_key(provider: &str, api_key: &str) -> Result<(), LlmError> {
+    if provider != "chatgpt" && api_key.trim().is_empty() {
+        return Err(LlmError::ApiKeyMissing);
+    }
+
+    Ok(())
+}
+
 impl LlmService {
     pub async fn completion(
         provider: &str,
@@ -57,16 +65,16 @@ impl LlmService {
         model: &str,
         api_key: &str,
     ) -> Result<String, LlmError> {
-        if api_key.trim().is_empty() {
-            return Err(LlmError::ApiKeyMissing);
-        }
+        validate_api_key(provider, api_key)?;
 
         let response = match provider {
             "openai" => {
                 let client = openai::Client::new(api_key)
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?;
                 let agent = client.agent(model).build();
-                agent.prompt(prompt).await
+                agent
+                    .prompt(prompt)
+                    .await
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?
             }
             "chatgpt" => {
@@ -75,35 +83,45 @@ impl LlmService {
                     .build()
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?;
                 let agent = client.agent(model).build();
-                agent.prompt(prompt).await
+                agent
+                    .prompt(prompt)
+                    .await
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?
             }
             "anthropic" => {
                 let client = anthropic::Client::new(api_key)
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?;
                 let agent = client.agent(model).build();
-                agent.prompt(prompt).await
+                agent
+                    .prompt(prompt)
+                    .await
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?
             }
             "gemini" => {
                 let client = gemini::Client::new(api_key)
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?;
                 let agent = client.agent(model).build();
-                agent.prompt(prompt).await
+                agent
+                    .prompt(prompt)
+                    .await
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?
             }
             "groq" => {
                 let client = groq::Client::new(api_key)
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?;
                 let agent = client.agent(model).build();
-                agent.prompt(prompt).await
+                agent
+                    .prompt(prompt)
+                    .await
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?
             }
             "mistral" => {
                 let client = mistral::Client::new(api_key)
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?;
                 let agent = client.agent(model).build();
-                agent.prompt(prompt).await
+                agent
+                    .prompt(prompt)
+                    .await
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?
             }
             _ => return Err(LlmError::UnsupportedProvider(provider.to_string())),
@@ -122,9 +140,7 @@ pub async fn stream_completion<F>(
 where
     F: FnMut(String),
 {
-    if api_key.trim().is_empty() {
-        return Err(LlmError::ApiKeyMissing);
-    }
+    validate_api_key(provider, api_key)?;
 
     let mut full_response = String::new();
 
@@ -136,7 +152,9 @@ where
             while let Some(item) = stream.next().await {
                 match item {
                     Ok(item) => match item {
-                        MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(text)) => {
+                        MultiTurnStreamItem::StreamAssistantItem(
+                            StreamedAssistantContent::Text(text),
+                        ) => {
                             full_response.push_str(&text.text);
                             on_token(text.text.clone());
                         }
@@ -156,8 +174,8 @@ where
 
     match provider {
         "openai" => {
-            let client = openai::Client::new(api_key)
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            let client =
+                openai::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
             stream_from_client!(client, model);
         }
         "chatgpt" => {
@@ -173,13 +191,13 @@ where
             stream_from_client!(client, model);
         }
         "gemini" => {
-            let client = gemini::Client::new(api_key)
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            let client =
+                gemini::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
             stream_from_client!(client, model);
         }
         "groq" => {
-            let client = groq::Client::new(api_key)
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            let client =
+                groq::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
             stream_from_client!(client, model);
         }
         "mistral" => {
@@ -217,5 +235,19 @@ mod tests {
 
         assert!(matches!(error, LlmError::ApiKeyMissing));
         assert_eq!(token_count, 0);
+    }
+
+    #[test]
+    fn validate_api_key_allows_blank_key_for_chatgpt() {
+        let result = validate_api_key("chatgpt", "   ");
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_api_key_rejects_blank_key_for_non_chatgpt() {
+        let result = validate_api_key("openai", "");
+
+        assert!(matches!(result, Err(LlmError::ApiKeyMissing)));
     }
 }
