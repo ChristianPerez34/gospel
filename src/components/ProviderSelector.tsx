@@ -24,13 +24,20 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
   const [oauthChallenge, setOauthChallenge] = useState<{ verification_url: string; user_code: string } | null>(null);
   const isOperationInProgress = useRef(false);
 
+  // Ref to always have the latest providers in event listeners (avoids stale closures)
+  const providersRef = useRef(providers);
+  providersRef.current = providers;
+
+  const onProvidersChangeRef = useRef(onProvidersChange);
+  onProvidersChangeRef.current = onProvidersChange;
+
   useEffect(() => {
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const savedProviders = await invoke<ProviderConfig[]>("get_provider_configs");
         if (savedProviders && savedProviders.length > 0) {
-          onProvidersChange(savedProviders);
+          onProvidersChangeRef.current(savedProviders);
         }
       } catch {
       }
@@ -42,9 +49,13 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
         const { invoke } = await import("@tauri-apps/api/core");
         const status = await invoke<{ configured: boolean }>("is_chatgpt_authenticated");
         if (status.configured) {
-          const chatgptProvider = providers.find(p => p.id === "chatgpt");
+          const current = providersRef.current;
+          const chatgptProvider = current.find(p => p.id === "chatgpt");
           if (chatgptProvider) {
-            updateProvider("chatgpt", { isAuthenticated: true, status: "success", testMessage: "Authenticated" });
+            const updated = current.map((p) =>
+              p.id === "chatgpt" ? { ...p, isAuthenticated: true, status: "success" as const, testMessage: "Authenticated" } : p
+            );
+            onProvidersChangeRef.current(updated);
           }
         }
       } catch {
@@ -56,11 +67,18 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
       const { listen } = await import("@tauri-apps/api/event");
       await listen("chatgpt-auth-complete", (event) => {
         const success = event.payload as boolean;
+        const current = providersRef.current;
         if (success) {
-          updateProvider("chatgpt", { isAuthenticated: true, status: "success", testMessage: "Authenticated" });
+          const updated = current.map((p) =>
+            p.id === "chatgpt" ? { ...p, isAuthenticated: true, status: "success" as const, testMessage: "Authenticated" } : p
+          );
+          onProvidersChangeRef.current(updated);
           setOauthChallenge(null);
         } else {
-          updateProvider("chatgpt", { status: "error", testMessage: "Authentication failed" });
+          const updated = current.map((p) =>
+            p.id === "chatgpt" ? { ...p, status: "error" as const, testMessage: "Authentication failed" } : p
+          );
+          onProvidersChangeRef.current(updated);
         }
       });
     })();
