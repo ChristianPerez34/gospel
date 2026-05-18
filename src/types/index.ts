@@ -46,4 +46,10 @@ export interface ModelOption {
   id: string;
   name: string;
   provider: string;
+  configured?: boolean;
+}
+
+export interface ProviderStatus {
+  provider: string;
+  configured: boolean;
 }

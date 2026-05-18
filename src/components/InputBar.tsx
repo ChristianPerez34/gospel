@@ -86,16 +86,24 @@ export function InputBar({
                   key={m.id}
                   className={`input-bar__model-option${
                     m.id === selectedModel ? " input-bar__model-option--active" : ""
-                  }`}
+                  }${m.configured === false ? " input-bar__model-option--disabled" : ""}`}
                   role="option"
                   aria-selected={m.id === selectedModel}
+                  disabled={m.configured === false}
                   onClick={() => {
-                    onModelChange(m.id);
+                    if (m.configured !== false) {
+                      onModelChange(m.id);
+                    }
                     setModelOpen(false);
                   }}
                 >
                   <span className="input-bar__model-name">{m.name}</span>
-                  <span className="input-bar__model-provider">{m.provider}</span>
+                  <span className="input-bar__model-provider">
+                    {m.provider}
+                    {m.configured === false && (
+                      <span className="input-bar__model-not-configured">Not configured</span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>

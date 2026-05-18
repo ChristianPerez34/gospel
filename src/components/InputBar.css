@@ -86,6 +86,25 @@
   font-family: var(--font-mono);
   font-size: var(--text-caption);
   color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.input-bar__model-option--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.input-bar__model-option--disabled:hover {
+  background-color: transparent;
+}
+
+.input-bar__model-not-configured {
+  font-size: 10px;
+  color: var(--status-error);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .input-bar__textarea {
