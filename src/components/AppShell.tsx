@@ -24,6 +24,7 @@ const FALLBACK_WORKSPACES: Workspace[] = [
 
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
   { id: "openai", name: "OpenAI", apiKey: "", enabled: false, status: "idle", testMessage: "" },
+  { id: "chatgpt", name: "ChatGPT Plus/Pro", apiKey: "", enabled: false, status: "idle", testMessage: "", isOAuth: true, isAuthenticated: false },
   { id: "anthropic", name: "Anthropic", apiKey: "", enabled: false, status: "idle", testMessage: "" },
   { id: "openrouter", name: "OpenRouter", apiKey: "", enabled: false, status: "idle", testMessage: "" },
   { id: "local", name: "Local (Ollama / LM Studio)", apiKey: "", enabled: false, status: "idle", testMessage: "" },
@@ -33,7 +34,12 @@ const DEFAULT_PROVIDERS: ProviderConfig[] = [
 function buildModelOptions(models: { model: string; provider: string }[], providers: ProviderConfig[]): ModelOption[] {
   return models.map((m) => {
     const provider = providers.find((p) => p.id === m.provider.toLowerCase() as ProviderId);
-    const isConfigured = provider ? provider.enabled && (m.provider.toLowerCase() === "local" || !!provider.apiKey.trim()) : false;
+    const isConfigured = provider
+      ? provider.enabled && (
+          m.provider.toLowerCase() === "local" ||
+          (provider.isOAuth ? provider.isAuthenticated : !!provider.apiKey.trim())
+        )
+      : false;
     return {
       id: m.model,
       name: m.model,
@@ -69,7 +75,7 @@ export function AppShell() {
           const models = buildModelOptions(availableModels, providers);
           setModels(models);
           if (!models.some((m) => m.id === selectedModel)) {
-            setSelectedModel(models[0].model);
+            setSelectedModel(models[0].id);
           }
           if (!availableModels.some((m) => m.provider.toLowerCase() === selectedProvider.toLowerCase())) {
             setSelectedProvider(availableModels[0].provider);

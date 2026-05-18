@@ -59,6 +59,15 @@ pub const MISTRAL_MODELS: &[&str] = &[
     "open-codestral-mamba",
 ];
 
+pub const CHATGPT_MODELS: &[&str] = &[
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex",
+    "o3-codex",
+    "o4-mini-codex",
+];
+
 #[derive(Serialize, Clone, Debug)]
 pub struct ModelInfo {
     pub model: String,
@@ -71,6 +80,7 @@ impl ModelRegistry {
     pub fn models_for_provider(provider: &str) -> &'static [&'static str] {
         match provider {
             "openai" => OPENAI_MODELS,
+            "chatgpt" => CHATGPT_MODELS,
             "anthropic" => ANTHROPIC_MODELS,
             "gemini" => GEMINI_MODELS,
             "groq" => GROQ_MODELS,
@@ -80,7 +90,7 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        &["openai", "anthropic", "gemini", "groq", "mistral"]
+        &["openai", "chatgpt", "anthropic", "gemini", "groq", "mistral"]
     }
 
     pub fn get_available_models(has_key: impl Fn(&str) -> bool) -> Vec<ModelInfo> {

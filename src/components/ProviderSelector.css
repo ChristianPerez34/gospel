@@ -238,3 +238,82 @@
 .provider-card__test-result--testing {
   color: var(--text-muted);
 }
+
+.provider-card__oauth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.provider-card__oauth-hint {
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+  font-family: var(--font-body);
+}
+
+.provider-card__oauth-status {
+  font-size: var(--text-caption);
+  color: var(--status-success);
+  font-family: var(--font-body);
+  font-weight: 500;
+}
+
+.provider-card__oauth-btn {
+  padding: 6px 12px;
+  background: var(--accent-action);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: var(--text-caption);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--duration-fast) var(--ease-out-quart);
+  white-space: nowrap;
+}
+
+.provider-card__oauth-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.provider-card__oauth-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.provider-card__oauth-btn--logout {
+  background: var(--surface-overlay);
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+}
+
+.provider-card__oauth-btn--logout:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+  opacity: 1;
+}
+
+.provider-card__oauth-code {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 0 0;
+}
+
+.provider-card__oauth-code-label {
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+  font-family: var(--font-body);
+}
+
+.provider-card__oauth-code-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-body-sm);
+  color: var(--accent-action);
+  background: var(--surface-base);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.15em;
+}

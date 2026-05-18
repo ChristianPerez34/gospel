@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import "./ProviderSelector.css";
 
-export type ProviderId = "openai" | "anthropic" | "openrouter" | "local" | "custom";
+export type ProviderId = "openai" | "anthropic" | "openrouter" | "local" | "custom" | "chatgpt";
 
 export interface ProviderConfig {
   id: ProviderId;
@@ -10,15 +10,9 @@ export interface ProviderConfig {
   enabled: boolean;
   status: "idle" | "testing" | "success" | "error";
   testMessage: string;
+  isOAuth?: boolean;
+  isAuthenticated?: boolean;
 }
-
-const DEFAULT_PROVIDERS: ProviderConfig[] = [
-  { id: "openai", name: "OpenAI", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "anthropic", name: "Anthropic", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "openrouter", name: "OpenRouter", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "local", name: "Local (Ollama / LM Studio)", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "custom", name: "Custom", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-];
 
 interface ProviderSelectorProps {
   providers: ProviderConfig[];
@@ -27,6 +21,7 @@ interface ProviderSelectorProps {
 
 export function ProviderSelector({ providers, onProvidersChange }: ProviderSelectorProps) {
   const [showKeyFor, setShowKeyFor] = useState<ProviderId | null>(null);
+  const [oauthChallenge, setOauthChallenge] = useState<{ verification_url: string; user_code: string } | null>(null);
   const isOperationInProgress = useRef(false);
 
   useEffect(() => {
@@ -39,6 +34,35 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
         }
       } catch {
       }
+    })();
+
+    // Check ChatGPT auth status
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const status = await invoke<{ configured: boolean }>("is_chatgpt_authenticated");
+        if (status.configured) {
+          const chatgptProvider = providers.find(p => p.id === "chatgpt");
+          if (chatgptProvider) {
+            updateProvider("chatgpt", { isAuthenticated: true, status: "success", testMessage: "Authenticated" });
+          }
+        }
+      } catch {
+      }
+    })();
+
+    // Listen for auth completion event
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      await listen("chatgpt-auth-complete", (event) => {
+        const success = event.payload as boolean;
+        if (success) {
+          updateProvider("chatgpt", { isAuthenticated: true, status: "success", testMessage: "Authenticated" });
+          setOauthChallenge(null);
+        } else {
+          updateProvider("chatgpt", { status: "error", testMessage: "Authentication failed" });
+        }
+      });
     })();
   }, []);
 
@@ -119,6 +143,38 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
     [updateProvider]
   );
 
+  const handleOAuthLogin = useCallback(
+    async (provider: ProviderConfig) => {
+      if (isOperationInProgress.current) return;
+      isOperationInProgress.current = true;
+      updateProvider(provider.id, { status: "testing", testMessage: "Starting authentication..." });
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const challenge = await invoke<{ verification_url: string; user_code: string }>("start_chatgpt_oauth");
+        setOauthChallenge(challenge);
+        updateProvider(provider.id, { status: "testing", testMessage: `Enter code: ${challenge.user_code}` });
+      } catch (e) {
+        updateProvider(provider.id, { status: "error", testMessage: `OAuth failed: ${e}` });
+      } finally {
+        isOperationInProgress.current = false;
+      }
+    },
+    [updateProvider]
+  );
+
+  const handleOAuthLogout = useCallback(
+    async (provider: ProviderConfig) => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("logout_chatgpt");
+        updateProvider(provider.id, { isAuthenticated: false, status: "idle", testMessage: "" });
+      } catch (e) {
+        updateProvider(provider.id, { status: "error", testMessage: `Logout failed: ${e}` });
+      }
+    },
+    [updateProvider]
+  );
+
   return (
     <div className="provider-selector">
       {providers.map((provider) => {
@@ -160,7 +216,40 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
 
             {provider.enabled && (
               <div className="provider-card__body">
-                {provider.id !== "local" && (
+                {provider.isOAuth ? (
+                  <div className="provider-card__oauth-row">
+                    {provider.isAuthenticated ? (
+                      <>
+                        <span className="provider-card__oauth-status">✓ Authenticated</span>
+                        <button
+                          className="provider-card__oauth-btn provider-card__oauth-btn--logout"
+                          onClick={() => handleOAuthLogout(provider)}
+                          type="button"
+                        >
+                          Sign Out
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="provider-card__oauth-hint">Sign in with your ChatGPT Plus/Pro account</span>
+                        <button
+                          className="provider-card__oauth-btn"
+                          onClick={() => handleOAuthLogin(provider)}
+                          disabled={isOperationInProgress.current}
+                          type="button"
+                        >
+                          {isOperationInProgress.current ? "Connecting..." : "Sign in with OpenAI"}
+                        </button>
+                      </>
+                    )}
+                    {oauthChallenge && (
+                      <div className="provider-card__oauth-code">
+                        <span className="provider-card__oauth-code-label">Your code:</span>
+                        <code className="provider-card__oauth-code-value">{oauthChallenge.user_code}</code>
+                      </div>
+                    )}
+                  </div>
+                ) : provider.id !== "local" && (
                   <div className="provider-card__input-row">
                     <div className="provider-card__input-wrapper">
                       <input
@@ -206,7 +295,7 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
                   <button
                     className="provider-card__test-btn"
                     onClick={() => handleTest(provider)}
-                    disabled={isTesting || !provider.enabled || (provider.id !== "local" && !provider.apiKey.trim())}
+                    disabled={isTesting || !provider.enabled || (provider.isOAuth ? !provider.isAuthenticated : provider.id !== "local" && !provider.apiKey.trim())}
                     type="button"
                   >
                     {isTesting ? "Testing…" : "Test Connection"}

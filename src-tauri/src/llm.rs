@@ -2,7 +2,7 @@ use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
-use rig::providers::{anthropic, gemini, groq, mistral, openai};
+use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
 use serde::Serialize;
 use thiserror::Error;
@@ -64,6 +64,15 @@ impl LlmService {
         let response = match provider {
             "openai" => {
                 let client = openai::Client::new(api_key)
+                    .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+                let agent = client.agent(model).build();
+                agent.prompt(prompt).await
+                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
+            }
+            "chatgpt" => {
+                let client = chatgpt::Client::builder()
+                    .oauth()
+                    .build()
                     .map_err(|e| LlmError::ProviderError(e.to_string()))?;
                 let agent = client.agent(model).build();
                 agent.prompt(prompt).await
@@ -148,6 +157,13 @@ where
     match provider {
         "openai" => {
             let client = openai::Client::new(api_key)
+                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            stream_from_client!(client, model);
+        }
+        "chatgpt" => {
+            let client = chatgpt::Client::builder()
+                .oauth()
+                .build()
                 .map_err(|e| LlmError::ProviderError(e.to_string()))?;
             stream_from_client!(client, model);
         }
