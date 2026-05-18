@@ -44,7 +44,9 @@ export function ChatView({
           <span className="chat-view__thinking-text">
             {typeof currentAction === "object" && currentAction?.type === "streaming"
               ? currentAction.content
-              : (currentAction as string) || "Thinking..."}
+              : typeof currentAction === "string"
+              ? currentAction
+              : "Thinking..."}
           </span>
         )}
       </div>

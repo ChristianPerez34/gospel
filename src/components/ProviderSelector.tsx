@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import "./ProviderSelector.css";
 
 export type ProviderId = "openai" | "anthropic" | "openrouter" | "local" | "custom";
@@ -20,42 +20,87 @@ const DEFAULT_PROVIDERS: ProviderConfig[] = [
   { id: "custom", name: "Custom", apiKey: "", enabled: false, status: "idle", testMessage: "" },
 ];
 
-export function ProviderSelector() {
-  const [providers, setProviders] = useState<ProviderConfig[]>(DEFAULT_PROVIDERS);
+interface ProviderSelectorProps {
+  providers: ProviderConfig[];
+  onProvidersChange: (providers: ProviderConfig[]) => void;
+}
+
+export function ProviderSelector({ providers, onProvidersChange }: ProviderSelectorProps) {
   const [showKeyFor, setShowKeyFor] = useState<ProviderId | null>(null);
+  const isOperationInProgress = useRef(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const savedProviders = await invoke<ProviderConfig[]>("get_provider_configs");
+        if (savedProviders && savedProviders.length > 0) {
+          onProvidersChange(savedProviders);
+        }
+      } catch {
+      }
+    })();
+  }, []);
 
   const updateProvider = useCallback(
     (id: ProviderId, patch: Partial<ProviderConfig>) => {
-      setProviders((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+      const updated = providers.map((p) => (p.id === id ? { ...p, ...patch } : p));
+      onProvidersChange(updated);
     },
-    []
+    [providers, onProvidersChange]
+  );
+
+  const persistProvider = useCallback(
+    async (id: ProviderId) => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const provider = providers.find((p) => p.id === id);
+        if (provider) {
+          await invoke("save_provider_config", { provider });
+        }
+      } catch (e) {
+        console.error("Failed to persist provider config:", e);
+      }
+    },
+    [providers]
   );
 
   const handleToggle = useCallback(
     (id: ProviderId) => {
-      setProviders((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled, status: "idle", testMessage: "" } : p))
-      );
+      updateProvider(id, { enabled: !providers.find((p) => p.id === id)!.enabled, status: "idle", testMessage: "" });
+      persistProvider(id);
     },
-    []
+    [providers, updateProvider, persistProvider]
   );
 
   const handleSaveKey = useCallback(
     async (provider: ProviderConfig) => {
-      if (!provider.apiKey.trim()) return;
+      if (!provider.apiKey.trim() || isOperationInProgress.current) return;
+      isOperationInProgress.current = true;
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("set_api_key", { provider: provider.id, apiKey: provider.apiKey.trim() });
         updateProvider(provider.id, { status: "success", testMessage: "Key saved" });
+        await persistProvider(provider.id);
+        const result = await invoke<boolean>("test_connection", { provider: provider.id });
+        if (result) {
+          updateProvider(provider.id, { status: "success", testMessage: "Connected" });
+        } else {
+          updateProvider(provider.id, { status: "error", testMessage: "Key saved but connection failed" });
+        }
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `Failed to save: ${e}` });
+      } finally {
+        isOperationInProgress.current = false;
       }
     },
-    [updateProvider]
+    [updateProvider, persistProvider]
   );
 
   const handleTest = useCallback(
     async (provider: ProviderConfig) => {
+      if (!provider.enabled || (provider.id !== "local" && !provider.apiKey.trim()) || isOperationInProgress.current) return;
+      isOperationInProgress.current = true;
       updateProvider(provider.id, { status: "testing", testMessage: "" });
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -67,6 +112,8 @@ export function ProviderSelector() {
         }
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `Connection failed: ${e}` });
+      } finally {
+        isOperationInProgress.current = false;
       }
     },
     [updateProvider]
@@ -159,7 +206,7 @@ export function ProviderSelector() {
                   <button
                     className="provider-card__test-btn"
                     onClick={() => handleTest(provider)}
-                    disabled={isTesting}
+                    disabled={isTesting || !provider.enabled || (provider.id !== "local" && !provider.apiKey.trim())}
                     type="button"
                   >
                     {isTesting ? "Testing…" : "Test Connection"}

@@ -1,21 +1,35 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import "./SettingsModal.css";
+import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
+  providers: ProviderConfig[];
+  onProvidersChange: (providers: ProviderConfig[]) => void;
 }
 
 type TabKey = "general" | "models";
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, providers, onProvidersChange }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("models");
 
   useEffect(() => {
     if (!open) return;
     setActiveTab("models");
   }, [open]);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape" && open) {
+      onClose();
+    }
+  }, [open, onClose]);
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
 
   if (!open) return null;
 
@@ -57,7 +71,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   Enable a provider and add its API key to get started.
                 </span>
               </p>
-              <ProviderSelector />
+              <ProviderSelector providers={providers} onProvidersChange={onProvidersChange} />
             </div>
           ) : (
             <div className="settings-modal__section">

@@ -93,10 +93,6 @@
   background: var(--surface-3, #2a2a2e);
 }
 
-.settings-modal__body {
-  padding: 20px;
-}
-
 .settings-modal__section {
   display: flex;
   flex-direction: column;

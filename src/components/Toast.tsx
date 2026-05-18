@@ -23,7 +23,8 @@ interface ToastProps {
 
 export function Toast({ toast, onDismiss }: ToastProps) {
   useEffect(() => {
-    if (toast.autoDismissMs && toast.autoDismissMs > 0) {
+    const shouldAutoDismiss = toast.autoDismissMs && toast.autoDismissMs > 0 && !toast.action && !toast.secondaryAction;
+    if (shouldAutoDismiss) {
       const timer = setTimeout(() => onDismiss(toast.id), toast.autoDismissMs);
       return () => clearTimeout(timer);
     }
@@ -101,12 +102,13 @@ export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
 }
 
 let toastIdCounter = 0;
+const SESSION_ID = Math.random().toString(36).slice(2, 9);
 
 export function useToasts() {
   const [toasts, setToasts] = useState<ToastData[]>([]);
 
   const addToast = useCallback((data: Omit<ToastData, "id">) => {
-    const id = `toast-${++toastIdCounter}`;
+    const id = `toast-${SESSION_ID}-${++toastIdCounter}`;
     setToasts((prev) => [...prev, { ...data, id }]);
   }, []);
 

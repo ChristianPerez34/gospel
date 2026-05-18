@@ -15,19 +15,32 @@ import type {
   ModelOption,
   AgentStatus,
 } from "../types";
+import type { ProviderConfig, ProviderId } from "./ProviderSelector";
 import "./AppShell.css";
 
 const FALLBACK_WORKSPACES: Workspace[] = [
   { id: "ws-1", name: "gospel", path: "~/Projects/gospel", sessionCount: 0 },
 ];
 
-function buildModelOptions(models: { model: string; provider: string }[]): ModelOption[] {
-  return models.map((m) => ({
-    id: m.model,
-    name: m.model,
-    provider: m.provider,
-    configured: true,
-  }));
+const DEFAULT_PROVIDERS: ProviderConfig[] = [
+  { id: "openai", name: "OpenAI", apiKey: "", enabled: false, status: "idle", testMessage: "" },
+  { id: "anthropic", name: "Anthropic", apiKey: "", enabled: false, status: "idle", testMessage: "" },
+  { id: "openrouter", name: "OpenRouter", apiKey: "", enabled: false, status: "idle", testMessage: "" },
+  { id: "local", name: "Local (Ollama / LM Studio)", apiKey: "", enabled: false, status: "idle", testMessage: "" },
+  { id: "custom", name: "Custom", apiKey: "", enabled: false, status: "idle", testMessage: "" },
+];
+
+function buildModelOptions(models: { model: string; provider: string }[], providers: ProviderConfig[]): ModelOption[] {
+  return models.map((m) => {
+    const provider = providers.find((p) => p.id === m.provider.toLowerCase() as ProviderId);
+    const isConfigured = provider ? provider.enabled && (m.provider.toLowerCase() === "local" || !!provider.apiKey.trim()) : false;
+    return {
+      id: m.model,
+      name: m.model,
+      provider: m.provider,
+      configured: isConfigured,
+    };
+  });
 }
 
 export function AppShell() {
@@ -41,6 +54,7 @@ export function AppShell() {
   const [selectedModel, setSelectedModel] = useState("gpt-4o");
   const [selectedProvider, setSelectedProvider] = useState("openai");
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [providers, setProviders] = useState<ProviderConfig[]>(DEFAULT_PROVIDERS);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [isThinking, setIsThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
@@ -52,7 +66,7 @@ export function AppShell() {
       try {
         const availableModels = await invoke<{ model: string; provider: string }[]>("get_available_models");
         if (availableModels.length > 0) {
-          setModels(buildModelOptions(availableModels));
+          setModels(buildModelOptions(availableModels, providers));
           setSelectedModel(availableModels[0].model);
           setSelectedProvider(availableModels[0].provider);
           setStatus("connected");
@@ -117,7 +131,7 @@ export function AppShell() {
     return () => {
       unlistenRef.current?.();
     };
-  }, [showError, streamingContent]);
+  }, [showError, streamingContent, providers]);
 
   const handleSend = useCallback(async (message: string) => {
     const userMsg: Message = {
@@ -233,6 +247,8 @@ export function AppShell() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        providers={providers}
+        onProvidersChange={setProviders}
       />
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
