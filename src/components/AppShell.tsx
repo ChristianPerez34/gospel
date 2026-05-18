@@ -66,13 +66,15 @@ export function AppShell() {
   const [streamingContent, setStreamingContent] = useState("");
   const { toasts, dismissToast, showError, showSuccess: _showSuccess } = useToasts();
   const unlistenRef = useRef<(() => void) | null>(null);
+  const providersRef = useRef(providers);
+  providersRef.current = providers;
 
   useEffect(() => {
     (async () => {
       try {
         const availableModels = await invoke<{ model: string; provider: string }[]>("get_available_models");
         if (availableModels.length > 0) {
-          const models = buildModelOptions(availableModels, providers);
+          const models = buildModelOptions(availableModels, providersRef.current);
           setModels(models);
           if (!models.some((m) => m.id === selectedModel)) {
             setSelectedModel(models[0].id);
@@ -142,7 +144,7 @@ export function AppShell() {
     return () => {
       unlistenRef.current?.();
     };
-  }, [showError, streamingContent, providers]);
+  }, [showError, streamingContent]);
 
   const handleSend = useCallback(async (message: string) => {
     const userMsg: Message = {

@@ -156,13 +156,26 @@ async fn start_chatgpt_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, St
     // Start authorization in background — this blocks polling for the token
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        match client.authorize().await {
-            Ok(()) => {
-                let _ = app_clone.emit("chatgpt-auth-complete", true);
-            }
-            Err(e) => {
-                eprintln!("ChatGPT OAuth failed: {}", e);
-                let _ = app_clone.emit("chatgpt-auth-complete", false);
+        let mut retries = 0;
+        let max_retries = 3;
+        let mut success = false;
+        
+        while retries < max_retries && !success {
+            match client.authorize().await {
+                Ok(()) => {
+                    success = true;
+                    let _ = app_clone.emit("chatgpt-auth-complete", true);
+                }
+                Err(e) => {
+                    retries += 1;
+                    if retries >= max_retries {
+                        eprintln!("ChatGPT OAuth failed after {} attempts: {}", retries, e);
+                        let _ = app_clone.emit("chatgpt-auth-complete", false);
+                    } else {
+                        eprintln!("ChatGPT OAuth attempt {} failed: {}, retrying...", retries, e);
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                }
             }
         }
     });

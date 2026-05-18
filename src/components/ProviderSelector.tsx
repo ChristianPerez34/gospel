@@ -64,28 +64,35 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
 
     // Listen for auth completion event
     let unlisten: (() => void) | undefined;
-    (async () => {
-      const { listen } = await import("@tauri-apps/api/event");
-      unlisten = await listen("chatgpt-auth-complete", (event) => {
-        const success = event.payload as boolean;
-        const current = providersRef.current;
-        if (success) {
-          const updated = current.map((p) =>
-            p.id === "chatgpt" ? { ...p, isAuthenticated: true, status: "success" as const, testMessage: "Authenticated" } : p
-          );
-          onProvidersChangeRef.current(updated);
-          setOauthChallenge(null);
-        } else {
-          const updated = current.map((p) =>
-            p.id === "chatgpt" ? { ...p, status: "error" as const, testMessage: "Authentication failed" } : p
-          );
-          onProvidersChangeRef.current(updated);
-        }
-      });
-    })();
+    const setupAuthListener = async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen("chatgpt-auth-complete", (event) => {
+          const success = event.payload as boolean;
+          const current = providersRef.current;
+          if (success) {
+            const updated = current.map((p) =>
+              p.id === "chatgpt" ? { ...p, isAuthenticated: true, status: "success" as const, testMessage: "Authenticated" } : p
+            );
+            onProvidersChangeRef.current(updated);
+            setOauthChallenge(null);
+          } else {
+            const updated = current.map((p) =>
+              p.id === "chatgpt" ? { ...p, status: "error" as const, testMessage: "Authentication failed" } : p
+            );
+            onProvidersChangeRef.current(updated);
+          }
+        });
+      } catch (error) {
+        console.error("Failed to setup auth listener:", error);
+      }
+    };
+    setupAuthListener();
 
     return () => {
-      unlisten?.();
+      if (unlisten) {
+        unlisten();
+      }
     };
   }, []);
 
