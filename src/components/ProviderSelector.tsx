@@ -63,9 +63,10 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
     })();
 
     // Listen for auth completion event
+    let unlisten: (() => void) | undefined;
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
-      await listen("chatgpt-auth-complete", (event) => {
+      unlisten = await listen("chatgpt-auth-complete", (event) => {
         const success = event.payload as boolean;
         const current = providersRef.current;
         if (success) {
@@ -82,6 +83,10 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
         }
       });
     })();
+
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   const updateProvider = useCallback(
