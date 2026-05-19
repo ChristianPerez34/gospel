@@ -54,8 +54,10 @@ struct AuthRecord {
 }
 
 fn chatgpt_auth_file_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".config").join("chatgpt").join("auth.json")
+    dirs::config_dir()
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join("chatgpt")
+        .join("auth.json")
 }
 
 pub fn has_chatgpt_oauth_session() -> bool {
@@ -68,7 +70,16 @@ pub fn has_chatgpt_oauth_session() -> bool {
         Ok(r) => r,
         Err(_) => return false,
     };
-    record.access_token.is_some() || record.refresh_token.is_some()
+    record
+        .access_token
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        || record
+            .refresh_token
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
 }
 
 pub fn delete_chatgpt_auth_file() -> Result<(), KeychainError> {
