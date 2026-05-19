@@ -39,7 +39,7 @@ async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
 #[tauri::command]
 fn get_api_key_status(provider: String) -> ApiKeyStatus {
     ApiKeyStatus {
-        configured: keychain::has_key(&provider),
+        configured: keychain::provider_has_credentials(&provider),
     }
 }
 
@@ -57,14 +57,14 @@ fn get_configured_providers() -> Vec<ProviderStatus> {
         .iter()
         .map(|&p| ProviderStatus {
             provider: p.to_string(),
-            configured: keychain::has_key(p),
+            configured: keychain::provider_has_credentials(p),
         })
         .collect()
 }
 
 #[tauri::command]
 fn get_available_models() -> Vec<ModelInfo> {
-    models::ModelRegistry::get_available_models(|p| keychain::has_key(p))
+    models::ModelRegistry::get_available_models(|p| keychain::provider_has_credentials(p))
 }
 
 #[tauri::command]
@@ -202,13 +202,15 @@ async fn start_chatgpt_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, St
 #[tauri::command]
 fn is_chatgpt_authenticated() -> ApiKeyStatus {
     ApiKeyStatus {
-        configured: keychain::has_key("chatgpt"),
+        configured: keychain::has_chatgpt_oauth_session(),
     }
 }
 
 #[tauri::command]
 fn logout_chatgpt() -> Result<(), String> {
-    keychain::delete("chatgpt").map_err(|e| e.to_string())
+    keychain::delete_chatgpt_auth_file().map_err(|e| e.to_string())?;
+    let _ = keychain::delete("chatgpt");
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

@@ -1561,6 +1561,7 @@ dependencies = [
 name = "gospel"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "futures",
  "keyring",
  "reqwest 0.12.28",
