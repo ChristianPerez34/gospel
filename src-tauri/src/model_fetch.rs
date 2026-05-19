@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::models::{ModelInfo, ModelRegistry};
 use rig::client::ModelListingClient;
 
@@ -144,7 +146,11 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
         .as_str()
         .ok_or_else(|| "access_token not found in auth file".to_string())?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("failed to create HTTP client: {}", e))?;
     let resp = client
         .get("https://chatgpt.com/backend-api/models")
         .header("Authorization", format!("Bearer {}", access_token))
@@ -176,6 +182,10 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
                 .collect()
         })
         .unwrap_or_default();
+
+    if models.is_empty() {
+        return Err("ChatGPT returned no models".to_string());
+    }
 
     tracing::info!("Fetched {} models from ChatGPT", models.len());
     Ok(models)
