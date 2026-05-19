@@ -85,7 +85,7 @@ export function AppShell() {
         setStatus("idle");
       }
     })();
-  }, []);
+  }, [providers]);
 
   useEffect(() => {
     const models = buildModelOptions(availableModels, providers);
