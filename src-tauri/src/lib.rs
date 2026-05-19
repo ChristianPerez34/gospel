@@ -9,10 +9,13 @@ mod model_fetch;
 
 #[cfg(test)]
 mod model_fetch {
-    use crate::models::{ModelInfo, ModelRegistry};
+    use crate::models::{ModelInfo, ModelInfoWithFreshness, ModelRegistry};
 
-    pub async fn fetch_models_for_provider(provider: &str, _api_key: &str) -> Vec<ModelInfo> {
-        ModelRegistry::hardcoded_models_for(provider)
+    pub async fn fetch_models_for_provider(provider: &str, _api_key: Option<&str>) -> ModelInfoWithFreshness {
+        ModelInfoWithFreshness {
+            models: ModelRegistry::hardcoded_models_for(provider),
+            is_fresh: true,
+        }
     }
 }
 
@@ -84,15 +87,15 @@ async fn get_available_models() -> Vec<ModelInfo> {
             continue;
         }
         let api_key = if provider == "chatgpt" {
-            String::new()
+            None
         } else {
             match keychain::retrieve(provider) {
-                Ok(key) => key,
+                Ok(key) => Some(key),
                 Err(_) => continue,
             }
         };
-        let models = model_fetch::fetch_models_for_provider(provider, &api_key).await;
-        all_models.extend(models);
+        let result = model_fetch::fetch_models_for_provider(provider, api_key.as_deref()).await;
+        all_models.extend(result.models);
     }
     all_models
 }

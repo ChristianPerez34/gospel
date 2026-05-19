@@ -1,8 +1,9 @@
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::{Notify, RwLock};
 
 #[cfg(not(test))]
 mod model_lists {
@@ -155,6 +156,12 @@ pub struct ModelInfo {
     pub provider: String,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct ModelInfoWithFreshness {
+    pub models: Vec<ModelInfo>,
+    pub is_fresh: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct CachedModelList {
     pub models: Vec<ModelInfo>,
@@ -168,8 +175,11 @@ impl CachedModelList {
     }
 }
 
-pub static MODEL_CACHE: Lazy<RwLock<HashMap<String, CachedModelList>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+pub static PENDING_REQUESTS: Lazy<Arc<RwLock<HashMap<String, Arc<Notify>>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 
@@ -227,24 +237,61 @@ impl ModelRegistry {
             .collect()
     }
 
-    pub async fn get_or_fetch<F, Fut>(cache_key: &str, provider: &str, fetch_fn: F) -> Vec<ModelInfo>
+    pub async fn get_or_fetch<F, Fut>(cache_key: &str, provider: &str, fetch_fn: F) -> ModelInfoWithFreshness
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Vec<ModelInfo>, String>>,
     {
+        // Check if we have fresh cached data
         {
-            let cache = MODEL_CACHE.read().unwrap();
+            let cache = MODEL_CACHE.read().await;
             if let Some(entry) = cache.get(cache_key) {
                 if entry.is_fresh() {
-                    return entry.models.clone();
+                    return ModelInfoWithFreshness {
+                        models: entry.models.clone(),
+                        is_fresh: true,
+                    };
                 }
             }
         }
 
+        // Check if there's already a pending request for this cache key
+        let notify = {
+            let pending = PENDING_REQUESTS.read().await;
+            if let Some(notify) = pending.get(cache_key) {
+                notify.clone()
+            } else {
+                // No pending request, create one and register it
+                drop(pending);
+                let notify = Arc::new(Notify::new());
+                let mut pending = PENDING_REQUESTS.write().await;
+                pending.insert(cache_key.to_string(), notify.clone());
+                notify
+            }
+        };
+
+        // We're the one fetching
+        let result = Self::fetch_and_cache_impl(cache_key, provider, fetch_fn).await;
+
+        // Notify waiters and clean up
+        {
+            let mut pending = PENDING_REQUESTS.write().await;
+            pending.remove(cache_key);
+        }
+        notify.notify_waiters();
+
+        result
+    }
+
+    async fn fetch_and_cache_impl<F, Fut>(cache_key: &str, provider: &str, fetch_fn: F) -> ModelInfoWithFreshness
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<ModelInfo>, String>>,
+    {
         match fetch_fn().await {
             Ok(models) => {
                 let ttl = get_cache_ttl();
-                let mut cache = MODEL_CACHE.write().unwrap();
+                let mut cache = MODEL_CACHE.write().await;
                 cache.insert(
                     cache_key.to_string(),
                     CachedModelList {
@@ -253,20 +300,45 @@ impl ModelRegistry {
                         ttl,
                     },
                 );
-                models
+                ModelInfoWithFreshness {
+                    models,
+                    is_fresh: true,
+                }
             }
             Err(e) => {
-                tracing::warn!("Failed to fetch models for {}: {}, falling back to hardcoded list", provider, e);
-                let cache = MODEL_CACHE.write().unwrap();
+                tracing::warn!("Failed to fetch models for {}: {}", provider, e);
+                // Check if we have stale cached data
+                let cache = MODEL_CACHE.read().await;
                 if let Some(entry) = cache.get(cache_key) {
                     tracing::info!("Using stale cached models for {}", provider);
-                    entry.models.clone()
-                } else {
-                    tracing::info!("No cache entry for {}, using hardcoded models", provider);
-                    Self::hardcoded_models_for(provider)
+                    return ModelInfoWithFreshness {
+                        models: entry.models.clone(),
+                        is_fresh: false,
+                    };
+                }
+                // No cache, return empty
+                ModelInfoWithFreshness {
+                    models: vec![],
+                    is_fresh: false,
                 }
             }
         }
+    }
+
+    pub async fn wait_for_fetch(cache_key: &str) -> Option<ModelInfoWithFreshness> {
+        let notify = {
+            let pending = PENDING_REQUESTS.read().await;
+            pending.get(cache_key)?.clone()
+        };
+        notify.notified().await;
+
+        // Fetch completed, check cache for result
+        let cache = MODEL_CACHE.read().await;
+        let entry = cache.get(cache_key)?;
+        Some(ModelInfoWithFreshness {
+            models: entry.models.clone(),
+            is_fresh: entry.is_fresh(),
+        })
     }
 }
 

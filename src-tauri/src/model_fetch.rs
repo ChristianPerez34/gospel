@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use crate::models::{ModelInfo, ModelRegistry};
+use crate::models::{ModelInfo, ModelInfoWithFreshness, ModelRegistry};
 use rig::client::ModelListingClient;
 
-fn cache_scope_for_provider(provider: &str, api_key: &str) -> String {
+fn cache_scope_for_provider(provider: &str, api_key: Option<&str>) -> String {
     match provider {
-        "openai" | "anthropic" | "gemini" | "mistral" => api_key.to_string(),
+        "openai" | "anthropic" | "gemini" | "mistral" => api_key.unwrap_or("").to_string(),
         _ => "shared".to_string(),
     }
 }
@@ -23,17 +23,17 @@ fn should_include_completion_model(model_id: &str) -> bool {
     include.iter().any(|p| id.contains(p))
 }
 
-pub async fn fetch_models_for_provider(provider: &str, api_key: &str) -> Vec<ModelInfo> {
+pub async fn fetch_models_for_provider(provider: &str, api_key: Option<&str>) -> ModelInfoWithFreshness {
     let cache_scope = cache_scope_for_provider(provider, api_key);
     let cache_key = format!("{}:{}", provider, cache_scope);
 
     ModelRegistry::get_or_fetch(&cache_key, provider, || async {
         match provider {
-            "openai" => fetch_openai_models_impl(api_key).await,
+            "openai" => fetch_openai_models_impl(api_key.unwrap_or("")).await,
             "chatgpt" => fetch_chatgpt_models_impl().await,
-            "anthropic" => fetch_anthropic_models_impl(api_key).await,
-            "gemini" => fetch_gemini_models_impl(api_key).await,
-            "mistral" => fetch_mistral_models_impl(api_key).await,
+            "anthropic" => fetch_anthropic_models_impl(api_key.unwrap_or("")).await,
+            "gemini" => fetch_gemini_models_impl(api_key.unwrap_or("")).await,
+            "mistral" => fetch_mistral_models_impl(api_key.unwrap_or("")).await,
             _ => Ok(ModelRegistry::hardcoded_models_for(provider)),
         }
     })
