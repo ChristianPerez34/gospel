@@ -227,14 +227,14 @@ impl ModelRegistry {
             .collect()
     }
 
-    pub async fn get_or_fetch<F, Fut>(provider: &str, fetch_fn: F) -> Vec<ModelInfo>
+    pub async fn get_or_fetch<F, Fut>(cache_key: &str, provider: &str, fetch_fn: F) -> Vec<ModelInfo>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Vec<ModelInfo>, String>>,
     {
         {
             let cache = MODEL_CACHE.read().unwrap();
-            if let Some(entry) = cache.get(provider) {
+            if let Some(entry) = cache.get(cache_key) {
                 if entry.is_fresh() {
                     return entry.models.clone();
                 }
@@ -246,7 +246,7 @@ impl ModelRegistry {
                 let ttl = get_cache_ttl();
                 let mut cache = MODEL_CACHE.write().unwrap();
                 cache.insert(
-                    provider.to_string(),
+                    cache_key.to_string(),
                     CachedModelList {
                         models: models.clone(),
                         fetched_at: Instant::now(),
@@ -258,7 +258,7 @@ impl ModelRegistry {
             Err(e) => {
                 tracing::warn!("Failed to fetch models for {}: {}, falling back to hardcoded list", provider, e);
                 let cache = MODEL_CACHE.write().unwrap();
-                if let Some(entry) = cache.get(provider) {
+                if let Some(entry) = cache.get(cache_key) {
                     tracing::info!("Using stale cached models for {}", provider);
                     entry.models.clone()
                 } else {

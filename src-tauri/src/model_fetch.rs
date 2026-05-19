@@ -1,6 +1,13 @@
 use crate::models::{ModelInfo, ModelRegistry};
 use rig::client::ModelListingClient;
 
+fn cache_scope_for_provider(provider: &str, api_key: &str) -> String {
+    match provider {
+        "openai" | "anthropic" | "gemini" | "mistral" => api_key.to_string(),
+        _ => "shared".to_string(),
+    }
+}
+
 fn should_include_completion_model(model_id: &str) -> bool {
     let id = model_id.to_lowercase();
     let exclude = [
@@ -15,7 +22,10 @@ fn should_include_completion_model(model_id: &str) -> bool {
 }
 
 pub async fn fetch_models_for_provider(provider: &str, api_key: &str) -> Vec<ModelInfo> {
-    ModelRegistry::get_or_fetch(provider, || async {
+    let cache_scope = cache_scope_for_provider(provider, api_key);
+    let cache_key = format!("{}:{}", provider, cache_scope);
+
+    ModelRegistry::get_or_fetch(&cache_key, provider, || async {
         match provider {
             "openai" => fetch_openai_models_impl(api_key).await,
             "chatgpt" => fetch_chatgpt_models_impl().await,
