@@ -1564,6 +1564,7 @@ dependencies = [
  "dirs",
  "futures",
  "keyring",
+ "once_cell",
  "reqwest 0.12.28",
  "rig-core",
  "serde",
@@ -1573,6 +1574,7 @@ dependencies = [
  "tauri-plugin-opener",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
