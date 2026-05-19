@@ -53,7 +53,7 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
           const chatgptProvider = current.find(p => p.id === "chatgpt");
           if (chatgptProvider) {
             const updated = current.map((p) =>
-              p.id === "chatgpt" ? { ...p, isAuthenticated: true, status: "success" as const, testMessage: "Authenticated" } : p
+              p.id === "chatgpt" ? { ...p, isAuthenticated: true, enabled: true, status: "success" as const, testMessage: "Authenticated" } : p
             );
             onProvidersChangeRef.current(updated);
           }

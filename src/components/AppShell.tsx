@@ -69,19 +69,14 @@ export function AppShell() {
   const providersRef = useRef(providers);
   providersRef.current = providers;
 
+  const [availableModels, setAvailableModels] = useState<{ model: string; provider: string }[]>([]);
+
   useEffect(() => {
     (async () => {
       try {
-        const availableModels = await invoke<{ model: string; provider: string }[]>("get_available_models");
-        if (availableModels.length > 0) {
-          const models = buildModelOptions(availableModels, providersRef.current);
-          setModels(models);
-          if (!models.some((m) => m.id === selectedModel)) {
-            setSelectedModel(models[0].id);
-          }
-          if (!availableModels.some((m) => m.provider.toLowerCase() === selectedProvider.toLowerCase())) {
-            setSelectedProvider(availableModels[0].provider);
-          }
+        const models = await invoke<{ model: string; provider: string }[]>("get_available_models");
+        setAvailableModels(models);
+        if (models.length > 0) {
           setStatus("connected");
         } else {
           setStatus("idle");
@@ -90,7 +85,20 @@ export function AppShell() {
         setStatus("idle");
       }
     })();
+  }, []);
 
+  useEffect(() => {
+    const models = buildModelOptions(availableModels, providers);
+    setModels(models);
+    if (models.length > 0 && !models.some((m) => m.id === selectedModel)) {
+      setSelectedModel(models[0].id);
+    }
+    if (availableModels.length > 0 && !availableModels.some((m) => m.provider.toLowerCase() === selectedProvider.toLowerCase())) {
+      setSelectedProvider(availableModels[0].provider);
+    }
+  }, [availableModels, providers]);
+
+  useEffect(() => {
     (async () => {
       const unlistenToken = await listen<string>("llm-token", (event) => {
         setStreamingContent((prev) => prev + event.payload);

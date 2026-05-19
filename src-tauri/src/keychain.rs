@@ -1,4 +1,6 @@
 use keyring::Entry;
+use serde::Deserialize;
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -7,6 +9,8 @@ pub enum KeychainError {
     Keyring(#[from] keyring::Error),
     #[error("provider {0} is not supported")]
     UnsupportedProvider(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 const SERVICE_NAME: &str = "gospel";
@@ -41,6 +45,45 @@ pub fn has_key(provider: &str) -> bool {
     entry_for_provider(provider)
         .map(|e| e.get_password().is_ok())
         .unwrap_or(false)
+}
+
+#[derive(Deserialize)]
+struct AuthRecord {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+}
+
+fn chatgpt_auth_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".config").join("chatgpt").join("auth.json")
+}
+
+pub fn has_chatgpt_oauth_session() -> bool {
+    let path = chatgpt_auth_file_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let record: AuthRecord = match serde_json::from_str(&content) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    record.access_token.is_some() || record.refresh_token.is_some()
+}
+
+pub fn delete_chatgpt_auth_file() -> Result<(), KeychainError> {
+    let path = chatgpt_auth_file_path();
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+pub fn provider_has_credentials(provider: &str) -> bool {
+    if provider == "chatgpt" {
+        return has_chatgpt_oauth_session();
+    }
+    has_key(provider)
 }
 
 #[cfg(test)]
