@@ -53,11 +53,25 @@ struct AuthRecord {
     refresh_token: Option<String>,
 }
 
+fn xdg_config_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dirs::config_dir().unwrap_or_else(std::env::temp_dir))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .unwrap_or_else(|| dirs::config_dir().unwrap_or_else(std::env::temp_dir))
+    }
+}
+
 fn chatgpt_auth_file_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
-        .join("chatgpt")
-        .join("auth.json")
+    xdg_config_dir().join("chatgpt").join("auth.json")
 }
 
 pub fn has_chatgpt_oauth_session() -> bool {

@@ -39,7 +39,7 @@ async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
 #[tauri::command]
 fn get_api_key_status(provider: String) -> ApiKeyStatus {
     ApiKeyStatus {
-        configured: keychain::has_key(&provider),
+        configured: keychain::provider_has_credentials(&provider),
     }
 }
 
@@ -208,7 +208,9 @@ fn is_chatgpt_authenticated() -> ApiKeyStatus {
 
 #[tauri::command]
 fn logout_chatgpt() -> Result<(), String> {
-    keychain::delete_chatgpt_auth_file().map_err(|e| e.to_string())
+    keychain::delete_chatgpt_auth_file().map_err(|e| e.to_string())?;
+    let _ = keychain::delete("chatgpt");
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

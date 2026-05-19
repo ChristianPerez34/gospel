@@ -72,7 +72,7 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
           const current = providersRef.current;
           if (success) {
             const updated = current.map((p) =>
-              p.id === "chatgpt" ? { ...p, isAuthenticated: true, status: "success" as const, testMessage: "Authenticated" } : p
+              p.id === "chatgpt" ? { ...p, isAuthenticated: true, enabled: true, status: "success" as const, testMessage: "Authenticated" } : p
             );
             onProvidersChangeRef.current(updated);
             setOauthChallenge(null);
