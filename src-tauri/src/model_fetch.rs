@@ -19,8 +19,17 @@ fn should_include_completion_model(model_id: &str) -> bool {
     if exclude.iter().any(|p| id.contains(p)) {
         return false;
     }
-    let include = ["gpt-", "o1-", "o3-", "o4-", "o5-", "codex"];
-    include.iter().any(|p| id.contains(p))
+    let include_prefixes = ["gpt-", "o1-", "o3-", "o4-", "o5-"];
+    if include_prefixes.iter().any(|p| id.starts_with(p)) {
+        return true;
+    }
+
+    let include_exact = ["o1", "o3", "o4", "o5"];
+    if include_exact.iter().any(|p| id == *p) {
+        return true;
+    }
+
+    id.contains("codex")
 }
 
 pub async fn fetch_models_for_provider(provider: &str, api_key: Option<&str>) -> ModelInfoWithFreshness {

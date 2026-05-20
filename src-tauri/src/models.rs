@@ -255,22 +255,33 @@ impl ModelRegistry {
             }
         }
 
-        // Check if there's already a pending request for this cache key
-        let notify = {
-            let pending = PENDING_REQUESTS.read().await;
+        // Register/check pending request atomically to avoid races and duplicate fetches
+        let (is_waiter, notify) = {
+            let mut pending = PENDING_REQUESTS.write().await;
             if let Some(notify) = pending.get(cache_key) {
-                notify.clone()
+                (true, notify.clone())
             } else {
-                // No pending request, create one and register it
-                drop(pending);
                 let notify = Arc::new(Notify::new());
-                let mut pending = PENDING_REQUESTS.write().await;
                 pending.insert(cache_key.to_string(), notify.clone());
-                notify
+                (false, notify)
             }
         };
 
-        // We're the one fetching
+        if is_waiter {
+            notify.notified().await;
+            let cache = MODEL_CACHE.read().await;
+            if let Some(entry) = cache.get(cache_key) {
+                return ModelInfoWithFreshness {
+                    models: entry.models.clone(),
+                    is_fresh: entry.is_fresh(),
+                };
+            }
+            return ModelInfoWithFreshness {
+                models: vec![],
+                is_fresh: false,
+            };
+        }
+
         let result = Self::fetch_and_cache_impl(cache_key, provider, fetch_fn).await;
 
         // Notify waiters and clean up
@@ -345,6 +356,14 @@ impl ModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn clear_model_state() {
+        let mut cache = MODEL_CACHE.write().await;
+        cache.clear();
+        let mut pending = PENDING_REQUESTS.write().await;
+        pending.clear();
+    }
 
     #[test]
     fn test_cache_is_fresh_within_ttl() {
@@ -416,5 +435,48 @@ mod tests {
             ttl: Duration::from_secs(601),
         };
         assert!(entry.is_fresh());
+    }
+
+    #[tokio::test]
+    async fn test_get_or_fetch_waits_for_inflight_request() {
+        clear_model_state().await;
+
+        let cache_key = "inflight-model-cache-key";
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+        let waiter_count = 6;
+        let barrier = Arc::new(tokio::sync::Barrier::new(waiter_count + 1));
+        let mut tasks = Vec::new();
+
+        for _ in 0..waiter_count {
+            let cache_key = cache_key.to_string();
+            let fetch_count = fetch_count.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                ModelRegistry::get_or_fetch(cache_key.as_str(), "openai", move || {
+                    let fetch_count = fetch_count.clone();
+                    async move {
+                        fetch_count.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Ok(vec![ModelInfo {
+                            model: "gpt-4o".to_string(),
+                            provider: "openai".to_string(),
+                        }])
+                    }
+                })
+                .await
+            }));
+        }
+
+        barrier.wait().await;
+
+        for task in tasks {
+            let result = task.await.expect("task panicked");
+            assert!(result.is_fresh);
+            assert_eq!(result.models.len(), 1);
+            assert_eq!(result.models[0].model, "gpt-4o");
+        }
+
+        assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
     }
 }
