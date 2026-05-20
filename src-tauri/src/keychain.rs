@@ -70,7 +70,7 @@ fn xdg_config_dir() -> PathBuf {
     }
 }
 
-fn chatgpt_auth_file_path() -> PathBuf {
+pub(crate) fn chatgpt_auth_file_path() -> PathBuf {
     xdg_config_dir().join("chatgpt").join("auth.json")
 }
 

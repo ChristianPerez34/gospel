@@ -1,6 +1,23 @@
+#![recursion_limit = "2048"]
+
 pub mod keychain;
 mod llm;
 mod models;
+
+#[cfg(not(test))]
+mod model_fetch;
+
+#[cfg(test)]
+mod model_fetch {
+    use crate::models::{ModelInfo, ModelInfoWithFreshness, ModelRegistry};
+
+    pub async fn fetch_models_for_provider(provider: &str, _api_key: Option<&str>) -> ModelInfoWithFreshness {
+        ModelInfoWithFreshness {
+            models: ModelRegistry::hardcoded_models_for(provider),
+            is_fresh: true,
+        }
+    }
+}
 
 use llm::{LlmError, LlmService};
 use models::ModelInfo;
@@ -63,8 +80,24 @@ fn get_configured_providers() -> Vec<ProviderStatus> {
 }
 
 #[tauri::command]
-fn get_available_models() -> Vec<ModelInfo> {
-    models::ModelRegistry::get_available_models(|p| keychain::provider_has_credentials(p))
+async fn get_available_models() -> Vec<ModelInfo> {
+    let mut all_models = Vec::new();
+    for &provider in models::ModelRegistry::all_providers() {
+        if !keychain::provider_has_credentials(provider) {
+            continue;
+        }
+        let api_key = if provider == "chatgpt" {
+            None
+        } else {
+            match keychain::retrieve(provider) {
+                Ok(key) => Some(key),
+                Err(_) => continue,
+            }
+        };
+        let result = model_fetch::fetch_models_for_provider(provider, api_key.as_deref()).await;
+        all_models.extend(result.models);
+    }
+    all_models
 }
 
 #[tauri::command]
