@@ -16,6 +16,10 @@ interface InputBarProps {
   contextFiles: ContextFile[];
   onRemoveContext: (path: string) => void;
   disabled?: boolean;
+  unavailableMessage?: string;
+  unavailableDetail?: string;
+  unavailableActionLabel?: string;
+  onUnavailableAction?: () => void;
 }
 
 export function InputBar({
@@ -26,18 +30,23 @@ export function InputBar({
   contextFiles,
   onRemoveContext,
   disabled = false,
+  unavailableMessage = "No available models",
+  unavailableDetail,
+  unavailableActionLabel = "Open Settings",
+  onUnavailableAction,
 }: InputBarProps) {
   const [value, setValue] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const currentModel = models.find((m) => m.id === selectedModel);
+  const sendDisabled = disabled || models.length === 0;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (value.trim() && !disabled) {
+        if (value.trim() && !sendDisabled) {
           onSend(value.trim());
           setValue("");
           if (textareaRef.current) {
@@ -46,7 +55,7 @@ export function InputBar({
         }
       }
     },
-    [value, disabled, onSend]
+    [value, sendDisabled, onSend]
   );
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -74,14 +83,24 @@ export function InputBar({
           <button
             className="input-bar__model-btn"
             onClick={() => setModelOpen(!modelOpen)}
-            disabled={disabled}
+            disabled={disabled && models.length > 0}
             aria-label="Select model"
           >
-            {currentModel?.name || "Select model"}
+            {currentModel?.name || unavailableMessage}
           </button>
           {modelOpen && (
             <div className="input-bar__model-dropdown" role="listbox">
-              {models.map((m) => (
+              {models.length === 0 ? (
+                <div className="input-bar__model-empty">
+                  <strong>{unavailableMessage}</strong>
+                  {unavailableDetail && <span>{unavailableDetail}</span>}
+                  {onUnavailableAction && (
+                    <button className="input-bar__model-empty-action" type="button" onClick={onUnavailableAction}>
+                      {unavailableActionLabel}
+                    </button>
+                  )}
+                </div>
+              ) : models.map((m) => (
                 <button
                   key={m.id}
                   className={`input-bar__model-option${
@@ -113,18 +132,27 @@ export function InputBar({
           ref={textareaRef}
           className="input-bar__textarea"
           placeholder={
-            disabled ? "Connecting..." : "Type a prompt (Shift+Enter for new line)"
+            sendDisabled ? unavailableMessage : "Type a prompt (Shift+Enter for new line)"
           }
           value={value}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
-          disabled={disabled}
+          disabled={sendDisabled}
           rows={1}
           aria-label="Message input"
         />
         <button
           className="input-bar__send"
-          disabled={disabled || !value.trim()}
+          disabled={sendDisabled || !value.trim()}
+          onClick={() => {
+            if (value.trim() && !sendDisabled) {
+              onSend(value.trim());
+              setValue("");
+              if (textareaRef.current) {
+                textareaRef.current.style.height = "auto";
+              }
+            }
+          }}
           aria-label="Send message"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">

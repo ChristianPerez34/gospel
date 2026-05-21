@@ -8,11 +8,13 @@ interface SettingsModalProps {
   onClose: () => void;
   providers: ProviderConfig[];
   onProvidersChange: (providers: ProviderConfig[]) => void;
+  onRefreshAvailability: (forceRefresh?: boolean) => Promise<void>;
+  isRefreshingModels: boolean;
 }
 
 type TabKey = "general" | "models";
 
-export function SettingsModal({ open, onClose, providers, onProvidersChange }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, providers, onProvidersChange, onRefreshAvailability, isRefreshingModels }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("models");
 
   useEffect(() => {
@@ -65,13 +67,23 @@ export function SettingsModal({ open, onClose, providers, onProvidersChange }: S
         <div className="settings-modal__body">
           {activeTab === "models" ? (
             <div className="settings-modal__section">
-              <h3 className="settings-modal__section-title">Configured Providers</h3>
+              <div className="settings-modal__section-header">
+                <h3 className="settings-modal__section-title">Credentialed Providers</h3>
+                <button
+                  className="settings-modal__refresh-btn"
+                  type="button"
+                  onClick={() => void onRefreshAvailability(true)}
+                  disabled={isRefreshingModels}
+                >
+                  {isRefreshingModels ? "Refreshing..." : "Refresh models"}
+                </button>
+              </div>
               <p className="settings-modal__status">
                 <span className="settings-modal__status--not-configured">
-                  Enable a provider and add its API key to get started.
+                  Provider rows are loaded from backend availability. Add credentials to make models selectable.
                 </span>
               </p>
-              <ProviderSelector providers={providers} onProvidersChange={onProvidersChange} />
+              <ProviderSelector providers={providers} onProvidersChange={onProvidersChange} onRefreshAvailability={onRefreshAvailability} />
             </div>
           ) : (
             <div className="settings-modal__section">

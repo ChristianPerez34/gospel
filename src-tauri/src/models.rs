@@ -13,98 +13,193 @@ mod model_lists {
     pub use rig::providers::gemini::completion::{
         GEMINI_2_0_FLASH, GEMINI_2_0_FLASH_LITE, GEMINI_2_5_FLASH, GEMINI_2_5_FLASH_PREVIEW_04_17,
         GEMINI_2_5_PRO_EXP_03_25, GEMINI_2_5_PRO_PREVIEW_03_25, GEMINI_2_5_PRO_PREVIEW_05_06,
-        GEMINI_2_5_PRO_PREVIEW_06_05, GEMINI_3_FLASH_PREVIEW, GEMINI_3_1_FLASH_LITE_PREVIEW,
+        GEMINI_2_5_PRO_PREVIEW_06_05, GEMINI_3_1_FLASH_LITE_PREVIEW, GEMINI_3_FLASH_PREVIEW,
     };
     pub use rig::providers::groq::{
-        DEEPSEEK_R1_DISTILL_LLAMA_70B, GEMMA2_9B_IT, LLAMA_3_70B_8192, LLAMA_3_8B_8192,
-        LLAMA_GUARD_3_8B, LLAMA_3_1_8B_INSTANT, LLAMA_3_2_11B_VISION_PREVIEW,
-        LLAMA_3_2_1B_PREVIEW, LLAMA_3_2_3B_PREVIEW, LLAMA_3_2_70B_SPECDEC,
-        LLAMA_3_2_70B_VERSATILE, LLAMA_3_2_90B_VISION_PREVIEW, MIXTRAL_8X7B_32768,
+        DEEPSEEK_R1_DISTILL_LLAMA_70B, GEMMA2_9B_IT, LLAMA_3_1_8B_INSTANT,
+        LLAMA_3_2_11B_VISION_PREVIEW, LLAMA_3_2_1B_PREVIEW, LLAMA_3_2_3B_PREVIEW,
+        LLAMA_3_2_70B_SPECDEC, LLAMA_3_2_70B_VERSATILE, LLAMA_3_2_90B_VISION_PREVIEW,
+        LLAMA_3_70B_8192, LLAMA_3_8B_8192, LLAMA_GUARD_3_8B, MIXTRAL_8X7B_32768,
     };
     pub use rig::providers::mistral::{
         CODESTRAL, CODESTRAL_MAMBA, MINISTRAL_3B, MINISTRAL_8B, MISTRAL_LARGE, MISTRAL_NEMO,
         MISTRAL_SABA, MISTRAL_SMALL, PIXTRAL_LARGE, PIXTRAL_SMALL,
     };
     pub use rig::providers::openai::{
-        GPT_4, GPT_4_0125_PREVIEW, GPT_4_0613, GPT_4_1106_PREVIEW, GPT_4_1106_VISION_PREVIEW,
-        GPT_4_1, GPT_4_1_2025_04_14, GPT_4_1_MINI, GPT_4_1_NANO, GPT_4_32K, GPT_4_32K_0613,
-        GPT_4_5_PREVIEW, GPT_4_5_PREVIEW_2025_02_27, GPT_4O, GPT_4O_2024_05_13,
-        GPT_4O_2024_11_20, GPT_4O_MINI, GPT_4_TURBO, GPT_4_TURBO_2024_04_09, GPT_4_TURBO_PREVIEW,
+        GPT_4, GPT_4O, GPT_4O_2024_05_13, GPT_4O_2024_11_20, GPT_4O_MINI, GPT_4_0125_PREVIEW,
+        GPT_4_0613, GPT_4_1, GPT_4_1106_PREVIEW, GPT_4_1106_VISION_PREVIEW, GPT_4_1_2025_04_14,
+        GPT_4_1_MINI, GPT_4_1_NANO, GPT_4_32K, GPT_4_32K_0613, GPT_4_5_PREVIEW,
+        GPT_4_5_PREVIEW_2025_02_27, GPT_4_TURBO, GPT_4_TURBO_2024_04_09, GPT_4_TURBO_PREVIEW,
         GPT_4_VISION_PREVIEW, GPT_5, GPT_5_1, GPT_5_2, GPT_5_5, GPT_5_MINI, GPT_5_NANO, O1,
-        O1_2024_12_17, O1_MINI, O1_MINI_2024_09_12, O1_PREVIEW, O1_PREVIEW_2024_09_12, O1_PRO,
-        O3, O3_MINI, O3_MINI_2025_01_31, O4_MINI, O4_MINI_2025_04_16,
+        O1_2024_12_17, O1_MINI, O1_MINI_2024_09_12, O1_PREVIEW, O1_PREVIEW_2024_09_12, O1_PRO, O3,
+        O3_MINI, O3_MINI_2025_01_31, O4_MINI, O4_MINI_2025_04_16,
     };
 
     pub const OPENAI_MODELS: &[&str] = &[
-        GPT_5_5, GPT_5_2, GPT_5_1, GPT_5, GPT_5_MINI, GPT_5_NANO, GPT_4_5_PREVIEW,
-        GPT_4_5_PREVIEW_2025_02_27, GPT_4O_2024_11_20, GPT_4O, GPT_4O_MINI, GPT_4O_2024_05_13,
-        GPT_4_TURBO, GPT_4_TURBO_2024_04_09, GPT_4_TURBO_PREVIEW, GPT_4_0125_PREVIEW,
-        GPT_4_1106_PREVIEW, GPT_4_VISION_PREVIEW, GPT_4_1106_VISION_PREVIEW, GPT_4, GPT_4_0613,
-        GPT_4_32K, GPT_4_32K_0613, O4_MINI_2025_04_16, O4_MINI, O3, O3_MINI, O3_MINI_2025_01_31,
-        O1_PRO, O1, O1_2024_12_17, O1_PREVIEW, O1_PREVIEW_2024_09_12, O1_MINI,
-        O1_MINI_2024_09_12, GPT_4_1_MINI, GPT_4_1_NANO, GPT_4_1_2025_04_14, GPT_4_1,
+        GPT_5_5,
+        GPT_5_2,
+        GPT_5_1,
+        GPT_5,
+        GPT_5_MINI,
+        GPT_5_NANO,
+        GPT_4_5_PREVIEW,
+        GPT_4_5_PREVIEW_2025_02_27,
+        GPT_4O_2024_11_20,
+        GPT_4O,
+        GPT_4O_MINI,
+        GPT_4O_2024_05_13,
+        GPT_4_TURBO,
+        GPT_4_TURBO_2024_04_09,
+        GPT_4_TURBO_PREVIEW,
+        GPT_4_0125_PREVIEW,
+        GPT_4_1106_PREVIEW,
+        GPT_4_VISION_PREVIEW,
+        GPT_4_1106_VISION_PREVIEW,
+        GPT_4,
+        GPT_4_0613,
+        GPT_4_32K,
+        GPT_4_32K_0613,
+        O4_MINI_2025_04_16,
+        O4_MINI,
+        O3,
+        O3_MINI,
+        O3_MINI_2025_01_31,
+        O1_PRO,
+        O1,
+        O1_2024_12_17,
+        O1_PREVIEW,
+        O1_PREVIEW_2024_09_12,
+        O1_MINI,
+        O1_MINI_2024_09_12,
+        GPT_4_1_MINI,
+        GPT_4_1_NANO,
+        GPT_4_1_2025_04_14,
+        GPT_4_1,
     ];
 
     pub const ANTHROPIC_MODELS: &[&str] = &[
-        CLAUDE_OPUS_4_6, CLAUDE_OPUS_4_7, CLAUDE_SONNET_4_6, CLAUDE_HAIKU_4_5,
+        CLAUDE_OPUS_4_6,
+        CLAUDE_OPUS_4_7,
+        CLAUDE_SONNET_4_6,
+        CLAUDE_HAIKU_4_5,
     ];
 
     pub const GEMINI_MODELS: &[&str] = &[
-        GEMINI_3_1_FLASH_LITE_PREVIEW, GEMINI_3_FLASH_PREVIEW, GEMINI_2_5_PRO_PREVIEW_06_05,
-        GEMINI_2_5_PRO_PREVIEW_05_06, GEMINI_2_5_PRO_PREVIEW_03_25, GEMINI_2_5_FLASH_PREVIEW_04_17,
-        GEMINI_2_5_PRO_EXP_03_25, GEMINI_2_5_FLASH, GEMINI_2_0_FLASH_LITE, GEMINI_2_0_FLASH,
+        GEMINI_3_1_FLASH_LITE_PREVIEW,
+        GEMINI_3_FLASH_PREVIEW,
+        GEMINI_2_5_PRO_PREVIEW_06_05,
+        GEMINI_2_5_PRO_PREVIEW_05_06,
+        GEMINI_2_5_PRO_PREVIEW_03_25,
+        GEMINI_2_5_FLASH_PREVIEW_04_17,
+        GEMINI_2_5_PRO_EXP_03_25,
+        GEMINI_2_5_FLASH,
+        GEMINI_2_0_FLASH_LITE,
+        GEMINI_2_0_FLASH,
     ];
 
     pub const GROQ_MODELS: &[&str] = &[
-        DEEPSEEK_R1_DISTILL_LLAMA_70B, GEMMA2_9B_IT, LLAMA_3_1_8B_INSTANT,
-        LLAMA_3_2_11B_VISION_PREVIEW, LLAMA_3_2_1B_PREVIEW, LLAMA_3_2_3B_PREVIEW,
-        LLAMA_3_2_90B_VISION_PREVIEW, LLAMA_3_2_70B_SPECDEC, LLAMA_3_2_70B_VERSATILE,
-        LLAMA_GUARD_3_8B, LLAMA_3_70B_8192, LLAMA_3_8B_8192, MIXTRAL_8X7B_32768,
+        DEEPSEEK_R1_DISTILL_LLAMA_70B,
+        GEMMA2_9B_IT,
+        LLAMA_3_1_8B_INSTANT,
+        LLAMA_3_2_11B_VISION_PREVIEW,
+        LLAMA_3_2_1B_PREVIEW,
+        LLAMA_3_2_3B_PREVIEW,
+        LLAMA_3_2_90B_VISION_PREVIEW,
+        LLAMA_3_2_70B_SPECDEC,
+        LLAMA_3_2_70B_VERSATILE,
+        LLAMA_GUARD_3_8B,
+        LLAMA_3_70B_8192,
+        LLAMA_3_8B_8192,
+        MIXTRAL_8X7B_32768,
     ];
 
     pub const MISTRAL_MODELS: &[&str] = &[
-        CODESTRAL, MISTRAL_LARGE, PIXTRAL_LARGE, MISTRAL_SABA, MINISTRAL_3B, MINISTRAL_8B,
-        MISTRAL_SMALL, PIXTRAL_SMALL, MISTRAL_NEMO, CODESTRAL_MAMBA,
+        CODESTRAL,
+        MISTRAL_LARGE,
+        PIXTRAL_LARGE,
+        MISTRAL_SABA,
+        MINISTRAL_3B,
+        MINISTRAL_8B,
+        MISTRAL_SMALL,
+        PIXTRAL_SMALL,
+        MISTRAL_NEMO,
+        CODESTRAL_MAMBA,
     ];
 
-    pub const CHATGPT_MODELS: &[&str] = &[
+    pub const CHATGPT_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"];
+
+    pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-pro",
         "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-5.1-codex",
-        "gpt-5-codex",
-        "o3-codex",
-        "o4-mini-codex",
+        "gpt-5.3-codex-spark",
     ];
 }
 
 #[cfg(test)]
 mod model_lists {
     pub const OPENAI_MODELS: &[&str] = &[
-        "gpt-5.5", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano",
-        "gpt-4.5-preview", "gpt-4.5-preview-2025-02-27",
-        "gpt-4o-2024-11-20", "gpt-4o", "gpt-4o-mini", "gpt-4o-2024-05-13",
-        "gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4-turbo-preview",
-        "gpt-4-0125-preview", "gpt-4-1106-preview",
-        "gpt-4-vision-preview", "gpt-4-1106-vision-preview",
-        "gpt-4", "gpt-4-0613", "gpt-4-32k", "gpt-4-32k-0613",
-        "o4-mini-2025-04-16", "o4-mini",
-        "o3", "o3-mini", "o3-mini-2025-01-31",
-        "o1-pro", "o1", "o1-2024-12-17",
-        "o1-preview", "o1-preview-2024-09-12", "o1-mini", "o1-mini-2024-09-12",
-        "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4.1-2025-04-14", "gpt-4.1",
+        "gpt-5.5",
+        "gpt-5.2",
+        "gpt-5.1",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-4.5-preview",
+        "gpt-4.5-preview-2025-02-27",
+        "gpt-4o-2024-11-20",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4o-2024-05-13",
+        "gpt-4-turbo",
+        "gpt-4-turbo-2024-04-09",
+        "gpt-4-turbo-preview",
+        "gpt-4-0125-preview",
+        "gpt-4-1106-preview",
+        "gpt-4-vision-preview",
+        "gpt-4-1106-vision-preview",
+        "gpt-4",
+        "gpt-4-0613",
+        "gpt-4-32k",
+        "gpt-4-32k-0613",
+        "o4-mini-2025-04-16",
+        "o4-mini",
+        "o3",
+        "o3-mini",
+        "o3-mini-2025-01-31",
+        "o1-pro",
+        "o1",
+        "o1-2024-12-17",
+        "o1-preview",
+        "o1-preview-2024-09-12",
+        "o1-mini",
+        "o1-mini-2024-09-12",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "gpt-4.1-2025-04-14",
+        "gpt-4.1",
     ];
 
     pub const ANTHROPIC_MODELS: &[&str] = &[
-        "claude-opus-4-6", "claude-opus-4-7",
-        "claude-sonnet-4-6", "claude-haiku-4-5",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
     ];
 
     pub const GEMINI_MODELS: &[&str] = &[
-        "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview",
-        "gemini-2.5-pro-preview-06-05", "gemini-2.5-pro-preview-05-06",
-        "gemini-2.5-pro-preview-03-25", "gemini-2.5-flash-preview-04-17",
-        "gemini-2.5-pro-exp-03-25", "gemini-2.5-flash",
-        "gemini-2.0-flash-lite", "gemini-2.0-flash",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-pro-preview-06-05",
+        "gemini-2.5-pro-preview-05-06",
+        "gemini-2.5-pro-preview-03-25",
+        "gemini-2.5-flash-preview-04-17",
+        "gemini-2.5-pro-exp-03-25",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash",
     ];
 
     pub const GROQ_MODELS: &[&str] = &[
@@ -136,18 +231,21 @@ mod model_lists {
         "open-codestral-mamba",
     ];
 
-    pub const CHATGPT_MODELS: &[&str] = &[
+    pub const CHATGPT_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"];
+
+    pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-pro",
         "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-5.1-codex",
-        "gpt-5-codex",
-        "o3-codex",
-        "o4-mini-codex",
+        "gpt-5.3-codex-spark",
     ];
 }
 
 use model_lists::{
-    ANTHROPIC_MODELS, CHATGPT_MODELS, GEMINI_MODELS, GROQ_MODELS, MISTRAL_MODELS, OPENAI_MODELS,
+    ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS, GROQ_MODELS,
+    MISTRAL_MODELS, OPENAI_MODELS,
 };
 
 #[derive(Serialize, Clone, Debug)]
@@ -160,6 +258,8 @@ pub struct ModelInfo {
 pub struct ModelInfoWithFreshness {
     pub models: Vec<ModelInfo>,
     pub is_fresh: bool,
+    pub error_kind: Option<String>,
+    pub error_detail: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -208,8 +308,19 @@ impl ModelRegistry {
         }
     }
 
+    pub fn is_chatgpt_subscription_model(model: &str) -> bool {
+        CHATGPT_DISCOVERABLE_MODELS.contains(&model)
+    }
+
     pub fn all_providers() -> &'static [&'static str] {
-        &["openai", "chatgpt", "anthropic", "gemini", "groq", "mistral"]
+        &[
+            "openai",
+            "chatgpt",
+            "anthropic",
+            "gemini",
+            "groq",
+            "mistral",
+        ]
     }
 
     pub fn get_available_models(has_key: impl Fn(&str) -> bool) -> Vec<ModelInfo> {
@@ -237,19 +348,25 @@ impl ModelRegistry {
             .collect()
     }
 
-    pub async fn get_or_fetch<F, Fut>(cache_key: &str, provider: &str, fetch_fn: F) -> ModelInfoWithFreshness
+    pub async fn get_or_fetch<F, Fut>(
+        cache_key: &str,
+        provider: &str,
+        force_refresh: bool,
+        fetch_fn: F,
+    ) -> ModelInfoWithFreshness
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Vec<ModelInfo>, String>>,
     {
-        // Check if we have fresh cached data
-        {
+        if !force_refresh {
             let cache = MODEL_CACHE.read().await;
             if let Some(entry) = cache.get(cache_key) {
                 if entry.is_fresh() {
                     return ModelInfoWithFreshness {
                         models: entry.models.clone(),
                         is_fresh: true,
+                        error_kind: None,
+                        error_detail: None,
                     };
                 }
             }
@@ -274,11 +391,15 @@ impl ModelRegistry {
                 return ModelInfoWithFreshness {
                     models: entry.models.clone(),
                     is_fresh: entry.is_fresh(),
+                    error_kind: None,
+                    error_detail: None,
                 };
             }
             return ModelInfoWithFreshness {
                 models: vec![],
                 is_fresh: false,
+                error_kind: Some("fetch_failed".to_string()),
+                error_detail: Some("Model fetch did not complete".to_string()),
             };
         }
 
@@ -294,7 +415,11 @@ impl ModelRegistry {
         result
     }
 
-    async fn fetch_and_cache_impl<F, Fut>(cache_key: &str, provider: &str, fetch_fn: F) -> ModelInfoWithFreshness
+    async fn fetch_and_cache_impl<F, Fut>(
+        cache_key: &str,
+        provider: &str,
+        fetch_fn: F,
+    ) -> ModelInfoWithFreshness
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Vec<ModelInfo>, String>>,
@@ -314,9 +439,12 @@ impl ModelRegistry {
                 ModelInfoWithFreshness {
                     models,
                     is_fresh: true,
+                    error_kind: None,
+                    error_detail: None,
                 }
             }
             Err(e) => {
+                let (error_kind, error_detail) = sanitize_model_fetch_error(&e);
                 tracing::warn!("Failed to fetch models for {}: {}", provider, e);
                 // Check if we have stale cached data
                 let cache = MODEL_CACHE.read().await;
@@ -325,12 +453,16 @@ impl ModelRegistry {
                     return ModelInfoWithFreshness {
                         models: entry.models.clone(),
                         is_fresh: false,
+                        error_kind: Some(error_kind),
+                        error_detail: Some(error_detail),
                     };
                 }
                 // No cache, return empty
                 ModelInfoWithFreshness {
                     models: vec![],
                     is_fresh: false,
+                    error_kind: Some(error_kind),
+                    error_detail: Some(error_detail),
                 }
             }
         }
@@ -349,8 +481,38 @@ impl ModelRegistry {
         Some(ModelInfoWithFreshness {
             models: entry.models.clone(),
             is_fresh: entry.is_fresh(),
+            error_kind: None,
+            error_detail: None,
         })
     }
+}
+
+fn sanitize_model_fetch_error(error: &str) -> (String, String) {
+    let lower = error.to_lowercase();
+    let kind = if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("access_token")
+        || lower.contains("oauth")
+    {
+        "auth_failed"
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "timeout"
+    } else if lower.contains("429") || lower.contains("rate") {
+        "rate_limited"
+    } else if lower.contains("parse") || lower.contains("json") {
+        "bad_response"
+    } else {
+        "fetch_failed"
+    };
+    let detail = match kind {
+        "auth_failed" => "Provider credentials need attention.",
+        "timeout" => "The provider did not respond in time.",
+        "rate_limited" => "The provider rate limited model loading.",
+        "bad_response" => "The provider returned an unreadable model response.",
+        _ => "The provider could not load models.",
+    };
+    (kind.to_string(), detail.to_string())
 }
 
 #[cfg(test)]
@@ -409,6 +571,46 @@ mod tests {
     }
 
     #[test]
+    fn test_chatgpt_subscription_models_include_current_codex_options() {
+        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.5"));
+        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4"));
+        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4-mini"));
+        assert!(ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.3-codex"
+        ));
+        assert!(ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.3-codex-spark"
+        ));
+    }
+
+    #[test]
+    fn test_chatgpt_subscription_models_reject_api_and_web_chat_models() {
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.2-codex"
+        ));
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.1-codex"
+        ));
+        assert!(!ModelRegistry::is_chatgpt_subscription_model("gpt-4o"));
+        assert!(!ModelRegistry::is_chatgpt_subscription_model("chat-latest"));
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "text-embedding-3-large"
+        ));
+    }
+
+    #[test]
+    fn test_chatgpt_hardcoded_fallback_omits_tier_specific_models() {
+        let models = ModelRegistry::models_for_provider("chatgpt");
+
+        assert!(models.contains(&"gpt-5.5"));
+        assert!(models.contains(&"gpt-5.4"));
+        assert!(models.contains(&"gpt-5.4-mini"));
+        assert!(models.contains(&"gpt-5.3-codex"));
+        assert!(!models.contains(&"gpt-5.4-pro"));
+        assert!(!models.contains(&"gpt-5.3-codex-spark"));
+    }
+
+    #[test]
     fn test_get_available_models_still_returns_hardcoded() {
         let has_key = |p: &str| -> bool { p == "openai" };
         let models = ModelRegistry::get_available_models(has_key);
@@ -453,7 +655,7 @@ mod tests {
             let barrier = barrier.clone();
             tasks.push(tokio::spawn(async move {
                 barrier.wait().await;
-                ModelRegistry::get_or_fetch(cache_key.as_str(), "openai", move || {
+                ModelRegistry::get_or_fetch(cache_key.as_str(), "openai", false, move || {
                     let fetch_count = fetch_count.clone();
                     async move {
                         fetch_count.fetch_add(1, Ordering::SeqCst);

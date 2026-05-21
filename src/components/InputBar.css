@@ -100,6 +100,26 @@
   background-color: transparent;
 }
 
+.input-bar__model-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+}
+
+.input-bar__model-empty strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.input-bar__model-empty-action {
+  align-self: flex-start;
+  color: var(--accent-action);
+  font-size: var(--text-caption);
+}
+
 .input-bar__model-not-configured {
   font-size: 10px;
   color: var(--status-error);

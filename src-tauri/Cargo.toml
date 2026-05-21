@@ -31,6 +31,7 @@ futures = "0.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 tracing = "0.1"
 once_cell = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 keyring = "3"

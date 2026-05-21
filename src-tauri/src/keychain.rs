@@ -16,7 +16,14 @@ pub enum KeychainError {
 const SERVICE_NAME: &str = "gospel";
 
 fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
-    let supported = ["openai", "anthropic", "gemini", "groq", "mistral", "chatgpt"];
+    let supported = [
+        "openai",
+        "anthropic",
+        "gemini",
+        "groq",
+        "mistral",
+        "chatgpt",
+    ];
     if !supported.contains(&provider) {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
     }

@@ -29,6 +29,7 @@ export interface ActionCard {
 export interface Session {
   id: string;
   title: string;
+  provider: string;
   model: string;
   timestamp: Date;
   messages: Message[];
