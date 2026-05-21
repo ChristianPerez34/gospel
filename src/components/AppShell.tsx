@@ -105,10 +105,14 @@ export function AppShell() {
   providersRef.current = providers;
 
   const [availableModels, setAvailableModels] = useState<{ model: string; provider: string }[]>([]);
+  const isRefreshingModelsRef = useRef(false);
 
   const refreshModelAvailability = useCallback(async (forceRefresh = false) => {
-    if (forceRefresh && isRefreshingModels) return;
-    if (forceRefresh) setIsRefreshingModels(true);
+    if (forceRefresh && isRefreshingModelsRef.current) return;
+    if (forceRefresh) {
+      setIsRefreshingModels(true);
+      isRefreshingModelsRef.current = true;
+    }
     try {
       const snapshot = await invoke<ModelAvailabilitySnapshot>("get_model_availability", { forceRefresh });
       setAvailabilitySnapshot(snapshot);
@@ -118,7 +122,9 @@ export function AppShell() {
           providerConfigFromAvailability(provider, current.find((p) => p.id === provider.provider))
         )
       );
-      setStatus(snapshot.available_models.length > 0 ? "connected" : "idle");
+      if (status !== "thinking") {
+        setStatus(snapshot.available_models.length > 0 ? "connected" : "idle");
+      }
       if (forceRefresh) {
         const failedProvider = snapshot.providers.find((p) => p.error_kind || p.model_fetch_status === "failed");
         if (failedProvider) {
@@ -135,9 +141,12 @@ export function AppShell() {
       }
       setStatus("idle");
     } finally {
-      if (forceRefresh) setIsRefreshingModels(false);
+      if (forceRefresh) {
+        setIsRefreshingModels(false);
+        isRefreshingModelsRef.current = false;
+      }
     }
-  }, [isRefreshingModels, showError, showSuccess]);
+  }, [showError, showSuccess]);
 
   useEffect(() => {
     void refreshModelAvailability();

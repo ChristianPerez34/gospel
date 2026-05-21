@@ -40,7 +40,8 @@ export function InputBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const currentModel = models.find((m) => m.id === selectedModel);
-  const sendDisabled = disabled || models.length === 0;
+  const noModels = models.length === 0;
+  const sendDisabled = disabled || noModels;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -131,9 +132,7 @@ export function InputBar({
         <textarea
           ref={textareaRef}
           className="input-bar__textarea"
-          placeholder={
-            sendDisabled ? unavailableMessage : "Type a prompt (Shift+Enter for new line)"
-          }
+          placeholder={noModels ? unavailableMessage : "Type a prompt (Shift+Enter for new line)"}
           value={value}
           onChange={handleInput}
           onKeyDown={handleKeyDown}

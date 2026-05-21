@@ -502,7 +502,11 @@ fn sanitize_model_fetch_error(error: &str) -> (String, String) {
         "auth_failed"
     } else if lower.contains("timeout") || lower.contains("timed out") {
         "timeout"
-    } else if lower.contains("429") || lower.contains("rate") {
+    } else if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("rate-limited")
+        || lower.contains("too many requests")
+    {
         "rate_limited"
     } else if lower.contains("parse") || lower.contains("json") {
         "bad_response"
