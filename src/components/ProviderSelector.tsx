@@ -151,7 +151,11 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
 
   const handleRemoveKey = useCallback(
     async (provider: ProviderConfig) => {
-      if (provider.isOAuth || isOperationInProgress.current) return;
+      if (isOperationInProgress.current) return;
+      if (provider.isOAuth) {
+        await handleOAuthLogout(provider);
+        return;
+      }
       isOperationInProgress.current = true;
       updateProvider(provider.id, { status: "testing", testMessage: "Removing key..." });
       try {

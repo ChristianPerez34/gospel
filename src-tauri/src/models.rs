@@ -373,19 +373,23 @@ impl ModelRegistry {
         }
 
         // Register/check pending request atomically to avoid races and duplicate fetches
-        let (is_waiter, notify) = {
+        let (is_waiter, notify, must_rejoin) = {
             let mut pending = PENDING_REQUESTS.write().await;
             if let Some(notify) = pending.get(cache_key) {
-                (true, notify.clone())
+                (true, notify.clone(), force_refresh)
             } else {
                 let notify = Arc::new(Notify::new());
                 pending.insert(cache_key.to_string(), notify.clone());
-                (false, notify)
+                (false, notify, false)
             }
         };
 
         if is_waiter {
             notify.notified().await;
+            if must_rejoin {
+                drop(notify);
+                return Self::fetch_and_cache_impl(cache_key, provider, fetch_fn).await;
+            }
             let cache = MODEL_CACHE.read().await;
             if let Some(entry) = cache.get(cache_key) {
                 return ModelInfoWithFreshness {
