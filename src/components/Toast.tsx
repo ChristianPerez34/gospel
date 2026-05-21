@@ -28,7 +28,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
       const timer = setTimeout(() => onDismiss(toast.id), toast.autoDismissMs);
       return () => clearTimeout(timer);
     }
-  }, [toast, onDismiss]);
+  }, [toast.id, toast.autoDismissMs, toast.action, toast.secondaryAction, onDismiss]);
 
   const handleDismiss = useCallback(() => {
     onDismiss(toast.id);
