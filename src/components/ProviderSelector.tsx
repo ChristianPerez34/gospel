@@ -237,17 +237,16 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
               <button
                 className={`provider-card__toggle ${provider.visible ? "provider-card__toggle--on" : ""}`}
                 onClick={() => handleToggle(provider.id)}
-                disabled={!provider.credentialed}
                 aria-pressed={provider.visible}
                 type="button"
                 aria-label={provider.visible ? `Hide ${provider.name} from model picker` : `Show ${provider.name} in model picker`}
-                title={provider.credentialed ? "Provider visibility" : "Add credentials before changing visibility"}
+                title="Provider visibility"
               >
                 <span className="provider-card__toggle-knob" />
               </button>
             </div>
 
-            {provider.visible && (
+            {(provider.visible || !provider.credentialed) && (
               <div className="provider-card__body">
                 {provider.isOAuth ? (
                   <div className="provider-card__oauth-row">
