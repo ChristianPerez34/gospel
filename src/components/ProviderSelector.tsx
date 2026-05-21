@@ -50,12 +50,15 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
   onProvidersChangeRef.current = onProvidersChange;
 
   useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
     // Check ChatGPT auth status
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const status = await invoke<{ configured: boolean }>("is_chatgpt_authenticated");
-        if (status.configured) {
+        if (!cancelled && status.configured) {
           const current = providersRef.current;
           const chatgptProvider = current.find(p => p.id === "chatgpt");
           if (chatgptProvider) {
@@ -70,11 +73,10 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
     })();
 
     // Listen for auth completion event
-    let unlisten: (() => void) | undefined;
-    const setupAuthListener = async () => {
+    (async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
-        unlisten = await listen("chatgpt-auth-complete", (event) => {
+        const unlistenFn = await listen("chatgpt-auth-complete", (event) => {
           const success = event.payload as boolean;
           const current = providersRef.current;
           if (success) {
@@ -92,16 +94,21 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
             void onRefreshAvailability();
           }
         });
+
+        if (cancelled) {
+          unlistenFn();
+          return;
+        }
+
+        unlisten = unlistenFn;
       } catch (error) {
         console.error("Failed to setup auth listener:", error);
       }
-    };
-    setupAuthListener();
+    })();
 
     return () => {
-      if (unlisten) {
-        unlisten();
-      }
+      cancelled = true;
+      unlisten?.();
     };
   }, []);
 

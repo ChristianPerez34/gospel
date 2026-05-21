@@ -22,13 +22,16 @@ interface ToastProps {
 }
 
 export function Toast({ toast, onDismiss }: ToastProps) {
+  const hasAction = Boolean(toast.action);
+  const hasSecondaryAction = Boolean(toast.secondaryAction);
+
   useEffect(() => {
-    const shouldAutoDismiss = toast.autoDismissMs && toast.autoDismissMs > 0 && !toast.action && !toast.secondaryAction;
+    const shouldAutoDismiss = toast.autoDismissMs && toast.autoDismissMs > 0 && !hasAction && !hasSecondaryAction;
     if (shouldAutoDismiss) {
       const timer = setTimeout(() => onDismiss(toast.id), toast.autoDismissMs);
       return () => clearTimeout(timer);
     }
-  }, [toast, onDismiss]);
+  }, [toast.id, toast.autoDismissMs, hasAction, hasSecondaryAction, onDismiss]);
 
   const handleDismiss = useCallback(() => {
     onDismiss(toast.id);

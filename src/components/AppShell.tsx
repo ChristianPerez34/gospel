@@ -163,12 +163,17 @@ export function AppShell() {
       setSelectedModel(null);
       return;
     }
-    if (!selectedModel || !availableModels.some((m) => m.model === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {
-      setSelectedModel({ provider: availableModels[0].provider, model: availableModels[0].model });
-    }
-  }, [availableModels, providers, selectedModel]);
+    setSelectedModel((prev) => {
+      if (prev && availableModels.some((m) => m.model === prev.model && m.provider.toLowerCase() === prev.provider.toLowerCase())) {
+        return prev;
+      }
+      return { provider: availableModels[0].provider, model: availableModels[0].model };
+    });
+  }, [availableModels, providers]);
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
       const unlistenToken = await listen<string>("llm-token", (event) => {
         setStreamingContent((prev) => prev + event.payload);
@@ -176,7 +181,7 @@ export function AppShell() {
       });
 
       const unlistenDone = await listen<string>("llm-done", (event) => {
-        const content = event.payload || streamingContent;
+        const content = event.payload;
         if (content) {
           setMessages((prev) => [
             ...prev,
@@ -212,6 +217,13 @@ export function AppShell() {
         }
       });
 
+      if (cancelled) {
+        unlistenToken();
+        unlistenDone();
+        unlistenError();
+        return;
+      }
+
       unlistenRef.current = () => {
         unlistenToken();
         unlistenDone();
@@ -220,9 +232,12 @@ export function AppShell() {
     })();
 
     return () => {
+      cancelled = true;
       unlistenRef.current?.();
+      unlistenRef.current = null;
     };
-  }, [showError, streamingContent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showError]);
 
   const handleSend = useCallback(async (message: string) => {
     if (!selectedModel || !availableModels.some((m) => m.model === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {
