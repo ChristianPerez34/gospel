@@ -97,6 +97,8 @@ export function AppShell() {
   const [availabilitySnapshot, setAvailabilitySnapshot] = useState<ModelAvailabilitySnapshot | null>(null);
   const [isRefreshingModels, setIsRefreshingModels] = useState(false);
   const [status, setStatus] = useState<AgentStatus>("idle");
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const [isThinking, setIsThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const { toasts, dismissToast, showError, showSuccess } = useToasts();
@@ -122,7 +124,7 @@ export function AppShell() {
           providerConfigFromAvailability(provider, current.find((p) => p.id === provider.provider))
         )
       );
-      if (status !== "thinking") {
+      if (statusRef.current !== "thinking") {
         setStatus(snapshot.available_models.length > 0 ? "connected" : "idle");
       }
       if (forceRefresh) {
@@ -138,8 +140,10 @@ export function AppShell() {
         showError(`Model refresh failed: ${e}`);
       } else {
         setAvailabilitySnapshot(null);
+        if (statusRef.current !== "thinking") {
+          setStatus("idle");
+        }
       }
-      setStatus("idle");
     } finally {
       if (forceRefresh) {
         setIsRefreshingModels(false);
