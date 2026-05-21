@@ -16,35 +16,69 @@ import type {
   AgentStatus,
 } from "../types";
 import type { ProviderConfig, ProviderId } from "./ProviderSelector";
+import { noModelCopy } from "../modelAvailabilityCopy";
 import "./AppShell.css";
 
 const FALLBACK_WORKSPACES: Workspace[] = [
   { id: "ws-1", name: "gospel", path: "~/Projects/gospel", sessionCount: 0 },
 ];
 
-const DEFAULT_PROVIDERS: ProviderConfig[] = [
-  { id: "openai", name: "OpenAI", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "chatgpt", name: "ChatGPT Plus/Pro", apiKey: "", enabled: false, status: "idle", testMessage: "", isOAuth: true, isAuthenticated: false },
-  { id: "anthropic", name: "Anthropic", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "openrouter", name: "OpenRouter", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "local", name: "Local (Ollama / LM Studio)", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-  { id: "custom", name: "Custom", apiKey: "", enabled: false, status: "idle", testMessage: "" },
-];
+interface ProviderAvailability {
+  provider: ProviderId;
+  display_name: string;
+  auth_type: "api_key" | "oauth";
+  credentialed: boolean;
+  visible: boolean;
+  model_fetch_status: string;
+  model_count: number;
+  error_kind?: string | null;
+  error_detail?: string | null;
+}
+
+interface ModelAvailabilitySnapshot {
+  providers: ProviderAvailability[];
+  available_models: { model: string; provider: string }[];
+  empty_reason?: string | null;
+  warnings: string[];
+}
+
+interface SelectedModel {
+  provider: string;
+  model: string;
+}
+
+function modelOptionId(provider: string, model: string) {
+  return `${provider.toLowerCase()}::${model}`;
+}
+
+function providerConfigFromAvailability(provider: ProviderAvailability, existing?: ProviderConfig): ProviderConfig {
+  return {
+    id: provider.provider,
+    name: provider.display_name,
+    authType: provider.auth_type,
+    credentialed: provider.credentialed,
+    visible: provider.visible,
+    modelFetchStatus: provider.model_fetch_status,
+    modelCount: provider.model_count,
+    errorKind: provider.error_kind ?? undefined,
+    errorDetail: provider.error_detail ?? undefined,
+    apiKey: provider.credentialed ? "" : existing?.apiKey ?? "",
+    enabled: provider.visible,
+    status: existing?.status ?? (provider.credentialed ? "success" : "idle"),
+    testMessage: existing?.testMessage ?? "",
+    isOAuth: provider.auth_type === "oauth",
+    isAuthenticated: provider.auth_type === "oauth" ? provider.credentialed : undefined,
+  };
+}
 
 function buildModelOptions(models: { model: string; provider: string }[], providers: ProviderConfig[]): ModelOption[] {
   return models.map((m) => {
     const provider = providers.find((p) => p.id === m.provider.toLowerCase() as ProviderId);
-    const isConfigured = provider
-      ? provider.enabled && (
-          m.provider.toLowerCase() === "local" ||
-          (provider.isOAuth ? provider.isAuthenticated : !!provider.apiKey.trim())
-        )
-      : false;
     return {
-      id: m.model,
+      id: modelOptionId(m.provider, m.model),
       name: m.model,
       provider: m.provider,
-      configured: isConfigured,
+      configured: provider?.credentialed ?? true,
     };
   });
 }
@@ -57,46 +91,82 @@ export function AppShell() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [selectedModel, setSelectedModel] = useState("gpt-4o");
-  const [selectedProvider, setSelectedProvider] = useState("openai");
+  const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [providers, setProviders] = useState<ProviderConfig[]>(DEFAULT_PROVIDERS);
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [availabilitySnapshot, setAvailabilitySnapshot] = useState<ModelAvailabilitySnapshot | null>(null);
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
   const [status, setStatus] = useState<AgentStatus>("idle");
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const [isThinking, setIsThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
-  const { toasts, dismissToast, showError, showSuccess: _showSuccess } = useToasts();
+  const { toasts, dismissToast, showError, showSuccess } = useToasts();
   const unlistenRef = useRef<(() => void) | null>(null);
   const providersRef = useRef(providers);
   providersRef.current = providers;
 
   const [availableModels, setAvailableModels] = useState<{ model: string; provider: string }[]>([]);
+  const isRefreshingModelsRef = useRef(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const models = await invoke<{ model: string; provider: string }[]>("get_available_models");
-        setAvailableModels(models);
-        if (models.length > 0) {
-          setStatus("connected");
+  const refreshModelAvailability = useCallback(async (forceRefresh = false) => {
+    if (forceRefresh && isRefreshingModelsRef.current) return;
+    if (forceRefresh) {
+      setIsRefreshingModels(true);
+      isRefreshingModelsRef.current = true;
+    }
+    try {
+      const snapshot = await invoke<ModelAvailabilitySnapshot>("get_model_availability", { forceRefresh });
+      setAvailabilitySnapshot(snapshot);
+      setAvailableModels(snapshot.available_models);
+      setProviders((current) =>
+        snapshot.providers.map((provider) =>
+          providerConfigFromAvailability(provider, current.find((p) => p.id === provider.provider))
+        )
+      );
+      if (statusRef.current !== "thinking") {
+        setStatus(snapshot.available_models.length > 0 ? "connected" : "idle");
+      }
+      if (forceRefresh) {
+        const failedProvider = snapshot.providers.find((p) => p.error_kind || p.model_fetch_status === "failed");
+        if (failedProvider) {
+          showError(`${failedProvider.display_name}: ${failedProvider.error_detail || "Model refresh failed."}`);
         } else {
+          showSuccess("Models refreshed.");
+        }
+      }
+    } catch (e) {
+      if (forceRefresh) {
+        showError(`Model refresh failed: ${e}`);
+      } else {
+        setAvailabilitySnapshot(null);
+        if (statusRef.current !== "thinking") {
           setStatus("idle");
         }
-      } catch {
-        setStatus("idle");
       }
-    })();
-  }, [providers]);
+    } finally {
+      if (forceRefresh) {
+        setIsRefreshingModels(false);
+        isRefreshingModelsRef.current = false;
+      }
+    }
+  }, [showError, showSuccess]);
+
+  useEffect(() => {
+    void refreshModelAvailability();
+  }, [refreshModelAvailability]);
 
   useEffect(() => {
     const models = buildModelOptions(availableModels, providers);
     setModels(models);
-    if (models.length > 0 && !models.some((m) => m.id === selectedModel)) {
-      setSelectedModel(models[0].id);
+    if (models.length === 0 || availableModels.length === 0) {
+      setSelectedModel(null);
+      return;
     }
-    if (availableModels.length > 0 && !availableModels.some((m) => m.provider.toLowerCase() === selectedProvider.toLowerCase())) {
-      setSelectedProvider(availableModels[0].provider);
+    if (!selectedModel || !availableModels.some((m) => m.model === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {
+      setSelectedModel({ provider: availableModels[0].provider, model: availableModels[0].model });
     }
-  }, [availableModels, providers]);
+  }, [availableModels, providers, selectedModel]);
 
   useEffect(() => {
     (async () => {
@@ -155,6 +225,14 @@ export function AppShell() {
   }, [showError, streamingContent]);
 
   const handleSend = useCallback(async (message: string) => {
+    if (!selectedModel || !availableModels.some((m) => m.model === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {
+      showError("Select an available model before sending.", {
+        label: "Open Settings",
+        onClick: () => setSettingsOpen(true),
+      });
+      return;
+    }
+
     const userMsg: Message = {
       id: `m-${Date.now()}-user`,
       role: "user",
@@ -170,7 +248,8 @@ export function AppShell() {
       const newSession: Session = {
         id: `s-${Date.now()}`,
         title: message.slice(0, 50) + (message.length > 50 ? "..." : ""),
-        model: selectedModel,
+        provider: selectedModel.provider,
+        model: selectedModel.model,
         timestamp: new Date(),
         messages: [userMsg],
         status: "active",
@@ -181,9 +260,9 @@ export function AppShell() {
 
     try {
       await invoke("complete_streaming", {
-        provider: selectedProvider,
+        provider: selectedModel.provider,
         prompt: message,
-        model: selectedModel,
+        model: selectedModel.model,
       });
     } catch (e) {
       setIsThinking(false);
@@ -194,7 +273,7 @@ export function AppShell() {
         onClick: () => setSettingsOpen(true),
       });
     }
-  }, [activeSessionId, selectedModel, selectedProvider, showError]);
+  }, [activeSessionId, availableModels, selectedModel, showError]);
 
   const handleSessionSelect = useCallback((session: Session) => {
     setActiveSessionId(session.id);
@@ -212,7 +291,9 @@ export function AppShell() {
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const sessionTitle = activeSession?.title || "New session";
-  const currentModelName = models.find((m) => m.id === selectedModel)?.name || selectedModel;
+  const selectedModelId = selectedModel ? modelOptionId(selectedModel.provider, selectedModel.model) : "";
+  const currentModelName = selectedModel?.model || "No model";
+  const noModels = noModelCopy(availabilitySnapshot);
 
   return (
     <div className="app-shell" data-theme="dark">
@@ -236,16 +317,19 @@ export function AppShell() {
         />
         <InputBar
           models={models}
-          selectedModel={selectedModel}
+          selectedModel={selectedModelId}
           onModelChange={(modelId) => {
-            setSelectedModel(modelId);
             const match = models.find((m) => m.id === modelId);
-            if (match?.provider) setSelectedProvider(match.provider.toLowerCase());
+            if (match) setSelectedModel({ provider: match.provider, model: match.name });
           }}
           onSend={handleSend}
           contextFiles={[]}
           onRemoveContext={() => {}}
-          disabled={isThinking}
+          disabled={isThinking || models.length === 0}
+          unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
+          unavailableDetail={noModels.detail}
+          unavailableActionLabel={noModels.actionLabel}
+          onUnavailableAction={() => setSettingsOpen(true)}
         />
       </div>
       <SessionDrawer
@@ -270,6 +354,8 @@ export function AppShell() {
         onClose={() => setSettingsOpen(false)}
         providers={providers}
         onProvidersChange={setProviders}
+        onRefreshAvailability={refreshModelAvailability}
+        isRefreshingModels={isRefreshingModels}
       />
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

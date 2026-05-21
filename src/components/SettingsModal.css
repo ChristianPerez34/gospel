@@ -109,6 +109,27 @@
   margin: 0;
 }
 
+.settings-modal__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-modal__refresh-btn {
+  padding: 6px 10px;
+  border: 1px solid var(--surface-overlay, #2a2a2e);
+  border-radius: var(--radius-md, 8px);
+  color: var(--accent-action, #4fe0c0);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.settings-modal__refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .settings-modal__status {
   margin: 0;
   font-size: 13px;

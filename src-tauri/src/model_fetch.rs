@@ -13,7 +13,11 @@ fn cache_scope_for_provider(provider: &str, api_key: Option<&str>) -> String {
 fn should_include_completion_model(model_id: &str) -> bool {
     let id = model_id.to_lowercase();
     let exclude = [
-        "embedding", "tts", "dall-e", "whisper", "moderation",
+        "embedding",
+        "tts",
+        "dall-e",
+        "whisper",
+        "moderation",
         "realtime",
     ];
     if exclude.iter().any(|p| id.contains(p)) {
@@ -32,11 +36,15 @@ fn should_include_completion_model(model_id: &str) -> bool {
     id.contains("codex")
 }
 
-pub async fn fetch_models_for_provider(provider: &str, api_key: Option<&str>) -> ModelInfoWithFreshness {
+pub async fn fetch_models_for_provider(
+    provider: &str,
+    api_key: Option<&str>,
+    force_refresh: bool,
+) -> ModelInfoWithFreshness {
     let cache_scope = cache_scope_for_provider(provider, api_key);
     let cache_key = format!("{}:{}", provider, cache_scope);
 
-    ModelRegistry::get_or_fetch(&cache_key, provider, || async {
+    ModelRegistry::get_or_fetch(&cache_key, provider, force_refresh, || async {
         match provider {
             "openai" => fetch_openai_models_impl(api_key.unwrap_or("")).await,
             "chatgpt" => fetch_chatgpt_models_impl().await,
@@ -155,47 +163,64 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
         .as_str()
         .ok_or_else(|| "access_token not found in auth file".to_string())?;
 
+    // There is no public ChatGPT subscription model-list API equivalent to
+    // OpenAI's API-key /models endpoint. Use the private ChatGPT model
+    // endpoint when available so account-tier-specific models only appear
+    // when the signed-in account can see them.
+    let fallback_models = ModelRegistry::hardcoded_models_for("chatgpt");
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .connect_timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+
     let resp = client
         .get("https://chatgpt.com/backend-api/models")
         .header("Authorization", format!("Bearer {}", access_token))
         .header("User-Agent", "gospel/0.1.0")
         .send()
-        .await
-        .map_err(|e| format!("failed to fetch ChatGPT models: {}", e))?;
+        .await;
 
-    if !resp.status().is_success() {
-        return Err(format!("ChatGPT API returned status {}", resp.status()));
-    }
+    let body: serde_json::Value = match resp {
+        Ok(r) if r.status().is_success() => r.json().await.unwrap_or(serde_json::Value::Null),
+        Ok(r) => {
+            tracing::warn!(
+                "ChatGPT API returned status {}; using hardcoded base only",
+                r.status()
+            );
+            return Ok(fallback_models);
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to fetch ChatGPT models: {}; using hardcoded base only",
+                e
+            );
+            return Ok(fallback_models);
+        }
+    };
 
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("failed to parse ChatGPT response: {}", e))?;
-
-    let models: Vec<ModelInfo> = body["models"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| {
-                    let slug = m["slug"].as_str().or_else(|| m["id"].as_str())?;
-                    Some(ModelInfo {
+    let mut models: Vec<ModelInfo> = Vec::new();
+    if let Some(arr) = body["models"].as_array() {
+        for m in arr {
+            if let Some(slug) = m["slug"].as_str().or_else(|| m["id"].as_str()) {
+                if !models.iter().any(|existing| existing.model == slug)
+                    && ModelRegistry::is_chatgpt_subscription_model(slug)
+                {
+                    models.push(ModelInfo {
                         model: slug.to_string(),
                         provider: "chatgpt".to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if models.is_empty() {
-        return Err("ChatGPT returned no models".to_string());
+                    });
+                }
+            }
+        }
     }
 
-    tracing::info!("Fetched {} models from ChatGPT", models.len());
+    if models.is_empty() {
+        tracing::warn!("ChatGPT API returned no compatible models; using hardcoded base only");
+        return Ok(fallback_models);
+    }
+
+    tracing::info!("Resolved {} compatible models for ChatGPT", models.len());
     Ok(models)
 }

@@ -1,11 +1,18 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import "./ProviderSelector.css";
 
-export type ProviderId = "openai" | "anthropic" | "openrouter" | "local" | "custom" | "chatgpt";
+export type ProviderId = "openai" | "chatgpt" | "anthropic" | "gemini" | "groq" | "mistral";
 
 export interface ProviderConfig {
   id: ProviderId;
   name: string;
+  authType: "api_key" | "oauth";
+  credentialed: boolean;
+  visible: boolean;
+  modelFetchStatus: string;
+  modelCount: number;
+  errorKind?: string;
+  errorDetail?: string;
   apiKey: string;
   enabled: boolean;
   status: "idle" | "testing" | "success" | "error";
@@ -17,10 +24,21 @@ export interface ProviderConfig {
 interface ProviderSelectorProps {
   providers: ProviderConfig[];
   onProvidersChange: (providers: ProviderConfig[]) => void;
+  onRefreshAvailability: (forceRefresh?: boolean) => Promise<void>;
 }
 
-export function ProviderSelector({ providers, onProvidersChange }: ProviderSelectorProps) {
+function providerAvailabilitySummary(provider: ProviderConfig) {
+  if (!provider.credentialed) return "Not credentialed";
+  if (!provider.visible) return "Hidden";
+  if (provider.modelFetchStatus === "failed") return provider.errorDetail || "Model load failed";
+  if (provider.modelFetchStatus === "stale") return `${provider.modelCount} stale models`;
+  if (provider.modelFetchStatus === "empty") return "No models returned";
+  return `${provider.modelCount} models`;
+}
+
+export function ProviderSelector({ providers, onProvidersChange, onRefreshAvailability }: ProviderSelectorProps) {
   const [showKeyFor, setShowKeyFor] = useState<ProviderId | null>(null);
+  const [editingKeyFor, setEditingKeyFor] = useState<ProviderId | null>(null);
   const [oauthChallenge, setOauthChallenge] = useState<{ verification_url: string; user_code: string } | null>(null);
   const isOperationInProgress = useRef(false);
 
@@ -32,17 +50,6 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
   onProvidersChangeRef.current = onProvidersChange;
 
   useEffect(() => {
-    (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const savedProviders = await invoke<ProviderConfig[]>("get_provider_configs");
-        if (savedProviders && savedProviders.length > 0) {
-          onProvidersChangeRef.current(savedProviders);
-        }
-      } catch {
-      }
-    })();
-
     // Check ChatGPT auth status
     (async () => {
       try {
@@ -53,7 +60,7 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
           const chatgptProvider = current.find(p => p.id === "chatgpt");
           if (chatgptProvider) {
             const updated = current.map((p) =>
-              p.id === "chatgpt" ? { ...p, isAuthenticated: true, enabled: true, status: "success" as const, testMessage: "Authenticated" } : p
+              p.id === "chatgpt" ? { ...p, isAuthenticated: true, credentialed: true, status: "success" as const, testMessage: "Authenticated" } : p
             );
             onProvidersChangeRef.current(updated);
           }
@@ -72,15 +79,17 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
           const current = providersRef.current;
           if (success) {
             const updated = current.map((p) =>
-              p.id === "chatgpt" ? { ...p, isAuthenticated: true, enabled: true, status: "success" as const, testMessage: "Authenticated" } : p
+              p.id === "chatgpt" ? { ...p, isAuthenticated: true, credentialed: true, status: "success" as const, testMessage: "Authenticated" } : p
             );
             onProvidersChangeRef.current(updated);
             setOauthChallenge(null);
+            void onRefreshAvailability();
           } else {
             const updated = current.map((p) =>
               p.id === "chatgpt" ? { ...p, status: "error" as const, testMessage: "Authentication failed" } : p
             );
             onProvidersChangeRef.current(updated);
+            void onRefreshAvailability();
           }
         });
       } catch (error) {
@@ -104,26 +113,21 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
     [providers, onProvidersChange]
   );
 
-  const persistProvider = useCallback(
-    async (provider: ProviderConfig | null) => {
-      if (!provider) return;
+  const handleToggle = useCallback(
+    async (id: ProviderId) => {
+      const provider = providers.find((p) => p.id === id)!;
+      if (!provider.credentialed) return;
+      const nextVisible = !provider.visible;
+      updateProvider(id, { visible: nextVisible, enabled: nextVisible, status: "idle", testMessage: "" });
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("save_provider_config", { provider });
+        await invoke("set_provider_visibility", { provider: id, visible: nextVisible });
+        await onRefreshAvailability();
       } catch (e) {
-        console.error("Failed to persist provider config:", e);
+        updateProvider(id, { visible: provider.visible, enabled: provider.visible, status: "error", testMessage: `Visibility update failed: ${e}` });
       }
     },
-    []
-  );
-
-  const handleToggle = useCallback(
-    (id: ProviderId) => {
-      const provider = providers.find((p) => p.id === id)!;
-      updateProvider(id, { enabled: !provider.enabled, status: "idle", testMessage: "" });
-      persistProvider({ ...provider, enabled: !provider.enabled });
-    },
-    [providers, updateProvider, persistProvider]
+    [providers, updateProvider, onRefreshAvailability]
   );
 
   const handleSaveKey = useCallback(
@@ -133,44 +137,39 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("set_api_key", { provider: provider.id, apiKey: provider.apiKey.trim() });
-        const updated = { ...provider, status: "success" as const, testMessage: "Key saved" };
-        updateProvider(provider.id, { status: "success", testMessage: "Key saved" });
-        persistProvider(updated);
-        const result = await invoke<boolean>("test_connection", { provider: provider.id });
-        if (result) {
-          updateProvider(provider.id, { status: "success", testMessage: "Connected" });
-        } else {
-          updateProvider(provider.id, { status: "error", testMessage: "Key saved but connection failed" });
-        }
+        updateProvider(provider.id, { apiKey: "", credentialed: true, status: "success", testMessage: "Key saved" });
+        setEditingKeyFor(null);
+        await onRefreshAvailability();
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `Failed to save: ${e}` });
       } finally {
         isOperationInProgress.current = false;
       }
     },
-    [updateProvider, persistProvider]
+    [updateProvider, onRefreshAvailability]
   );
 
-  const handleTest = useCallback(
+  const handleRemoveKey = useCallback(
     async (provider: ProviderConfig) => {
-      if (!provider.enabled || (provider.id !== "local" && !provider.apiKey.trim()) || isOperationInProgress.current) return;
+      if (isOperationInProgress.current) return;
+      if (provider.isOAuth) {
+        await handleOAuthLogout(provider);
+        return;
+      }
       isOperationInProgress.current = true;
-      updateProvider(provider.id, { status: "testing", testMessage: "" });
+      updateProvider(provider.id, { status: "testing", testMessage: "Removing key..." });
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const result = await invoke<boolean>("test_connection", { provider: provider.id });
-        if (result) {
-          updateProvider(provider.id, { status: "success", testMessage: "Connected" });
-        } else {
-          updateProvider(provider.id, { status: "error", testMessage: "Connection failed" });
-        }
+        await invoke("delete_api_key", { provider: provider.id });
+        updateProvider(provider.id, { apiKey: "", credentialed: false, status: "idle", testMessage: "" });
+        await onRefreshAvailability();
       } catch (e) {
-        updateProvider(provider.id, { status: "error", testMessage: `Connection failed: ${e}` });
+        updateProvider(provider.id, { status: "error", testMessage: `Failed to remove key: ${e}` });
       } finally {
         isOperationInProgress.current = false;
       }
     },
-    [updateProvider]
+    [updateProvider, onRefreshAvailability]
   );
 
   const handleOAuthLogin = useCallback(
@@ -185,11 +184,12 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
         updateProvider(provider.id, { status: "testing", testMessage: `Enter code: ${challenge.user_code}` });
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `OAuth failed: ${e}` });
+        await onRefreshAvailability();
       } finally {
         isOperationInProgress.current = false;
       }
     },
-    [updateProvider]
+    [updateProvider, onRefreshAvailability]
   );
 
   const handleOAuthLogout = useCallback(
@@ -197,18 +197,20 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("logout_chatgpt");
-        updateProvider(provider.id, { isAuthenticated: false, status: "idle", testMessage: "" });
+        updateProvider(provider.id, { isAuthenticated: false, credentialed: false, status: "idle", testMessage: "" });
+        await onRefreshAvailability();
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `Logout failed: ${e}` });
       }
     },
-    [updateProvider]
+    [updateProvider, onRefreshAvailability]
   );
 
   return (
     <div className="provider-selector">
       {providers.map((provider) => {
         const showKey = showKeyFor === provider.id;
+        const editingKey = editingKeyFor === provider.id || !provider.credentialed;
         const isIdle = provider.status === "idle";
         const isTesting = provider.status === "testing";
         const isSuccess = provider.status === "success";
@@ -217,11 +219,14 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
         return (
           <div
             key={provider.id}
-            className={`provider-card ${provider.enabled ? "provider-card--enabled" : ""} ${isError ? "provider-card--error" : ""}`}
+            className={`provider-card ${provider.visible ? "provider-card--enabled" : ""} ${isError ? "provider-card--error" : ""}`}
           >
             <div className="provider-card__header">
               <div className="provider-card__identity">
                 <span className="provider-card__name">{provider.name}</span>
+                <span className="provider-card__test-result">
+                  {providerAvailabilitySummary(provider)}
+                </span>
                 {!isIdle && (
                   <span
                     className={`provider-card__badge provider-card__badge--${provider.status}`}
@@ -234,17 +239,18 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
               </div>
 
               <button
-                className={`provider-card__toggle ${provider.enabled ? "provider-card__toggle--on" : ""}`}
+                className={`provider-card__toggle ${provider.visible ? "provider-card__toggle--on" : ""}`}
                 onClick={() => handleToggle(provider.id)}
-                aria-pressed={provider.enabled}
+                aria-pressed={provider.visible}
                 type="button"
-                aria-label={provider.enabled ? `Disable ${provider.name}` : `Enable ${provider.name}`}
+                aria-label={provider.visible ? `Hide ${provider.name} from model picker` : `Show ${provider.name} in model picker`}
+                title="Provider visibility"
               >
                 <span className="provider-card__toggle-knob" />
               </button>
             </div>
 
-            {provider.enabled && (
+            {(provider.visible || !provider.credentialed) && (
               <div className="provider-card__body">
                 {provider.isOAuth ? (
                   <div className="provider-card__oauth-row">
@@ -279,7 +285,7 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
                       </div>
                     )}
                   </div>
-                ) : provider.id !== "local" && (
+                ) : editingKey ? (
                   <div className="provider-card__input-row">
                     <div className="provider-card__input-wrapper">
                       <input
@@ -319,25 +325,32 @@ export function ProviderSelector({ providers, onProvidersChange }: ProviderSelec
                       Save
                     </button>
                   </div>
+                ) : (
+                  <div className="provider-card__oauth-row">
+                    <span className="provider-card__oauth-status">Key saved</span>
+                    <button
+                      className="provider-card__oauth-btn"
+                      onClick={() => setEditingKeyFor(provider.id)}
+                      type="button"
+                    >
+                      Replace
+                    </button>
+                    <button
+                      className="provider-card__oauth-btn provider-card__oauth-btn--logout"
+                      onClick={() => handleRemoveKey(provider)}
+                      disabled={isOperationInProgress.current}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </div>
                 )}
 
-                <div className="provider-card__test-row">
-                  <button
-                    className="provider-card__test-btn"
-                    onClick={() => handleTest(provider)}
-                    disabled={isTesting || !provider.enabled || (provider.isOAuth ? !provider.isAuthenticated : provider.id !== "local" && !provider.apiKey.trim())}
-                    type="button"
-                  >
-                    {isTesting ? "Testing…" : "Test Connection"}
-                  </button>
-                  {!isIdle && (
-                    <span
-                      className={`provider-card__test-result provider-card__test-result--${provider.status}`}
-                    >
-                      {provider.testMessage}
-                    </span>
-                  )}
-                </div>
+                {!isIdle && (
+                  <span className={`provider-card__test-result provider-card__test-result--${provider.status}`}>
+                    {provider.testMessage}
+                  </span>
+                )}
               </div>
             )}
           </div>
