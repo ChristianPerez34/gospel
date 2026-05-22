@@ -26,7 +26,7 @@ mod model_fetch {
     }
 }
 
-use app_config::Workspace;
+use app_config::{AppConfigError, Workspace};
 use clap::Parser;
 use futures::{stream, StreamExt};
 use llm::{LlmError, LlmService};
@@ -696,10 +696,30 @@ pub fn run() {
     let app_config_state = match app_config::AppConfigStore::new() {
         Ok(store) => {
             if let Some(ref dir_path) = cli.dir {
-                if let Err(e) = store.add_workspace(dir_path) {
-                    eprintln!("Warning: could not add --dir workspace: {}", e);
-                } else if let Ok(ws) = store.add_workspace(dir_path) {
-                    if let Err(e) = store.set_active_workspace(&ws.id) {
+                let workspace_for_dir = match store.add_workspace(dir_path) {
+                    Ok(ws) => Some(ws),
+                    Err(AppConfigError::WorkspacePathExists(existing_path)) => {
+                        match store.list_workspaces() {
+                            Ok(workspaces) => workspaces
+                                .into_iter()
+                                .find(|workspace| workspace.path == existing_path),
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: could not list workspaces for --dir activation: {}",
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: could not add --dir workspace: {}", e);
+                        None
+                    }
+                };
+
+                if let Some(workspace) = workspace_for_dir {
+                    if let Err(e) = store.set_active_workspace(&workspace.id) {
                         eprintln!("Warning: could not set --dir workspace as active: {}", e);
                     }
                 }
