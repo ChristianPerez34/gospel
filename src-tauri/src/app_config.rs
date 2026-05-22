@@ -119,19 +119,19 @@ impl AppConfigStore {
             .map_err(|e| AppConfigError::Io(e))?;
         let canonical_str = canonical.to_string_lossy().to_string();
 
+        if !canonical.is_dir() {
+            return Err(AppConfigError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Path is not a directory: {}", canonical_str),
+            )));
+        }
+
         let name = canonical
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "workspace".to_string());
 
         let id = Uuid::new_v4().to_string();
-
-        if !canonical.exists() {
-            return Err(AppConfigError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Path does not exist: {}", canonical_str),
-            )));
-        }
 
         let conn = self.conn.lock().unwrap();
 

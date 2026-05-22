@@ -358,9 +358,16 @@ export function AppShell() {
           onSelect={(ws) => { void switchWorkspace(ws.id); }}
           onAdd={() => {
             void (async () => {
-              const path = await invoke<string | null>("pick_workspace_directory");
-              if (path) {
-                await addWorkspace(path);
+              try {
+                const path = await invoke<string | null>("pick_workspace_directory");
+                if (path) {
+                  const result = await addWorkspace(path);
+                  if (!result) {
+                    showError("Failed to add workspace. It may already exist or the path is invalid.");
+                  }
+                }
+              } catch (e) {
+                showError(`Failed to pick workspace directory: ${e}`);
               }
             })();
           }}

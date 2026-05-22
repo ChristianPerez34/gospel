@@ -131,8 +131,15 @@
     color var(--duration-fast) var(--ease-out-quart);
 }
 
-.workspace-switcher__item:hover .workspace-switcher__item-remove {
+.workspace-switcher__item:hover .workspace-switcher__item-remove,
+.workspace-switcher__item:focus-within .workspace-switcher__item-remove,
+.workspace-switcher__item-remove:focus-visible {
   opacity: 1;
+}
+
+.workspace-switcher__item-remove:focus-visible {
+  outline: 2px solid var(--accent-action);
+  outline-offset: 2px;
 }
 
 .workspace-switcher__item-remove:hover {
