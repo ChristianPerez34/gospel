@@ -26,6 +26,8 @@ mod model_fetch {
     }
 }
 
+use app_config::Workspace;
+use clap::Parser;
 use futures::{stream, StreamExt};
 use llm::{LlmError, LlmService};
 use models::ModelInfo;
@@ -33,7 +35,15 @@ use rig::providers::chatgpt;
 use serde::Serialize;
 use std::collections::HashMap;
 use tauri::Emitter;
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+
+#[derive(Parser, Debug)]
+#[command(name = "gospel", about = "Gospel AI coding assistant")]
+struct Cli {
+    #[arg(short = 'd', long = "dir")]
+    dir: Option<String>,
+}
 
 struct AppConfigState {
     store: Option<app_config::AppConfigStore>,
@@ -431,18 +441,29 @@ mod availability_tests {
 
 #[tauri::command]
 async fn complete(
+    app_config: tauri::State<'_, AppConfigState>,
     provider: String,
     prompt: String,
     model: String,
 ) -> Result<String, llm::LlmErrorDto> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten(),
+        None => None,
+    };
+
+    let full_prompt = match workspace_path {
+        Some(path) => format!("[Workspace: {}]\n\n{}", path, prompt),
+        None => prompt,
+    };
+
     if provider == "chatgpt" {
-        LlmService::completion(&provider, &prompt, &model, "")
+        LlmService::completion(&provider, &full_prompt, &model, "")
             .await
             .map_err(|e| e.to_dto())
     } else {
         let api_key =
             keychain::retrieve(&provider).map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
-        LlmService::completion(&provider, &prompt, &model, &api_key)
+        LlmService::completion(&provider, &full_prompt, &model, &api_key)
             .await
             .map_err(|e| e.to_dto())
     }
@@ -472,10 +493,21 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
 #[tauri::command]
 async fn complete_streaming(
     app: tauri::AppHandle,
+    app_config: tauri::State<'_, AppConfigState>,
     provider: String,
     prompt: String,
     model: String,
 ) -> Result<(), llm::LlmErrorDto> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten(),
+        None => None,
+    };
+
+    let full_prompt = match workspace_path {
+        Some(path) => format!("[Workspace: {}]\n\n{}", path, prompt),
+        None => prompt,
+    };
+
     let api_key = if provider == "chatgpt" {
         String::new()
     } else {
@@ -483,7 +515,7 @@ async fn complete_streaming(
     };
 
     let app_clone = app.clone();
-    let result = llm::stream_completion(&provider, &prompt, &model, &api_key, move |token| {
+    let result = llm::stream_completion(&provider, &full_prompt, &model, &api_key, move |token| {
         let _ = app_clone.emit("llm-token", token);
     })
     .await;
@@ -589,13 +621,94 @@ fn logout_chatgpt() -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn pick_workspace_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let folder = app
+        .dialog()
+        .file()
+        .set_title("Select workspace directory")
+        .blocking_pick_folder();
+    match folder {
+        Some(path) => Ok(Some(path.to_string())),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn list_workspaces(app_config: tauri::State<'_, AppConfigState>) -> Result<Vec<Workspace>, String> {
+    match &app_config.store {
+        Some(store) => store.list_workspaces().map_err(|e| e.to_string()),
+        None => Err(app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn add_workspace(app_config: tauri::State<'_, AppConfigState>, path: String) -> Result<Workspace, String> {
+    match &app_config.store {
+        Some(store) => store.add_workspace(&path).map_err(|e| e.to_string()),
+        None => Err(app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn remove_workspace(app_config: tauri::State<'_, AppConfigState>, id: String) -> Result<(), String> {
+    match &app_config.store {
+        Some(store) => store.remove_workspace(&id).map_err(|e| e.to_string()),
+        None => Err(app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn set_active_workspace(app_config: tauri::State<'_, AppConfigState>, id: String) -> Result<(), String> {
+    match &app_config.store {
+        Some(store) => store.set_active_workspace(&id).map_err(|e| e.to_string()),
+        None => Err(app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn get_active_workspace(app_config: tauri::State<'_, AppConfigState>) -> Result<Option<Workspace>, String> {
+    match &app_config.store {
+        Some(store) => store.get_active_workspace().map_err(|e| e.to_string()),
+        None => Err(app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let cli = Cli::parse();
+
     let app_config_state = match app_config::AppConfigStore::new() {
-        Ok(store) => AppConfigState {
-            store: Some(store),
-            init_warning: None,
-        },
+        Ok(store) => {
+            if let Some(ref dir_path) = cli.dir {
+                if let Err(e) = store.add_workspace(dir_path) {
+                    eprintln!("Warning: could not add --dir workspace: {}", e);
+                } else if let Ok(ws) = store.add_workspace(dir_path) {
+                    if let Err(e) = store.set_active_workspace(&ws.id) {
+                        eprintln!("Warning: could not set --dir workspace as active: {}", e);
+                    }
+                }
+            }
+            AppConfigState {
+                store: Some(store),
+                init_warning: None,
+            }
+        }
         Err(e) => AppConfigState {
             store: None,
             init_warning: Some(format!(
@@ -606,6 +719,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(app_config_state)
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -623,6 +737,12 @@ pub fn run() {
             start_chatgpt_oauth,
             is_chatgpt_authenticated,
             logout_chatgpt,
+            pick_workspace_directory,
+            list_workspaces,
+            add_workspace,
+            remove_workspace,
+            set_active_workspace,
+            get_active_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
