@@ -7,7 +7,9 @@ interface WorkspaceSwitcherProps {
   activeWorkspaceId: string;
   onSelect: (workspace: Workspace) => void;
   onAdd: () => void;
+  onRemove: (id: string) => void;
   onClose: () => void;
+  loading?: boolean;
 }
 
 export function WorkspaceSwitcher({
@@ -15,7 +17,9 @@ export function WorkspaceSwitcher({
   activeWorkspaceId,
   onSelect,
   onAdd,
+  onRemove,
   onClose,
+  loading,
 }: WorkspaceSwitcherProps) {
   const [search, setSearch] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -69,27 +73,45 @@ export function WorkspaceSwitcher({
         />
       </div>
       <div className="workspace-switcher__list">
+        {loading && workspaces.length === 0 && (
+          <div className="workspace-switcher__empty">Loading workspaces...</div>
+        )}
+        {!loading && workspaces.length === 0 && (
+          <div className="workspace-switcher__empty">No workspaces yet. Add one below.</div>
+        )}
         {filtered.map((ws) => (
-          <button
-            key={ws.id}
-            className={`workspace-switcher__item${
-              ws.id === activeWorkspaceId
-                ? " workspace-switcher__item--active"
-                : ""
-            }`}
-            onClick={() => {
-              onSelect(ws);
-              onClose();
-            }}
-          >
-            <div className="workspace-switcher__item-name">{ws.name}</div>
-            <div className="workspace-switcher__item-path">{ws.path}</div>
-            {ws.sessionCount > 0 && (
-              <span className="workspace-switcher__item-count">
-                {ws.sessionCount}
-              </span>
-            )}
-          </button>
+          <div key={ws.id} className={`workspace-switcher__item${
+            ws.id === activeWorkspaceId
+              ? " workspace-switcher__item--active"
+              : ""
+          }`}>
+            <button
+              className="workspace-switcher__item-content"
+              onClick={() => {
+                onSelect(ws);
+                onClose();
+              }}
+            >
+              <div className="workspace-switcher__item-name">{ws.name}</div>
+              <div className="workspace-switcher__item-path">{ws.path}</div>
+              {ws.sessionCount > 0 && (
+                <span className="workspace-switcher__item-count">
+                  {ws.sessionCount}
+                </span>
+              )}
+            </button>
+            <button
+              className="workspace-switcher__item-remove"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemove(ws.id);
+              }}
+              aria-label="Remove workspace"
+              title="Remove workspace"
+            >
+              ×
+            </button>
+          </div>
         ))}
       </div>
       <button className="workspace-switcher__add" onClick={onAdd}>

@@ -42,15 +42,19 @@
   flex: 1;
 }
 
+.workspace-switcher__empty {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-body-sm);
+}
+
 .workspace-switcher__item {
   display: flex;
   align-items: center;
   width: 100%;
-  padding: var(--space-3) var(--space-4);
-  gap: var(--space-3);
-  text-align: left;
-  transition: background-color var(--duration-fast) var(--ease-out-quart);
   border-left: 2px solid transparent;
+  transition: background-color var(--duration-fast) var(--ease-out-quart);
 }
 
 .workspace-switcher__item:hover {
@@ -59,6 +63,21 @@
 
 .workspace-switcher__item--active {
   border-left-color: var(--accent-action);
+}
+
+.workspace-switcher__item-content {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1;
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  min-width: 0;
 }
 
 .workspace-switcher__item-name {
@@ -90,6 +109,41 @@
   padding: 1px var(--space-1);
   border-radius: var(--radius-sm);
   flex-shrink: 0;
+}
+
+.workspace-switcher__item-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: var(--space-2);
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.workspace-switcher__item:hover .workspace-switcher__item-remove,
+.workspace-switcher__item:focus-within .workspace-switcher__item-remove,
+.workspace-switcher__item-remove:focus-visible {
+  opacity: 1;
+}
+
+.workspace-switcher__item-remove:focus-visible {
+  outline: 2px solid var(--accent-action);
+  outline-offset: 2px;
+}
+
+.workspace-switcher__item-remove:hover {
+  color: var(--text-primary);
 }
 
 .workspace-switcher__add {

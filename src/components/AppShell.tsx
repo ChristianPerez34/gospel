@@ -8,20 +8,16 @@ import { SessionDrawer } from "./SessionDrawer";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { SettingsModal } from "./SettingsModal";
 import { ToastContainer, useToasts } from "./Toast";
+import { useWorkspaces } from "../hooks/useWorkspaces";
 import type {
   Message,
   Session,
-  Workspace,
   ModelOption,
   AgentStatus,
 } from "../types";
 import type { ProviderConfig, ProviderId } from "./ProviderSelector";
 import { noModelCopy } from "../modelAvailabilityCopy";
 import "./AppShell.css";
-
-const FALLBACK_WORKSPACES: Workspace[] = [
-  { id: "ws-1", name: "gospel", path: "~/Projects/gospel", sessionCount: 0 },
-];
 
 interface ProviderAvailability {
   provider: ProviderId;
@@ -87,7 +83,7 @@ export function AppShell() {
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeWorkspace] = useState(FALLBACK_WORKSPACES[0]);
+  const { workspaces, activeWorkspace, addWorkspace, removeWorkspace, switchWorkspace, loading: workspacesLoading } = useWorkspaces();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -313,7 +309,7 @@ export function AppShell() {
   return (
     <div className="app-shell" data-theme="dark">
       <TopBar
-        workspace={activeWorkspace}
+        workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
         model={currentModelName}
         status={status}
@@ -326,7 +322,7 @@ export function AppShell() {
       <div className="app-shell__body">
         <ChatView
           messages={messages}
-          workspacePath={activeWorkspace.path}
+          workspacePath={activeWorkspace?.path ?? ""}
           isThinking={isThinking}
           currentAction={streamingContent ? { type: "streaming" as const, content: streamingContent } : undefined}
         />
@@ -357,11 +353,27 @@ export function AppShell() {
       />
       {workspaceSwitcherOpen && (
         <WorkspaceSwitcher
-          workspaces={FALLBACK_WORKSPACES}
-          activeWorkspaceId={activeWorkspace.id}
-          onSelect={() => {}}
-          onAdd={() => {}}
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspace?.id ?? ""}
+          onSelect={(ws) => { void switchWorkspace(ws.id); }}
+          onAdd={() => {
+            void (async () => {
+              try {
+                const path = await invoke<string | null>("pick_workspace_directory");
+                if (path) {
+                  const result = await addWorkspace(path);
+                  if (!result) {
+                    showError("Failed to add workspace. It may already exist or the path is invalid.");
+                  }
+                }
+              } catch (e) {
+                showError(`Failed to pick workspace directory: ${e}`);
+              }
+            })();
+          }}
+          onRemove={(id) => { void removeWorkspace(id); }}
           onClose={() => setWorkspaceSwitcherOpen(false)}
+          loading={workspacesLoading}
         />
       )}
       <SettingsModal
