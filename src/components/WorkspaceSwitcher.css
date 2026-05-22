@@ -1,3 +1,10 @@
+.workspace-switcher__scrim {
+  position: fixed;
+  inset: 0;
+  background-color: var(--scrim);
+  z-index: calc(var(--z-dropdowns) - 1);
+}
+
 .workspace-switcher {
   position: absolute;
   top: calc(var(--titlebar-height) + var(--topbar-height));

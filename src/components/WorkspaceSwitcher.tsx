@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 import type { Workspace } from "../types";
 import "./WorkspaceSwitcher.css";
 
@@ -22,7 +22,6 @@ export function WorkspaceSwitcher({
   loading,
 }: WorkspaceSwitcherProps) {
   const [search, setSearch] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
 
   const filtered = workspaces.filter((w) =>
     w.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -34,13 +33,19 @@ export function WorkspaceSwitcher({
   };
 
   return (
-    <div
-      className="workspace-switcher"
-      ref={ref}
-      role="dialog"
-      aria-label="Switch workspace"
-      onKeyDown={handleKeyDown}
-    >
+    <>
+      <div
+        className="workspace-switcher__scrim"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        className="workspace-switcher"
+        role="dialog"
+        aria-label="Switch workspace"
+        onKeyDown={handleKeyDown}
+        onClick={(e) => e.stopPropagation()}
+      >
       <div className="workspace-switcher__search">
         <svg
           className="workspace-switcher__search-icon"
@@ -130,6 +135,7 @@ export function WorkspaceSwitcher({
         </svg>
         Add workspace
       </button>
-    </div>
+      </div>
+    </>
   );
 }
