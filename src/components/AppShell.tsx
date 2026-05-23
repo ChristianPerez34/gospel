@@ -300,6 +300,10 @@ export function AppShell() {
     setSessionDrawerOpen(false);
   }, []);
 
+  const handleWorkspaceSwitcherClose = useCallback(() => {
+    setWorkspaceSwitcherOpen(false);
+  }, []);
+
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const sessionTitle = activeSession?.title || "New session";
   const selectedModelId = selectedModel ? modelOptionId(selectedModel.provider, selectedModel.model) : "";
@@ -372,7 +376,7 @@ export function AppShell() {
             })();
           }}
           onRemove={(id) => { void removeWorkspace(id); }}
-          onClose={() => setWorkspaceSwitcherOpen(false)}
+          onClose={handleWorkspaceSwitcherClose}
           loading={workspacesLoading}
         />
       )}

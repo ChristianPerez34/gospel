@@ -16,7 +16,7 @@
   border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
-  z-index: var(--z-dropdowns);
+  z-index: var(--z-dialog);
   overflow: hidden;
 }
 

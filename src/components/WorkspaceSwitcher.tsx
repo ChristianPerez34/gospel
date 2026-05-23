@@ -29,19 +29,31 @@ export function WorkspaceSwitcher({
       onClose();
     }
     if (e.key === "Tab" && dialogRef.current) {
-      const focusableElements = dialogRef.current.querySelectorAll(
+      const focusableElements = dialogRef.current.querySelectorAll<HTMLElement>(
         'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
       );
-      const firstElement = focusableElements[0] as HTMLElement;
-      const lastElement = focusableElements[focusableElements.length - 1] as HTMLElement;
+
+      if (focusableElements.length === 0) {
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+
+      if (!dialogRef.current.contains(activeElement)) {
+        e.preventDefault();
+        (e.shiftKey ? lastElement : firstElement).focus();
+        return;
+      }
 
       if (e.shiftKey) {
-        if (document.activeElement === firstElement) {
+        if (activeElement === firstElement) {
           e.preventDefault();
           lastElement.focus();
         }
       } else {
-        if (document.activeElement === lastElement) {
+        if (activeElement === lastElement) {
           e.preventDefault();
           firstElement.focus();
         }
