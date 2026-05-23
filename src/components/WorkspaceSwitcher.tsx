@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Workspace } from "../types";
 import "./WorkspaceSwitcher.css";
 
@@ -22,15 +22,42 @@ export function WorkspaceSwitcher({
   loading,
 }: WorkspaceSwitcherProps) {
   const [search, setSearch] = useState("");
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      onClose();
+    }
+    if (e.key === "Tab" && dialogRef.current) {
+      const focusableElements = dialogRef.current.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      const firstElement = focusableElements[0] as HTMLElement;
+      const lastElement = focusableElements[focusableElements.length - 1] as HTMLElement;
+
+      if (e.shiftKey) {
+        if (document.activeElement === firstElement) {
+          e.preventDefault();
+          lastElement.focus();
+        }
+      } else {
+        if (document.activeElement === lastElement) {
+          e.preventDefault();
+          firstElement.focus();
+        }
+      }
+    }
+  }, [onClose]);
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
 
   const filtered = workspaces.filter((w) =>
     w.name.toLowerCase().includes(search.toLowerCase()) ||
     w.path.toLowerCase().includes(search.toLowerCase())
   );
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") onClose();
-  };
 
   return (
     <>
@@ -43,7 +70,8 @@ export function WorkspaceSwitcher({
         className="workspace-switcher"
         role="dialog"
         aria-label="Switch workspace"
-        onKeyDown={handleKeyDown}
+        aria-modal="true"
+        ref={dialogRef}
         onClick={(e) => e.stopPropagation()}
       >
       <div className="workspace-switcher__search">
