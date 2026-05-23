@@ -1,3 +1,10 @@
+.workspace-switcher__scrim {
+  position: fixed;
+  inset: 0;
+  background-color: var(--scrim);
+  z-index: var(--z-scrim);
+}
+
 .workspace-switcher {
   position: absolute;
   top: calc(var(--titlebar-height) + var(--topbar-height));
@@ -9,7 +16,7 @@
   border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
-  z-index: var(--z-dropdowns);
+  z-index: var(--z-dialog);
   overflow: hidden;
 }
 

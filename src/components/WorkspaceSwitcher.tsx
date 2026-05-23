@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Workspace } from "../types";
 import "./WorkspaceSwitcher.css";
 
@@ -22,25 +22,70 @@ export function WorkspaceSwitcher({
   loading,
 }: WorkspaceSwitcherProps) {
   const [search, setSearch] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      onClose();
+    }
+    if (e.key === "Tab" && dialogRef.current) {
+      const focusableElements = dialogRef.current.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+
+      if (focusableElements.length === 0) {
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+
+      if (!dialogRef.current.contains(activeElement)) {
+        e.preventDefault();
+        (e.shiftKey ? lastElement : firstElement).focus();
+        return;
+      }
+
+      if (e.shiftKey) {
+        if (activeElement === firstElement) {
+          e.preventDefault();
+          lastElement.focus();
+        }
+      } else {
+        if (activeElement === lastElement) {
+          e.preventDefault();
+          firstElement.focus();
+        }
+      }
+    }
+  }, [onClose]);
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
 
   const filtered = workspaces.filter((w) =>
     w.name.toLowerCase().includes(search.toLowerCase()) ||
     w.path.toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") onClose();
-  };
-
   return (
-    <div
-      className="workspace-switcher"
-      ref={ref}
-      role="dialog"
-      aria-label="Switch workspace"
-      onKeyDown={handleKeyDown}
-    >
+    <>
+      <div
+        className="workspace-switcher__scrim"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        className="workspace-switcher"
+        role="dialog"
+        aria-label="Switch workspace"
+        aria-modal="true"
+        ref={dialogRef}
+        onClick={(e) => e.stopPropagation()}
+      >
       <div className="workspace-switcher__search">
         <svg
           className="workspace-switcher__search-icon"
@@ -130,6 +175,7 @@ export function WorkspaceSwitcher({
         </svg>
         Add workspace
       </button>
-    </div>
+      </div>
+    </>
   );
 }
