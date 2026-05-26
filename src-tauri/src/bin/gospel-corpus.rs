@@ -11,7 +11,7 @@
 use clap::{Parser, Subcommand};
 use gospel_lib::corpus::{
     extractor::extract_directory,
-    persistence::{CorpusPersistence, CorpusManifest},
+    persistence::CorpusPersistence,
     Corpus,
 };
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,22 @@ enum Commands {
         /// Minimum confidence (high, medium, low)
         #[arg(short, long, default_value = "low")]
         confidence: String,
+    },
+    /// List all files in the corpus
+    Files {
+        /// Directory containing the corpus
+        #[arg(short, long)]
+        dir: PathBuf,
+    },
+    /// List all symbols in the corpus
+    Symbols {
+        /// Directory containing the corpus
+        #[arg(short, long)]
+        dir: PathBuf,
+
+        /// Filter by symbol name
+        #[arg(short, long)]
+        filter: Option<String>,
     },
 }
 
@@ -495,6 +511,54 @@ fn run_cli_mode(command: Option<Commands>) {
                 None => {
                     println!("Node not found: {}", id);
                     std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Files { dir }) => {
+            let persistence = CorpusPersistence::new(&dir).expect("Failed to create persistence");
+
+            if !persistence.exists() {
+                println!("No corpus found in {:?}", dir);
+                std::process::exit(1);
+            }
+
+            let corpus = persistence.load().expect("Failed to load corpus");
+            let files: Vec<_> = corpus.nodes.values()
+                .filter(|n| matches!(n.node_type, gospel_lib::corpus::NodeType::File { .. }))
+                .collect();
+
+            println!("Files in corpus ({} total):", files.len());
+            for file in files {
+                if let gospel_lib::corpus::NodeType::File { path, language, line_count } = &file.node_type {
+                    println!("  {} ({}, {} lines)", path, language, line_count);
+                }
+            }
+        }
+        Some(Commands::Symbols { dir, filter }) => {
+            let persistence = CorpusPersistence::new(&dir).expect("Failed to create persistence");
+
+            if !persistence.exists() {
+                println!("No corpus found in {:?}", dir);
+                std::process::exit(1);
+            }
+
+            let corpus = persistence.load().expect("Failed to load corpus");
+            let symbols: Vec<_> = corpus.nodes.values()
+                .filter(|n| matches!(n.node_type, gospel_lib::corpus::NodeType::Symbol { .. }))
+                .collect();
+
+            let filtered: Vec<_> = if let Some(f) = &filter {
+                symbols.iter()
+                    .filter(|s| s.name().to_lowercase().contains(&f.to_lowercase()))
+                    .collect()
+            } else {
+                symbols.iter().collect()
+            };
+
+            println!("Symbols in corpus ({} total, {} shown):", symbols.len(), filtered.len());
+            for symbol in filtered {
+                if let gospel_lib::corpus::NodeType::Symbol { name, symbol_kind, file_id, .. } = &symbol.node_type {
+                    println!("  {} ({}) in {}", name, format!("{:?}", symbol_kind).to_lowercase(), file_id);
                 }
             }
         }

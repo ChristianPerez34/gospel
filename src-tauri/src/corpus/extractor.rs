@@ -85,41 +85,15 @@ impl Extractor {
         });
         let file_id = corpus.add_node(file_node);
 
-        eprintln!("DEBUG: Parsing file with tree-sitter...");
-        // Parse the file
+        tracing::debug!("Parsing file with tree-sitter...");
         let tree = self.parser.parse(&content, None)
             .ok_or_else(|| ExtractionError::ParseError("Failed to parse file".to_string()))?;
-        
-        eprintln!("DEBUG: Parse successful, extracting symbols...");
-        // Extract symbols from the tree (simplified for now - just create a placeholder symbol)
-        // TODO: Implement full tree traversal
-        let root = tree.root_node();
-        eprintln!("DEBUG: Root node kind: {}", root.kind());
-        
-        // For MVP, create a simple symbol from the file name
-        if let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str()) {
-            let symbol_node = Node::new(NodeType::Symbol {
-                name: file_name.to_string(),
-                symbol_kind: SymbolKind::Module,
-                file_id: file_id.clone(),
-                start_line: 0,
-                end_line: line_count,
-                documentation: Some(format!("Module from {}", file_path.display())),
-            });
-            let symbol_id = corpus.add_node(symbol_node);
-            
-            corpus.add_relationship(Relationship::new(
-                file_id.clone(),
-                symbol_id,
-                RelationshipType::Contains,
-                Confidence::High,
-            ));
-        }
 
-        // Extract imports (simplified)
-        // TODO: Implement full import extraction
-        
-        eprintln!("DEBUG: Extraction complete for {:?}", file_path);
+        tracing::debug!("Parse successful, extracting symbols...");
+        self.extract_symbols(corpus, &file_id, &tree, &content);
+        self.extract_imports(corpus, &file_id, &tree, file_path, &content);
+
+        tracing::debug!("Extraction complete for {:?}", file_path);
         Ok(())
     }
 
@@ -136,13 +110,12 @@ impl Extractor {
         content: &str,
     ) {
         let kind = node.kind();
-        eprintln!("DEBUG: walk_node: kind={}, is_named={}", kind, node.is_named());
-        
-        // Try to extract symbol based on node kind
+        tracing::debug!(kind = kind, is_named = node.is_named(), "walk_node");
+
         if let Some(symbol_kind) = SymbolKind::from_ts_symbol(kind) {
-            eprintln!("DEBUG:   -> symbol kind: {:?}", symbol_kind);
+            tracing::debug!(?symbol_kind, "symbol kind matched");
             if let Some(symbol_name) = self.get_symbol_name(node, content) {
-                eprintln!("DEBUG:   -> symbol name: {}", symbol_name);
+                tracing::debug!(symbol_name = %symbol_name, "symbol name found");
                 let documentation = self.get_documentation(node, content);
                 let (start_line, end_line) = (node.start_position().row, node.end_position().row);
                 
@@ -263,45 +236,13 @@ impl Extractor {
         node: tree_sitter::Node,
         content: &str,
     ) {
-        // Extract function calls, type references, etc.
-        let mut cursor = node.walk();
         let mut references_to_add: Vec<(String, RelationshipType, Confidence)> = Vec::new();
-        
-        loop {
-            let child = cursor.node();
-            let kind = child.kind();
-            
-            // Look for function calls
-            if kind == "call_expression" || kind == "function_call" {
-                if let Some(called_name) = self.get_called_function_name(child, content) {
-                    references_to_add.push((called_name, RelationshipType::Uses, Confidence::High));
-                }
-            }
-            
-            // Look for type references
-            if kind == "type_identifier" || kind == "generic_type" {
-                if let Ok(type_name) = child.utf8_text(content.as_bytes()) {
-                    references_to_add.push((type_name.to_string(), RelationshipType::References, Confidence::Medium));
-                }
-            }
-            
-            // Recurse
-            if cursor.goto_first_child() {
-                continue;
-            }
-            
-            while !cursor.goto_next_sibling() {
-                if !cursor.goto_parent() {
-                    break;
-                }
-            }
-            
-            if !cursor.goto_parent() {
-                break;
-            }
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            self.collect_references_from_node(child, content, &mut references_to_add);
         }
-        
-        // Add relationships after collecting to avoid borrow conflicts
+
         for (name, rel_type, confidence) in references_to_add {
             if let Some(target_symbols) = corpus.symbol_index.get(&name) {
                 let target_ids: Vec<_> = target_symbols.clone();
@@ -314,6 +255,32 @@ impl Extractor {
                     ));
                 }
             }
+        }
+    }
+
+    fn collect_references_from_node(
+        &self,
+        node: tree_sitter::Node,
+        content: &str,
+        refs: &mut Vec<(String, RelationshipType, Confidence)>,
+    ) {
+        let kind = node.kind();
+
+        if kind == "call_expression" || kind == "function_call" {
+            if let Some(called_name) = self.get_called_function_name(node, content) {
+                refs.push((called_name, RelationshipType::Uses, Confidence::High));
+            }
+        }
+
+        if kind == "type_identifier" || kind == "generic_type" {
+            if let Ok(type_name) = node.utf8_text(content.as_bytes()) {
+                refs.push((type_name.to_string(), RelationshipType::References, Confidence::Medium));
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_references_from_node(child, content, refs);
         }
     }
 
@@ -334,72 +301,67 @@ impl Extractor {
         file_id: &str,
         tree: &Tree,
         file_path: &Path,
+        content: &str,
     ) {
+        let mut import_targets: Vec<String> = Vec::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
-        
-        loop {
-            let node = cursor.node();
-            let kind = node.kind();
-            
-            // Rust: use statements
-            if self.language == ExtractorLanguage::Rust && kind == "use_declaration" {
-                if let Some(imported_path) = self.get_rust_use_path(node, &mut cursor) {
-                    // Try to resolve to a file
-                    if let Some(target_file) = self.resolve_import(file_path, &imported_path) {
-                        if let Some(target_node) = corpus.get_file_by_path(&target_file) {
-                            corpus.add_relationship(Relationship::new(
-                                file_id.to_string(),
-                                target_node.id.clone(),
-                                RelationshipType::Imports,
-                                Confidence::High,
-                            ));
-                        }
-                    }
-                }
-            }
-            
-            // TypeScript: import statements
-            if (self.language == ExtractorLanguage::TypeScript 
-                || self.language == ExtractorLanguage::Tsx
-                || self.language == ExtractorLanguage::JavaScript)
-                && (kind == "import_statement" || kind == "import")
-            {
-                if let Some(import_path) = self.get_ts_import_path(node) {
-                    if let Some(target_file) = self.resolve_import(file_path, &import_path) {
-                        if let Some(target_node) = corpus.get_file_by_path(&target_file) {
-                            corpus.add_relationship(Relationship::new(
-                                file_id.to_string(),
-                                target_node.id.clone(),
-                                RelationshipType::Imports,
-                                Confidence::High,
-                            ));
-                        }
-                    }
-                }
-            }
-            
-            // Recurse
-            if cursor.goto_first_child() {
-                continue;
-            }
-            
-            while !cursor.goto_next_sibling() {
-                if !cursor.goto_parent() {
-                    break;
-                }
-            }
-            
-            if !cursor.goto_parent() {
-                break;
+
+        for child in root.children(&mut cursor) {
+            self.collect_imports_from_node(child, content, file_path, &mut import_targets);
+        }
+
+        let file_id_owned = file_id.to_string();
+        for target_file in import_targets {
+            if let Some(target_id) = corpus.file_index.get(&target_file) {
+                let target_id = target_id.clone();
+                corpus.add_relationship(Relationship::new(
+                    file_id_owned.clone(),
+                    target_id,
+                    RelationshipType::Imports,
+                    Confidence::High,
+                ));
             }
         }
     }
 
-    fn get_rust_use_path(&self, node: tree_sitter::Node, _cursor: &mut tree_sitter::TreeCursor) -> Option<String> {
-        // Extract the path from a use declaration
-        let node_string = node.to_string();
-        let content_bytes = node_string.as_bytes();
+    fn collect_imports_from_node(
+        &self,
+        node: tree_sitter::Node,
+        content: &str,
+        file_path: &Path,
+        targets: &mut Vec<String>,
+    ) {
+        let kind = node.kind();
+
+        if self.language == ExtractorLanguage::Rust && kind == "use_declaration" {
+            if let Some(imported_path) = self.get_rust_use_path(node, content) {
+                if let Some(target_file) = self.resolve_import(file_path, &imported_path) {
+                    targets.push(target_file);
+                }
+            }
+        }
+
+        if (self.language == ExtractorLanguage::TypeScript
+            || self.language == ExtractorLanguage::Tsx
+            || self.language == ExtractorLanguage::JavaScript)
+            && (kind == "import_statement" || kind == "import")
+        {
+            if let Some(import_path) = self.get_ts_import_path(node, content) {
+                if let Some(target_file) = self.resolve_import(file_path, &import_path) {
+                    targets.push(target_file);
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_imports_from_node(child, content, file_path, targets);
+        }
+    }
+
+    fn get_rust_use_path(&self, node: tree_sitter::Node, content: &str) -> Option<String> {
+        let content_bytes = content.as_bytes();
         let mut path_parts = Vec::new();
         
         let mut cursor = node.walk();
@@ -424,17 +386,17 @@ impl Extractor {
         }
     }
 
-    fn get_ts_import_path(&self, node: tree_sitter::Node) -> Option<String> {
-        // Extract the module specifier from an import statement
+    fn get_ts_import_path(&self, node: tree_sitter::Node, content: &str) -> Option<String> {
+        let content_bytes = content.as_bytes();
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
                 if child.kind() == "string" {
-                    let content = child.to_string();
-                    // Remove quotes
-                    let path = content.trim_matches(|c| c == '"' || c == '\'');
-                    return Some(path.to_string());
+                    if let Ok(text) = child.utf8_text(content_bytes) {
+                        let path = text.trim_matches(|c| c == '"' || c == '\'');
+                        return Some(path.to_string());
+                    }
                 }
                 if !cursor.goto_next_sibling() {
                     break;

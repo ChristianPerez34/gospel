@@ -1,6 +1,7 @@
 //! Tauri commands for Corpus functionality
 
 use crate::corpus::{
+    dto::{NeighborDto, NodeDto},
     extractor::extract_directory,
     persistence::{CorpusManifest, CorpusPersistence},
     Corpus,
@@ -290,106 +291,4 @@ pub struct CorpusSummaryDto {
     pub top_symbols: Vec<(String, usize)>,
 }
 
-/// DTO for a corpus node
-#[derive(Clone, Serialize)]
-pub struct NodeDto {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub node_type: String,
-    pub metadata: std::collections::HashMap<String, String>,
-}
-
-impl NodeDto {
-    pub fn from_node(node: &crate::corpus::Node) -> Self {
-        use crate::corpus::NodeType;
-
-        let (node_type, mut metadata) = match &node.node_type {
-            NodeType::File {
-                path,
-                language,
-                line_count,
-            } => {
-                let mut m = std::collections::HashMap::new();
-                m.insert("path".to_string(), path.clone());
-                m.insert("language".to_string(), language.clone());
-                m.insert("line_count".to_string(), line_count.to_string());
-                ("file".to_string(), m)
-            }
-            NodeType::Symbol {
-                name,
-                symbol_kind,
-                file_id,
-                start_line,
-                end_line,
-                documentation,
-            } => {
-                let mut m = std::collections::HashMap::new();
-                m.insert("symbol_kind".to_string(), format!("{:?}", symbol_kind));
-                m.insert("file_id".to_string(), file_id.clone());
-                m.insert("start_line".to_string(), start_line.to_string());
-                m.insert("end_line".to_string(), end_line.to_string());
-                if let Some(doc) = documentation {
-                    m.insert("documentation".to_string(), doc.clone());
-                }
-                ("symbol".to_string(), m)
-            }
-            NodeType::Concept {
-                name,
-                source,
-                summary,
-                keywords,
-            } => {
-                let mut m = std::collections::HashMap::new();
-                m.insert("source".to_string(), source.clone());
-                m.insert("summary".to_string(), summary.clone());
-                m.insert("keywords".to_string(), keywords.join(", "));
-                ("concept".to_string(), m)
-            }
-        };
-
-        // Merge with node metadata
-        for (k, v) in &node.metadata {
-            metadata.insert(k.clone(), v.clone());
-        }
-
-        Self {
-            id: node.id.clone(),
-            name: node.name(),
-            kind: node.kind_str().to_string(),
-            node_type,
-            metadata,
-        }
-    }
-}
-
-/// DTO for a neighbor relationship
-#[derive(Clone, Serialize)]
-pub struct NeighborDto {
-    pub node_id: String,
-    pub node_name: String,
-    pub node_kind: String,
-    pub relationship_type: String,
-    pub confidence: String,
-    pub direction: String, // "outgoing" or "incoming"
-}
-
-impl NeighborDto {
-    pub fn from_relationship(
-        rel: &crate::corpus::Relationship,
-        node: &crate::corpus::Node,
-    ) -> Self {
-        Self {
-            node_id: node.id.clone(),
-            node_name: node.name(),
-            node_kind: node.kind_str().to_string(),
-            relationship_type: format!("{:?}", rel.relationship_type),
-            confidence: rel.confidence.to_string(),
-            direction: if rel.from_id == node.id {
-                "incoming".to_string()
-            } else {
-                "outgoing".to_string()
-            },
-        }
-    }
-}
+// NodeDto and NeighborDto are defined in dto.rs for shared use

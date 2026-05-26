@@ -195,11 +195,33 @@ impl CorpusPersistence {
         Ok(())
     }
 
-    /// Query corpus using SQL
-    pub fn query(&self, sql: &str, _params: &[&str]) -> Result<Vec<QueryResult>, PersistenceError> {
-        // For now, just return empty - SQL query interface needs refinement
-        // TODO: Implement proper parameterized queries
-        Ok(Vec::new())
+    /// Search corpus nodes by name (safe parameterized query)
+    pub fn search(&self, name: &str) -> Result<Vec<QueryResult>, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        if !db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let conn = Connection::open(&db_path)?;
+        let sql = "SELECT id, node_data FROM nodes WHERE node_data LIKE ?1 LIMIT 50";
+        let pattern = format!("%{}%", name);
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![pattern], |row| {
+            let id: String = row.get(0)?;
+            let data: String = row.get(1)?;
+            let (name, kind) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or(&id).to_string();
+                let kind = v.get("symbol_kind").or(v.get("type")).and_then(|k| k.as_str()).unwrap_or("unknown").to_string();
+                (name, kind)
+            } else {
+                (id.clone(), "unknown".to_string())
+            };
+            Ok(QueryResult { id, name, kind })
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
     }
 
     /// Get neighbors of a node using SQL

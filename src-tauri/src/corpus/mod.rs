@@ -1,6 +1,7 @@
 //! Corpus data model - nodes, relationships, and confidence tagging
 
 pub mod commands;
+pub mod dto;
 pub mod extractor;
 pub mod persistence;
 pub mod tools;
@@ -15,12 +16,9 @@ pub type NodeId = String;
 /// Confidence level for relationships
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
 pub enum Confidence {
-    /// Extracted from explicit syntax (imports, function calls, etc.)
-    High,
-    /// Inferred from naming patterns or proximity
-    Medium,
-    /// Speculative or weak association
     Low,
+    Medium,
+    High,
 }
 
 impl std::fmt::Display for Confidence {
@@ -93,20 +91,29 @@ pub enum SymbolKind {
 impl SymbolKind {
     pub fn from_ts_symbol(kind: &str) -> Option<Self> {
         match kind {
-            "function" | "arrow_function" => Some(SymbolKind::Function),
-            "struct_item" | "struct" => Some(SymbolKind::Struct),
-            "class" | "class_declaration" => Some(SymbolKind::Class),
-            "interface" | "interface_declaration" => Some(SymbolKind::Interface),
-            "type_alias" | "type_alias_declaration" => Some(SymbolKind::TypeAlias),
-            "const" | "const_item" => Some(SymbolKind::Constant),
-            "let" | "variable" | "variable_declarator" => Some(SymbolKind::Variable),
-            "module" | "mod_item" => Some(SymbolKind::Module),
-            "trait" | "trait_item" => Some(SymbolKind::Trait),
-            "impl" | "impl_item" => Some(SymbolKind::Impl),
-            "enum" | "enum_item" => Some(SymbolKind::Enum),
-            "enum_variant" | "variant" => Some(SymbolKind::Variant),
-            "field" | "field_declaration" => Some(SymbolKind::Field),
-            "method" | "method_definition" => Some(SymbolKind::Method),
+            // TypeScript / JavaScript node kinds
+            "function_declaration" | "arrow_function" | "function_expression" => Some(SymbolKind::Function),
+            "method_definition" => Some(SymbolKind::Method),
+            "class_declaration" => Some(SymbolKind::Class),
+            "interface_declaration" => Some(SymbolKind::Interface),
+            "type_alias_declaration" => Some(SymbolKind::TypeAlias),
+            "variable_declarator" => Some(SymbolKind::Variable),
+            "module" => Some(SymbolKind::Module),
+            "enum_declaration" => Some(SymbolKind::Enum),
+            "field_definition" => Some(SymbolKind::Field),
+            // Rust node kinds
+            "function_item" | "function_signature_item" => Some(SymbolKind::Function),
+            "struct_item" => Some(SymbolKind::Struct),
+            "enum_item" => Some(SymbolKind::Enum),
+            "trait_item" => Some(SymbolKind::Trait),
+            "impl_item" => Some(SymbolKind::Impl),
+            "mod_item" => Some(SymbolKind::Module),
+            "const_item" => Some(SymbolKind::Constant),
+            "type_item" => Some(SymbolKind::TypeAlias),
+            "let_declaration" => Some(SymbolKind::Variable),
+            "enum_variant" => Some(SymbolKind::Variant),
+            "field_declaration" | "field_initializer" => Some(SymbolKind::Field),
+            "match_arm" => Some(SymbolKind::Variant),
             _ => None,
         }
     }
@@ -339,9 +346,12 @@ impl Corpus {
             *relationship_counts.entry(key).or_insert(0) += 1;
         }
 
-        // Get top symbols by incoming references
+        // Get top symbols by incoming references (exclude structural Contains)
         let mut symbol_refs: HashMap<String, usize> = HashMap::new();
         for rel in &self.relationships {
+            if matches!(rel.relationship_type, RelationshipType::Contains) {
+                continue;
+            }
             if let Some(node) = self.nodes.get(&rel.to_id) {
                 if let NodeType::Symbol { name, .. } = &node.node_type {
                     *symbol_refs.entry(name.clone()).or_insert(0) += 1;
