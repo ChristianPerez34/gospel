@@ -1,6 +1,7 @@
 #![recursion_limit = "2048"]
 
 mod app_config;
+pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
@@ -26,8 +27,11 @@ mod model_fetch {
     }
 }
 
-use app_config::{AppConfigError, Workspace};
+use app_config::{AppConfigError, AppConfigState, Workspace};
 use clap::Parser;
+use corpus::commands::{
+    build_corpus, get_corpus_neighbors, get_corpus_status, get_corpus_summary, query_corpus,
+};
 use futures::{stream, StreamExt};
 use llm::{LlmError, LlmService};
 use models::ModelInfo;
@@ -43,11 +47,6 @@ use tauri_plugin_opener::OpenerExt;
 struct Cli {
     #[arg(short = 'd', long = "dir")]
     dir: Option<String>,
-}
-
-struct AppConfigState {
-    store: Option<app_config::AppConfigStore>,
-    init_warning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -763,6 +762,12 @@ pub fn run() {
             remove_workspace,
             set_active_workspace,
             get_active_workspace,
+            // Corpus commands
+            build_corpus,
+            get_corpus_status,
+            get_corpus_summary,
+            query_corpus,
+            get_corpus_neighbors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
