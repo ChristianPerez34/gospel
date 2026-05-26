@@ -19,6 +19,8 @@ pub enum CorpusToolError {
     CorpusLoadError(String),
     #[error("Node not found: {0}")]
     NodeNotFound(String),
+    #[error("Invalid min_confidence value: '{0}'; expected 'high', 'medium', or 'low'")]
+    InvalidConfidence(String),
 }
 
 /// Arguments for corpus_summary tool
@@ -280,10 +282,12 @@ impl Tool for CorpusNeighborsTool {
         let corpus = persistence.load()
             .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
 
-        let min_conf = match args.min_confidence.as_deref() {
+        let min_conf = match args.min_confidence.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
             Some("high") => crate::corpus::Confidence::High,
             Some("medium") => crate::corpus::Confidence::Medium,
-            _ => crate::corpus::Confidence::Low,
+            Some("low") => crate::corpus::Confidence::Low,
+            Some(v) => return Err(CorpusToolError::InvalidConfidence(v.to_string())),
+            None => crate::corpus::Confidence::Low,
         };
 
         // Find node
@@ -297,7 +301,7 @@ impl Tool for CorpusNeighborsTool {
                 let dtos: Vec<NeighborDto> = neighbors
                     .into_iter()
                     .filter(|(rel, _)| rel.confidence >= min_conf)
-                    .map(|(rel, node)| NeighborDto::from_relationship(rel, node))
+                    .map(|(rel, node)| NeighborDto::from_relationship(rel, node, &node.id))
                     .collect();
                 Ok(dtos)
             }

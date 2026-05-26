@@ -89,6 +89,7 @@ impl NeighborDto {
     pub fn from_relationship(
         rel: &corpus::Relationship,
         node: &corpus::Node,
+        queried_node_id: &str,
     ) -> Self {
         Self {
             node_id: node.id.clone(),
@@ -96,10 +97,10 @@ impl NeighborDto {
             node_kind: node.kind_str().to_string(),
             relationship_type: format!("{:?}", rel.relationship_type),
             confidence: rel.confidence.to_string(),
-            direction: if rel.from_id == node.id {
-                "incoming".to_string()
-            } else {
+            direction: if rel.from_id == queried_node_id {
                 "outgoing".to_string()
+            } else {
+                "incoming".to_string()
             },
         }
     }

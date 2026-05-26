@@ -200,9 +200,13 @@ fn handle_jsonrpc_request(request: JsonRpcRequest) -> JsonRpcResponse {
 }
 
 fn handle_build(params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    let params: BuildParams = params
-        .and_then(|p| serde_json::from_value(p).ok())
-        .unwrap_or_default();
+    let params = params.ok_or("Missing parameters")?;
+    let params: BuildParams = serde_json::from_value(params)
+        .map_err(|e| format!("Invalid parameters: {}", e))?;
+
+    if params.dir.as_os_str().is_empty() {
+        return Err("Invalid or missing 'dir' parameter".into());
+    }
 
     let ignore: Vec<&str> = params
         .ignore
@@ -239,7 +243,7 @@ fn handle_summary(params: Option<serde_json::Value>) -> Result<serde_json::Value
     let dir_str = params.get("dir")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'dir' parameter")?;
-    
+
     let dir = PathBuf::from(dir_str);
     let persistence = CorpusPersistence::new(&dir)
         .map_err(|e| format!("Failed to access corpus: {}", e))?;
@@ -480,7 +484,7 @@ fn run_cli_mode(command: Option<Commands>) {
 
             let corpus = persistence.load().expect("Failed to load corpus");
 
-            let min_conf = match confidence.as_str() {
+            let min_conf = match confidence.trim().to_lowercase().as_str() {
                 "high" => gospel_lib::corpus::Confidence::High,
                 "medium" => gospel_lib::corpus::Confidence::Medium,
                 _ => gospel_lib::corpus::Confidence::Low,

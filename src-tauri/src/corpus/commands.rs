@@ -264,17 +264,19 @@ pub fn get_corpus_neighbors(
         .load()
         .map_err(|e| format!("Failed to load corpus: {}", e))?;
 
-    let min_conf = match min_confidence.as_deref() {
+    let min_conf = match min_confidence.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
         Some("high") => crate::corpus::Confidence::High,
         Some("medium") => crate::corpus::Confidence::Medium,
-        _ => crate::corpus::Confidence::Low,
+        Some("low") => crate::corpus::Confidence::Low,
+        Some(v) => return Err(format!("Invalid min_confidence value: '{}'; expected 'high', 'medium', or 'low'", v)),
+        None => crate::corpus::Confidence::Low,
     };
 
     let neighbors = corpus.get_neighbors(&node_id);
     let dtos: Vec<NeighborDto> = neighbors
         .into_iter()
         .filter(|(rel, _)| rel.confidence >= min_conf)
-        .map(|(rel, node)| NeighborDto::from_relationship(rel, node))
+        .map(|(rel, node)| NeighborDto::from_relationship(rel, node, &node_id))
         .collect();
 
     Ok(dtos)
