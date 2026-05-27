@@ -1,6 +1,9 @@
 //! Corpus persistence - save and load corpus to/from disk
 
-use crate::corpus::{Corpus, NodeId, NodeType};
+use crate::corpus::{
+    Confidence, Corpus, CorpusSummary, Node, NodeId, NodeType,
+};
+use crate::corpus::dto::{NeighborDto, NodeDto};
 use rusqlite::{params, Connection};
 use serde_json;
 use std::collections::HashMap;
@@ -253,6 +256,251 @@ impl CorpusPersistence {
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
+        }
+
+        Ok(results)
+    }
+
+    /// Reconstruct a Node from a database row's node_data JSON
+    fn node_from_row(id: String, node_data: String) -> Result<Node, PersistenceError> {
+        let node_type: NodeType = serde_json::from_str(&node_data)?;
+        Ok(Node {
+            id,
+            node_type,
+            metadata: HashMap::new(),
+        })
+    }
+
+    /// Get corpus summary using SQLite
+    pub fn summary_sqlite(&self) -> Result<CorpusSummary, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        let conn = Connection::open(&db_path)?;
+
+        let mut file_count = 0usize;
+        let mut symbol_count = 0usize;
+        let mut concept_count = 0usize;
+
+        let mut stmt = conn.prepare(
+            "SELECT node_type, COUNT(*) FROM nodes GROUP BY node_type",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let nt: String = row.get(0)?;
+            let cnt: i64 = row.get(1)?;
+            Ok((nt, cnt as usize))
+        })?;
+        for row in rows {
+            let (nt, cnt) = row?;
+            match nt.as_str() {
+                "file" => file_count = cnt,
+                "symbol" => symbol_count = cnt,
+                "concept" => concept_count = cnt,
+                _ => {}
+            }
+        }
+
+        let relationship_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM relationships", [], |row| {
+                row.get(0)
+            })?;
+
+        let mut stmt = conn.prepare(
+            "SELECT relationship_type, COUNT(*) FROM relationships GROUP BY relationship_type",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let rt: String = row.get(0)?;
+            let cnt: i64 = row.get(1)?;
+            Ok((rt, cnt as usize))
+        })?;
+        let mut relationship_counts = HashMap::new();
+        for row in rows {
+            let (rt, cnt) = row?;
+            relationship_counts.insert(rt, cnt);
+        }
+
+        let mut top_symbols = Vec::new();
+        let sql = r#"
+            SELECT n.node_data, COUNT(*) as ref_count
+            FROM relationships r
+            JOIN nodes n ON r.to_id = n.id
+            WHERE r.relationship_type != 'Contains' AND n.node_type = 'symbol'
+            GROUP BY n.id
+            ORDER BY ref_count DESC
+            LIMIT 10
+        "#;
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([], |row| {
+            let data: String = row.get(0)?;
+            let cnt: i64 = row.get(1)?;
+            Ok((data, cnt as usize))
+        })?;
+        for row in rows {
+            let (data, cnt) = row?;
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+                    top_symbols.push((name.to_string(), cnt));
+                }
+            }
+        }
+
+        Ok(CorpusSummary {
+            file_count,
+            symbol_count,
+            concept_count,
+            relationship_count: relationship_count as usize,
+            relationship_counts,
+            top_symbols,
+        })
+    }
+
+    /// Find a node by ID using SQLite, return as NodeDto
+    pub fn get_node_dto(&self, id: &str) -> Result<Option<NodeDto>, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        let conn = Connection::open(&db_path)?;
+        let mut stmt = conn.prepare("SELECT id, node_data FROM nodes WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            let node_id: String = row.get(0)?;
+            let data: String = row.get(1)?;
+            Ok((node_id, data))
+        })?;
+        match rows.next() {
+            Some(Ok((node_id, data))) => {
+                let node = Self::node_from_row(node_id, data)?;
+                Ok(Some(NodeDto::from_node(&node)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Find symbols by exact name using SQLite
+    pub fn get_symbols_by_name_dto(&self, name: &str) -> Result<Vec<NodeDto>, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        let conn = Connection::open(&db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, node_data FROM nodes WHERE node_type = 'symbol' AND json_extract(node_data, '$.name') = ?1",
+        )?;
+        let rows = stmt.query_map(params![name], |row| {
+            let node_id: String = row.get(0)?;
+            let data: String = row.get(1)?;
+            Ok((node_id, data))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            let (node_id, data) = row?;
+            let node = Self::node_from_row(node_id, data)?;
+            results.push(NodeDto::from_node(&node));
+        }
+        Ok(results)
+    }
+
+    /// Find a file by path using SQLite
+    pub fn get_file_by_path_dto(&self, path: &str) -> Result<Option<NodeDto>, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        let conn = Connection::open(&db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, node_data FROM nodes WHERE node_type = 'file' AND json_extract(node_data, '$.path') = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![path], |row| {
+            let node_id: String = row.get(0)?;
+            let data: String = row.get(1)?;
+            Ok((node_id, data))
+        })?;
+        match rows.next() {
+            Some(Ok((node_id, data))) => {
+                let node = Self::node_from_row(node_id, data)?;
+                Ok(Some(NodeDto::from_node(&node)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolve a node by ID, symbol name, or file path using SQLite
+    pub fn resolve_node_dto(&self, identifier: &str) -> Result<Option<NodeDto>, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        if let Some(dto) = self.get_node_dto(identifier)? {
+            return Ok(Some(dto));
+        }
+        let symbols = self.get_symbols_by_name_dto(identifier)?;
+        if let Some(dto) = symbols.into_iter().next() {
+            return Ok(Some(dto));
+        }
+        self.get_file_by_path_dto(identifier)
+    }
+
+    /// Count neighbors of a node using SQLite
+    pub fn count_neighbors(&self, node_id: &str) -> Result<usize, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        let conn = Connection::open(&db_path)?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM relationships WHERE from_id = ?1 OR to_id = ?1",
+            params![node_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Get neighbor DTOs from SQLite, optionally filtered by minimum confidence
+    pub fn get_neighbor_dtos(
+        &self,
+        node_id: &str,
+        min_confidence: Option<Confidence>,
+    ) -> Result<Vec<NeighborDto>, PersistenceError> {
+        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+        let conn = Connection::open(&db_path)?;
+
+        let confidence_clause = match min_confidence {
+            None | Some(Confidence::Low) => String::new(),
+            Some(Confidence::Medium) => "AND r.confidence IN ('High', 'Medium')".to_string(),
+            Some(Confidence::High) => "AND r.confidence IN ('High')".to_string(),
+        };
+
+        let sql = format!(
+            r#"
+            SELECT 
+                CASE WHEN r.from_id = ?1 THEN r.to_id ELSE r.from_id END as neighbor_id,
+                n.node_data,
+                r.from_id,
+                r.relationship_type,
+                r.confidence
+            FROM relationships r
+            JOIN nodes n ON (CASE WHEN r.from_id = ?1 THEN r.to_id ELSE r.from_id END) = n.id
+            WHERE (r.from_id = ?1 OR r.to_id = ?1)
+            {}
+            "#,
+            confidence_clause
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![node_id], |row| {
+            let neighbor_id: String = row.get(0)?;
+            let node_data: String = row.get(1)?;
+            let from_id: String = row.get(2)?;
+            let rel_type: String = row.get(3)?;
+            let confidence: String = row.get(4)?;
+            Ok((neighbor_id, node_data, from_id, rel_type, confidence))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (neighbor_id, node_data, from_id, rel_type, confidence) = row?;
+            let node = Self::node_from_row(neighbor_id, node_data)?;
+            let direction = if from_id == node_id {
+                "outgoing"
+            } else {
+                "incoming"
+            };
+            let node_name = node.name();
+            let node_kind = node.kind_str().to_string();
+            results.push(NeighborDto {
+                node_id: node.id,
+                node_name,
+                node_kind,
+                relationship_type: rel_type,
+                confidence: confidence.to_lowercase(),
+                direction: direction.to_string(),
+            });
         }
 
         Ok(results)

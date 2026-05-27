@@ -168,8 +168,8 @@ impl Extractor {
                 }
                 None
             }
-            ExtractorLanguage::TypeScript | ExtractorLanguage::Tsx => {
-                // For TS/TSX, look for name or identifier
+            ExtractorLanguage::TypeScript | ExtractorLanguage::Tsx | ExtractorLanguage::JavaScript | ExtractorLanguage::Jsx => {
+                // For TS/TSX/JS/JSX, look for name or identifier
                 let mut cursor = node.walk();
                 if cursor.goto_first_child() {
                     loop {
@@ -185,7 +185,6 @@ impl Extractor {
                 }
                 None
             }
-            _ => None,
         }
     }
 

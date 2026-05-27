@@ -188,11 +188,9 @@ pub fn get_corpus_summary(
         return Err("No corpus exists for this workspace".to_string());
     }
 
-    let corpus = persistence
-        .load()
-        .map_err(|e| format!("Failed to load corpus: {}", e))?;
-
-    let summary = corpus.summary();
+    let summary = persistence
+        .summary_sqlite()
+        .map_err(|e| format!("Failed to query corpus: {}", e))?;
 
     Ok(CorpusSummaryDto {
         file_count: summary.file_count,
@@ -226,15 +224,12 @@ pub fn query_corpus(
         return Err("No corpus exists for this workspace".to_string());
     }
 
-    let corpus = persistence
-        .load()
-        .map_err(|e| format!("Failed to load corpus: {}", e))?;
-
-    let node = corpus
-        .get_node(&node_id)
+    let node = persistence
+        .get_node_dto(&node_id)
+        .map_err(|e| format!("Failed to query corpus: {}", e))?
         .ok_or_else(|| format!("Node not found: {}", node_id))?;
 
-    Ok(NodeDto::from_node(node))
+    Ok(node)
 }
 
 /// Get neighbors of a node in the corpus
@@ -260,10 +255,6 @@ pub fn get_corpus_neighbors(
         return Err("No corpus exists for this workspace".to_string());
     }
 
-    let corpus = persistence
-        .load()
-        .map_err(|e| format!("Failed to load corpus: {}", e))?;
-
     let min_conf = match min_confidence.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
         Some("high") => crate::corpus::Confidence::High,
         Some("medium") => crate::corpus::Confidence::Medium,
@@ -272,12 +263,9 @@ pub fn get_corpus_neighbors(
         None => crate::corpus::Confidence::Low,
     };
 
-    let neighbors = corpus.get_neighbors(&node_id);
-    let dtos: Vec<NeighborDto> = neighbors
-        .into_iter()
-        .filter(|(rel, _)| rel.confidence >= min_conf)
-        .map(|(rel, node)| NeighborDto::from_relationship(rel, node, &node_id))
-        .collect();
+    let dtos = persistence
+        .get_neighbor_dtos(&node_id, Some(min_conf))
+        .map_err(|e| format!("Failed to query corpus neighbors: {}", e))?;
 
     Ok(dtos)
 }

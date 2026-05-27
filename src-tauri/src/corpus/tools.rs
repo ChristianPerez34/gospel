@@ -88,9 +88,8 @@ impl Tool for CorpusSummaryTool {
             });
         }
 
-        let corpus = persistence.load()
+        let summary = persistence.summary_sqlite()
             .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
-        let summary = corpus.summary();
         let top_symbols_clone = summary.top_symbols.clone();
 
         Ok(CorpusSummaryOutput {
@@ -181,32 +180,23 @@ impl Tool for CorpusQueryTool {
             });
         }
 
-        let corpus = persistence.load()
-            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
+        let (node_dto, neighbor_count) = match persistence.resolve_node_dto(&args.identifier)
+            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))? {
+            Some(dto) => {
+                let count = persistence.count_neighbors(&dto.id)
+                    .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
+                (Some(dto), count)
+            }
+            None => (None, 0),
+        };
 
-        // Try to find by exact node ID first
-        let node = corpus.get_node(&args.identifier);
-        
-        // If not found by ID, try symbol name
-        let node = node.or_else(|| {
-            corpus.get_symbols_by_name(&args.identifier).first().copied()
-        });
-
-        // If still not found, try file path
-        let node = node.or_else(|| {
-            corpus.get_file_by_path(&args.identifier)
-        });
-
-        match node {
-            Some(node) => {
-                let neighbors = corpus.get_neighbors(&node.id);
-                let node_dto = NodeDto::from_node(node);
-                
+        match node_dto {
+            Some(node_dto) => {
                 Ok(CorpusQueryOutput {
                     found: true,
                     node: Some(node_dto),
-                    neighbor_count: neighbors.len(),
-                    message: format!("Found '{}' with {} connections", args.identifier, neighbors.len()),
+                    neighbor_count,
+                    message: format!("Found '{}' with {} connections", args.identifier, neighbor_count),
                 })
             }
             None => Ok(CorpusQueryOutput {
@@ -279,9 +269,6 @@ impl Tool for CorpusNeighborsTool {
             return Ok(vec![]);
         }
 
-        let corpus = persistence.load()
-            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
-
         let min_conf = match args.min_confidence.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
             Some("high") => crate::corpus::Confidence::High,
             Some("medium") => crate::corpus::Confidence::Medium,
@@ -290,23 +277,16 @@ impl Tool for CorpusNeighborsTool {
             None => crate::corpus::Confidence::Low,
         };
 
-        // Find node
-        let node = corpus.get_node(&args.identifier)
-            .or_else(|| corpus.get_symbols_by_name(&args.identifier).first().copied())
-            .or_else(|| corpus.get_file_by_path(&args.identifier));
+        let node_id = match persistence.resolve_node_dto(&args.identifier)
+            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))? {
+            Some(dto) => dto.id,
+            None => return Ok(vec![]),
+        };
 
-        match node {
-            Some(node) => {
-                let neighbors = corpus.get_neighbors(&node.id);
-                let dtos: Vec<NeighborDto> = neighbors
-                    .into_iter()
-                    .filter(|(rel, _)| rel.confidence >= min_conf)
-                    .map(|(rel, node)| NeighborDto::from_relationship(rel, node, &node.id))
-                    .collect();
-                Ok(dtos)
-            }
-            None => Ok(vec![]),
-        }
+        let dtos = persistence.get_neighbor_dtos(&node_id, Some(min_conf))
+            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
+
+        Ok(dtos)
     }
 }
 
