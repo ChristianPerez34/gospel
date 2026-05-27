@@ -43,7 +43,10 @@ pub struct CorpusSummaryOutput {
 
 /// Tool to get a summary of the codebase corpus
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CorpusSummaryTool;
+pub struct CorpusSummaryTool {
+    #[serde(default)]
+    pub default_workspace_path: Option<PathBuf>,
+}
 
 impl Tool for CorpusSummaryTool {
     const NAME: &'static str = "corpus_summary";
@@ -72,6 +75,7 @@ impl Tool for CorpusSummaryTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let workspace_path = args.workspace_path
             .map(PathBuf::from)
+            .or_else(|| self.default_workspace_path.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
         let persistence = CorpusPersistence::new(&workspace_path)
@@ -133,7 +137,10 @@ pub struct CorpusQueryOutput {
 
 /// Tool to query details about a specific code element
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CorpusQueryTool;
+pub struct CorpusQueryTool {
+    #[serde(default)]
+    pub default_workspace_path: Option<PathBuf>,
+}
 
 impl Tool for CorpusQueryTool {
     const NAME: &'static str = "corpus_query";
@@ -166,6 +173,7 @@ impl Tool for CorpusQueryTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let workspace_path: PathBuf = args.workspace_path
             .map(PathBuf::from)
+            .or_else(|| self.default_workspace_path.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
         let persistence = CorpusPersistence::new(&workspace_path)
@@ -222,7 +230,10 @@ pub struct CorpusNeighborsArgs {
 
 /// Tool to get relationships for a code element
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CorpusNeighborsTool;
+pub struct CorpusNeighborsTool {
+    #[serde(default)]
+    pub default_workspace_path: Option<PathBuf>,
+}
 
 impl Tool for CorpusNeighborsTool {
     const NAME: &'static str = "corpus_neighbors";
@@ -260,6 +271,7 @@ impl Tool for CorpusNeighborsTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let workspace_path: PathBuf = args.workspace_path
             .map(PathBuf::from)
+            .or_else(|| self.default_workspace_path.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
         let persistence = CorpusPersistence::new(&workspace_path)
@@ -290,16 +302,16 @@ impl Tool for CorpusNeighborsTool {
     }
 }
 
-pub fn create_corpus_summary_tool() -> CorpusSummaryTool {
-    CorpusSummaryTool
+pub fn create_corpus_summary_tool(default_workspace_path: Option<PathBuf>) -> CorpusSummaryTool {
+    CorpusSummaryTool { default_workspace_path }
 }
 
-pub fn create_corpus_query_tool() -> CorpusQueryTool {
-    CorpusQueryTool
+pub fn create_corpus_query_tool(default_workspace_path: Option<PathBuf>) -> CorpusQueryTool {
+    CorpusQueryTool { default_workspace_path }
 }
 
-pub fn create_corpus_neighbors_tool() -> CorpusNeighborsTool {
-    CorpusNeighborsTool
+pub fn create_corpus_neighbors_tool(default_workspace_path: Option<PathBuf>) -> CorpusNeighborsTool {
+    CorpusNeighborsTool { default_workspace_path }
 }
 
 /// System prompt to add when corpus tools are available

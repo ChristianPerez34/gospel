@@ -32,9 +32,9 @@
 }
 
 .chat-view__thinking-bar {
-  height: 3px;
   overflow: hidden;
   flex-shrink: 0;
+  padding: var(--space-2) var(--space-4);
 }
 
 .chat-view__thinking-text {
@@ -45,6 +45,45 @@
   animation: pulse 2s ease-in-out infinite;
   border-radius: 0;
   font-size: 0;
+}
+
+.chat-view__tool-activities {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.tool-activity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+  background-color: var(--surface-elevated);
+  animation: fadeSlideIn var(--duration-fast) var(--ease-out-quart);
+}
+
+.tool-activity--calling {
+  color: var(--accent-action);
+}
+
+.tool-activity--completed {
+  color: var(--text-muted);
+}
+
+.tool-activity__icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.tool-activity--calling .tool-activity__icon {
+  animation: spin 1s linear infinite;
+}
+
+.tool-activity__label {
+  font-family: var(--font-mono);
 }
 
 .chat-view__messages {

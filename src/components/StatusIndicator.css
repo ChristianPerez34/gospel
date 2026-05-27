@@ -22,6 +22,7 @@
 
 .status-indicator__dot--acting {
   background-color: var(--accent-structure);
+  animation: pulse 2s ease-in-out infinite;
 }
 
 .status-indicator__dot--error {

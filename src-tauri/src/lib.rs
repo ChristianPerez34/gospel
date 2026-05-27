@@ -2,6 +2,7 @@
 
 mod app_config;
 pub mod corpus;
+mod conversation;
 pub mod keychain;
 mod llm;
 mod models;
@@ -29,11 +30,12 @@ mod model_fetch {
 
 use app_config::{AppConfigError, AppConfigState, Workspace};
 use clap::Parser;
+use conversation::{ConversationState, ConversationStore};
 use corpus::commands::{
     build_corpus, get_corpus_neighbors, get_corpus_status, get_corpus_summary, query_corpus,
 };
 use futures::{stream, StreamExt};
-use llm::{LlmError, LlmService};
+use llm::{LlmError, LlmService, StreamEvent};
 use models::ModelInfo;
 use rig::providers::chatgpt;
 use serde::Serialize;
@@ -493,18 +495,15 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
 async fn complete_streaming(
     app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
+    conversation_state: tauri::State<'_, ConversationState>,
     provider: String,
     prompt: String,
     model: String,
+    session_id: Option<String>,
 ) -> Result<(), llm::LlmErrorDto> {
     let workspace_path = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten(),
+        Some(store) => store.get_workspace_path().ok().flatten().map(std::path::PathBuf::from),
         None => None,
-    };
-
-    let full_prompt = match workspace_path {
-        Some(path) => format!("[Workspace: {}]\n\n{}", path, prompt),
-        None => prompt,
     };
 
     let api_key = if provider == "chatgpt" {
@@ -513,15 +512,49 @@ async fn complete_streaming(
         keychain::retrieve(&provider).map_err(|_| LlmError::ApiKeyMissing.to_dto())?
     };
 
+    let chat_history = match &session_id {
+        Some(sid) => {
+            let mut store = conversation_state.store.lock().unwrap();
+            store.get_history(sid)
+        }
+        None => vec![],
+    };
+
     let app_clone = app.clone();
-    let result = llm::stream_completion(&provider, &full_prompt, &model, &api_key, move |token| {
-        let _ = app_clone.emit("llm-token", token);
-    })
+    let result = llm::stream_completion(
+        &provider,
+        &prompt,
+        &model,
+        &api_key,
+        workspace_path,
+        chat_history,
+        move |event| match event {
+            StreamEvent::Text(token) => {
+                let _ = app_clone.emit("llm-token", token);
+            }
+            StreamEvent::ToolCall { name, arguments } => {
+                let _ = app_clone.emit(
+                    "llm-tool-call",
+                    serde_json::json!({ "name": name, "arguments": arguments }),
+                );
+            }
+            StreamEvent::ToolResult { name, result } => {
+                let _ = app_clone.emit(
+                    "llm-tool-result",
+                    serde_json::json!({ "name": name, "result": result }),
+                );
+            }
+        },
+    )
     .await;
 
     match result {
-        Ok(full_response) => {
-            let _ = app.emit("llm-done", full_response);
+        Ok(stream_result) => {
+            if let (Some(sid), Some(history)) = (&session_id, stream_result.history) {
+                let mut store = conversation_state.store.lock().unwrap();
+                store.store_history(sid, history);
+            }
+            let _ = app.emit("llm-done", stream_result.full_response);
             Ok(())
         }
         Err(e) => {
@@ -529,6 +562,16 @@ async fn complete_streaming(
             Err(e.to_dto())
         }
     }
+}
+
+#[tauri::command]
+fn clear_conversation_history(
+    conversation_state: tauri::State<'_, ConversationState>,
+    session_id: String,
+) -> Result<(), String> {
+    let mut store = conversation_state.store.lock().unwrap();
+    store.clear(&session_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -738,6 +781,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(app_config_state)
+        .manage(ConversationState {
+            store: std::sync::Mutex::new(ConversationStore::new()),
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -752,6 +798,7 @@ pub fn run() {
             set_provider_visibility,
             complete,
             complete_streaming,
+            clear_conversation_history,
             test_connection,
             start_chatgpt_oauth,
             is_chatgpt_authenticated,
