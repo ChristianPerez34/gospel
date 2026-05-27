@@ -33,6 +33,11 @@ pub struct AppConfigStore {
     conn: Mutex<Connection>,
 }
 
+pub struct AppConfigState {
+    pub store: Option<AppConfigStore>,
+    pub init_warning: Option<String>,
+}
+
 impl AppConfigStore {
     pub fn new() -> Result<Self, AppConfigError> {
         let dir = app_data_dir();
