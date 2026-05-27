@@ -19,10 +19,12 @@ impl ConversationStore {
     }
 
     pub fn get_history(&mut self, session_id: &str) -> Vec<Message> {
-        if let Some(pos) = self.access_order.iter().position(|id| id == session_id) {
-            self.access_order.remove(pos);
+        if self.conversations.contains_key(session_id) {
+            if let Some(pos) = self.access_order.iter().position(|id| id == session_id) {
+                self.access_order.remove(pos);
+            }
+            self.access_order.push(session_id.to_string());
         }
-        self.access_order.push(session_id.to_string());
         self.conversations.get(session_id).cloned().unwrap_or_default()
     }
 
