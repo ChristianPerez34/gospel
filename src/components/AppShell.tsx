@@ -299,12 +299,14 @@ export function AppShell() {
       setActiveSessionId(newSession.id);
     }
 
+      const effectiveSessionId = activeSessionId || newSession.id;
+
     try {
       await invoke("complete_streaming", {
         provider: selectedModel.provider,
         prompt: message,
         model: selectedModel.model,
-        sessionId: activeSessionId,
+        sessionId: effectiveSessionId,
       });
     } catch (e) {
       setIsThinking(false);

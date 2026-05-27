@@ -41,8 +41,8 @@ impl ConversationStore {
         }
         self.access_order.push(session_id.to_string());
 
-        let entry = self.conversations.entry(session_id.to_string()).or_default();
-        entry.extend(new_messages);
+        let mut entry = self.conversations.entry(session_id.to_string()).or_default();
+        *entry = new_messages;
         if entry.len() > MAX_MESSAGES_PER_CONVERSATION {
             let excess = entry.len() - MAX_MESSAGES_PER_CONVERSATION;
             entry.drain(..excess);
@@ -84,12 +84,15 @@ mod tests {
     }
 
     #[test]
-    fn store_and_retrieve_history() {
+    fn store_replaces_history() {
         let mut store = ConversationStore::new();
-        let msgs = vec![make_user_message("hello"), make_assistant_message("hi")];
-        store.store_history("s1", msgs.clone());
+        let msgs1 = vec![make_user_message("hello"), make_assistant_message("hi")];
+        store.store_history("s1", msgs1.clone());
+        let msgs2 = vec![make_user_message("hello"), make_assistant_message("hi"), make_user_message("how are you")];
+        store.store_history("s1", msgs2.clone());
         let retrieved = store.get_history("s1");
-        assert_eq!(retrieved.len(), 2);
+        assert_eq!(retrieved.len(), 3);
+        assert_eq!(retrieved[2], make_user_message("how are you"));
     }
 
     #[test]

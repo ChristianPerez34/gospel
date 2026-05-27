@@ -183,11 +183,7 @@ where
                 .default_max_turns(5)
                 .build();
 
-            let request = if chat_history.is_empty() {
-                agent.stream_prompt(prompt).multi_turn(5)
-            } else {
-                agent.stream_chat(prompt, chat_history.clone()).multi_turn(5)
-            };
+            let request = agent.stream_chat(prompt, chat_history).multi_turn(5);
             let mut stream = request.await;
 
             while let Some(item) = stream.next().await {
