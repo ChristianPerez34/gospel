@@ -46,8 +46,24 @@ pub async fn build_corpus(
     let workspace = workspace.ok_or("No active workspace selected")?;
     let workspace_path = PathBuf::from(workspace.path);
 
+    run_corpus_build(&app, &workspace_path, ignore_patterns).await
+}
+
+/// Build a corpus for a workspace path.
+pub async fn run_corpus_build(
+    app: &tauri::AppHandle,
+    workspace_path: &PathBuf,
+    ignore_patterns: Option<String>,
+) -> Result<CorpusStatus, String> {
+    eprintln!(
+        "[CORPUS-AUTO] run_corpus_build called for {}",
+        workspace_path.display()
+    );
     if !workspace_path.exists() {
-        return Err(format!("Workspace path does not exist: {:?}", workspace_path));
+        return Err(format!(
+            "Workspace path does not exist: {:?}",
+            workspace_path
+        ));
     }
 
     // Parse ignore patterns
@@ -57,6 +73,10 @@ pub async fn build_corpus(
         .split(',')
         .map(|s| s.trim())
         .collect();
+    eprintln!(
+        "[CORPUS-AUTO] run_corpus_build ignore patterns: {}",
+        ignore.join(",")
+    );
 
     // Emit progress: starting
     let _ = app.emit(
@@ -72,9 +92,15 @@ pub async fn build_corpus(
     // Build corpus
     let mut corpus = Corpus::new();
 
-    match extract_directory(&mut corpus, &workspace_path, &ignore) {
+    match extract_directory(&mut corpus, workspace_path, &ignore) {
         Ok(()) => {
             let summary = corpus.summary();
+            eprintln!(
+                "[CORPUS-AUTO] extraction complete for {}: {} files, {} symbols",
+                workspace_path.display(),
+                summary.file_count,
+                summary.symbol_count
+            );
 
             // Emit progress: saving
             let _ = app.emit(
@@ -91,12 +117,17 @@ pub async fn build_corpus(
             );
 
             // Save corpus
-            let persistence = CorpusPersistence::new(&workspace_path)
+            let persistence = CorpusPersistence::new(workspace_path)
                 .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
             persistence
-                .save(&corpus, &workspace_path)
+                .save(&corpus, workspace_path)
                 .map_err(|e| format!("Failed to save corpus: {}", e))?;
+            eprintln!(
+                "[CORPUS-AUTO] persisted corpus for {} at {}",
+                workspace_path.display(),
+                persistence.corpus_dir().display()
+            );
 
             // Emit progress: complete
             let _ = app.emit(
@@ -117,6 +148,11 @@ pub async fn build_corpus(
             })
         }
         Err(e) => {
+            eprintln!(
+                "[CORPUS-AUTO] extraction failed for {}: {}",
+                workspace_path.display(),
+                e
+            );
             let _ = app.emit(
                 "corpus-progress",
                 CorpusProgress {
@@ -255,11 +291,20 @@ pub fn get_corpus_neighbors(
         return Err("No corpus exists for this workspace".to_string());
     }
 
-    let min_conf = match min_confidence.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
+    let min_conf = match min_confidence
+        .as_deref()
+        .map(|s| s.trim().to_lowercase())
+        .as_deref()
+    {
         Some("high") => crate::corpus::Confidence::High,
         Some("medium") => crate::corpus::Confidence::Medium,
         Some("low") => crate::corpus::Confidence::Low,
-        Some(v) => return Err(format!("Invalid min_confidence value: '{}'; expected 'high', 'medium', or 'low'", v)),
+        Some(v) => {
+            return Err(format!(
+                "Invalid min_confidence value: '{}'; expected 'high', 'medium', or 'low'",
+                v
+            ))
+        }
         None => crate::corpus::Confidence::Low,
     };
 

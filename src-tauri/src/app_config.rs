@@ -120,8 +120,7 @@ impl AppConfigStore {
     }
 
     pub fn add_workspace(&self, path: &str) -> Result<Workspace, AppConfigError> {
-        let canonical = std::fs::canonicalize(path)
-            .map_err(|e| AppConfigError::Io(e))?;
+        let canonical = std::fs::canonicalize(path).map_err(|e| AppConfigError::Io(e))?;
         let canonical_str = canonical.to_string_lossy().to_string();
 
         if !canonical.is_dir() {
@@ -211,12 +210,11 @@ impl AppConfigStore {
 
     pub fn set_active_workspace(&self, id: &str) -> Result<(), AppConfigError> {
         let conn = self.conn.lock().unwrap();
-        let exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
-                params![id],
-                |row| row.get::<_, i64>(0).map(|c| c > 0),
-            )?;
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, i64>(0).map(|c| c > 0),
+        )?;
         if !exists {
             return Err(AppConfigError::WorkspaceNotFound(id.to_string()));
         }

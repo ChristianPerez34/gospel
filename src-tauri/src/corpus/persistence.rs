@@ -1,9 +1,7 @@
 //! Corpus persistence - save and load corpus to/from disk
 
-use crate::corpus::{
-    Confidence, Corpus, CorpusSummary, Node, NodeId, NodeType,
-};
 use crate::corpus::dto::{NeighborDto, NodeDto};
+use crate::corpus::{Confidence, Corpus, CorpusSummary, Node, NodeId, NodeType};
 use rusqlite::{params, Connection};
 use serde_json;
 use std::collections::HashMap;
@@ -94,14 +92,15 @@ impl CorpusPersistence {
         // Rebuild indexes
         corpus.file_index = HashMap::new();
         corpus.symbol_index = HashMap::new();
-        
+
         for (id, node) in &corpus.nodes {
             match &node.node_type {
                 NodeType::File { path, .. } => {
                     corpus.file_index.insert(path.clone(), id.clone());
                 }
                 NodeType::Symbol { name, .. } => {
-                    corpus.symbol_index
+                    corpus
+                        .symbol_index
                         .entry(name.clone())
                         .or_insert_with(Vec::new)
                         .push(id.clone());
@@ -168,7 +167,8 @@ impl CorpusPersistence {
         conn.execute("DELETE FROM nodes", [])?;
 
         // Insert nodes
-        let mut node_stmt = conn.prepare("INSERT INTO nodes (id, node_type, node_data) VALUES (?1, ?2, ?3)")?;
+        let mut node_stmt =
+            conn.prepare("INSERT INTO nodes (id, node_type, node_data) VALUES (?1, ?2, ?3)")?;
         for (id, node) in &corpus.nodes {
             let node_type = match &node.node_type {
                 NodeType::File { .. } => "file",
@@ -192,7 +192,13 @@ impl CorpusPersistence {
             } else {
                 Some(serde_json::to_string(&rel.metadata)?)
             };
-            rel_stmt.execute(params![rel.from_id, rel.to_id, rel_type, confidence, metadata])?;
+            rel_stmt.execute(params![
+                rel.from_id,
+                rel.to_id,
+                rel_type,
+                confidence,
+                metadata
+            ])?;
         }
 
         Ok(())
@@ -212,8 +218,17 @@ impl CorpusPersistence {
             let id: String = row.get(0)?;
             let data: String = row.get(1)?;
             let (name, kind) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or(&id).to_string();
-                let kind = v.get("symbol_kind").or(v.get("type")).and_then(|k| k.as_str()).unwrap_or("unknown").to_string();
+                let name = v
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+                let kind = v
+                    .get("symbol_kind")
+                    .or(v.get("type"))
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
                 (name, kind)
             } else {
                 (id.clone(), "unknown".to_string())
@@ -280,9 +295,7 @@ impl CorpusPersistence {
         let mut symbol_count = 0usize;
         let mut concept_count = 0usize;
 
-        let mut stmt = conn.prepare(
-            "SELECT node_type, COUNT(*) FROM nodes GROUP BY node_type",
-        )?;
+        let mut stmt = conn.prepare("SELECT node_type, COUNT(*) FROM nodes GROUP BY node_type")?;
         let rows = stmt.query_map([], |row| {
             let nt: String = row.get(0)?;
             let cnt: i64 = row.get(1)?;
@@ -299,9 +312,7 @@ impl CorpusPersistence {
         }
 
         let relationship_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM relationships", [], |row| {
-                row.get(0)
-            })?;
+            conn.query_row("SELECT COUNT(*) FROM relationships", [], |row| row.get(0))?;
 
         let mut stmt = conn.prepare(
             "SELECT relationship_type, COUNT(*) FROM relationships GROUP BY relationship_type",

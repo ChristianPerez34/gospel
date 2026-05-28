@@ -47,7 +47,7 @@ impl ExtractorLanguage {
 impl Extractor {
     pub fn new(language: ExtractorLanguage) -> Result<Self, ExtractionError> {
         let mut parser = Parser::new();
-        
+
         match language {
             ExtractorLanguage::Rust => {
                 parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
@@ -71,12 +71,16 @@ impl Extractor {
     }
 
     /// Extract symbols from a file and add them to the corpus
-    pub fn extract_file(&mut self, corpus: &mut Corpus, file_path: &Path) -> Result<(), ExtractionError> {
+    pub fn extract_file(
+        &mut self,
+        corpus: &mut Corpus,
+        file_path: &Path,
+    ) -> Result<(), ExtractionError> {
         let content = std::fs::read_to_string(file_path)
             .map_err(|e| ExtractionError::IoError(e.to_string()))?;
-        
+
         let line_count = content.lines().count();
-        
+
         // Create file node
         let file_node = Node::new(NodeType::File {
             path: file_path.to_string_lossy().to_string(),
@@ -86,7 +90,9 @@ impl Extractor {
         let file_id = corpus.add_node(file_node);
 
         tracing::debug!("Parsing file with tree-sitter...");
-        let tree = self.parser.parse(&content, None)
+        let tree = self
+            .parser
+            .parse(&content, None)
             .ok_or_else(|| ExtractionError::ParseError("Failed to parse file".to_string()))?;
 
         tracing::debug!("Parse successful, extracting symbols...");
@@ -118,7 +124,7 @@ impl Extractor {
                 tracing::debug!(symbol_name = %symbol_name, "symbol name found");
                 let documentation = self.get_documentation(node, content);
                 let (start_line, end_line) = (node.start_position().row, node.end_position().row);
-                
+
                 let symbol_node = Node::new(NodeType::Symbol {
                     name: symbol_name.clone(),
                     symbol_kind,
@@ -128,7 +134,7 @@ impl Extractor {
                     documentation,
                 });
                 let symbol_id = corpus.add_node(symbol_node);
-                
+
                 // Add contains relationship
                 corpus.add_relationship(Relationship::new(
                     file_id.to_string(),
@@ -141,7 +147,7 @@ impl Extractor {
                 self.extract_references(corpus, &symbol_id, node, content);
             }
         }
-        
+
         // Recurse into children
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -168,14 +174,21 @@ impl Extractor {
                 }
                 None
             }
-            ExtractorLanguage::TypeScript | ExtractorLanguage::Tsx | ExtractorLanguage::JavaScript | ExtractorLanguage::Jsx => {
+            ExtractorLanguage::TypeScript
+            | ExtractorLanguage::Tsx
+            | ExtractorLanguage::JavaScript
+            | ExtractorLanguage::Jsx => {
                 // For TS/TSX/JS/JSX, look for name or identifier
                 let mut cursor = node.walk();
                 if cursor.goto_first_child() {
                     loop {
                         let child = cursor.node();
                         let kind = child.kind();
-                        if kind == "identifier" || kind == "name" || kind == "type_identifier" || kind == "property_identifier" {
+                        if kind == "identifier"
+                            || kind == "name"
+                            || kind == "type_identifier"
+                            || kind == "property_identifier"
+                        {
                             return Some(child.utf8_text(content.as_bytes()).ok()?.to_string());
                         }
                         if !cursor.goto_next_sibling() {
@@ -191,11 +204,11 @@ impl Extractor {
     fn get_documentation(&self, node: tree_sitter::Node, content: &str) -> Option<String> {
         // Look for documentation comments before the node
         let start_byte = node.start_byte();
-        
+
         // Simple heuristic: look for /// or /** comments in Rust, or /** */ in TS
         let prefix = &content[..start_byte.min(content.len())];
         let lines: Vec<&str> = prefix.lines().rev().collect();
-        
+
         let mut doc_lines = Vec::new();
         for line in lines {
             let trimmed = line.trim();
@@ -204,7 +217,7 @@ impl Extractor {
             } else if trimmed.starts_with("*") && trimmed.ends_with("*/") {
                 // End of block comment
                 break;
-            } else if self.language == ExtractorLanguage::TypeScript 
+            } else if self.language == ExtractorLanguage::TypeScript
                 || self.language == ExtractorLanguage::Tsx
             {
                 if trimmed.starts_with("/**") {
@@ -219,7 +232,7 @@ impl Extractor {
                 }
             }
         }
-        
+
         if doc_lines.is_empty() {
             None
         } else {
@@ -273,7 +286,11 @@ impl Extractor {
 
         if kind == "type_identifier" || kind == "generic_type" {
             if let Ok(type_name) = node.utf8_text(content.as_bytes()) {
-                refs.push((type_name.to_string(), RelationshipType::References, Confidence::Medium));
+                refs.push((
+                    type_name.to_string(),
+                    RelationshipType::References,
+                    Confidence::Medium,
+                ));
             }
         }
 
@@ -362,7 +379,7 @@ impl Extractor {
     fn get_rust_use_path(&self, node: tree_sitter::Node, content: &str) -> Option<String> {
         let content_bytes = content.as_bytes();
         let mut path_parts = Vec::new();
-        
+
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
@@ -377,7 +394,7 @@ impl Extractor {
                 }
             }
         }
-        
+
         if path_parts.is_empty() {
             None
         } else {
@@ -408,7 +425,7 @@ impl Extractor {
     fn resolve_import(&self, from_file: &Path, import_path: &str) -> Option<String> {
         // Simple import resolution - in production this would be more sophisticated
         let from_dir = from_file.parent()?;
-        
+
         // Handle relative imports
         let target_path = if import_path.starts_with("./") || import_path.starts_with("../") {
             from_dir.join(import_path)
@@ -417,7 +434,7 @@ impl Extractor {
             // For now, just try common patterns
             from_dir.join("src").join(import_path)
         };
-        
+
         // Try different extensions
         for ext in &["rs", "ts", "tsx", "js", "jsx"] {
             let mut path_with_ext = target_path.clone();
@@ -425,12 +442,12 @@ impl Extractor {
                 let file_name = path_with_ext.file_name()?.to_string_lossy().to_string();
                 path_with_ext = parent.join(format!("{}.{}", file_name, ext));
             }
-            
+
             if path_with_ext.exists() {
                 return Some(path_with_ext.to_string_lossy().to_string());
             }
         }
-        
+
         // Try with index files
         for index_name in &["index.rs", "index.ts", "index.tsx", "index.js", "index.jsx"] {
             let index_path = target_path.join(index_name);
@@ -438,7 +455,7 @@ impl Extractor {
                 return Some(index_path.to_string_lossy().to_string());
             }
         }
-        
+
         None
     }
 }
@@ -461,7 +478,7 @@ pub fn extract_directory(
 ) -> Result<(), ExtractionError> {
     let mut files = Vec::new();
     collect_files(root_path, root_path, &mut files, ignore_patterns)?;
-    
+
     for file_path in files {
         if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
             if let Some(language) = ExtractorLanguage::from_extension(ext) {
@@ -471,7 +488,7 @@ pub fn extract_directory(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -485,11 +502,11 @@ fn collect_files(
         files.push(current.to_path_buf());
         return Ok(());
     }
-    
+
     if !current.is_dir() {
         return Ok(());
     }
-    
+
     // Check ignore patterns
     if let Some(name) = current.file_name().and_then(|n| n.to_str()) {
         for pattern in ignore_patterns {
@@ -498,11 +515,11 @@ fn collect_files(
             }
         }
     }
-    
+
     let Ok(entries) = std::fs::read_dir(current) else {
         return Ok(());
     };
-    
+
     for entry in entries.flatten() {
         let path = entry.path();
         // Skip hidden files and directories
@@ -514,7 +531,7 @@ fn collect_files(
         // Recurse
         let _ = collect_files(root, &path, files, ignore_patterns);
     }
-    
+
     Ok(())
 }
 
@@ -523,17 +540,17 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    
+
     if pattern.ends_with("*") {
         let prefix = &pattern[..pattern.len() - 1];
         return text.starts_with(prefix);
     }
-    
+
     if pattern.starts_with("*") {
         let suffix = &pattern[1..];
         return text.ends_with(suffix);
     }
-    
+
     pattern == text
 }
 
@@ -547,7 +564,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
-        
+
         // Create main.rs
         let main_rs = r#"
 /// Main entry point
@@ -566,7 +583,7 @@ struct Data {
 }
 "#;
         fs::write(src_dir.join("main.rs"), main_rs).unwrap();
-        
+
         // Create lib.rs
         let lib_rs = r#"
 /// Library module
@@ -577,7 +594,7 @@ pub fn library_func() {
 }
 "#;
         fs::write(src_dir.join("lib.rs"), lib_rs).unwrap();
-        
+
         (temp_dir, src_dir)
     }
 
@@ -585,10 +602,12 @@ pub fn library_func() {
     fn test_extract_rust_file() {
         let mut corpus = Corpus::new();
         let mut extractor = Extractor::new(ExtractorLanguage::Rust).unwrap();
-        
+
         let temp_dir = TempDir::new().unwrap();
         let test_file = temp_dir.path().join("test.rs");
-        fs::write(&test_file, r#"
+        fs::write(
+            &test_file,
+            r#"
 /// Test function
 fn test() {
     println!("test");
@@ -597,16 +616,20 @@ fn test() {
 struct TestStruct {
     field: i32,
 }
-"#).unwrap();
-        
+"#,
+        )
+        .unwrap();
+
         let result = extractor.extract_file(&mut corpus, &test_file);
         assert!(result.is_ok());
-        
+
         // Should have file node and symbol nodes
         assert!(corpus.nodes.len() >= 1);
-        
+
         // Check for symbols
-        let symbols: Vec<_> = corpus.nodes.values()
+        let symbols: Vec<_> = corpus
+            .nodes
+            .values()
             .filter(|n| matches!(n.node_type, NodeType::Symbol { .. }))
             .collect();
         assert!(!symbols.is_empty());
@@ -614,11 +637,26 @@ struct TestStruct {
 
     #[test]
     fn test_extractor_language_from_extension() {
-        assert_eq!(ExtractorLanguage::from_extension("rs"), Some(ExtractorLanguage::Rust));
-        assert_eq!(ExtractorLanguage::from_extension("ts"), Some(ExtractorLanguage::TypeScript));
-        assert_eq!(ExtractorLanguage::from_extension("tsx"), Some(ExtractorLanguage::Tsx));
-        assert_eq!(ExtractorLanguage::from_extension("js"), Some(ExtractorLanguage::JavaScript));
-        assert_eq!(ExtractorLanguage::from_extension("jsx"), Some(ExtractorLanguage::Jsx));
+        assert_eq!(
+            ExtractorLanguage::from_extension("rs"),
+            Some(ExtractorLanguage::Rust)
+        );
+        assert_eq!(
+            ExtractorLanguage::from_extension("ts"),
+            Some(ExtractorLanguage::TypeScript)
+        );
+        assert_eq!(
+            ExtractorLanguage::from_extension("tsx"),
+            Some(ExtractorLanguage::Tsx)
+        );
+        assert_eq!(
+            ExtractorLanguage::from_extension("js"),
+            Some(ExtractorLanguage::JavaScript)
+        );
+        assert_eq!(
+            ExtractorLanguage::from_extension("jsx"),
+            Some(ExtractorLanguage::Jsx)
+        );
         assert_eq!(ExtractorLanguage::from_extension("py"), None);
     }
 }

@@ -9,6 +9,23 @@ use serde_json::json;
 use std::path::PathBuf;
 use thiserror::Error;
 
+fn resolve_workspace_path(
+    requested_workspace_path: Option<String>,
+    default_workspace_path: Option<&PathBuf>,
+) -> PathBuf {
+    requested_workspace_path
+        .and_then(|path| {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        })
+        .or_else(|| default_workspace_path.cloned())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+}
+
 #[derive(Error, Debug)]
 pub enum CorpusToolError {
     #[error("Corpus not found")]
@@ -73,26 +90,32 @@ impl Tool for CorpusSummaryTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let workspace_path = args.workspace_path
-            .map(PathBuf::from)
-            .or_else(|| self.default_workspace_path.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let workspace_path =
+            resolve_workspace_path(args.workspace_path, self.default_workspace_path.as_ref());
 
         let persistence = CorpusPersistence::new(&workspace_path)
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
 
         if !persistence.exists() {
+            eprintln!(
+                "[CORPUS-AUTO] corpus_summary missing corpus at {}",
+                workspace_path.display()
+            );
             return Ok(CorpusSummaryOutput {
                 exists: false,
                 file_count: 0,
                 symbol_count: 0,
                 relationship_count: 0,
                 top_symbols: vec![],
-                message: format!("No corpus exists at {:?}. Use the 'Build Corpus' command to create one.", workspace_path),
+                message: format!(
+                    "No corpus exists at {:?}. Use the 'Build Corpus' command to create one.",
+                    workspace_path
+                ),
             });
         }
 
-        let summary = persistence.summary_sqlite()
+        let summary = persistence
+            .summary_sqlite()
             .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
         let top_symbols_clone = summary.top_symbols.clone();
 
@@ -107,7 +130,9 @@ impl Tool for CorpusSummaryTool {
                 summary.file_count,
                 summary.symbol_count,
                 summary.relationship_count,
-                summary.top_symbols.iter()
+                summary
+                    .top_symbols
+                    .iter()
                     .take(5)
                     .map(|(name, count)| format!("{} ({} refs)", name, count))
                     .collect::<Vec<_>>()
@@ -171,15 +196,17 @@ impl Tool for CorpusQueryTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let workspace_path: PathBuf = args.workspace_path
-            .map(PathBuf::from)
-            .or_else(|| self.default_workspace_path.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let workspace_path =
+            resolve_workspace_path(args.workspace_path, self.default_workspace_path.as_ref());
 
         let persistence = CorpusPersistence::new(&workspace_path)
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
 
         if !persistence.exists() {
+            eprintln!(
+                "[CORPUS-AUTO] corpus_query missing corpus at {}",
+                workspace_path.display()
+            );
             return Ok(CorpusQueryOutput {
                 found: false,
                 node: None,
@@ -188,10 +215,13 @@ impl Tool for CorpusQueryTool {
             });
         }
 
-        let (node_dto, neighbor_count) = match persistence.resolve_node_dto(&args.identifier)
-            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))? {
+        let (node_dto, neighbor_count) = match persistence
+            .resolve_node_dto(&args.identifier)
+            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?
+        {
             Some(dto) => {
-                let count = persistence.count_neighbors(&dto.id)
+                let count = persistence
+                    .count_neighbors(&dto.id)
                     .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
                 (Some(dto), count)
             }
@@ -199,14 +229,15 @@ impl Tool for CorpusQueryTool {
         };
 
         match node_dto {
-            Some(node_dto) => {
-                Ok(CorpusQueryOutput {
-                    found: true,
-                    node: Some(node_dto),
-                    neighbor_count,
-                    message: format!("Found '{}' with {} connections", args.identifier, neighbor_count),
-                })
-            }
+            Some(node_dto) => Ok(CorpusQueryOutput {
+                found: true,
+                node: Some(node_dto),
+                neighbor_count,
+                message: format!(
+                    "Found '{}' with {} connections",
+                    args.identifier, neighbor_count
+                ),
+            }),
             None => Ok(CorpusQueryOutput {
                 found: false,
                 node: None,
@@ -269,19 +300,26 @@ impl Tool for CorpusNeighborsTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let workspace_path: PathBuf = args.workspace_path
-            .map(PathBuf::from)
-            .or_else(|| self.default_workspace_path.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let workspace_path =
+            resolve_workspace_path(args.workspace_path, self.default_workspace_path.as_ref());
 
         let persistence = CorpusPersistence::new(&workspace_path)
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
 
         if !persistence.exists() {
+            eprintln!(
+                "[CORPUS-AUTO] corpus_neighbors missing corpus at {}",
+                workspace_path.display()
+            );
             return Ok(vec![]);
         }
 
-        let min_conf = match args.min_confidence.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
+        let min_conf = match args
+            .min_confidence
+            .as_deref()
+            .map(|s| s.trim().to_lowercase())
+            .as_deref()
+        {
             Some("high") => crate::corpus::Confidence::High,
             Some("medium") => crate::corpus::Confidence::Medium,
             Some("low") => crate::corpus::Confidence::Low,
@@ -289,13 +327,16 @@ impl Tool for CorpusNeighborsTool {
             None => crate::corpus::Confidence::Low,
         };
 
-        let node_id = match persistence.resolve_node_dto(&args.identifier)
-            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))? {
+        let node_id = match persistence
+            .resolve_node_dto(&args.identifier)
+            .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?
+        {
             Some(dto) => dto.id,
             None => return Ok(vec![]),
         };
 
-        let dtos = persistence.get_neighbor_dtos(&node_id, Some(min_conf))
+        let dtos = persistence
+            .get_neighbor_dtos(&node_id, Some(min_conf))
             .map_err(|e| CorpusToolError::CorpusLoadError(e.to_string()))?;
 
         Ok(dtos)
@@ -303,15 +344,23 @@ impl Tool for CorpusNeighborsTool {
 }
 
 pub fn create_corpus_summary_tool(default_workspace_path: Option<PathBuf>) -> CorpusSummaryTool {
-    CorpusSummaryTool { default_workspace_path }
+    CorpusSummaryTool {
+        default_workspace_path,
+    }
 }
 
 pub fn create_corpus_query_tool(default_workspace_path: Option<PathBuf>) -> CorpusQueryTool {
-    CorpusQueryTool { default_workspace_path }
+    CorpusQueryTool {
+        default_workspace_path,
+    }
 }
 
-pub fn create_corpus_neighbors_tool(default_workspace_path: Option<PathBuf>) -> CorpusNeighborsTool {
-    CorpusNeighborsTool { default_workspace_path }
+pub fn create_corpus_neighbors_tool(
+    default_workspace_path: Option<PathBuf>,
+) -> CorpusNeighborsTool {
+    CorpusNeighborsTool {
+        default_workspace_path,
+    }
 }
 
 /// System prompt to add when corpus tools are available
@@ -347,3 +396,41 @@ You have access to a **corpus** - a structured knowledge graph of the workspace'
 - Corpus provides structural knowledge; use file reads for detailed code content
 
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_workspace_path_arg_uses_default_workspace() {
+        let default = PathBuf::from("/tmp/default-workspace");
+
+        assert_eq!(
+            resolve_workspace_path(Some("".to_string()), Some(&default)),
+            default
+        );
+    }
+
+    #[test]
+    fn whitespace_workspace_path_arg_uses_default_workspace() {
+        let default = PathBuf::from("/tmp/default-workspace");
+
+        assert_eq!(
+            resolve_workspace_path(Some("  \t\n  ".to_string()), Some(&default)),
+            default
+        );
+    }
+
+    #[test]
+    fn explicit_workspace_path_arg_wins_over_default_workspace() {
+        let default = PathBuf::from("/tmp/default-workspace");
+
+        assert_eq!(
+            resolve_workspace_path(
+                Some(" /tmp/requested-workspace ".to_string()),
+                Some(&default)
+            ),
+            PathBuf::from("/tmp/requested-workspace")
+        );
+    }
+}
