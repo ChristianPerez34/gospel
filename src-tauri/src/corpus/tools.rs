@@ -88,7 +88,7 @@ impl Tool for CorpusSummaryTool {
                 symbol_count: 0,
                 relationship_count: 0,
                 top_symbols: vec![],
-                message: "No corpus exists for this workspace. Use the 'Build Corpus' command to create one.".to_string(),
+                message: format!("No corpus exists at {:?}. Use the 'Build Corpus' command to create one.", workspace_path),
             });
         }
 
@@ -184,7 +184,7 @@ impl Tool for CorpusQueryTool {
                 found: false,
                 node: None,
                 neighbor_count: 0,
-                message: "No corpus exists. Build one first.".to_string(),
+                message: format!("No corpus exists at {:?}. Build one first.", workspace_path),
             });
         }
 
