@@ -98,3 +98,23 @@
   background-color: var(--surface-overlay);
   color: var(--text-secondary);
 }
+
+.prose pre {
+  background-color: var(--surface-overlay);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+
+.prose :not(pre) > code {
+  background-color: var(--surface-overlay);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}

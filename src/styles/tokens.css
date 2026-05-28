@@ -86,6 +86,20 @@
   --text-inverse: #ececf0;
 }
 
+.prose {
+  --background: var(--surface-base);
+  --foreground: var(--text-primary);
+  --card: var(--surface-elevated);
+  --card-foreground: var(--text-primary);
+  --muted: var(--surface-overlay);
+  --muted-foreground: var(--text-muted);
+  --border: var(--surface-overlay);
+  --input: var(--surface-overlay);
+  --primary: var(--accent-action);
+  --primary-foreground: var(--text-inverse);
+  --radius: var(--radius-md);
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --duration-fast: 0ms;
