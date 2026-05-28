@@ -285,6 +285,7 @@ export function AppShell() {
     setStreamingContent("");
     setToolActivities([]);
 
+    let effectiveSessionId = activeSessionId;
     if (!activeSessionId) {
       const newSession: Session = {
         id: `s-${Date.now()}`,
@@ -297,9 +298,8 @@ export function AppShell() {
       };
       setSessions((prev) => [newSession, ...prev]);
       setActiveSessionId(newSession.id);
+      effectiveSessionId = newSession.id;
     }
-
-      const effectiveSessionId = activeSessionId || newSession.id;
 
     try {
       await invoke("complete_streaming", {

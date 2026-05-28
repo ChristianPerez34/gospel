@@ -186,6 +186,9 @@ where
             let request = agent.stream_chat(prompt, chat_history).multi_turn(5);
             let mut stream = request.await;
 
+            let mut tool_name_by_id: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
             while let Some(item) = stream.next().await {
                 match item {
                     Ok(item) => match item {
@@ -196,15 +199,25 @@ where
                             on_event(StreamEvent::Text(text.text.clone()));
                         }
                         MultiTurnStreamItem::StreamAssistantItem(
-                            StreamedAssistantContent::ToolCall { tool_call, .. },
+                            StreamedAssistantContent::ToolCall {
+                                tool_call,
+                                internal_call_id,
+                            },
                         ) => {
+                            tool_name_by_id.insert(
+                                internal_call_id.clone(),
+                                tool_call.function.name.clone(),
+                            );
                             on_event(StreamEvent::ToolCall {
                                 name: tool_call.function.name.clone(),
                                 arguments: tool_call.function.arguments.clone(),
                             });
                         }
                         MultiTurnStreamItem::StreamUserItem(
-                            StreamedUserContent::ToolResult { tool_result, .. },
+                            StreamedUserContent::ToolResult {
+                                tool_result,
+                                internal_call_id,
+                            },
                         ) => {
                             let result_summary = tool_result
                                 .content
@@ -217,7 +230,10 @@ where
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n");
-                            let tool_name = tool_result.id.clone();
+                            let tool_name = tool_name_by_id
+                                .get(&internal_call_id)
+                                .cloned()
+                                .unwrap_or_else(|| tool_result.id.clone());
                             on_event(StreamEvent::ToolResult {
                                 name: tool_name,
                                 result: result_summary,
