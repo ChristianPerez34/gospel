@@ -4,7 +4,9 @@ use rig::client::CompletionClient;
 use rig::completion::message::Message;
 use rig::completion::Prompt;
 use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
-use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat, StreamingPrompt};
+use rig::streaming::{
+    StreamedAssistantContent, StreamedUserContent, StreamingChat, StreamingPrompt,
+};
 use serde::Serialize;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -59,8 +61,14 @@ impl LlmError {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StreamEvent {
     Text(String),
-    ToolCall { name: String, arguments: serde_json::Value },
-    ToolResult { name: String, result: String },
+    ToolCall {
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        name: String,
+        result: String,
+    },
 }
 
 pub struct LlmService;
@@ -204,21 +212,17 @@ where
                                 internal_call_id,
                             },
                         ) => {
-                            tool_name_by_id.insert(
-                                internal_call_id.clone(),
-                                tool_call.function.name.clone(),
-                            );
+                            tool_name_by_id
+                                .insert(internal_call_id.clone(), tool_call.function.name.clone());
                             on_event(StreamEvent::ToolCall {
                                 name: tool_call.function.name.clone(),
                                 arguments: tool_call.function.arguments.clone(),
                             });
                         }
-                        MultiTurnStreamItem::StreamUserItem(
-                            StreamedUserContent::ToolResult {
-                                tool_result,
-                                internal_call_id,
-                            },
-                        ) => {
+                        MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
+                            tool_result,
+                            internal_call_id,
+                        }) => {
                             let result_summary = tool_result
                                 .content
                                 .iter()

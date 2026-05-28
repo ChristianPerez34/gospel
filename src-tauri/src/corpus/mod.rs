@@ -92,7 +92,9 @@ impl SymbolKind {
     pub fn from_ts_symbol(kind: &str) -> Option<Self> {
         match kind {
             // TypeScript / JavaScript node kinds
-            "function_declaration" | "arrow_function" | "function_expression" => Some(SymbolKind::Function),
+            "function_declaration" | "arrow_function" | "function_expression" => {
+                Some(SymbolKind::Function)
+            }
             "method_definition" => Some(SymbolKind::Method),
             "class_declaration" => Some(SymbolKind::Class),
             "interface_declaration" => Some(SymbolKind::Interface),
@@ -239,7 +241,7 @@ impl Corpus {
 
     pub fn add_node(&mut self, node: Node) -> NodeId {
         let id = node.id.clone();
-        
+
         // Update indexes
         match &node.node_type {
             NodeType::File { path, .. } => {

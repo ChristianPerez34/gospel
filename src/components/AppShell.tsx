@@ -39,6 +39,11 @@ interface ModelAvailabilitySnapshot {
   warnings: string[];
 }
 
+interface CorpusAutoBuildComplete {
+  success: boolean;
+  symbol_count: number;
+}
+
 interface SelectedModel {
   provider: string;
   model: string;
@@ -100,7 +105,6 @@ export function AppShell() {
   const [streamingContent, setStreamingContent] = useState("");
   const [toolActivities, setToolActivities] = useState<ToolCallActivity[]>([]);
   const { toasts, dismissToast, showError, showSuccess } = useToasts();
-  const unlistenRef = useRef<(() => void) | null>(null);
   const providersRef = useRef(providers);
   providersRef.current = providers;
 
@@ -171,98 +175,102 @@ export function AppShell() {
 
   useEffect(() => {
     let cancelled = false;
+    let cleanup: (() => void) | null = null;
 
     (async () => {
-      const unlistenToken = await listen<string>("llm-token", (event) => {
-        setStreamingContent((prev) => prev + event.payload);
-        setIsThinking(false);
-      });
+      const unlisteners: (() => void)[] = [];
 
-      const unlistenDone = await listen<string>("llm-done", (event) => {
-        const content = event.payload;
-        if (content) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `m-${Date.now()}`,
-              role: "agent",
-              content,
-              timestamp: new Date(),
-            },
-          ]);
-        }
-        setStreamingContent("");
-        setToolActivities([]);
-        setIsThinking(false);
-        setStatus("connected");
-      });
+      try {
+        const [u1, u2, u3, u4, u5, u6] = await Promise.all([
+          listen<string>("llm-token", (event) => {
+            setStreamingContent((prev) => prev + event.payload);
+            setIsThinking(false);
+          }),
+          listen<string>("llm-done", (event) => {
+            const content = event.payload;
+            if (content) {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `m-${Date.now()}`,
+                  role: "agent",
+                  content,
+                  timestamp: new Date(),
+                },
+              ]);
+            }
+            setStreamingContent("");
+            setToolActivities([]);
+            setIsThinking(false);
+            setStatus("connected");
+          }),
+          listen<{ code: string; message: string }>("llm-error", (event) => {
+            const err = event.payload;
+            setIsThinking(false);
+            setStreamingContent("");
+            setToolActivities([]);
+            setStatus("error");
 
-      const unlistenError = await listen<{ code: string; message: string }>("llm-error", (event) => {
-        const err = event.payload;
-        setIsThinking(false);
-        setStreamingContent("");
-        setToolActivities([]);
-        setStatus("error");
-
-        if (err?.code === "API_KEY_MISSING") {
-          showError(err.message, {
-            label: "Open Settings",
-            onClick: () => setSettingsOpen(true),
-          });
-        } else {
-          showError(err?.message || "Completion failed.", {
-            label: "Retry",
-            onClick: () => {},
-          });
-        }
-      });
-
-      const unlistenToolCall = await listen<{ name: string; arguments?: unknown }>("llm-tool-call", (event) => {
-        setToolActivities((prev) => [
-          ...prev,
-          { name: event.payload.name, arguments: event.payload.arguments, status: "calling" },
+            if (err?.code === "API_KEY_MISSING") {
+              showError(err.message, {
+                label: "Open Settings",
+                onClick: () => setSettingsOpen(true),
+              });
+            } else {
+              showError(err?.message || "Completion failed.", {
+                label: "Retry",
+                onClick: () => {},
+              });
+            }
+          }),
+          listen<{ name: string; arguments?: unknown }>("llm-tool-call", (event) => {
+            setToolActivities((prev) => [
+              ...prev,
+              { name: event.payload.name, arguments: event.payload.arguments, status: "calling" },
+            ]);
+            setStatus("acting");
+          }),
+          listen<{ name: string; result: string }>("llm-tool-result", (event) => {
+            setToolActivities((prev) => {
+              const idx = prev.findIndex((a) => a.name === event.payload.name && a.status === "calling");
+              if (idx >= 0) {
+                const updated = [...prev];
+                updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
+                return updated;
+              }
+              return [...prev, { name: event.payload.name, result: event.payload.result, status: "completed" as const }];
+            });
+            setStatus("acting");
+          }),
+          listen<CorpusAutoBuildComplete>("corpus-auto-build-complete", (event) => {
+            if (event.payload.success) {
+              showSuccess(`Corpus ready with ${event.payload.symbol_count} symbols.`);
+            } else {
+              showError("Corpus auto-build failed. Use Build Corpus to retry.");
+            }
+          }),
         ]);
-        setStatus("acting");
-      });
-
-      const unlistenToolResult = await listen<{ name: string; result: string }>("llm-tool-result", (event) => {
-        setToolActivities((prev) => {
-          const idx = prev.findIndex((a) => a.name === event.payload.name && a.status === "calling");
-          if (idx >= 0) {
-            const updated = [...prev];
-            updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
-            return updated;
-          }
-          return [...prev, { name: event.payload.name, result: event.payload.result, status: "completed" as const }];
-        });
-        setStatus("acting");
-      });
-
-      if (cancelled) {
-        unlistenToken();
-        unlistenDone();
-        unlistenError();
-        unlistenToolCall();
-        unlistenToolResult();
-        return;
+        unlisteners.push(u1, u2, u3, u4, u5, u6);
+      } catch (error) {
+        unlisteners.forEach((unlisten) => unlisten());
+        throw error;
       }
 
-      unlistenRef.current = () => {
-        unlistenToken();
-        unlistenDone();
-        unlistenError();
-        unlistenToolCall();
-        unlistenToolResult();
+      cleanup = () => {
+        unlisteners.forEach((unlisten) => unlisten());
       };
+
+      if (cancelled) {
+        cleanup();
+        return;
+      }
     })();
 
     return () => {
       cancelled = true;
-      unlistenRef.current?.();
-      unlistenRef.current = null;
+      cleanup?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showError]);
+  }, [showError, showSuccess]);
 
   const handleSend = useCallback(async (message: string) => {
     if (!selectedModel || !availableModels.some((m) => m.model === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {

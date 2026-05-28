@@ -6,9 +6,9 @@ use crate::corpus::{
     persistence::{CorpusManifest, CorpusPersistence},
     Corpus,
 };
-use crate::AppConfigState;
+use crate::{AppConfigState, CORPUS_BUILD_LOCK};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
 /// Corpus build progress event
@@ -46,10 +46,38 @@ pub async fn build_corpus(
     let workspace = workspace.ok_or("No active workspace selected")?;
     let workspace_path = PathBuf::from(workspace.path);
 
+    run_corpus_build(&app, &workspace_path, ignore_patterns).await
+}
+
+/// Build a corpus for a workspace path.
+pub async fn run_corpus_build(
+    app: &tauri::AppHandle,
+    workspace_path: &Path,
+    ignore_patterns: Option<String>,
+) -> Result<CorpusStatus, String> {
+    tracing::debug!(
+        "[CORPUS-AUTO] run_corpus_build called for {}",
+        workspace_path.display()
+    );
     if !workspace_path.exists() {
-        return Err(format!("Workspace path does not exist: {:?}", workspace_path));
+        return Err(format!(
+            "Workspace path does not exist: {:?}",
+            workspace_path
+        ));
     }
 
+    let _guard = CORPUS_BUILD_LOCK.lock().await;
+    run_corpus_build_inner(app, workspace_path, ignore_patterns).await
+}
+
+/// Core corpus build implementation. Caller MUST hold CORPUS_BUILD_LOCK
+/// (this is not reentrant). Used by both `run_corpus_build` (forced builds)
+/// and `ensure_workspace_corpus` (conditional builds).
+pub(crate) async fn run_corpus_build_inner(
+    app: &tauri::AppHandle,
+    workspace_path: &Path,
+    ignore_patterns: Option<String>,
+) -> Result<CorpusStatus, String> {
     // Parse ignore patterns
     let ignore: Vec<&str> = ignore_patterns
         .as_deref()
@@ -57,6 +85,10 @@ pub async fn build_corpus(
         .split(',')
         .map(|s| s.trim())
         .collect();
+    tracing::debug!(
+        "[CORPUS-AUTO] run_corpus_build ignore patterns: {}",
+        ignore.join(",")
+    );
 
     // Emit progress: starting
     let _ = app.emit(
@@ -72,9 +104,15 @@ pub async fn build_corpus(
     // Build corpus
     let mut corpus = Corpus::new();
 
-    match extract_directory(&mut corpus, &workspace_path, &ignore) {
+    match extract_directory(&mut corpus, workspace_path, &ignore) {
         Ok(()) => {
             let summary = corpus.summary();
+            tracing::debug!(
+                "[CORPUS-AUTO] extraction complete for {}: {} files, {} symbols",
+                workspace_path.display(),
+                summary.file_count,
+                summary.symbol_count
+            );
 
             // Emit progress: saving
             let _ = app.emit(
@@ -91,12 +129,17 @@ pub async fn build_corpus(
             );
 
             // Save corpus
-            let persistence = CorpusPersistence::new(&workspace_path)
+            let persistence = CorpusPersistence::new(workspace_path)
                 .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
 
             persistence
-                .save(&corpus, &workspace_path)
+                .save(&corpus, workspace_path)
                 .map_err(|e| format!("Failed to save corpus: {}", e))?;
+            tracing::debug!(
+                "[CORPUS-AUTO] persisted corpus for {} at {}",
+                workspace_path.display(),
+                persistence.corpus_dir().display()
+            );
 
             // Emit progress: complete
             let _ = app.emit(
@@ -117,6 +160,11 @@ pub async fn build_corpus(
             })
         }
         Err(e) => {
+            tracing::warn!(
+                "[CORPUS-AUTO] extraction failed for {}: {}",
+                workspace_path.display(),
+                e
+            );
             let _ = app.emit(
                 "corpus-progress",
                 CorpusProgress {
@@ -255,11 +303,20 @@ pub fn get_corpus_neighbors(
         return Err("No corpus exists for this workspace".to_string());
     }
 
-    let min_conf = match min_confidence.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
+    let min_conf = match min_confidence
+        .as_deref()
+        .map(|s| s.trim().to_lowercase())
+        .as_deref()
+    {
         Some("high") => crate::corpus::Confidence::High,
         Some("medium") => crate::corpus::Confidence::Medium,
         Some("low") => crate::corpus::Confidence::Low,
-        Some(v) => return Err(format!("Invalid min_confidence value: '{}'; expected 'high', 'medium', or 'low'", v)),
+        Some(v) => {
+            return Err(format!(
+                "Invalid min_confidence value: '{}'; expected 'high', 'medium', or 'low'",
+                v
+            ))
+        }
         None => crate::corpus::Confidence::Low,
     };
 

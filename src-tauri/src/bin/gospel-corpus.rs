@@ -9,11 +9,7 @@
 //!   Echo JSON-RPC requests on stdin, write responses to stdout
 
 use clap::{Parser, Subcommand};
-use gospel_lib::corpus::{
-    extractor::extract_directory,
-    persistence::CorpusPersistence,
-    Corpus,
-};
+use gospel_lib::corpus::{extractor::extract_directory, persistence::CorpusPersistence, Corpus};
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -201,8 +197,8 @@ fn handle_jsonrpc_request(request: JsonRpcRequest) -> JsonRpcResponse {
 
 fn handle_build(params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let params = params.ok_or("Missing parameters")?;
-    let params: BuildParams = serde_json::from_value(params)
-        .map_err(|e| format!("Invalid parameters: {}", e))?;
+    let params: BuildParams =
+        serde_json::from_value(params).map_err(|e| format!("Invalid parameters: {}", e))?;
 
     if params.dir.as_os_str().is_empty() {
         return Err("Invalid or missing 'dir' parameter".into());
@@ -240,13 +236,14 @@ fn handle_build(params: Option<serde_json::Value>) -> Result<serde_json::Value, 
 
 fn handle_summary(params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let params = params.ok_or("Missing parameters")?;
-    let dir_str = params.get("dir")
+    let dir_str = params
+        .get("dir")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'dir' parameter")?;
 
     let dir = PathBuf::from(dir_str);
-    let persistence = CorpusPersistence::new(&dir)
-        .map_err(|e| format!("Failed to access corpus: {}", e))?;
+    let persistence =
+        CorpusPersistence::new(&dir).map_err(|e| format!("Failed to access corpus: {}", e))?;
 
     if !persistence.exists() {
         return Ok(serde_json::json!({
@@ -255,7 +252,8 @@ fn handle_summary(params: Option<serde_json::Value>) -> Result<serde_json::Value
         }));
     }
 
-    let corpus = persistence.load()
+    let corpus = persistence
+        .load()
         .map_err(|e| format!("Failed to load corpus: {}", e))?;
     let summary = corpus.summary();
 
@@ -271,16 +269,18 @@ fn handle_summary(params: Option<serde_json::Value>) -> Result<serde_json::Value
 
 fn handle_query(params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let params = params.ok_or("Missing parameters")?;
-    let dir_str = params.get("dir")
+    let dir_str = params
+        .get("dir")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'dir' parameter")?;
-    let id = params.get("id")
+    let id = params
+        .get("id")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'id' parameter")?;
 
     let dir = PathBuf::from(dir_str);
-    let persistence = CorpusPersistence::new(&dir)
-        .map_err(|e| format!("Failed to access corpus: {}", e))?;
+    let persistence =
+        CorpusPersistence::new(&dir).map_err(|e| format!("Failed to access corpus: {}", e))?;
 
     if !persistence.exists() {
         return Ok(serde_json::json!({
@@ -289,10 +289,12 @@ fn handle_query(params: Option<serde_json::Value>) -> Result<serde_json::Value, 
         }));
     }
 
-    let corpus = persistence.load()
+    let corpus = persistence
+        .load()
         .map_err(|e| format!("Failed to load corpus: {}", e))?;
 
-    let node = corpus.get_node(&id.to_string())
+    let node = corpus
+        .get_node(&id.to_string())
         .or_else(|| corpus.get_symbols_by_name(id).first().copied())
         .or_else(|| corpus.get_file_by_path(id));
 
@@ -318,16 +320,18 @@ fn handle_query(params: Option<serde_json::Value>) -> Result<serde_json::Value, 
 
 fn handle_neighbors(params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let params = params.ok_or("Missing parameters")?;
-    let dir_str = params.get("dir")
+    let dir_str = params
+        .get("dir")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'dir' parameter")?;
-    let id = params.get("id")
+    let id = params
+        .get("id")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'id' parameter")?;
 
     let dir = PathBuf::from(dir_str);
-    let persistence = CorpusPersistence::new(&dir)
-        .map_err(|e| format!("Failed to access corpus: {}", e))?;
+    let persistence =
+        CorpusPersistence::new(&dir).map_err(|e| format!("Failed to access corpus: {}", e))?;
 
     if !persistence.exists() {
         return Ok(serde_json::json!({
@@ -335,10 +339,12 @@ fn handle_neighbors(params: Option<serde_json::Value>) -> Result<serde_json::Val
         }));
     }
 
-    let corpus = persistence.load()
+    let corpus = persistence
+        .load()
         .map_err(|e| format!("Failed to load corpus: {}", e))?;
 
-    let node = corpus.get_node(&id.to_string())
+    let node = corpus
+        .get_node(&id.to_string())
         .or_else(|| corpus.get_symbols_by_name(id).first().copied())
         .or_else(|| corpus.get_file_by_path(id));
 
@@ -392,8 +398,8 @@ fn run_cli_mode(command: Option<Commands>) {
                     println!("  Symbols: {}", summary.symbol_count);
                     println!("  Relationships: {}", summary.relationship_count);
 
-                    let persistence = CorpusPersistence::new(&dir)
-                        .expect("Failed to create persistence");
+                    let persistence =
+                        CorpusPersistence::new(&dir).expect("Failed to create persistence");
 
                     match persistence.save(&corpus, &dir) {
                         Ok(()) => {
@@ -445,7 +451,8 @@ fn run_cli_mode(command: Option<Commands>) {
 
             let corpus = persistence.load().expect("Failed to load corpus");
 
-            let node = corpus.get_node(&id)
+            let node = corpus
+                .get_node(&id)
                 .or_else(|| corpus.get_symbols_by_name(&id).first().copied())
                 .or_else(|| corpus.get_file_by_path(&id));
 
@@ -474,7 +481,11 @@ fn run_cli_mode(command: Option<Commands>) {
                 }
             }
         }
-        Some(Commands::Neighbors { dir, id, confidence }) => {
+        Some(Commands::Neighbors {
+            dir,
+            id,
+            confidence,
+        }) => {
             let persistence = CorpusPersistence::new(&dir).expect("Failed to create persistence");
 
             if !persistence.exists() {
@@ -490,14 +501,19 @@ fn run_cli_mode(command: Option<Commands>) {
                 _ => gospel_lib::corpus::Confidence::Low,
             };
 
-            let node = corpus.get_node(&id)
+            let node = corpus
+                .get_node(&id)
                 .or_else(|| corpus.get_symbols_by_name(&id).first().copied())
                 .or_else(|| corpus.get_file_by_path(&id));
 
             match node {
                 Some(node) => {
                     let neighbors = corpus.get_neighbors(&node.id);
-                    println!("Neighbors of {} (min confidence: {:?}):", node.name(), min_conf);
+                    println!(
+                        "Neighbors of {} (min confidence: {:?}):",
+                        node.name(),
+                        min_conf
+                    );
 
                     for (rel, neighbor) in neighbors {
                         if rel.confidence >= min_conf {
@@ -527,13 +543,20 @@ fn run_cli_mode(command: Option<Commands>) {
             }
 
             let corpus = persistence.load().expect("Failed to load corpus");
-            let files: Vec<_> = corpus.nodes.values()
+            let files: Vec<_> = corpus
+                .nodes
+                .values()
                 .filter(|n| matches!(n.node_type, gospel_lib::corpus::NodeType::File { .. }))
                 .collect();
 
             println!("Files in corpus ({} total):", files.len());
             for file in files {
-                if let gospel_lib::corpus::NodeType::File { path, language, line_count } = &file.node_type {
+                if let gospel_lib::corpus::NodeType::File {
+                    path,
+                    language,
+                    line_count,
+                } = &file.node_type
+                {
                     println!("  {} ({}, {} lines)", path, language, line_count);
                 }
             }
@@ -547,22 +570,40 @@ fn run_cli_mode(command: Option<Commands>) {
             }
 
             let corpus = persistence.load().expect("Failed to load corpus");
-            let symbols: Vec<_> = corpus.nodes.values()
+            let symbols: Vec<_> = corpus
+                .nodes
+                .values()
                 .filter(|n| matches!(n.node_type, gospel_lib::corpus::NodeType::Symbol { .. }))
                 .collect();
 
             let filtered: Vec<_> = if let Some(f) = &filter {
-                symbols.iter()
+                symbols
+                    .iter()
                     .filter(|s| s.name().to_lowercase().contains(&f.to_lowercase()))
                     .collect()
             } else {
                 symbols.iter().collect()
             };
 
-            println!("Symbols in corpus ({} total, {} shown):", symbols.len(), filtered.len());
+            println!(
+                "Symbols in corpus ({} total, {} shown):",
+                symbols.len(),
+                filtered.len()
+            );
             for symbol in filtered {
-                if let gospel_lib::corpus::NodeType::Symbol { name, symbol_kind, file_id, .. } = &symbol.node_type {
-                    println!("  {} ({}) in {}", name, format!("{:?}", symbol_kind).to_lowercase(), file_id);
+                if let gospel_lib::corpus::NodeType::Symbol {
+                    name,
+                    symbol_kind,
+                    file_id,
+                    ..
+                } = &symbol.node_type
+                {
+                    println!(
+                        "  {} ({}) in {}",
+                        name,
+                        format!("{:?}", symbol_kind).to_lowercase(),
+                        file_id
+                    );
                 }
             }
         }

@@ -1,6 +1,6 @@
+use rig::completion::message::Message;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use rig::completion::message::Message;
 
 const MAX_CONVERSATIONS: usize = 50;
 const MAX_MESSAGES_PER_CONVERSATION: usize = 50;
@@ -25,7 +25,10 @@ impl ConversationStore {
             }
             self.access_order.push(session_id.to_string());
         }
-        self.conversations.get(session_id).cloned().unwrap_or_default()
+        self.conversations
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn store_history(&mut self, session_id: &str, new_messages: Vec<Message>) {
@@ -43,7 +46,10 @@ impl ConversationStore {
         }
         self.access_order.push(session_id.to_string());
 
-        let mut entry = self.conversations.entry(session_id.to_string()).or_default();
+        let mut entry = self
+            .conversations
+            .entry(session_id.to_string())
+            .or_default();
         *entry = new_messages;
         if entry.len() > MAX_MESSAGES_PER_CONVERSATION {
             let excess = entry.len() - MAX_MESSAGES_PER_CONVERSATION;
@@ -90,7 +96,11 @@ mod tests {
         let mut store = ConversationStore::new();
         let msgs1 = vec![make_user_message("hello"), make_assistant_message("hi")];
         store.store_history("s1", msgs1.clone());
-        let msgs2 = vec![make_user_message("hello"), make_assistant_message("hi"), make_user_message("how are you")];
+        let msgs2 = vec![
+            make_user_message("hello"),
+            make_assistant_message("hi"),
+            make_user_message("how are you"),
+        ];
         store.store_history("s1", msgs2.clone());
         let retrieved = store.get_history("s1");
         assert_eq!(retrieved.len(), 3);
@@ -101,7 +111,10 @@ mod tests {
     fn lru_eviction_removes_oldest() {
         let mut store = ConversationStore::new();
         for i in 0..51 {
-            store.store_history(&format!("s{}", i), vec![make_user_message(&format!("msg {}", i))]);
+            store.store_history(
+                &format!("s{}", i),
+                vec![make_user_message(&format!("msg {}", i))],
+            );
         }
         assert_eq!(store.conversations.len(), 50);
         assert!(!store.conversations.contains_key("s0"));
@@ -137,7 +150,10 @@ mod tests {
         let _ = store.get_history("s1");
         store.store_history("s3", vec![make_user_message("c")]);
         for i in 4..52 {
-            store.store_history(&format!("s{}", i), vec![make_user_message(&format!("m{}", i))]);
+            store.store_history(
+                &format!("s{}", i),
+                vec![make_user_message(&format!("m{}", i))],
+            );
         }
         assert!(!store.conversations.contains_key("s2"));
         assert!(store.conversations.contains_key("s1"));

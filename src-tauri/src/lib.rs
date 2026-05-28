@@ -1,8 +1,8 @@
 #![recursion_limit = "2048"]
 
 mod app_config;
-pub mod corpus;
 mod conversation;
+pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
@@ -33,16 +33,21 @@ use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
 use corpus::commands::{
     build_corpus, get_corpus_neighbors, get_corpus_status, get_corpus_summary, query_corpus,
+    run_corpus_build_inner,
 };
+use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
 use llm::{LlmError, LlmService, StreamEvent};
 use models::ModelInfo;
+use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
 use serde::Serialize;
-use std::collections::HashMap;
-use tauri::Emitter;
+use std::{collections::HashMap, path::PathBuf, time::Duration};
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+
+static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
 #[derive(Parser, Debug)]
 #[command(name = "gospel", about = "Gospel AI coding assistant")]
@@ -81,6 +86,12 @@ struct ModelAvailabilitySnapshot {
     available_models: Vec<ModelInfo>,
     empty_reason: Option<String>,
     warnings: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct CorpusAutoBuildComplete {
+    success: bool,
+    symbol_count: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -442,18 +453,32 @@ mod availability_tests {
 
 #[tauri::command]
 async fn complete(
+    app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
     provider: String,
     prompt: String,
     model: String,
 ) -> Result<String, llm::LlmErrorDto> {
     let workspace_path = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten(),
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
         None => None,
     };
+    eprintln!(
+        "[CORPUS-AUTO] complete workspace path: {}",
+        workspace_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    );
+
+    if let Some(path) = &workspace_path {
+        ensure_workspace_corpus(&app, path)
+            .await
+            .map_err(|e| LlmError::ProviderError(e).to_dto())?;
+    }
 
     let full_prompt = match workspace_path {
-        Some(path) => format!("[Workspace: {}]\n\n{}", path, prompt),
+        Some(path) => format!("[Workspace: {}]\n\n{}", path.display(), prompt),
         None => prompt,
     };
 
@@ -502,9 +527,28 @@ async fn complete_streaming(
     session_id: Option<String>,
 ) -> Result<(), llm::LlmErrorDto> {
     let workspace_path = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten().map(std::path::PathBuf::from),
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(std::path::PathBuf::from),
         None => None,
     };
+    eprintln!(
+        "[CORPUS-AUTO] complete_streaming workspace path: {}",
+        workspace_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    );
+
+    if let Some(path) = &workspace_path {
+        if let Err(e) = ensure_workspace_corpus(&app, path).await {
+            let dto = LlmError::ProviderError(e).to_dto();
+            let _ = app.emit("llm-error", dto.clone());
+            return Err(dto);
+        }
+    }
 
     let api_key = if provider == "chatgpt" {
         String::new()
@@ -688,7 +732,10 @@ fn list_workspaces(app_config: tauri::State<'_, AppConfigState>) -> Result<Vec<W
 }
 
 #[tauri::command]
-fn add_workspace(app_config: tauri::State<'_, AppConfigState>, path: String) -> Result<Workspace, String> {
+fn add_workspace(
+    app_config: tauri::State<'_, AppConfigState>,
+    path: String,
+) -> Result<Workspace, String> {
     match &app_config.store {
         Some(store) => store.add_workspace(&path).map_err(|e| e.to_string()),
         None => Err(app_config
@@ -699,7 +746,10 @@ fn add_workspace(app_config: tauri::State<'_, AppConfigState>, path: String) -> 
 }
 
 #[tauri::command]
-fn remove_workspace(app_config: tauri::State<'_, AppConfigState>, id: String) -> Result<(), String> {
+fn remove_workspace(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+) -> Result<(), String> {
     match &app_config.store {
         Some(store) => store.remove_workspace(&id).map_err(|e| e.to_string()),
         None => Err(app_config
@@ -709,10 +759,171 @@ fn remove_workspace(app_config: tauri::State<'_, AppConfigState>, id: String) ->
     }
 }
 
+fn spawn_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf, delay: Duration) {
+    tracing::debug!(
+        "[CORPUS-AUTO] scheduling workspace-switch build for {} after {:?}",
+        workspace_path.display(),
+        delay
+    );
+    tauri::async_runtime::spawn(async move {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+
+        run_corpus_auto_build(app, workspace_path).await;
+    });
+}
+
+fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
+    tracing::debug!("[CORPUS-AUTO] scheduling startup corpus check after 500ms");
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let workspace_path = {
+            let app_config = app.state::<AppConfigState>();
+            match &app_config.store {
+                Some(store) => match store.get_active_workspace() {
+                    Ok(Some(workspace)) => {
+                        tracing::debug!(
+                            "[CORPUS-AUTO] startup active workspace: {} ({})",
+                            workspace.name, workspace.path
+                        );
+                        Some(PathBuf::from(workspace.path))
+                    }
+                    Ok(None) => {
+                        tracing::debug!("[CORPUS-AUTO] startup check skipped: no active workspace");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[CORPUS-AUTO] could not read active workspace for startup check: {}",
+                            e
+                        );
+                        None
+                    }
+                },
+                None => {
+                    tracing::debug!("[CORPUS-AUTO] startup check skipped: app config store unavailable");
+                    None
+                }
+            }
+        };
+
+        if let Some(workspace_path) = workspace_path {
+            run_corpus_auto_build(app, workspace_path).await;
+        }
+    });
+}
+
+async fn run_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf) {
+    match ensure_workspace_corpus(&app, &workspace_path).await {
+        Ok(Some(symbol_count)) => {
+            let _ = app.emit(
+                "corpus-auto-build-complete",
+                CorpusAutoBuildComplete {
+                    success: true,
+                    symbol_count,
+                },
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!(
+                "[CORPUS-AUTO] corpus auto-build failed for {}: {}",
+                workspace_path.display(),
+                e
+            );
+            let _ = app.emit(
+                "corpus-auto-build-complete",
+                CorpusAutoBuildComplete {
+                    success: false,
+                    symbol_count: 0,
+                },
+            );
+        }
+    }
+}
+
+async fn ensure_workspace_corpus(
+    app: &tauri::AppHandle,
+    workspace_path: &PathBuf,
+) -> Result<Option<usize>, String> {
+    eprintln!(
+        "[CORPUS-AUTO] ensure requested for {}",
+        workspace_path.display()
+    );
+
+    if !workspace_path.exists() {
+        return Err(format!(
+            "Workspace path does not exist: {:?}",
+            workspace_path
+        ));
+    }
+
+    let _guard = CORPUS_BUILD_LOCK.lock().await;
+    let persistence = CorpusPersistence::new(workspace_path)
+        .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
+
+    if persistence.exists() {
+        eprintln!(
+            "[CORPUS-AUTO] corpus already exists for {}",
+            workspace_path.display()
+        );
+        return Ok(None);
+    }
+
+    eprintln!(
+        "[CORPUS-AUTO] corpus missing; building for {}",
+        workspace_path.display()
+    );
+    // Use the inner (lock already held by us) to avoid re-acquiring the
+    // non-reentrant CORPUS_BUILD_LOCK and deadlocking.
+    run_corpus_build_inner(app, workspace_path, None).await?;
+
+    let persistence = CorpusPersistence::new(workspace_path)
+        .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
+    let symbol_count = persistence
+        .summary_sqlite()
+        .map_err(|e| format!("Failed to query corpus summary: {}", e))?
+        .symbol_count;
+
+    eprintln!(
+        "[CORPUS-AUTO] corpus build complete for {} with {} symbols",
+        workspace_path.display(),
+        symbol_count
+    );
+    Ok(Some(symbol_count))
+}
+
 #[tauri::command]
-fn set_active_workspace(app_config: tauri::State<'_, AppConfigState>, id: String) -> Result<(), String> {
+fn set_active_workspace(
+    app: tauri::AppHandle,
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+) -> Result<(), String> {
     match &app_config.store {
-        Some(store) => store.set_active_workspace(&id).map_err(|e| e.to_string()),
+        Some(store) => {
+            store.set_active_workspace(&id).map_err(|e| e.to_string())?;
+            match store.get_active_workspace().map_err(|e| e.to_string()) {
+                Ok(Some(workspace)) => {
+                    tracing::debug!(
+                        "[CORPUS-AUTO] active workspace set to {} ({})",
+                        workspace.name, workspace.path
+                    );
+                    spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
+                }
+                Ok(None) => {
+                    tracing::debug!("[CORPUS-AUTO] set active workspace succeeded but no workspace is active");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[CORPUS-AUTO] set active workspace succeeded but could not read it back: {}",
+                        e
+                    );
+                }
+            }
+            Ok(())
+        }
         None => Err(app_config
             .init_warning
             .clone()
@@ -721,7 +932,9 @@ fn set_active_workspace(app_config: tauri::State<'_, AppConfigState>, id: String
 }
 
 #[tauri::command]
-fn get_active_workspace(app_config: tauri::State<'_, AppConfigState>) -> Result<Option<Workspace>, String> {
+fn get_active_workspace(
+    app_config: tauri::State<'_, AppConfigState>,
+) -> Result<Option<Workspace>, String> {
     match &app_config.store {
         Some(store) => store.get_active_workspace().map_err(|e| e.to_string()),
         None => Err(app_config
@@ -816,6 +1029,10 @@ pub fn run() {
             query_corpus,
             get_corpus_neighbors,
         ])
+        .setup(|app| {
+            spawn_startup_corpus_auto_build(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
