@@ -870,10 +870,12 @@ async fn ensure_workspace_corpus(
     );
     run_corpus_build(app, workspace_path, None).await?;
 
-    let symbol_count = CorpusPersistence::new(workspace_path)
-        .and_then(|persistence| persistence.summary_sqlite())
-        .map(|summary| summary.symbol_count)
-        .unwrap_or(0);
+    let persistence = CorpusPersistence::new(workspace_path)
+        .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
+    let symbol_count = persistence
+        .summary_sqlite()
+        .map_err(|e| format!("Failed to query corpus summary: {}", e))?
+        .symbol_count;
 
     eprintln!(
         "[CORPUS-AUTO] corpus build complete for {} with {} symbols",

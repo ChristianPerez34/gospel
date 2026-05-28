@@ -6,7 +6,7 @@ use crate::corpus::{
     persistence::{CorpusManifest, CorpusPersistence},
     Corpus,
 };
-use crate::AppConfigState;
+use crate::{AppConfigState, CORPUS_BUILD_LOCK};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::Emitter;
@@ -65,6 +65,8 @@ pub async fn run_corpus_build(
             workspace_path
         ));
     }
+
+    let _guard = CORPUS_BUILD_LOCK.lock().await;
 
     // Parse ignore patterns
     let ignore: Vec<&str> = ignore_patterns
