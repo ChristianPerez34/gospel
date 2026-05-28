@@ -55,7 +55,7 @@ pub async fn run_corpus_build(
     workspace_path: &PathBuf,
     ignore_patterns: Option<String>,
 ) -> Result<CorpusStatus, String> {
-    eprintln!(
+    tracing::debug!(
         "[CORPUS-AUTO] run_corpus_build called for {}",
         workspace_path.display()
     );
@@ -75,7 +75,7 @@ pub async fn run_corpus_build(
         .split(',')
         .map(|s| s.trim())
         .collect();
-    eprintln!(
+    tracing::debug!(
         "[CORPUS-AUTO] run_corpus_build ignore patterns: {}",
         ignore.join(",")
     );
@@ -97,7 +97,7 @@ pub async fn run_corpus_build(
     match extract_directory(&mut corpus, workspace_path, &ignore) {
         Ok(()) => {
             let summary = corpus.summary();
-            eprintln!(
+            tracing::debug!(
                 "[CORPUS-AUTO] extraction complete for {}: {} files, {} symbols",
                 workspace_path.display(),
                 summary.file_count,
@@ -125,7 +125,7 @@ pub async fn run_corpus_build(
             persistence
                 .save(&corpus, workspace_path)
                 .map_err(|e| format!("Failed to save corpus: {}", e))?;
-            eprintln!(
+            tracing::debug!(
                 "[CORPUS-AUTO] persisted corpus for {} at {}",
                 workspace_path.display(),
                 persistence.corpus_dir().display()
@@ -150,7 +150,7 @@ pub async fn run_corpus_build(
             })
         }
         Err(e) => {
-            eprintln!(
+            tracing::warn!(
                 "[CORPUS-AUTO] extraction failed for {}: {}",
                 workspace_path.display(),
                 e

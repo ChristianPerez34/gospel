@@ -760,7 +760,7 @@ fn remove_workspace(
 }
 
 fn spawn_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf, delay: Duration) {
-    eprintln!(
+    tracing::debug!(
         "[CORPUS-AUTO] scheduling workspace-switch build for {} after {:?}",
         workspace_path.display(),
         delay
@@ -775,7 +775,7 @@ fn spawn_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf, delay
 }
 
 fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
-    eprintln!("[CORPUS-AUTO] scheduling startup corpus check after 500ms");
+    tracing::debug!("[CORPUS-AUTO] scheduling startup corpus check after 500ms");
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -784,18 +784,18 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
             match &app_config.store {
                 Some(store) => match store.get_active_workspace() {
                     Ok(Some(workspace)) => {
-                        eprintln!(
+                        tracing::debug!(
                             "[CORPUS-AUTO] startup active workspace: {} ({})",
                             workspace.name, workspace.path
                         );
                         Some(PathBuf::from(workspace.path))
                     }
                     Ok(None) => {
-                        eprintln!("[CORPUS-AUTO] startup check skipped: no active workspace");
+                        tracing::debug!("[CORPUS-AUTO] startup check skipped: no active workspace");
                         None
                     }
                     Err(e) => {
-                        eprintln!(
+                        tracing::warn!(
                             "[CORPUS-AUTO] could not read active workspace for startup check: {}",
                             e
                         );
@@ -803,7 +803,7 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
                     }
                 },
                 None => {
-                    eprintln!("[CORPUS-AUTO] startup check skipped: app config store unavailable");
+                    tracing::debug!("[CORPUS-AUTO] startup check skipped: app config store unavailable");
                     None
                 }
             }
@@ -894,12 +894,23 @@ fn set_active_workspace(
     match &app_config.store {
         Some(store) => {
             store.set_active_workspace(&id).map_err(|e| e.to_string())?;
-            if let Some(workspace) = store.get_active_workspace().map_err(|e| e.to_string())? {
-                eprintln!(
-                    "[CORPUS-AUTO] active workspace set to {} ({})",
-                    workspace.name, workspace.path
-                );
-                spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
+            match store.get_active_workspace().map_err(|e| e.to_string()) {
+                Ok(Some(workspace)) => {
+                    tracing::debug!(
+                        "[CORPUS-AUTO] active workspace set to {} ({})",
+                        workspace.name, workspace.path
+                    );
+                    spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
+                }
+                Ok(None) => {
+                    tracing::debug!("[CORPUS-AUTO] set active workspace succeeded but no workspace is active");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[CORPUS-AUTO] set active workspace succeeded but could not read it back: {}",
+                        e
+                    );
+                }
             }
             Ok(())
         }

@@ -97,7 +97,7 @@ impl Tool for CorpusSummaryTool {
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
 
         if !persistence.exists() {
-            eprintln!(
+            tracing::debug!(
                 "[CORPUS-AUTO] corpus_summary missing corpus at {}",
                 workspace_path.display()
             );
@@ -203,7 +203,7 @@ impl Tool for CorpusQueryTool {
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
 
         if !persistence.exists() {
-            eprintln!(
+            tracing::debug!(
                 "[CORPUS-AUTO] corpus_query missing corpus at {}",
                 workspace_path.display()
             );
@@ -307,7 +307,7 @@ impl Tool for CorpusNeighborsTool {
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
 
         if !persistence.exists() {
-            eprintln!(
+            tracing::debug!(
                 "[CORPUS-AUTO] corpus_neighbors missing corpus at {}",
                 workspace_path.display()
             );
