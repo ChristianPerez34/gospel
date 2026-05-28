@@ -1,3 +1,5 @@
+import { Streamdown } from "streamdown";
+import { code } from "@streamdown/code";
 import type { Message, ToolCallActivity } from "../types";
 import { MessageBlock } from "./MessageBlock";
 import { ActionCard } from "./ActionCard";
@@ -68,13 +70,15 @@ export function ChatView({
             </div>
           )}
           {isThinking && !hasToolActivities && (
-            <span className="chat-view__thinking-text">
-              {typeof currentAction === "object" && currentAction?.type === "streaming"
-                ? currentAction.content
-                : typeof currentAction === "string"
-                ? currentAction
-                : "Thinking..."}
-            </span>
+            <div className="chat-view__thinking-text prose">
+              <Streamdown animated isAnimating={isThinking} plugins={{ code }}>
+                {typeof currentAction === "object" && currentAction?.type === "streaming"
+                  ? currentAction.content
+                  : typeof currentAction === "string"
+                  ? currentAction
+                  : "Thinking..."}
+              </Streamdown>
+            </div>
           )}
         </div>
       )}

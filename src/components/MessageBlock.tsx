@@ -1,3 +1,5 @@
+import { Streamdown } from "streamdown";
+import { code } from "@streamdown/code";
 import type { Message } from "../types";
 import "./MessageBlock.css";
 
@@ -29,7 +31,15 @@ export function MessageBlock({ message }: MessageBlockProps) {
         </span>
         <time className="message-block__time">{timeStr}</time>
       </div>
-      <div className="message-block__body">{message.content}</div>
+      <div className={`message-block__body ${isUser ? "" : "prose"}`}>
+        {isUser ? (
+          message.content
+        ) : (
+          <Streamdown animated plugins={{ code }}>
+            {message.content}
+          </Streamdown>
+        )}
+      </div>
       <div className="message-block__footer">
         <button className="message-block__action" aria-label="Copy message">
           Copy
