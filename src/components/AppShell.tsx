@@ -14,6 +14,7 @@ import type {
   Session,
   ModelOption,
   AgentStatus,
+  ToolCallActivity,
 } from "../types";
 import type { ProviderConfig, ProviderId } from "./ProviderSelector";
 import { noModelCopy } from "../modelAvailabilityCopy";
@@ -97,6 +98,7 @@ export function AppShell() {
   statusRef.current = status;
   const [isThinking, setIsThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [toolActivities, setToolActivities] = useState<ToolCallActivity[]>([]);
   const { toasts, dismissToast, showError, showSuccess } = useToasts();
   const unlistenRef = useRef<(() => void) | null>(null);
   const providersRef = useRef(providers);
@@ -190,6 +192,7 @@ export function AppShell() {
           ]);
         }
         setStreamingContent("");
+        setToolActivities([]);
         setIsThinking(false);
         setStatus("connected");
       });
@@ -198,6 +201,7 @@ export function AppShell() {
         const err = event.payload;
         setIsThinking(false);
         setStreamingContent("");
+        setToolActivities([]);
         setStatus("error");
 
         if (err?.code === "API_KEY_MISSING") {
@@ -213,10 +217,33 @@ export function AppShell() {
         }
       });
 
+      const unlistenToolCall = await listen<{ name: string; arguments?: unknown }>("llm-tool-call", (event) => {
+        setToolActivities((prev) => [
+          ...prev,
+          { name: event.payload.name, arguments: event.payload.arguments, status: "calling" },
+        ]);
+        setStatus("acting");
+      });
+
+      const unlistenToolResult = await listen<{ name: string; result: string }>("llm-tool-result", (event) => {
+        setToolActivities((prev) => {
+          const idx = prev.findIndex((a) => a.name === event.payload.name && a.status === "calling");
+          if (idx >= 0) {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
+            return updated;
+          }
+          return [...prev, { name: event.payload.name, result: event.payload.result, status: "completed" as const }];
+        });
+        setStatus("acting");
+      });
+
       if (cancelled) {
         unlistenToken();
         unlistenDone();
         unlistenError();
+        unlistenToolCall();
+        unlistenToolResult();
         return;
       }
 
@@ -224,6 +251,8 @@ export function AppShell() {
         unlistenToken();
         unlistenDone();
         unlistenError();
+        unlistenToolCall();
+        unlistenToolResult();
       };
     })();
 
@@ -254,7 +283,9 @@ export function AppShell() {
     setIsThinking(true);
     setStatus("thinking");
     setStreamingContent("");
+    setToolActivities([]);
 
+    let effectiveSessionId = activeSessionId;
     if (!activeSessionId) {
       const newSession: Session = {
         id: `s-${Date.now()}`,
@@ -267,6 +298,7 @@ export function AppShell() {
       };
       setSessions((prev) => [newSession, ...prev]);
       setActiveSessionId(newSession.id);
+      effectiveSessionId = newSession.id;
     }
 
     try {
@@ -274,6 +306,7 @@ export function AppShell() {
         provider: selectedModel.provider,
         prompt: message,
         model: selectedModel.model,
+        sessionId: effectiveSessionId,
       });
     } catch (e) {
       setIsThinking(false);
@@ -296,6 +329,7 @@ export function AppShell() {
     setActiveSessionId(null);
     setMessages([]);
     setStreamingContent("");
+    setToolActivities([]);
     setIsThinking(false);
     setSessionDrawerOpen(false);
   }, []);
@@ -329,6 +363,7 @@ export function AppShell() {
           workspacePath={activeWorkspace?.path ?? ""}
           isThinking={isThinking}
           currentAction={streamingContent ? { type: "streaming" as const, content: streamingContent } : undefined}
+          toolActivities={toolActivities}
         />
         <InputBar
           models={models}

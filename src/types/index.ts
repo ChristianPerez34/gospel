@@ -4,6 +4,13 @@ export type MessageRole = "user" | "agent";
 
 export type ActionCardType = "file" | "terminal" | "diff" | "search";
 
+export interface ToolCallActivity {
+  name: string;
+  arguments?: unknown;
+  result?: string;
+  status: "calling" | "completed";
+}
+
 export interface User {
   name: string;
   avatar?: string;

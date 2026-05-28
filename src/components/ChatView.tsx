@@ -1,4 +1,4 @@
-import type { Message } from "../types";
+import type { Message, ToolCallActivity } from "../types";
 import { MessageBlock } from "./MessageBlock";
 import { ActionCard } from "./ActionCard";
 import "./ChatView.css";
@@ -14,6 +14,23 @@ interface ChatViewProps {
   isThinking: boolean;
   currentAction?: string | StreamingAction;
   statusText?: string;
+  toolActivities?: ToolCallActivity[];
+}
+
+function ToolActivityIndicator({ activity }: { activity: ToolCallActivity }) {
+  const displayName = activity.name
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  const isCalling = activity.status === "calling";
+
+  return (
+    <div className={`tool-activity tool-activity--${activity.status}`}>
+      <span className="tool-activity__icon">{isCalling ? "⟳" : "✓"}</span>
+      <span className="tool-activity__label">
+        {isCalling ? `Searching ${displayName}...` : displayName}
+      </span>
+    </div>
+  );
 }
 
 export function ChatView({
@@ -21,8 +38,10 @@ export function ChatView({
   workspacePath,
   isThinking,
   currentAction,
+  toolActivities,
 }: ChatViewProps) {
   const isEmpty = messages.length === 0;
+  const hasToolActivities = toolActivities && toolActivities.length > 0;
 
   if (isEmpty) {
     return (
@@ -39,17 +58,26 @@ export function ChatView({
 
   return (
     <div className="chat-view" role="main" aria-live="polite">
-      <div className="chat-view__thinking-bar">
-        {isThinking && (
-          <span className="chat-view__thinking-text">
-            {typeof currentAction === "object" && currentAction?.type === "streaming"
-              ? currentAction.content
-              : typeof currentAction === "string"
-              ? currentAction
-              : "Thinking..."}
-          </span>
-        )}
-      </div>
+      {(isThinking || hasToolActivities) && (
+        <div className="chat-view__thinking-bar">
+          {hasToolActivities && (
+            <div className="chat-view__tool-activities">
+              {toolActivities!.map((activity, i) => (
+                <ToolActivityIndicator key={`${activity.name}-${i}`} activity={activity} />
+              ))}
+            </div>
+          )}
+          {isThinking && !hasToolActivities && (
+            <span className="chat-view__thinking-text">
+              {typeof currentAction === "object" && currentAction?.type === "streaming"
+                ? currentAction.content
+                : typeof currentAction === "string"
+                ? currentAction
+                : "Thinking..."}
+            </span>
+          )}
+        </div>
+      )}
       <div className="chat-view__messages">
         {messages.map((msg) => (
           <div key={msg.id} className="chat-view__message-wrapper">

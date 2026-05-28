@@ -1,11 +1,18 @@
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
+use rig::completion::message::Message;
 use rig::completion::Prompt;
 use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
-use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
+use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat, StreamingPrompt};
 use serde::Serialize;
+use std::path::PathBuf;
 use thiserror::Error;
+
+use crate::corpus::tools::{
+    create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
+    CORPUS_SYSTEM_PROMPT,
+};
 
 #[derive(Error, Debug)]
 pub enum LlmError {
@@ -46,6 +53,14 @@ impl LlmError {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum StreamEvent {
+    Text(String),
+    ToolCall { name: String, arguments: serde_json::Value },
+    ToolResult { name: String, result: String },
 }
 
 pub struct LlmService;
@@ -130,24 +145,49 @@ impl LlmService {
     }
 }
 
+#[derive(Debug)]
+pub struct StreamCompletionResult {
+    pub full_response: String,
+    pub history: Option<Vec<Message>>,
+}
+
 pub async fn stream_completion<F>(
     provider: &str,
     prompt: &str,
     model: &str,
     api_key: &str,
-    mut on_token: F,
-) -> Result<String, LlmError>
+    workspace_path: Option<PathBuf>,
+    chat_history: Vec<Message>,
+    mut on_event: F,
+) -> Result<StreamCompletionResult, LlmError>
 where
-    F: FnMut(String),
+    F: FnMut(StreamEvent),
 {
     validate_api_key(provider, api_key)?;
 
     let mut full_response = String::new();
+    let mut captured_history: Option<Vec<Message>> = None;
 
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
-            let agent = $client.agent($model).build();
-            let mut stream = agent.stream_prompt(prompt).await;
+            let summary_tool = create_corpus_summary_tool(workspace_path.clone());
+            let query_tool = create_corpus_query_tool(workspace_path.clone());
+            let neighbors_tool = create_corpus_neighbors_tool(workspace_path.clone());
+
+            let agent = $client
+                .agent($model)
+                .preamble(CORPUS_SYSTEM_PROMPT)
+                .tool(summary_tool)
+                .tool(query_tool)
+                .tool(neighbors_tool)
+                .default_max_turns(5)
+                .build();
+
+            let request = agent.stream_chat(prompt, chat_history).multi_turn(5);
+            let mut stream = request.await;
+
+            let mut tool_name_by_id: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -156,10 +196,52 @@ where
                             StreamedAssistantContent::Text(text),
                         ) => {
                             full_response.push_str(&text.text);
-                            on_token(text.text.clone());
+                            on_event(StreamEvent::Text(text.text.clone()));
+                        }
+                        MultiTurnStreamItem::StreamAssistantItem(
+                            StreamedAssistantContent::ToolCall {
+                                tool_call,
+                                internal_call_id,
+                            },
+                        ) => {
+                            tool_name_by_id.insert(
+                                internal_call_id.clone(),
+                                tool_call.function.name.clone(),
+                            );
+                            on_event(StreamEvent::ToolCall {
+                                name: tool_call.function.name.clone(),
+                                arguments: tool_call.function.arguments.clone(),
+                            });
+                        }
+                        MultiTurnStreamItem::StreamUserItem(
+                            StreamedUserContent::ToolResult {
+                                tool_result,
+                                internal_call_id,
+                            },
+                        ) => {
+                            let result_summary = tool_result
+                                .content
+                                .iter()
+                                .filter_map(|c| match c {
+                                    rig::completion::message::ToolResultContent::Text(t) => {
+                                        Some(t.text.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let tool_name = tool_name_by_id
+                                .get(&internal_call_id)
+                                .cloned()
+                                .unwrap_or_else(|| tool_result.id.clone());
+                            on_event(StreamEvent::ToolResult {
+                                name: tool_name,
+                                result: result_summary,
+                            });
                         }
                         MultiTurnStreamItem::FinalResponse(final_response) => {
                             full_response = final_response.response().to_owned();
+                            captured_history = final_response.history().map(|h| h.to_vec());
                             break;
                         }
                         _ => {}
@@ -208,7 +290,10 @@ where
         _ => return Err(LlmError::UnsupportedProvider(provider.to_string())),
     }
 
-    Ok(full_response)
+    Ok(StreamCompletionResult {
+        full_response,
+        history: captured_history,
+    })
 }
 
 #[cfg(test)]
@@ -226,15 +311,21 @@ mod tests {
 
     #[tokio::test]
     async fn stream_completion_rejects_blank_api_key() {
-        let mut token_count = 0;
-        let error = stream_completion("openai", "hello", "gpt-4o-mini", "", |_| {
-            token_count += 1;
-        })
+        let mut events = vec![];
+        let error = stream_completion(
+            "openai",
+            "hello",
+            "gpt-4o-mini",
+            "",
+            None,
+            vec![],
+            |event| events.push(event),
+        )
         .await
         .unwrap_err();
 
         assert!(matches!(error, LlmError::ApiKeyMissing));
-        assert_eq!(token_count, 0);
+        assert!(events.is_empty());
     }
 
     #[test]
