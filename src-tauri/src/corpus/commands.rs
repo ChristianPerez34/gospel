@@ -8,7 +8,7 @@ use crate::corpus::{
 };
 use crate::{AppConfigState, CORPUS_BUILD_LOCK};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
 /// Corpus build progress event
@@ -52,7 +52,7 @@ pub async fn build_corpus(
 /// Build a corpus for a workspace path.
 pub async fn run_corpus_build(
     app: &tauri::AppHandle,
-    workspace_path: &PathBuf,
+    workspace_path: &Path,
     ignore_patterns: Option<String>,
 ) -> Result<CorpusStatus, String> {
     tracing::debug!(
@@ -67,7 +67,17 @@ pub async fn run_corpus_build(
     }
 
     let _guard = CORPUS_BUILD_LOCK.lock().await;
+    run_corpus_build_inner(app, workspace_path, ignore_patterns).await
+}
 
+/// Core corpus build implementation. Caller MUST hold CORPUS_BUILD_LOCK
+/// (this is not reentrant). Used by both `run_corpus_build` (forced builds)
+/// and `ensure_workspace_corpus` (conditional builds).
+pub(crate) async fn run_corpus_build_inner(
+    app: &tauri::AppHandle,
+    workspace_path: &Path,
+    ignore_patterns: Option<String>,
+) -> Result<CorpusStatus, String> {
     // Parse ignore patterns
     let ignore: Vec<&str> = ignore_patterns
         .as_deref()

@@ -33,7 +33,7 @@ use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
 use corpus::commands::{
     build_corpus, get_corpus_neighbors, get_corpus_status, get_corpus_summary, query_corpus,
-    run_corpus_build,
+    run_corpus_build_inner,
 };
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
@@ -852,6 +852,14 @@ async fn ensure_workspace_corpus(
         "[CORPUS-AUTO] ensure requested for {}",
         workspace_path.display()
     );
+
+    if !workspace_path.exists() {
+        return Err(format!(
+            "Workspace path does not exist: {:?}",
+            workspace_path
+        ));
+    }
+
     let _guard = CORPUS_BUILD_LOCK.lock().await;
     let persistence = CorpusPersistence::new(workspace_path)
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
@@ -868,7 +876,9 @@ async fn ensure_workspace_corpus(
         "[CORPUS-AUTO] corpus missing; building for {}",
         workspace_path.display()
     );
-    run_corpus_build(app, workspace_path, None).await?;
+    // Use the inner (lock already held by us) to avoid re-acquiring the
+    // non-reentrant CORPUS_BUILD_LOCK and deadlocking.
+    run_corpus_build_inner(app, workspace_path, None).await?;
 
     let persistence = CorpusPersistence::new(workspace_path)
         .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
