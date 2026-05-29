@@ -1,7 +1,6 @@
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import type { Message } from "../types";
-import "./MessageBlock.css";
 
 interface MessageBlockProps {
   message: Message;
@@ -15,23 +14,25 @@ export function MessageBlock({ message }: MessageBlockProps) {
     minute: "2-digit",
   });
 
+  const alignClass = isUser ? "self-end" : "self-start";
+  const avatarBg = isUser ? "bg-surface-overlay text-text-secondary" : "bg-accent-action text-text-inverse";
+  const bodyBg = isUser ? "bg-surface-overlay" : "bg-surface-elevated";
+
   return (
-    <div className={`message-block ${isUser ? "message-block--user" : "message-block--agent"}`}>
-      <div className="message-block__header">
+    <div className={`flex flex-col gap-1 max-w-[720px] w-full ${alignClass} group`}>
+      <div className="flex items-center gap-2">
         <div
-          className={`message-block__avatar ${
-            isUser ? "message-block__avatar--user" : "message-block__avatar--agent"
-          }`}
+          className={`w-[22px] h-[22px] rounded-full flex items-center justify-center font-body text-caption font-semibold shrink-0 ${avatarBg}`}
           aria-hidden="true"
         >
           {isUser ? "Y" : "G"}
         </div>
-        <span className="message-block__name">
+        <span className="text-body-sm font-medium text-text-secondary">
           {isUser ? "You" : "Gospel"}
         </span>
-        <time className="message-block__time">{timeStr}</time>
+        <time className="font-mono text-caption text-text-muted tracking-[0.02em]">{timeStr}</time>
       </div>
-      <div className={`message-block__body ${isUser ? "" : "prose"}`}>
+      <div className={`text-body leading-relaxed text-text-primary py-3 px-4 rounded-md break-words ${bodyBg} ${isUser ? "" : "prose"}`}>
         {isUser ? (
           message.content
         ) : (
@@ -40,16 +41,16 @@ export function MessageBlock({ message }: MessageBlockProps) {
           </Streamdown>
         )}
       </div>
-      <div className="message-block__footer">
-        <button className="message-block__action" aria-label="Copy message">
+      <div className="flex gap-1 opacity-0 transition-opacity duration-150 ease-out-quart pl-1 group-hover:opacity-100">
+        <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary" aria-label="Copy message">
           Copy
         </button>
         {!isUser && (
           <>
-            <button className="message-block__action" aria-label="Retry message">
+            <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary" aria-label="Retry message">
               Retry
             </button>
-            <button className="message-block__action" aria-label="Fork conversation">
+            <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary" aria-label="Fork conversation">
               Fork
             </button>
           </>

@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import type { ModelOption } from "../types";
 import { ContextPill } from "./ContextPill";
-import "./InputBar.css";
 
 interface ContextFile {
   name: string;
@@ -67,9 +66,9 @@ export function InputBar({
   }, []);
 
   return (
-    <div className="input-bar">
+    <div className="bg-surface-elevated border-t border-surface-overlay flex flex-col shrink-0 z-[--z-sticky-input]">
       {contextFiles.length > 0 && (
-        <div className="input-bar__context">
+        <div className="flex gap-1 pt-2 px-3 overflow-x-auto flex-nowrap">
           {contextFiles.map((file) => (
             <ContextPill
               key={file.path}
@@ -79,10 +78,10 @@ export function InputBar({
           ))}
         </div>
       )}
-      <div className="input-bar__row">
-        <div className="input-bar__model-select">
+      <div className="flex items-end gap-2 p-3 min-h-[--input-min-height]">
+        <div className="relative shrink-0">
           <button
-            className="input-bar__model-btn"
+            className="font-mono text-caption text-text-muted py-1 px-2 rounded-sm bg-surface-overlay transition-colors duration-150 ease-out-quart whitespace-nowrap hover:bg-surface-elevated hover:text-text-secondary"
             onClick={() => setModelOpen(!modelOpen)}
             disabled={disabled && models.length > 0}
             aria-label="Select model"
@@ -90,48 +89,53 @@ export function InputBar({
             {currentModel?.name || unavailableMessage}
           </button>
           {modelOpen && (
-            <div className="input-bar__model-dropdown" role="listbox">
+            <div className="absolute bottom-full left-0 w-60 max-h-[200px] overflow-y-auto bg-surface-elevated border border-surface-overlay rounded-md mb-1 z-[--z-dropdowns]" role="listbox">
               {models.length === 0 ? (
-                <div className="input-bar__model-empty">
-                  <strong>{unavailableMessage}</strong>
+                <div className="flex flex-col gap-1 p-3 text-text-muted text-body-sm">
+                  <strong className="text-text-primary font-semibold">{unavailableMessage}</strong>
                   {unavailableDetail && <span>{unavailableDetail}</span>}
                   {onUnavailableAction && (
-                    <button className="input-bar__model-empty-action" type="button" onClick={onUnavailableAction}>
+                    <button className="self-start text-accent-action text-caption" type="button" onClick={onUnavailableAction}>
                       {unavailableActionLabel}
                     </button>
                   )}
                 </div>
-              ) : models.map((m) => (
-                <button
-                  key={m.id}
-                  className={`input-bar__model-option${
-                    m.id === selectedModel ? " input-bar__model-option--active" : ""
-                  }${m.configured === false ? " input-bar__model-option--disabled" : ""}`}
-                  role="option"
-                  aria-selected={m.id === selectedModel}
-                  disabled={m.configured === false}
-                  onClick={() => {
-                    if (m.configured !== false) {
-                      onModelChange(m.id);
-                    }
-                    setModelOpen(false);
-                  }}
-                >
-                  <span className="input-bar__model-name">{m.name}</span>
-                  <span className="input-bar__model-provider">
-                    {m.provider}
-                    {m.configured === false && (
-                      <span className="input-bar__model-not-configured">Not configured</span>
-                    )}
-                  </span>
-                </button>
-              ))}
+              ) : models.map((m) => {
+                const isActive = m.id === selectedModel;
+                const isDisabled = m.configured === false;
+                const baseClass = "flex items-center justify-between w-full py-2 px-3 text-left transition-colors duration-150 ease-out-quart";
+                const activeClass = isActive ? " bg-surface-overlay" : "";
+                const disabledClass = isDisabled ? " opacity-40 cursor-not-allowed hover:bg-transparent" : " hover:bg-surface-overlay";
+                return (
+                  <button
+                    key={m.id}
+                    className={`${baseClass}${activeClass}${disabledClass}`}
+                    role="option"
+                    aria-selected={isActive}
+                    disabled={isDisabled}
+                    onClick={() => {
+                      if (m.configured !== false) {
+                        onModelChange(m.id);
+                      }
+                      setModelOpen(false);
+                    }}
+                  >
+                    <span className="text-body-sm text-text-primary">{m.name}</span>
+                    <span className="font-mono text-caption text-text-muted flex items-center gap-1">
+                      {m.provider}
+                      {m.configured === false && (
+                        <span className="text-[10px] text-status-error uppercase tracking-[0.03em]">Not configured</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
         <textarea
           ref={textareaRef}
-          className="input-bar__textarea"
+          className="flex-1 min-h-[28px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary py-1 overflow-y-auto placeholder:text-text-muted disabled:opacity-50"
           placeholder={noModels ? unavailableMessage : "Type a prompt (Shift+Enter for new line)"}
           value={value}
           onChange={handleInput}
@@ -141,7 +145,7 @@ export function InputBar({
           aria-label="Message input"
         />
         <button
-          className="input-bar__send"
+          className="w-9 h-9 flex items-center justify-center rounded-sm bg-accent-action text-text-inverse text-body shrink-0 transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
           disabled={sendDisabled || !value.trim()}
           onClick={() => {
             if (value.trim() && !sendDisabled) {

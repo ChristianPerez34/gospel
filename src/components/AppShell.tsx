@@ -18,7 +18,6 @@ import type {
 } from "../types";
 import type { ProviderConfig, ProviderId } from "./ProviderSelector";
 import { noModelCopy } from "../modelAvailabilityCopy";
-import "./AppShell.css";
 
 interface ProviderAvailability {
   provider: ProviderId;
@@ -353,7 +352,7 @@ export function AppShell() {
   const noModels = noModelCopy(availabilitySnapshot);
 
   return (
-    <div className="app-shell" data-theme="dark">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-surface-base text-text-primary" data-theme="dark">
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
@@ -365,7 +364,7 @@ export function AppShell() {
         onOpenSettings={() => setSettingsOpen(true)}
         sessionsOpen={sessionDrawerOpen}
       />
-      <div className="app-shell__body">
+      <div className="flex flex-col flex-1 min-h-0 relative">
         <ChatView
           messages={messages}
           workspacePath={activeWorkspace?.path ?? ""}

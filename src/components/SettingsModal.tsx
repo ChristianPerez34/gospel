@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import "./SettingsModal.css";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
 
@@ -36,27 +35,46 @@ export function SettingsModal({ open, onClose, providers, onProvidersChange, onR
   if (!open) return null;
 
   return (
-    <div className="settings-modal__overlay" onClick={onClose}>
-      <div className="settings-modal settings-modal--with-tabs" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
-        <div className="settings-modal__header">
-          <h2 className="settings-modal__title" id="settings-modal-title">Settings</h2>
-          <button className="settings-modal__close" onClick={onClose} aria-label="Close settings" type="button">
+    <div className="fixed inset-0 bg-scrim z-[100] flex items-center justify-center animate-fade-in" onClick={onClose}>
+      <div
+        className="w-[520px] max-w-[90vw] max-h-[80vh] flex flex-col bg-surface-elevated border border-surface-overlay rounded-lg shadow-[0_16px_48px_rgba(0,0,0,0.4)] animate-slide-up"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-modal-title"
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-surface-overlay shrink-0">
+          <h2 className="font-sans text-base font-semibold text-text-primary m-0" id="settings-modal-title">Settings</h2>
+          <button
+            className="text-text-muted p-1 rounded-sm flex items-center justify-center transition-colors duration-150 hover:text-text-primary hover:bg-surface-overlay"
+            onClick={onClose}
+            aria-label="Close settings"
+            type="button"
+          >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
             </svg>
           </button>
         </div>
 
-        <div className="settings-modal__tabs">
+        <div className="flex gap-0 px-5 border-b border-surface-overlay shrink-0">
           <button
-            className={`settings-modal__tab ${activeTab === "general" ? "settings-modal__tab--active" : ""}`}
+            className={`py-2.5 px-3.5 bg-transparent border-none border-b-2 font-body text-[13px] font-medium cursor-pointer transition-colors duration-150 ${
+              activeTab === "general"
+                ? "text-accent-action border-b-accent-action"
+                : "text-text-muted border-b-transparent hover:text-text-secondary"
+            }`}
             onClick={() => setActiveTab("general")}
             type="button"
           >
             General
           </button>
           <button
-            className={`settings-modal__tab ${activeTab === "models" ? "settings-modal__tab--active" : ""}`}
+            className={`py-2.5 px-3.5 bg-transparent border-none border-b-2 font-body text-[13px] font-medium cursor-pointer transition-colors duration-150 ${
+              activeTab === "models"
+                ? "text-accent-action border-b-accent-action"
+                : "text-text-muted border-b-transparent hover:text-text-secondary"
+            }`}
             onClick={() => setActiveTab("models")}
             type="button"
           >
@@ -64,13 +82,13 @@ export function SettingsModal({ open, onClose, providers, onProvidersChange, onR
           </button>
         </div>
 
-        <div className="settings-modal__body">
+        <div className="p-5 overflow-y-auto min-h-0">
           {activeTab === "models" ? (
-            <div className="settings-modal__section">
-              <div className="settings-modal__section-header">
-                <h3 className="settings-modal__section-title">Credentialed Providers</h3>
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-sans text-[13px] font-semibold text-text-secondary uppercase tracking-[0.04em] m-0">Credentialed Providers</h3>
                 <button
-                  className="settings-modal__refresh-btn"
+                  className="py-1.5 px-2.5 border border-surface-overlay rounded-md text-accent-action text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                   type="button"
                   onClick={() => void onRefreshAvailability(true)}
                   disabled={isRefreshingModels}
@@ -78,16 +96,14 @@ export function SettingsModal({ open, onClose, providers, onProvidersChange, onR
                   {isRefreshingModels ? "Refreshing..." : "Refresh models"}
                 </button>
               </div>
-              <p className="settings-modal__status">
-                <span className="settings-modal__status--not-configured">
-                  Provider rows are loaded from backend availability. Add credentials to make models selectable.
-                </span>
+              <p className="m-0 text-[13px] text-text-muted">
+                Provider rows are loaded from backend availability. Add credentials to make models selectable.
               </p>
               <ProviderSelector providers={providers} onProvidersChange={onProvidersChange} onRefreshAvailability={onRefreshAvailability} />
             </div>
           ) : (
-            <div className="settings-modal__section">
-              <p className="settings-modal__status settings-modal__status--not-configured">General settings coming soon.</p>
+            <div className="flex flex-col gap-3">
+              <p className="m-0 text-[13px] text-text-muted">General settings coming soon.</p>
             </div>
           )}
         </div>

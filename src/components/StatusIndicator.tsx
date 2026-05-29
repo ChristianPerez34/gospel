@@ -1,5 +1,4 @@
 import type { AgentStatus } from "../types";
-import "./StatusIndicator.css";
 
 interface StatusIndicatorProps {
   status: AgentStatus;
@@ -13,15 +12,25 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
   connected: "Connected",
 };
 
+const DOT_CLASSES: Record<AgentStatus, string> = {
+  idle: "bg-text-muted",
+  thinking: "bg-accent-action animate-pulse",
+  acting: "bg-accent-structure animate-pulse",
+  error: "bg-status-error",
+  connected: "bg-status-success",
+};
+
 export function StatusIndicator({ status }: StatusIndicatorProps) {
   return (
-    <div className="status-indicator" title={STATUS_LABELS[status]}>
+    <div className="flex items-center gap-1" title={STATUS_LABELS[status]}>
       <span
-        className={`status-indicator__dot status-indicator__dot--${status}`}
+        className={`w-2 h-2 rounded-full shrink-0 ${DOT_CLASSES[status]}`}
         aria-hidden="true"
       />
       {status !== "idle" && status !== "connected" && (
-        <span className="status-indicator__label">{STATUS_LABELS[status]}</span>
+        <span className="text-caption text-text-muted tracking-[0.02em] whitespace-nowrap">
+          {STATUS_LABELS[status]}
+        </span>
       )}
     </div>
   );

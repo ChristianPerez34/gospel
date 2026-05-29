@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { ActionCard as ActionCardType } from "../types";
-import "./ActionCard.css";
 
 interface ActionCardProps {
   card: ActionCardType;
@@ -13,30 +12,32 @@ const TYPE_ICONS: Record<string, string> = {
   search: "?",
 };
 
-const TYPE_ACCENT: Record<string, string> = {
-  file: "var(--accent-action)",
-  terminal: "var(--accent-data)",
-  diff: "var(--accent-structure)",
-  search: "var(--accent-signal)",
+const TYPE_BORDER: Record<string, string> = {
+  file: "border-l-accent-action",
+  terminal: "border-l-accent-data",
+  diff: "border-l-accent-structure",
+  search: "border-l-accent-signal",
 };
 
 export function ActionCard({ card }: ActionCardProps) {
   const [expanded, setExpanded] = useState(card.expanded ?? false);
 
+  const borderClass = TYPE_BORDER[card.type] || TYPE_BORDER.file;
+  const chevronClass = expanded ? "rotate-180" : "";
+
   return (
-    <div className="action-card" role="region" aria-label={card.summary}>
+    <div className="ml-7 mr-6 rounded-md overflow-hidden bg-surface-elevated animate-fade-slide-in" role="region" aria-label={card.summary}>
       <button
-        className="action-card__header"
+        className={`flex items-center gap-2 w-full py-2 px-3 border-l-2 ${borderClass} text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart min-h-[36px] hover:bg-surface-overlay`}
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
-        style={{ borderLeftColor: TYPE_ACCENT[card.type] || TYPE_ACCENT.file }}
       >
-        <span className="action-card__icon" aria-hidden="true">
+        <span className="font-mono text-caption font-semibold text-text-muted w-[18px] h-[18px] flex items-center justify-center rounded-sm bg-surface-overlay shrink-0" aria-hidden="true">
           {TYPE_ICONS[card.type] || TYPE_ICONS.file}
         </span>
-        <span className="action-card__summary">{card.summary}</span>
+        <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm">{card.summary}</span>
         <svg
-          className={`action-card__chevron ${expanded ? "action-card__chevron--open" : ""}`}
+          className={`text-text-muted transition-transform duration-150 ease-out-quart shrink-0 ${chevronClass}`}
           width="12"
           height="12"
           viewBox="0 0 12 12"
@@ -52,8 +53,8 @@ export function ActionCard({ card }: ActionCardProps) {
         </svg>
       </button>
       {expanded && card.content && (
-        <div className="action-card__content">
-          <pre className="action-card__code">{card.content}</pre>
+        <div className="px-3 pb-3 max-h-[400px] overflow-y-auto animate-fade-slide-in-fast">
+          <pre className="font-mono text-mono-lg leading-relaxed text-text-primary whitespace-pre-wrap break-all m-0">{card.content}</pre>
         </div>
       )}
     </div>

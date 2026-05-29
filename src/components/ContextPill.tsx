@@ -1,5 +1,3 @@
-import "./ContextPill.css";
-
 interface ContextPillProps {
   name: string;
   onRemove: () => void;
@@ -7,10 +5,12 @@ interface ContextPillProps {
 
 export function ContextPill({ name, onRemove }: ContextPillProps) {
   return (
-    <span className="context-pill">
-      <span className="context-pill__name">{name}</span>
+    <span className="inline-flex items-center gap-1 py-0.5 px-2 bg-surface-overlay rounded-md font-mono text-body-sm text-text-secondary whitespace-nowrap shrink-0 group">
+      <span className="max-w-[120px] overflow-hidden text-ellipsis">
+        {name}
+      </span>
       <button
-        className="context-pill__remove"
+        className="flex items-center justify-center w-3.5 h-3.5 rounded-full text-text-muted opacity-0 transition-opacity transition-colors duration-150 ease-out-quart group-hover:opacity-100 hover:bg-surface-elevated hover:text-text-primary"
         onClick={onRemove}
         aria-label={`Remove ${name}`}
       >

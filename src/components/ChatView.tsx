@@ -3,7 +3,6 @@ import { code } from "@streamdown/code";
 import type { Message, ToolCallActivity } from "../types";
 import { MessageBlock } from "./MessageBlock";
 import { ActionCard } from "./ActionCard";
-import "./ChatView.css";
 
 interface StreamingAction {
   type: "streaming";
@@ -25,10 +24,15 @@ function ToolActivityIndicator({ activity }: { activity: ToolCallActivity }) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
   const isCalling = activity.status === "calling";
 
+  const statusColor = isCalling ? "text-accent-action" : "text-text-muted";
+  const iconAnim = isCalling ? "animate-spin" : "";
+
   return (
-    <div className={`tool-activity tool-activity--${activity.status}`}>
-      <span className="tool-activity__icon">{isCalling ? "⟳" : "✓"}</span>
-      <span className="tool-activity__label">
+    <div className={`flex items-center gap-2 py-1 px-2 rounded-sm text-caption bg-surface-elevated animate-fade-slide-in-fast ${statusColor}`}>
+      <span className={`shrink-0 w-3.5 text-center ${iconAnim}`}>
+        {isCalling ? "⟳" : "✓"}
+      </span>
+      <span className="font-mono">
         {isCalling ? `Searching ${displayName}...` : displayName}
       </span>
     </div>
@@ -47,10 +51,10 @@ export function ChatView({
 
   if (isEmpty) {
     return (
-      <div className="chat-view chat-view--empty" role="main">
-        <div className="chat-view__empty">
-          <p className="chat-view__empty-path">{workspacePath}</p>
-          <p className="chat-view__empty-prompt">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center" role="main">
+        <div className="flex flex-col items-center gap-3 animate-fade-slide-in">
+          <p className="font-mono text-body-sm text-text-muted">{workspacePath}</p>
+          <p className="text-body text-text-secondary">
             Type a prompt to start a session
           </p>
         </div>
@@ -59,18 +63,18 @@ export function ChatView({
   }
 
   return (
-    <div className="chat-view" role="main" aria-live="polite">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col relative" role="main" aria-live="polite">
       {(isThinking || hasToolActivities) && (
-        <div className="chat-view__thinking-bar">
+        <div className="overflow-hidden shrink-0 py-2 px-4">
           {hasToolActivities && (
-            <div className="chat-view__tool-activities">
+            <div className="flex flex-col gap-1">
               {toolActivities!.map((activity, i) => (
                 <ToolActivityIndicator key={`${activity.name}-${i}`} activity={activity} />
               ))}
             </div>
           )}
           {isThinking && !hasToolActivities && (
-            <div className="chat-view__thinking-text prose">
+            <div className="text-body leading-relaxed text-text-primary py-3 px-4 rounded-md bg-surface-elevated border-l-2 border-l-accent-action max-h-[200px] overflow-y-auto">
               <Streamdown animated isAnimating={isThinking} plugins={{ code }}>
                 {typeof currentAction === "object" && currentAction?.type === "streaming"
                   ? currentAction.content
@@ -82,21 +86,21 @@ export function ChatView({
           )}
         </div>
       )}
-      <div className="chat-view__messages">
+      <div className="flex-1 flex flex-col gap-6 py-6 px-4 max-w-full">
         {messages.map((msg) => (
-          <div key={msg.id} className="chat-view__message-wrapper">
+          <div key={msg.id} className="flex flex-col gap-2 animate-fade-slide-in-fast">
             <MessageBlock message={msg} />
             {msg.actionCards?.map((card) => (
               <ActionCard key={card.id} card={card} />
             ))}
             {msg.error && (
-              <div className="chat-view__error" role="alert">
-                <div className="chat-view__error-content">
+              <div className="ml-7 border-l-2 border-l-status-error py-3 px-4 rounded-r-md bg-surface-elevated" role="alert">
+                <div className="text-body-sm text-text-primary mb-2">
                   {msg.error}
                 </div>
-                <div className="chat-view__error-actions">
-                  <button className="chat-view__error-btn">Retry</button>
-                  <button className="chat-view__error-btn">Copy error</button>
+                <div className="flex gap-2">
+                  <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Retry</button>
+                  <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Copy error</button>
                 </div>
               </div>
             )}
