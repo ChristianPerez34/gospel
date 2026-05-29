@@ -74,7 +74,7 @@ export function ChatView({
             </div>
           )}
           {isThinking && !hasToolActivities && (
-            <div className="text-body leading-relaxed text-text-primary py-3 px-4 rounded-md bg-surface-elevated border-l-2 border-l-accent-action max-h-[200px] overflow-y-auto">
+            <div className="prose text-body leading-relaxed text-text-primary py-3 px-4 rounded-md bg-surface-elevated border-l-2 border-l-accent-action max-h-[200px] overflow-y-auto">
               <Streamdown animated isAnimating={isThinking} plugins={{ code }}>
                 {typeof currentAction === "object" && currentAction?.type === "streaming"
                   ? currentAction.content

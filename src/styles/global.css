@@ -36,15 +36,15 @@
   --font-body: "Inter", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
 
-  --text-display: 36px;
-  --text-heading-lg: 24px;
-  --text-heading: 18px;
-  --text-heading-sm: 16px;
-  --text-body: 14px;
-  --text-body-sm: 13px;
-  --text-caption: 11px;
-  --text-mono: 13px;
-  --text-mono-lg: 14px;
+  --font-size-display: 36px;
+  --font-size-heading-lg: 24px;
+  --font-size-heading: 18px;
+  --font-size-heading-sm: 16px;
+  --font-size-body: 14px;
+  --font-size-body-sm: 13px;
+  --font-size-caption: 11px;
+  --font-size-mono: 13px;
+  --font-size-mono-lg: 14px;
 
   /* ── Spacing ── */
   --spacing: 4px;
@@ -57,20 +57,20 @@
 
   /* ── Easing & Duration ── */
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
-  --transition-duration-fast: 150ms;
-  --transition-duration-normal: 250ms;
-  --transition-duration-slow: 400ms;
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
 
   /* ── Z-Index ── */
-  --z-index-base: 0;
-  --z-index-sticky-input: 10;
-  --z-index-panels: 20;
-  --z-index-drawers: 30;
-  --z-index-dropdowns: 40;
-  --z-index-scrim: 45;
-  --z-index-palette: 50;
-  --z-index-toast: 60;
-  --z-index-dialog: 70;
+  --z-base: 0;
+  --z-sticky-input: 10;
+  --z-panels: 20;
+  --z-drawers: 30;
+  --z-dropdowns: 40;
+  --z-scrim: 45;
+  --z-palette: 50;
+  --z-toast: 60;
+  --z-dialog: 70;
 
   /* ── Layout Dimensions ── */
   --titlebar-height: 36px;
@@ -124,12 +124,12 @@
   padding: var(--space-3);
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: var(--text-mono);
+  font-size: var(--font-size-mono);
 }
 
 .prose code {
   font-family: var(--font-mono);
-  font-size: var(--text-mono);
+  font-size: var(--font-size-mono);
 }
 
 .prose :not(pre) > code {
@@ -140,9 +140,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root {
-    --transition-duration-fast: 0ms;
-    --transition-duration-normal: 0ms;
-    --transition-duration-slow: 0ms;
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
   }
 }
 
@@ -156,7 +156,7 @@ body,
 
 body {
   font-family: var(--font-body);
-  font-size: var(--text-body);
+  font-size: var(--font-size-body);
   line-height: 1.5;
   color: var(--text-primary);
   background-color: var(--surface-base);

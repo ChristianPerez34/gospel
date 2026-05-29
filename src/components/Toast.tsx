@@ -21,9 +21,9 @@ interface ToastProps {
 }
 
 const TYPE_STYLES = {
-  error: "border-l-3 border-l-status-error",
-  success: "border-l-3 border-l-status-success",
-  info: "border-l-3 border-l-accent-structure",
+  error: "border-l-[3px] border-l-status-error",
+  success: "border-l-[3px] border-l-status-success",
+  info: "border-l-[3px] border-l-accent-structure",
 };
 
 const ICON_STYLES = {
@@ -79,7 +79,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
       <div className="flex gap-1.5 shrink-0">
         {toast.action && (
           <button
-            className="py-1 px-2 bg-surface-overlay text-text-secondary border-none rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:bg-surface-overlay"
+            className="py-1 px-2 bg-surface-overlay text-text-secondary border-none rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:brightness-110"
             type="button"
             onClick={(e) => { e.stopPropagation(); toast.action!.onClick(); }}
           >

@@ -27,15 +27,15 @@
   --font-body: "Inter", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
 
-  --text-display: 36px;
-  --text-heading-lg: 24px;
-  --text-heading: 18px;
-  --text-heading-sm: 16px;
-  --text-body: 14px;
-  --text-body-sm: 13px;
-  --text-caption: 11px;
-  --text-mono: 13px;
-  --text-mono-lg: 14px;
+  --font-size-display: 36px;
+  --font-size-heading-lg: 24px;
+  --font-size-heading: 18px;
+  --font-size-heading-sm: 16px;
+  --font-size-body: 14px;
+  --font-size-body-sm: 13px;
+  --font-size-caption: 11px;
+  --font-size-mono: 13px;
+  --font-size-mono-lg: 14px;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -84,26 +84,4 @@
   --text-secondary: #4a4a54;
   --text-muted: #7a7a84;
   --text-inverse: #ececf0;
-}
-
-.prose {
-  --background: var(--surface-base);
-  --foreground: var(--text-primary);
-  --card: var(--surface-elevated);
-  --card-foreground: var(--text-primary);
-  --muted: var(--surface-overlay);
-  --muted-foreground: var(--text-muted);
-  --border: var(--surface-overlay);
-  --input: var(--surface-overlay);
-  --primary: var(--accent-action);
-  --primary-foreground: var(--text-inverse);
-  --radius: var(--radius-md);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --duration-fast: 0ms;
-    --duration-normal: 0ms;
-    --duration-slow: 0ms;
-  }
 }
