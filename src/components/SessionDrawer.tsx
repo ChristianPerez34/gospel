@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import type { Session } from "../types";
 
 interface SessionDrawerProps {
@@ -63,34 +63,17 @@ export function SessionDrawer({
     }
   }
 
-  const [scrimVisible, setScrimVisible] = useState(false);
-  const scrimRef = useRef<HTMLDivElement>(null);
-
   const drawerClass = open
     ? "translate-x-0"
     : "-translate-x-full";
 
-  useEffect(() => {
-    if (open) {
-      setScrimVisible(true);
-    }
-  }, [open]);
-
-  const handleScrimTransitionEnd = () => {
-    if (!open) {
-      setScrimVisible(false);
-    }
-  };
-
   return (
     <>
       <div
-        ref={scrimRef}
         className="fixed inset-0 bg-scrim z-[calc(var(--z-drawers)_-_1)] transition-opacity duration-[250ms] ease-out-quart"
-        style={{ opacity: scrimVisible ? 1 : 0, pointerEvents: open ? "auto" : "none" }}
+        style={{ opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none" }}
         onClick={onClose}
         aria-hidden="true"
-        onTransitionEnd={handleScrimTransitionEnd}
       />
       <aside
         className={`fixed left-0 top-0 bottom-0 w-[var(--sidebar-width)] bg-surface-elevated border-r border-surface-overlay flex flex-col z-[var(--z-drawers)] transition-transform duration-[250ms] ease-out-quart ${drawerClass}`}
@@ -111,7 +94,7 @@ export function SessionDrawer({
             <path d="M9 9L12.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
           <input
-            className="flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted"
+            className="flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
             type="text"
             placeholder="Search sessions..."
             value={search}

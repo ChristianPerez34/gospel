@@ -135,7 +135,7 @@ export function InputBar({
         </div>
         <textarea
           ref={textareaRef}
-          className="flex-1 min-h-[28px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary py-1 overflow-y-auto placeholder:text-text-muted disabled:opacity-50"
+          className="flex-1 min-h-[28px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary py-1 overflow-y-auto placeholder:text-text-muted disabled:opacity-50 bg-transparent"
           placeholder={noModels ? unavailableMessage : "Type a prompt (Shift+Enter for new line)"}
           value={value}
           onChange={handleInput}

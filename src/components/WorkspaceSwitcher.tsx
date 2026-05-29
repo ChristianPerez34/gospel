@@ -97,7 +97,7 @@ export function WorkspaceSwitcher({
             <path d="M9 9L12.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
           <input
-            className="flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted"
+            className="flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
             type="text"
             placeholder="Search workspaces..."
             value={search}
