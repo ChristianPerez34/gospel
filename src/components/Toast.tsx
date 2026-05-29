@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import "./Toast.css";
 
 export interface ToastData {
   id: string;
@@ -21,6 +20,18 @@ interface ToastProps {
   onDismiss: (id: string) => void;
 }
 
+const TYPE_STYLES = {
+  error: "border-l-[3px] border-l-status-error",
+  success: "border-l-[3px] border-l-status-success",
+  info: "border-l-[3px] border-l-accent-structure",
+};
+
+const ICON_STYLES = {
+  error: "text-status-error",
+  success: "text-status-success",
+  info: "text-accent-structure",
+};
+
 export function Toast({ toast, onDismiss }: ToastProps) {
   const hasAction = Boolean(toast.action);
   const hasSecondaryAction = Boolean(toast.secondaryAction);
@@ -39,11 +50,11 @@ export function Toast({ toast, onDismiss }: ToastProps) {
 
   return (
     <div
-      className={`toast toast--${toast.type}`}
+      className={`flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border border-surface-overlay rounded-md shadow-[0_8px_24px_rgba(0,0,0,0.3)] cursor-pointer pointer-events-auto max-w-[380px] animate-toast-in transition-opacity duration-200 hover:border-text-muted ${TYPE_STYLES[toast.type]}`}
       onClick={handleDismiss}
       role="alert"
     >
-      <div className="toast__icon">
+      <div className={`shrink-0 flex items-center ${ICON_STYLES[toast.type]}`}>
         {toast.type === "error" && (
           <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
             <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
@@ -64,11 +75,11 @@ export function Toast({ toast, onDismiss }: ToastProps) {
           </svg>
         )}
       </div>
-      <span className="toast__message">{toast.message}</span>
-      <div className="toast__actions">
+      <span className="flex-1 text-[13px] text-text-secondary leading-snug">{toast.message}</span>
+      <div className="flex gap-1.5 shrink-0">
         {toast.action && (
           <button
-            className="toast__action-btn"
+            className="py-1 px-2 bg-surface-overlay text-text-secondary border-none rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:brightness-110"
             type="button"
             onClick={(e) => { e.stopPropagation(); toast.action!.onClick(); }}
           >
@@ -77,7 +88,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         )}
         {toast.secondaryAction && (
           <button
-            className="toast__action-btn toast__action-btn--secondary"
+            className="py-1 px-2 bg-transparent text-text-secondary border border-surface-overlay rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:bg-surface-overlay"
             type="button"
             onClick={(e) => { e.stopPropagation(); toast.secondaryAction!.onClick(); }}
           >
@@ -98,7 +109,7 @@ export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="toast-container">
+    <div className="fixed bottom-20 right-4 z-[--z-toast] flex flex-col gap-2 pointer-events-none">
       {toasts.map((toast) => (
         <Toast key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}

@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import "./ProviderSelector.css";
 
 export type ProviderId = "openai" | "chatgpt" | "anthropic" | "gemini" | "groq" | "mistral";
 
@@ -42,7 +41,6 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
   const [oauthChallenge, setOauthChallenge] = useState<{ verification_url: string; user_code: string } | null>(null);
   const isOperationInProgress = useRef(false);
 
-  // Ref to always have the latest providers in event listeners (avoids stale closures)
   const providersRef = useRef(providers);
   providersRef.current = providers;
 
@@ -53,7 +51,6 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
     let cancelled = false;
     let unlisten: (() => void) | undefined;
 
-    // Check ChatGPT auth status
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -72,7 +69,6 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
       }
     })();
 
-    // Listen for auth completion event
     (async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
@@ -214,7 +210,7 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
   );
 
   return (
-    <div className="provider-selector">
+    <div className="flex flex-col gap-3">
       {providers.map((provider) => {
         const showKey = showKeyFor === provider.id;
         const editingKey = editingKeyFor === provider.id || !provider.credentialed;
@@ -223,20 +219,32 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
         const isSuccess = provider.status === "success";
         const isError = provider.status === "error";
 
+        const cardBorder = isError
+          ? "border-status-error"
+          : provider.visible
+          ? "border-accent-action"
+          : "border-surface-overlay";
+
         return (
           <div
             key={provider.id}
-            className={`provider-card ${provider.visible ? "provider-card--enabled" : ""} ${isError ? "provider-card--error" : ""}`}
+            className={`bg-surface-elevated border rounded-md overflow-hidden transition-colors duration-150 ease-out-quart ${cardBorder}`}
           >
-            <div className="provider-card__header">
-              <div className="provider-card__identity">
-                <span className="provider-card__name">{provider.name}</span>
-                <span className="provider-card__test-result">
+            <div className="flex items-center justify-between py-3 px-4 gap-3">
+              <div className="flex items-center gap-2">
+                <span className="font-body text-body-sm font-medium text-text-primary">{provider.name}</span>
+                <span className="text-caption">
                   {providerAvailabilitySummary(provider)}
                 </span>
                 {!isIdle && (
                   <span
-                    className={`provider-card__badge provider-card__badge--${provider.status}`}
+                    className={`inline-flex items-center justify-center w-4 h-4 text-caption font-semibold rounded-full leading-none ${
+                      isSuccess
+                        ? "text-status-success"
+                        : isError
+                        ? "text-status-error"
+                        : "text-text-muted animate-pulse"
+                    }`}
                     aria-label={provider.testMessage}
                     title={provider.testMessage}
                   >
@@ -246,26 +254,32 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
               </div>
 
               <button
-                className={`provider-card__toggle ${provider.visible ? "provider-card__toggle--on" : ""}`}
+                className={`relative w-9 h-5 border-none rounded-full cursor-pointer p-0 transition-colors duration-150 ease-out-quart shrink-0 ${
+                  provider.visible ? "bg-accent-action" : "bg-surface-overlay"
+                }`}
                 onClick={() => handleToggle(provider.id)}
                 aria-pressed={provider.visible}
                 type="button"
                 aria-label={provider.visible ? `Hide ${provider.name} from model picker` : `Show ${provider.name} in model picker`}
                 title="Provider visibility"
               >
-                <span className="provider-card__toggle-knob" />
+                <span
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 bg-text-inverse rounded-full transition-transform duration-150 ease-out-quart ${
+                    provider.visible ? "translate-x-4" : ""
+                  }`}
+                />
               </button>
             </div>
 
             {(provider.visible || !provider.credentialed) && (
-              <div className="provider-card__body">
+              <div className="px-4 pb-3 flex flex-col gap-2 animate-appear-body">
                 {provider.isOAuth ? (
-                  <div className="provider-card__oauth-row">
+                  <div className="flex items-center justify-between gap-2 py-1">
                     {provider.isAuthenticated ? (
                       <>
-                        <span className="provider-card__oauth-status">✓ Authenticated</span>
+                        <span className="text-caption text-status-success font-body font-medium">✓ Authenticated</span>
                         <button
-                          className="provider-card__oauth-btn provider-card__oauth-btn--logout"
+                          className="py-1.5 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
                           onClick={() => handleOAuthLogout(provider)}
                           type="button"
                         >
@@ -274,9 +288,9 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                       </>
                     ) : (
                       <>
-                        <span className="provider-card__oauth-hint">Sign in with your ChatGPT Plus/Pro account</span>
+                        <span className="text-caption text-text-muted font-body">Sign in with your ChatGPT Plus/Pro account</span>
                         <button
-                          className="provider-card__oauth-btn"
+                          className="py-1.5 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
                           onClick={() => handleOAuthLogin(provider)}
                           disabled={isOperationInProgress.current}
                           type="button"
@@ -286,25 +300,25 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                       </>
                     )}
                     {oauthChallenge && (
-                      <div className="provider-card__oauth-code">
-                        <span className="provider-card__oauth-code-label">Your code:</span>
-                        <code className="provider-card__oauth-code-value">{oauthChallenge.user_code}</code>
+                      <div className="flex items-center gap-2 pt-2">
+                        <span className="text-caption text-text-muted font-body">Your code:</span>
+                        <code className="font-mono text-body-sm text-accent-action bg-surface-base py-0.5 px-2 rounded-sm tracking-[0.15em]">{oauthChallenge.user_code}</code>
                       </div>
                     )}
                   </div>
                 ) : editingKey ? (
-                  <div className="provider-card__input-row">
-                    <div className="provider-card__input-wrapper">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 relative flex items-center">
                       <input
                         type={showKey ? "text" : "password"}
-                        className="provider-card__input"
+                        className="w-full py-1.5 pr-8 pl-2.5 bg-surface-base border border-surface-overlay rounded-sm text-text-primary font-mono text-mono outline-none transition-colors duration-150 ease-out-quart placeholder:text-text-muted focus:border-accent-action"
                         placeholder={`${provider.name} API key`}
                         value={provider.apiKey}
                         onChange={(e) => updateProvider(provider.id, { apiKey: e.target.value, status: "idle", testMessage: "" })}
                         aria-label={`${provider.name} API key`}
                       />
                       <button
-                        className="provider-card__toggle-visibility"
+                        className="absolute right-1.5 border-none bg-transparent text-text-muted cursor-pointer p-0.5 rounded-sm flex items-center justify-center transition-colors duration-150 hover:text-text-primary"
                         onClick={() => setShowKeyFor((prev) => (prev === provider.id ? null : provider.id))}
                         aria-label={showKey ? "Hide API key" : "Show API key"}
                         type="button"
@@ -324,7 +338,7 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                       </button>
                     </div>
                     <button
-                      className="provider-card__save-btn"
+                      className="py-1.5 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
                       onClick={() => handleSaveKey(provider)}
                       disabled={!provider.apiKey.trim()}
                       type="button"
@@ -333,28 +347,36 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                     </button>
                   </div>
                 ) : (
-                  <div className="provider-card__oauth-row">
-                    <span className="provider-card__oauth-status">Key saved</span>
-                    <button
-                      className="provider-card__oauth-btn"
-                      onClick={() => setEditingKeyFor(provider.id)}
-                      type="button"
-                    >
-                      Replace
-                    </button>
-                    <button
-                      className="provider-card__oauth-btn provider-card__oauth-btn--logout"
-                      onClick={() => handleRemoveKey(provider)}
-                      disabled={isOperationInProgress.current}
-                      type="button"
-                    >
-                      Remove
-                    </button>
+                  <div className="flex items-center justify-between gap-2 py-1">
+                    <span className="text-caption text-status-success font-body font-medium">Key saved</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="py-1.5 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90"
+                        onClick={() => setEditingKeyFor(provider.id)}
+                        type="button"
+                      >
+                        Replace
+                      </button>
+                      <button
+                        className="py-1.5 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
+                        onClick={() => handleRemoveKey(provider)}
+                        disabled={isOperationInProgress.current}
+                        type="button"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
                 )}
 
                 {!isIdle && (
-                  <span className={`provider-card__test-result provider-card__test-result--${provider.status}`}>
+                  <span className={`text-caption font-body ${
+                    isSuccess
+                      ? "text-status-success"
+                      : isError
+                      ? "text-status-error"
+                      : "text-text-muted"
+                  }`}>
                     {provider.testMessage}
                   </span>
                 )}
