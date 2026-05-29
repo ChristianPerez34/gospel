@@ -1,7 +1,7 @@
 export function TitleBar() {
   return (
     <div
-      className="h-titlebar-height flex items-center justify-between bg-surface-elevated border-b border-surface-overlay px-3 select-none"
+      className="h-[var(--titlebar-height)] flex items-center justify-between bg-surface-elevated border-b border-surface-overlay px-3 select-none"
       data-tauri-drag-region
       // @ts-expect-error WebkitAppRegion is a Tauri-specific vendor property
       style={{ WebkitAppRegion: "drag" }}

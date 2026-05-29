@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Session } from "../types";
 
 interface SessionDrawerProps {
@@ -63,24 +63,41 @@ export function SessionDrawer({
     }
   }
 
+  const [scrimVisible, setScrimVisible] = useState(false);
+  const scrimRef = useRef<HTMLDivElement>(null);
+
   const drawerClass = open
     ? "translate-x-0"
     : "-translate-x-full";
 
+  useEffect(() => {
+    if (open) {
+      setScrimVisible(true);
+    }
+  }, [open]);
+
+  const handleScrimTransitionEnd = () => {
+    if (!open) {
+      setScrimVisible(false);
+    }
+  };
+
   return (
     <>
-      {open && (
-        <div
-          className="fixed inset-0 bg-scrim z-[calc(var(--z-drawers)_-_1)] opacity-0 transition-opacity duration-[250ms] ease-out-quart"
-          style={{ opacity: open ? 1 : 0 }}
-          onClick={onClose}
-          aria-hidden="true"
-        />
-      )}
+      <div
+        ref={scrimRef}
+        className="fixed inset-0 bg-scrim z-[calc(var(--z-drawers)_-_1)] transition-opacity duration-[250ms] ease-out-quart"
+        style={{ opacity: scrimVisible ? 1 : 0, pointerEvents: open ? "auto" : "none" }}
+        onClick={onClose}
+        aria-hidden="true"
+        onTransitionEnd={handleScrimTransitionEnd}
+      />
       <aside
-        className={`fixed left-0 top-0 bottom-0 w-sidebar-width bg-surface-elevated border-r border-surface-overlay flex flex-col z-[--z-drawers] transition-transform duration-[250ms] ease-out-quart ${drawerClass}`}
+        className={`fixed left-0 top-0 bottom-0 w-[var(--sidebar-width)] bg-surface-elevated border-r border-surface-overlay flex flex-col z-[var(--z-drawers)] transition-transform duration-[250ms] ease-out-quart ${drawerClass}`}
         role="navigation"
         aria-label="Session history"
+        aria-hidden={!open}
+        tabIndex={open ? undefined : -1}
       >
         <div className="flex items-center gap-2 p-3 border-b border-surface-overlay shrink-0">
           <svg

@@ -59,7 +59,7 @@ export function SettingsModal({ open, onClose, providers, onProvidersChange, onR
 
         <div className="flex gap-0 px-5 border-b border-surface-overlay shrink-0">
           <button
-            className={`py-2.5 px-3.5 bg-transparent border-none border-b-2 font-body text-[13px] font-medium cursor-pointer transition-colors duration-150 ${
+            className={`py-2.5 px-3.5 bg-transparent border-b-2 font-body text-[13px] font-medium cursor-pointer transition-colors duration-150 ${
               activeTab === "general"
                 ? "text-accent-action border-b-accent-action"
                 : "text-text-muted border-b-transparent hover:text-text-secondary"
@@ -70,7 +70,7 @@ export function SettingsModal({ open, onClose, providers, onProvidersChange, onR
             General
           </button>
           <button
-            className={`py-2.5 px-3.5 bg-transparent border-none border-b-2 font-body text-[13px] font-medium cursor-pointer transition-colors duration-150 ${
+            className={`py-2.5 px-3.5 bg-transparent border-b-2 font-body text-[13px] font-medium cursor-pointer transition-colors duration-150 ${
               activeTab === "models"
                 ? "text-accent-action border-b-accent-action"
                 : "text-text-muted border-b-transparent hover:text-text-secondary"

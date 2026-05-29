@@ -73,12 +73,12 @@ export function WorkspaceSwitcher({
   return (
     <>
       <div
-        className="fixed inset-0 bg-scrim z-[--z-scrim]"
+        className="fixed inset-0 bg-scrim z-[var(--z-scrim)]"
         onClick={onClose}
         aria-hidden="true"
       />
       <div
-        className="absolute top-[calc(var(--titlebar-height)_+_var(--topbar-height))] left-4 w-80 max-h-[400px] bg-surface-elevated border border-surface-overlay rounded-md flex flex-col z-[--z-dialog] overflow-hidden"
+                className="absolute top-[calc(var(--titlebar-height)_+_var(--topbar-height))] left-4 w-80 max-h-[400px] bg-surface-elevated border border-surface-overlay rounded-md flex flex-col z-[var(--z-dialog)] overflow-hidden"
         role="dialog"
         aria-label="Switch workspace"
         aria-modal="true"
@@ -117,7 +117,7 @@ export function WorkspaceSwitcher({
             return (
               <div
                 key={ws.id}
-                className={`flex items-center w-full border-l-2 transition-colors duration-150 ease-out-quart ${
+                className={`flex items-center w-full border-l-2 transition-colors duration-150 ease-out-quart group ${
                   isActive ? "border-l-accent-action" : "border-l-transparent"
                 } hover:bg-surface-overlay`}
               >
@@ -137,7 +137,7 @@ export function WorkspaceSwitcher({
                   )}
                 </button>
                 <button
-                  className="flex items-center justify-center w-5 h-5 mr-2 border-none bg-transparent text-text-muted cursor-pointer rounded-sm text-sm leading-none shrink-0 opacity-0 transition-opacity duration-150 ease-out-quart hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent-action focus-visible:outline-offset-2"
+                  className="flex items-center justify-center w-5 h-5 mr-2 border-none bg-transparent text-text-muted cursor-pointer rounded-sm text-sm leading-none shrink-0 opacity-0 transition-opacity duration-150 ease-out-quart group-hover:opacity-100 hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent-action focus-visible:outline-offset-2"
                   onClick={(e) => {
                     e.stopPropagation();
                     onRemove(ws.id);

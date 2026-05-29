@@ -50,7 +50,7 @@ export function TopBar({
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
 
   return (
-    <header className="h-topbar-height flex items-center justify-between px-4 bg-surface-base border-b border-surface-overlay shrink-0">
+    <header className="h-[var(--topbar-height)] flex items-center justify-between px-4 bg-surface-base border-b border-surface-overlay shrink-0">
       <div className="flex items-center gap-2 min-w-0">
         <button
           className={`w-7 h-7 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${sessionToggleClass}`}
@@ -66,11 +66,11 @@ export function TopBar({
           </svg>
         </button>
         <button
-          className="flex items-center gap-1 py-1 px-2 rounded-sm transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
+          className="flex min-w-0 items-center gap-1 py-1 px-2 rounded-sm transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
           onClick={onWorkspaceSwitch}
           aria-label="Switch workspace"
         >
-          <span className="text-body-sm font-medium whitespace-nowrap">{workspace.name}</span>
+          <span className="text-body-sm font-medium truncate max-w-[220px]">{workspace.name}</span>
           <svg
             className="shrink-0 opacity-50"
             width="14"
