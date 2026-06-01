@@ -6,6 +6,7 @@ pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+mod workspace_tools;
 
 #[cfg(not(test))]
 mod model_fetch;
@@ -37,7 +38,7 @@ use corpus::commands::{
 };
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
-use llm::{LlmError, LlmService, StreamEvent};
+use llm::{LlmError, LlmService, StreamEvent, WorkspaceToolContext};
 use models::ModelInfo;
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
@@ -542,13 +543,33 @@ async fn complete_streaming(
             .unwrap_or_else(|| "<none>".to_string())
     );
 
-    if let Some(path) = &workspace_path {
-        if let Err(e) = ensure_workspace_corpus(&app, path).await {
-            let dto = LlmError::ProviderError(e).to_dto();
-            let _ = app.emit("llm-error", dto.clone());
-            return Err(dto);
-        }
-    }
+    let workspace_context = if let Some(path) = workspace_path.clone() {
+        let corpus_available = match ensure_workspace_corpus(&app, &path).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(
+                    "[CORPUS-AUTO] continuing without corpus for {}: {}",
+                    path.display(),
+                    e
+                );
+                let _ = app.emit(
+                    "corpus-auto-build-complete",
+                    CorpusAutoBuildComplete {
+                        success: false,
+                        symbol_count: 0,
+                    },
+                );
+                false
+            }
+        };
+
+        Some(WorkspaceToolContext {
+            workspace_path: path,
+            corpus_available,
+        })
+    } else {
+        None
+    };
 
     let api_key = if provider == "chatgpt" {
         String::new()
@@ -570,7 +591,7 @@ async fn complete_streaming(
         &prompt,
         &model,
         &api_key,
-        workspace_path,
+        workspace_context,
         chat_history,
         move |event| match event {
             StreamEvent::Text(token) => {
@@ -786,7 +807,8 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
                     Ok(Some(workspace)) => {
                         tracing::debug!(
                             "[CORPUS-AUTO] startup active workspace: {} ({})",
-                            workspace.name, workspace.path
+                            workspace.name,
+                            workspace.path
                         );
                         Some(PathBuf::from(workspace.path))
                     }
@@ -803,7 +825,9 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
                     }
                 },
                 None => {
-                    tracing::debug!("[CORPUS-AUTO] startup check skipped: app config store unavailable");
+                    tracing::debug!(
+                        "[CORPUS-AUTO] startup check skipped: app config store unavailable"
+                    );
                     None
                 }
             }
@@ -908,12 +932,15 @@ fn set_active_workspace(
                 Ok(Some(workspace)) => {
                     tracing::debug!(
                         "[CORPUS-AUTO] active workspace set to {} ({})",
-                        workspace.name, workspace.path
+                        workspace.name,
+                        workspace.path
                     );
                     spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
                 }
                 Ok(None) => {
-                    tracing::debug!("[CORPUS-AUTO] set active workspace succeeded but no workspace is active");
+                    tracing::debug!(
+                        "[CORPUS-AUTO] set active workspace succeeded but no workspace is active"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(
