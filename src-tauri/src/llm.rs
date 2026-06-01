@@ -24,7 +24,7 @@ use crate::workspace_tools::{
     create_search_code_tool, truncate_text_bytes, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
-const AGENT_MAX_TURNS: usize = 5;
+const AGENT_MAX_TURNS: usize = 20;
 const EXPLORATION_TIMEOUT: Duration = Duration::from_secs(90);
 const EXPLORATION_REPORT_BYTES_CAP: usize = 32 * 1024;
 const DELEGATION_SYSTEM_PROMPT: &str = r#"
