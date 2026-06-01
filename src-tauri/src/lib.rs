@@ -684,16 +684,20 @@ async fn complete_streaming(
             StreamEvent::Text(token) => {
                 let _ = app_clone.emit("llm-token", token);
             }
-            StreamEvent::ToolCall { name, arguments } => {
+            StreamEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
                 let _ = app_clone.emit(
                     "llm-tool-call",
-                    serde_json::json!({ "name": name, "arguments": arguments }),
+                    serde_json::json!({ "id": id, "name": name, "arguments": arguments }),
                 );
             }
-            StreamEvent::ToolResult { name, result } => {
+            StreamEvent::ToolResult { id, name, result } => {
                 let _ = app_clone.emit(
                     "llm-tool-result",
-                    serde_json::json!({ "name": name, "result": result }),
+                    serde_json::json!({ "id": id, "name": name, "result": result }),
                 );
             }
         },

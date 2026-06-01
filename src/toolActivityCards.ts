@@ -108,8 +108,8 @@ export function summarizeLiveToolActivity(
 export function toolActivitiesToActionCards(
   activities: ToolCallActivity[]
 ): ActionCard[] {
-  return activities.map((activity, index) => ({
-    id: `${activity.name}-${index}`,
+  return activities.map((activity) => ({
+    id: activity.id,
     type: actionCardTypeForTool(activity.name),
     summary: formatToolActivityLabel(activity),
     content: formatToolActivityContent(activity),
