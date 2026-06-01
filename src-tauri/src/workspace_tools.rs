@@ -51,11 +51,17 @@ const BINARY_SAMPLE_BYTES: usize = 4096;
 
 static HIDDEN_ALLOWLIST: Lazy<GlobSet> = Lazy::new(|| {
     build_globset(&[
+        ".github",
         ".github/**",
+        ".vscode",
         ".vscode/**",
+        ".devcontainer",
         ".devcontainer/**",
+        ".cargo",
         ".cargo/**",
+        ".agents",
         ".agents/**",
+        ".opencode",
         ".opencode/**",
         ".gitignore",
         ".gitattributes",
@@ -167,7 +173,7 @@ impl WorkspaceAccess {
                 })?;
 
             return Ok(ResolvedPath {
-                absolute_path: normalized,
+                absolute_path: canonical,
                 relative_path,
                 exists: true,
                 is_dir: metadata.is_dir(),
@@ -928,16 +934,19 @@ pub(crate) fn truncate_text_bytes(text: &str, max_bytes: usize) -> (String, bool
         return (text.to_string(), false);
     }
 
+    let suffix = "\n\n[truncated]";
+    let suffix_bytes = suffix.len();
+    let allowed_bytes = max_bytes.saturating_sub(suffix_bytes);
     let mut last_boundary = 0;
     for (index, _) in text.char_indices() {
-        if index > max_bytes {
+        if index > allowed_bytes {
             break;
         }
         last_boundary = index;
     }
 
     let truncated = text[..last_boundary].trim_end().to_string();
-    (format!("{}\n\n[truncated]", truncated), true)
+    (format!("{}{}", truncated, suffix), true)
 }
 
 fn build_globset(patterns: &[&str]) -> GlobSet {
@@ -1726,6 +1735,32 @@ mod tests {
         assert_eq!(secret.reason.as_deref(), Some("blocked"));
     }
 
+    #[test]
+    fn hidden_allowlist_includes_directory_itself() {
+        for path in [
+            ".github",
+            ".vscode",
+            ".devcontainer",
+            ".cargo",
+            ".agents",
+            ".opencode",
+        ] {
+            assert!(
+                blocked_path_reason(Path::new(path), PathKind::Directory, true).is_none(),
+                "{path} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn truncate_text_bytes_reserves_space_for_suffix() {
+        let (truncated, did_truncate) = truncate_text_bytes("abcdefghijklmnopqrstuv", 20);
+
+        assert!(did_truncate);
+        assert_eq!(truncated.len(), 20);
+        assert_eq!(truncated, "abcdefg\n\n[truncated]");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn read_file_blocks_symlink_escape() {
@@ -1830,5 +1865,33 @@ mod tests {
             .entries
             .iter()
             .all(|entry| entry.path != "linked-dir/deep"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_directory_uses_canonical_paths_for_symlink_ancestor() {
+        let dir = tempdir().unwrap();
+        write_file(&dir.path().join("real/src/main.rs"), b"");
+        symlink(dir.path().join("real"), dir.path().join("alias")).unwrap();
+
+        let tool = create_list_directory_tool(dir.path().to_path_buf());
+        let output = tool
+            .call(ListDirectoryArgs {
+                path: Some("alias/src".to_string()),
+                depth: Some(1),
+                max_entries: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert!(output
+            .entries
+            .iter()
+            .any(|entry| entry.path == "real/src/main.rs"));
+        assert!(output
+            .entries
+            .iter()
+            .all(|entry| entry.path != "alias/src/main.rs"));
     }
 }

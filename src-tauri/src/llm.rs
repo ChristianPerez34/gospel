@@ -7,6 +7,7 @@ use rig::completion::{CompletionModel, Prompt, ToolDefinition};
 use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
 use rig::tool::Tool;
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::future::Future;
@@ -213,12 +214,36 @@ struct DelegateExplorationOutput {
     reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct DelegateExplorationTool {
     workspace: WorkspaceToolContext,
     provider: String,
     model: String,
     api_key: String,
+}
+
+impl std::fmt::Debug for DelegateExplorationTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelegateExplorationTool")
+            .field("workspace", &self.workspace)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Serialize for DelegateExplorationTool {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("DelegateExplorationTool", 3)?;
+        state.serialize_field("workspace", &self.workspace)?;
+        state.serialize_field("provider", &self.provider)?;
+        state.serialize_field("model", &self.model)?;
+        state.end()
+    }
 }
 
 impl Tool for DelegateExplorationTool {
@@ -649,6 +674,18 @@ where
 mod tests {
     use super::*;
 
+    fn delegate_tool_for_test() -> DelegateExplorationTool {
+        DelegateExplorationTool {
+            workspace: WorkspaceToolContext {
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                corpus_available: false,
+            },
+            provider: "openai".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_key: "secret-api-key".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn completion_rejects_blank_api_key() {
         let error = LlmService::completion("openai", "hello", "gpt-4o-mini", "  ")
@@ -689,6 +726,24 @@ mod tests {
         let result = validate_api_key("openai", "");
 
         assert!(matches!(result, Err(LlmError::ApiKeyMissing)));
+    }
+
+    #[test]
+    fn delegate_exploration_tool_debug_redacts_api_key() {
+        let debug = format!("{:?}", delegate_tool_for_test());
+
+        assert!(debug.contains("api_key"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret-api-key"));
+    }
+
+    #[test]
+    fn delegate_exploration_tool_serialization_omits_api_key() {
+        let json = serde_json::to_string(&delegate_tool_for_test()).unwrap();
+
+        assert!(json.contains("provider"));
+        assert!(!json.contains("api_key"));
+        assert!(!json.contains("secret-api-key"));
     }
 
     #[test]
