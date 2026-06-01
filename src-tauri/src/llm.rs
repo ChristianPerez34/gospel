@@ -94,10 +94,12 @@ impl LlmError {
 pub enum StreamEvent {
     Text(String),
     ToolCall {
+        id: String,
         name: String,
         arguments: serde_json::Value,
     },
     ToolResult {
+        id: String,
         name: String,
         result: String,
     },
@@ -585,6 +587,7 @@ where
                             tool_name_by_id
                                 .insert(internal_call_id.clone(), tool_call.function.name.clone());
                             on_event(StreamEvent::ToolCall {
+                                id: internal_call_id,
                                 name: tool_call.function.name.clone(),
                                 arguments: tool_call.function.arguments.clone(),
                             });
@@ -609,6 +612,7 @@ where
                                 .cloned()
                                 .unwrap_or_else(|| tool_result.id.clone());
                             on_event(StreamEvent::ToolResult {
+                                id: internal_call_id,
                                 name: tool_name,
                                 result: result_summary,
                             });

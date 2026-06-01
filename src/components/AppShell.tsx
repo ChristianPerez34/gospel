@@ -277,11 +277,12 @@ export function AppShell() {
               });
             }
           }),
-          listen<{ name: string; arguments?: unknown }>("llm-tool-call", (event) => {
+          listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
             setToolActivities((prev) => {
               const next = [
                 ...prev,
                 {
+                  id: event.payload.id,
                   name: event.payload.name,
                   arguments: event.payload.arguments,
                   status: "calling" as const,
@@ -293,9 +294,9 @@ export function AppShell() {
             });
             setStatus("acting");
           }),
-          listen<{ name: string; result: string }>("llm-tool-result", (event) => {
+          listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
             setToolActivities((prev) => {
-              const idx = prev.findIndex((a) => a.name === event.payload.name && a.status === "calling");
+              const idx = prev.findIndex((a) => a.id === event.payload.id);
               if (idx >= 0) {
                 const updated = [...prev];
                 updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
@@ -306,6 +307,7 @@ export function AppShell() {
               const next = [
                 ...prev,
                 {
+                  id: event.payload.id,
                   name: event.payload.name,
                   result: event.payload.result,
                   status: "completed" as const,
