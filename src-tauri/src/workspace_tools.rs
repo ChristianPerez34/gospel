@@ -75,6 +75,18 @@ static HIDDEN_ALLOWLIST: Lazy<GlobSet> = Lazy::new(|| {
     ])
 });
 
+const HIDDEN_ALLOWLISTED_FILENAMES: &[&str] = &[
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".editorconfig",
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+    ".nvmrc",
+    ".tool-versions",
+];
+
 #[derive(Debug, Error)]
 pub enum WorkspaceToolError {
     #[error("workspace root is unavailable: {0}")]
@@ -1003,7 +1015,7 @@ fn blocked_path_reason(path: &Path, kind: PathKind, broad_tool: bool) -> Option<
         return Some("Secret-like files are blocked from chat tools.".to_string());
     }
 
-    if has_hidden_component(path) && !HIDDEN_ALLOWLIST.is_match(path_to_slash(path)) {
+    if has_hidden_component(path) && !is_hidden_allowlisted_path(path) {
         return Some("Hidden path is blocked by the workspace safety policy.".to_string());
     }
 
@@ -1028,6 +1040,36 @@ fn has_hidden_component(path: &Path) -> bool {
         Component::Normal(part) => part.to_string_lossy().starts_with('.'),
         _ => false,
     })
+}
+
+fn is_hidden_allowlisted_path(path: &Path) -> bool {
+    if HIDDEN_ALLOWLIST.is_match(path_to_slash(path)) {
+        return true;
+    }
+
+    let file_name = path.file_name().map(|name| name.to_string_lossy());
+    let mut allowed_hidden_file = false;
+
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        let part = part.to_string_lossy();
+        if !part.starts_with('.') {
+            continue;
+        }
+
+        if file_name.as_deref() == Some(part.as_ref())
+            && HIDDEN_ALLOWLISTED_FILENAMES.contains(&part.as_ref())
+        {
+            allowed_hidden_file = true;
+            continue;
+        }
+
+        return false;
+    }
+
+    allowed_hidden_file
 }
 
 fn has_ignored_directory_component(path: &Path) -> bool {
@@ -1243,7 +1285,6 @@ fn search_file(
 ) -> Result<(), WorkspaceToolError> {
     if let Some(reason) = blocked_path_reason(&scope.relative_path, PathKind::File, true) {
         state.skipped_files += 1;
-        state.truncated = false;
         let _ = reason;
         return Ok(());
     }
@@ -1325,9 +1366,6 @@ fn walk_search_directory(
         state.visited_entries += 1;
         if state.visited_entries > VISITED_ENTRY_CAP {
             state.truncated = true;
-            return Ok(());
-        }
-        if state.truncated {
             return Ok(());
         }
 
@@ -1753,6 +1791,27 @@ mod tests {
     }
 
     #[test]
+    fn hidden_allowlist_includes_config_files_at_any_depth() {
+        for path in [
+            ".gitignore",
+            "src/.gitignore",
+            "packages/app/.editorconfig",
+            "examples/.env.example",
+            "tools/.nvmrc",
+        ] {
+            assert!(
+                blocked_path_reason(Path::new(path), PathKind::File, false).is_none(),
+                "{path} should be allowed"
+            );
+        }
+
+        assert!(
+            blocked_path_reason(Path::new("src/.hidden/.gitignore"), PathKind::File, false,)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn truncate_text_bytes_reserves_space_for_suffix() {
         let (truncated, did_truncate) = truncate_text_bytes("abcdefghijklmnopqrstuv", 20);
 
@@ -1815,6 +1874,41 @@ mod tests {
         assert!(output.success);
         assert_eq!(output.matches.len(), 1);
         assert_eq!(output.matches[0].path, "src/lib.rs");
+    }
+
+    #[test]
+    fn search_file_preserves_existing_truncation_when_blocked() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join(".env");
+        write_file(&file_path, b"TOKEN=abc\n");
+        let regex = Regex::new("TOKEN").unwrap();
+        let scope = ResolvedPath {
+            absolute_path: file_path,
+            relative_path: PathBuf::from(".env"),
+            exists: true,
+            is_dir: false,
+            is_file: true,
+            is_symlink: false,
+        };
+        let mut state = SearchState {
+            regex: &regex,
+            include_matcher: None,
+            matches: Vec::new(),
+            scanned_files: 0,
+            skipped_files: 0,
+            scanned_bytes: 0,
+            visited_entries: 0,
+            truncated: true,
+            max_results: 10,
+            scope_match_base: PathBuf::new(),
+            scope_is_file: true,
+        };
+
+        search_file(&scope, &mut state).unwrap();
+
+        assert!(state.truncated);
+        assert_eq!(state.skipped_files, 1);
+        assert_eq!(state.scanned_files, 0);
     }
 
     #[tokio::test]

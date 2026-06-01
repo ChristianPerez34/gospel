@@ -219,6 +219,7 @@ struct DelegateExplorationTool {
     workspace: WorkspaceToolContext,
     provider: String,
     model: String,
+    #[serde(default)]
     api_key: String,
 }
 
@@ -744,6 +745,15 @@ mod tests {
         assert!(json.contains("provider"));
         assert!(!json.contains("api_key"));
         assert!(!json.contains("secret-api-key"));
+    }
+
+    #[test]
+    fn delegate_exploration_tool_deserializes_redacted_serialization() {
+        let value = serde_json::to_value(delegate_tool_for_test()).unwrap();
+        let tool: DelegateExplorationTool = serde_json::from_value(value).unwrap();
+
+        assert_eq!(tool.api_key, "");
+        assert_eq!(tool.provider, "openai");
     }
 
     #[test]

@@ -43,12 +43,17 @@ use models::ModelInfo;
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
 use serde::Serialize;
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
 
 #[derive(Parser, Debug)]
 #[command(name = "gospel", about = "Gospel AI coding assistant")]
@@ -93,6 +98,45 @@ struct ModelAvailabilitySnapshot {
 struct CorpusAutoBuildComplete {
     success: bool,
     symbol_count: usize,
+}
+
+fn corpus_auto_build_complete_payload(
+    success: bool,
+    symbol_count: usize,
+) -> CorpusAutoBuildComplete {
+    CorpusAutoBuildComplete {
+        success,
+        symbol_count,
+    }
+}
+
+fn corpus_auto_build_failure_payload() -> CorpusAutoBuildComplete {
+    corpus_auto_build_complete_payload(false, 0)
+}
+
+fn emit_corpus_auto_build_complete<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    payload: CorpusAutoBuildComplete,
+) {
+    let _ = app.emit(CORPUS_AUTO_BUILD_COMPLETE_EVENT, payload);
+}
+
+fn validate_active_workspace_path(path: &Path) -> Result<(), String> {
+    if !path
+        .try_exists()
+        .map_err(|e| format!("Failed to inspect workspace path {}: {}", path.display(), e))?
+    {
+        return Err(format!("Workspace path does not exist: {}", path.display()));
+    }
+
+    if !path.is_dir() {
+        return Err(format!(
+            "Workspace path is not a directory: {}",
+            path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 #[derive(Serialize, Clone)]
@@ -452,6 +496,42 @@ mod availability_tests {
     }
 }
 
+#[cfg(test)]
+mod corpus_auto_build_event_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn failure_event_contract_uses_existing_frontend_payload() {
+        let payload = serde_json::to_value(corpus_auto_build_failure_payload()).unwrap();
+
+        assert_eq!(
+            CORPUS_AUTO_BUILD_COMPLETE_EVENT,
+            "corpus-auto-build-complete"
+        );
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "success": false,
+                "symbol_count": 0,
+            })
+        );
+    }
+
+    #[test]
+    fn active_workspace_path_must_exist_and_be_directory() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let file = dir.path().join("workspace-file");
+        fs::write(&file, b"not a directory").unwrap();
+
+        assert!(validate_active_workspace_path(dir.path()).is_ok());
+        assert!(validate_active_workspace_path(&missing).is_err());
+        assert!(validate_active_workspace_path(&file).is_err());
+    }
+}
+
 #[tauri::command]
 async fn complete(
     app: tauri::AppHandle,
@@ -544,22 +624,36 @@ async fn complete_streaming(
     );
 
     let workspace_context = if let Some(path) = workspace_path.clone() {
-        let corpus_available = match ensure_workspace_corpus(&app, &path).await {
-            Ok(_) => true,
+        match validate_active_workspace_path(&path) {
+            Ok(()) => {
+                let corpus_available = match ensure_workspace_corpus(&app, &path).await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        tracing::warn!(
+                            "[CORPUS-AUTO] continuing without corpus for {}: {}",
+                            path.display(),
+                            e
+                        );
+                        emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
+                        false
+                    }
+                };
+
+                Some(WorkspaceToolContext {
+                    workspace_path: path,
+                    corpus_available,
+                })
+            }
             Err(e) => {
                 tracing::warn!(
-                    "[CORPUS-AUTO] continuing without corpus for {}: {}",
+                    "[CORPUS-AUTO] workspace tools unavailable for {}: {}",
                     path.display(),
                     e
                 );
-                false
+                emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
+                None
             }
-        };
-
-        Some(WorkspaceToolContext {
-            workspace_path: path,
-            corpus_available,
-        })
+        }
     } else {
         None
     };
@@ -835,12 +929,9 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
 async fn run_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf) {
     match ensure_workspace_corpus(&app, &workspace_path).await {
         Ok(Some(symbol_count)) => {
-            let _ = app.emit(
-                "corpus-auto-build-complete",
-                CorpusAutoBuildComplete {
-                    success: true,
-                    symbol_count,
-                },
+            emit_corpus_auto_build_complete(
+                &app,
+                corpus_auto_build_complete_payload(true, symbol_count),
             );
         }
         Ok(None) => {}
@@ -850,13 +941,7 @@ async fn run_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf) {
                 workspace_path.display(),
                 e
             );
-            let _ = app.emit(
-                "corpus-auto-build-complete",
-                CorpusAutoBuildComplete {
-                    success: false,
-                    symbol_count: 0,
-                },
-            );
+            emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
         }
     }
 }
@@ -870,12 +955,7 @@ async fn ensure_workspace_corpus(
         workspace_path.display()
     );
 
-    if !workspace_path.exists() {
-        return Err(format!(
-            "Workspace path does not exist: {:?}",
-            workspace_path
-        ));
-    }
+    validate_active_workspace_path(workspace_path)?;
 
     let _guard = CORPUS_BUILD_LOCK.lock().await;
     let persistence = CorpusPersistence::new(workspace_path)
