@@ -552,13 +552,6 @@ async fn complete_streaming(
                     path.display(),
                     e
                 );
-                let _ = app.emit(
-                    "corpus-auto-build-complete",
-                    CorpusAutoBuildComplete {
-                        success: false,
-                        symbol_count: 0,
-                    },
-                );
                 false
             }
         };
