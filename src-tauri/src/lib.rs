@@ -6,6 +6,7 @@ pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+mod workspace_tools;
 
 #[cfg(not(test))]
 mod model_fetch;
@@ -37,17 +38,22 @@ use corpus::commands::{
 };
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
-use llm::{LlmError, LlmService, StreamEvent};
+use llm::{LlmError, LlmService, StreamEvent, WorkspaceToolContext};
 use models::ModelInfo;
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
 use serde::Serialize;
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
 
 #[derive(Parser, Debug)]
 #[command(name = "gospel", about = "Gospel AI coding assistant")]
@@ -92,6 +98,45 @@ struct ModelAvailabilitySnapshot {
 struct CorpusAutoBuildComplete {
     success: bool,
     symbol_count: usize,
+}
+
+fn corpus_auto_build_complete_payload(
+    success: bool,
+    symbol_count: usize,
+) -> CorpusAutoBuildComplete {
+    CorpusAutoBuildComplete {
+        success,
+        symbol_count,
+    }
+}
+
+fn corpus_auto_build_failure_payload() -> CorpusAutoBuildComplete {
+    corpus_auto_build_complete_payload(false, 0)
+}
+
+fn emit_corpus_auto_build_complete<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    payload: CorpusAutoBuildComplete,
+) {
+    let _ = app.emit(CORPUS_AUTO_BUILD_COMPLETE_EVENT, payload);
+}
+
+fn validate_active_workspace_path(path: &Path) -> Result<(), String> {
+    if !path
+        .try_exists()
+        .map_err(|e| format!("Failed to inspect workspace path {}: {}", path.display(), e))?
+    {
+        return Err(format!("Workspace path does not exist: {}", path.display()));
+    }
+
+    if !path.is_dir() {
+        return Err(format!(
+            "Workspace path is not a directory: {}",
+            path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 #[derive(Serialize, Clone)]
@@ -451,6 +496,42 @@ mod availability_tests {
     }
 }
 
+#[cfg(test)]
+mod corpus_auto_build_event_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn failure_event_contract_uses_existing_frontend_payload() {
+        let payload = serde_json::to_value(corpus_auto_build_failure_payload()).unwrap();
+
+        assert_eq!(
+            CORPUS_AUTO_BUILD_COMPLETE_EVENT,
+            "corpus-auto-build-complete"
+        );
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "success": false,
+                "symbol_count": 0,
+            })
+        );
+    }
+
+    #[test]
+    fn active_workspace_path_must_exist_and_be_directory() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let file = dir.path().join("workspace-file");
+        fs::write(&file, b"not a directory").unwrap();
+
+        assert!(validate_active_workspace_path(dir.path()).is_ok());
+        assert!(validate_active_workspace_path(&missing).is_err());
+        assert!(validate_active_workspace_path(&file).is_err());
+    }
+}
+
 #[tauri::command]
 async fn complete(
     app: tauri::AppHandle,
@@ -542,13 +623,40 @@ async fn complete_streaming(
             .unwrap_or_else(|| "<none>".to_string())
     );
 
-    if let Some(path) = &workspace_path {
-        if let Err(e) = ensure_workspace_corpus(&app, path).await {
-            let dto = LlmError::ProviderError(e).to_dto();
-            let _ = app.emit("llm-error", dto.clone());
-            return Err(dto);
+    let workspace_context = if let Some(path) = workspace_path.clone() {
+        match validate_active_workspace_path(&path) {
+            Ok(()) => {
+                let corpus_available = match ensure_workspace_corpus(&app, &path).await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        tracing::warn!(
+                            "[CORPUS-AUTO] continuing without corpus for {}: {}",
+                            path.display(),
+                            e
+                        );
+                        emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
+                        false
+                    }
+                };
+
+                Some(WorkspaceToolContext {
+                    workspace_path: path,
+                    corpus_available,
+                })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[CORPUS-AUTO] workspace tools unavailable for {}: {}",
+                    path.display(),
+                    e
+                );
+                emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
+                None
+            }
         }
-    }
+    } else {
+        None
+    };
 
     let api_key = if provider == "chatgpt" {
         String::new()
@@ -570,7 +678,7 @@ async fn complete_streaming(
         &prompt,
         &model,
         &api_key,
-        workspace_path,
+        workspace_context,
         chat_history,
         move |event| match event {
             StreamEvent::Text(token) => {
@@ -786,7 +894,8 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
                     Ok(Some(workspace)) => {
                         tracing::debug!(
                             "[CORPUS-AUTO] startup active workspace: {} ({})",
-                            workspace.name, workspace.path
+                            workspace.name,
+                            workspace.path
                         );
                         Some(PathBuf::from(workspace.path))
                     }
@@ -803,7 +912,9 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
                     }
                 },
                 None => {
-                    tracing::debug!("[CORPUS-AUTO] startup check skipped: app config store unavailable");
+                    tracing::debug!(
+                        "[CORPUS-AUTO] startup check skipped: app config store unavailable"
+                    );
                     None
                 }
             }
@@ -818,12 +929,9 @@ fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
 async fn run_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf) {
     match ensure_workspace_corpus(&app, &workspace_path).await {
         Ok(Some(symbol_count)) => {
-            let _ = app.emit(
-                "corpus-auto-build-complete",
-                CorpusAutoBuildComplete {
-                    success: true,
-                    symbol_count,
-                },
+            emit_corpus_auto_build_complete(
+                &app,
+                corpus_auto_build_complete_payload(true, symbol_count),
             );
         }
         Ok(None) => {}
@@ -833,13 +941,7 @@ async fn run_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf) {
                 workspace_path.display(),
                 e
             );
-            let _ = app.emit(
-                "corpus-auto-build-complete",
-                CorpusAutoBuildComplete {
-                    success: false,
-                    symbol_count: 0,
-                },
-            );
+            emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
         }
     }
 }
@@ -853,12 +955,7 @@ async fn ensure_workspace_corpus(
         workspace_path.display()
     );
 
-    if !workspace_path.exists() {
-        return Err(format!(
-            "Workspace path does not exist: {:?}",
-            workspace_path
-        ));
-    }
+    validate_active_workspace_path(workspace_path)?;
 
     let _guard = CORPUS_BUILD_LOCK.lock().await;
     let persistence = CorpusPersistence::new(workspace_path)
@@ -908,12 +1005,15 @@ fn set_active_workspace(
                 Ok(Some(workspace)) => {
                     tracing::debug!(
                         "[CORPUS-AUTO] active workspace set to {} ({})",
-                        workspace.name, workspace.path
+                        workspace.name,
+                        workspace.path
                     );
                     spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
                 }
                 Ok(None) => {
-                    tracing::debug!("[CORPUS-AUTO] set active workspace succeeded but no workspace is active");
+                    tracing::debug!(
+                        "[CORPUS-AUTO] set active workspace succeeded but no workspace is active"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(

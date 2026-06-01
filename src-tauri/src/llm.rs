@@ -1,20 +1,52 @@
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
+use rig::agent::{HookAction, PromptHook, ToolCallHookAction};
 use rig::client::CompletionClient;
 use rig::completion::message::Message;
-use rig::completion::Prompt;
+use rig::completion::{CompletionModel, Prompt, ToolDefinition};
 use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
-use rig::streaming::{
-    StreamedAssistantContent, StreamedUserContent, StreamingChat, StreamingPrompt,
-};
-use serde::Serialize;
+use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
+use rig::tool::Tool;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::future::Future;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
+use tokio::time::{timeout, Duration};
 
 use crate::corpus::tools::{
     create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
     CORPUS_SYSTEM_PROMPT,
 };
+use crate::workspace_tools::{
+    create_find_files_tool, create_list_directory_tool, create_read_file_tool,
+    create_search_code_tool, truncate_text_bytes, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+};
+
+const AGENT_MAX_TURNS: usize = 20;
+const EXPLORATION_TIMEOUT: Duration = Duration::from_secs(90);
+const EXPLORATION_REPORT_BYTES_CAP: usize = 32 * 1024;
+const DELEGATION_SYSTEM_PROMPT: &str = r#"
+Use `delegate_exploration` only for broad multi-file, architectural, or investigative tasks that would benefit from a focused report before you answer the user.
+Prefer direct file reads and targeted search for small or obvious tasks.
+"#;
+const EXPLORATION_AGENT_PROMPT: &str = r#"
+You are the Gospel Exploration Agent.
+
+Investigate the active workspace and return a concise markdown report with exactly these section headings:
+
+## Summary
+## Key Files
+## Findings
+## Constraints
+## Suggested Next Reads
+## Tools Used
+
+Use corpus tools for fast structure when available, and live workspace tools for source-of-truth verification.
+Do not answer as the final user-facing assistant. Return findings only.
+"#;
 
 #[derive(Error, Debug)]
 pub enum LlmError {
@@ -69,6 +101,12 @@ pub enum StreamEvent {
         name: String,
         result: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceToolContext {
+    pub workspace_path: PathBuf,
+    pub corpus_available: bool,
 }
 
 pub struct LlmService;
@@ -159,12 +197,310 @@ pub struct StreamCompletionResult {
     pub history: Option<Vec<Message>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DelegateExplorationArgs {
+    task: String,
+    context: Option<String>,
+    expected_output: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DelegateExplorationOutput {
+    success: bool,
+    truncated: bool,
+    report: String,
+    tools_used: Vec<String>,
+    message: String,
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+struct DelegateExplorationTool {
+    workspace: WorkspaceToolContext,
+    provider: String,
+    model: String,
+    #[serde(default)]
+    api_key: String,
+}
+
+impl std::fmt::Debug for DelegateExplorationTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelegateExplorationTool")
+            .field("workspace", &self.workspace)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Serialize for DelegateExplorationTool {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("DelegateExplorationTool", 3)?;
+        state.serialize_field("workspace", &self.workspace)?;
+        state.serialize_field("provider", &self.provider)?;
+        state.serialize_field("model", &self.model)?;
+        state.end()
+    }
+}
+
+impl Tool for DelegateExplorationTool {
+    const NAME: &'static str = "delegate_exploration";
+
+    type Error = LlmError;
+    type Args = DelegateExplorationArgs;
+    type Output = DelegateExplorationOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Delegate a broad workspace investigation to the Exploration Agent. Use this for multi-file or architectural investigations that need a focused report before answering the user.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Required investigation task for the Exploration Agent."
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional extra context or constraints for the investigation."
+                    },
+                    "expected_output": {
+                        "type": "string",
+                        "description": "Optional guidance for what the report should emphasize."
+                    }
+                },
+                "required": ["task"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let prompt = build_exploration_prompt(&args);
+        match run_exploration_agent(
+            &self.provider,
+            &self.model,
+            &self.api_key,
+            &self.workspace,
+            &prompt,
+        )
+        .await
+        {
+            Ok(output) => Ok(output),
+            Err(error) => Ok(DelegateExplorationOutput {
+                success: false,
+                truncated: false,
+                report: String::new(),
+                tools_used: vec![],
+                message: error.to_string(),
+                reason: Some(match error {
+                    LlmError::ProviderError(_) => "provider_error".to_string(),
+                    LlmError::ApiKeyMissing => "api_key_missing".to_string(),
+                    LlmError::ModelUnavailable(_) => "model_unavailable".to_string(),
+                    LlmError::UnsupportedProvider(_) => "unsupported_provider".to_string(),
+                }),
+            }),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ExplorationHook {
+    tools: Arc<Mutex<Vec<String>>>,
+}
+
+impl<M> PromptHook<M> for ExplorationHook
+where
+    M: CompletionModel,
+{
+    fn on_tool_call(
+        &self,
+        tool_name: &str,
+        _tool_call_id: Option<String>,
+        _internal_call_id: &str,
+        _args: &str,
+    ) -> impl Future<Output = ToolCallHookAction> + Send {
+        let tool_name = tool_name.to_string();
+        let tools = self.tools.clone();
+        async move {
+            let mut guard = tools.lock().unwrap();
+            if !guard.iter().any(|name| name == &tool_name) {
+                guard.push(tool_name);
+            }
+            ToolCallHookAction::cont()
+        }
+    }
+
+    fn on_tool_result(
+        &self,
+        _tool_name: &str,
+        _tool_call_id: Option<String>,
+        _internal_call_id: &str,
+        _args: &str,
+        _result: &str,
+    ) -> impl Future<Output = HookAction> + Send {
+        async { HookAction::cont() }
+    }
+}
+
+fn build_system_preamble(
+    workspace: Option<&WorkspaceToolContext>,
+    allow_delegate: bool,
+) -> Option<String> {
+    let mut sections = Vec::new();
+
+    if workspace.is_some() {
+        sections.push(WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string());
+    }
+
+    if workspace.map(|ctx| ctx.corpus_available).unwrap_or(false) {
+        sections.push(CORPUS_SYSTEM_PROMPT.trim().to_string());
+    }
+
+    if allow_delegate && workspace.is_some() {
+        sections.push(DELEGATION_SYSTEM_PROMPT.trim().to_string());
+    }
+
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
+}
+
+fn build_exploration_prompt(args: &DelegateExplorationArgs) -> String {
+    let mut sections = vec![format!("Task:\n{}", args.task.trim())];
+    if let Some(context) = args
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("Context:\n{}", context));
+    }
+    if let Some(expected_output) = args
+        .expected_output
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("Expected output emphasis:\n{}", expected_output));
+    }
+    sections.join("\n\n")
+}
+
+async fn run_exploration_agent(
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    workspace: &WorkspaceToolContext,
+    prompt: &str,
+) -> Result<DelegateExplorationOutput, LlmError> {
+    let hook = ExplorationHook {
+        tools: Arc::new(Mutex::new(Vec::new())),
+    };
+    let tool_names = hook.tools.clone();
+    let agent_preamble = format!(
+        "{}\n\n{}",
+        build_system_preamble(Some(workspace), false).unwrap_or_default(),
+        EXPLORATION_AGENT_PROMPT.trim()
+    );
+
+    macro_rules! exploration_from_client {
+        ($client:expr, $model:expr) => {{
+            let mut builder = $client
+                .agent($model)
+                .preamble(&agent_preamble)
+                .default_max_turns(AGENT_MAX_TURNS)
+                .tool(create_read_file_tool(workspace.workspace_path.clone()))
+                .tool(create_search_code_tool(workspace.workspace_path.clone()))
+                .tool(create_find_files_tool(workspace.workspace_path.clone()))
+                .tool(create_list_directory_tool(workspace.workspace_path.clone()));
+
+            if workspace.corpus_available {
+                builder = builder
+                    .tool(create_corpus_summary_tool(workspace.workspace_path.clone()))
+                    .tool(create_corpus_query_tool(workspace.workspace_path.clone()))
+                    .tool(create_corpus_neighbors_tool(
+                        workspace.workspace_path.clone(),
+                    ));
+            }
+
+            let agent = builder.build();
+            let future = agent
+                .prompt(prompt)
+                .with_hook(hook.clone())
+                .extended_details();
+            let response = timeout(EXPLORATION_TIMEOUT, future)
+                .await
+                .map_err(|_| {
+                    LlmError::ProviderError(
+                        "Exploration Agent timed out after 90 seconds".to_string(),
+                    )
+                })?
+                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+
+            let tools_used = tool_names.lock().unwrap().clone();
+            let (report, truncated) =
+                truncate_text_bytes(&response.output, EXPLORATION_REPORT_BYTES_CAP);
+            DelegateExplorationOutput {
+                success: true,
+                truncated,
+                report,
+                tools_used,
+                message: "Exploration completed.".to_string(),
+                reason: None,
+            }
+        }};
+    }
+
+    match provider {
+        "openai" => {
+            let client =
+                openai::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            Ok(exploration_from_client!(client, model))
+        }
+        "chatgpt" => {
+            let client = chatgpt::Client::builder()
+                .oauth()
+                .build()
+                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            Ok(exploration_from_client!(client, model))
+        }
+        "anthropic" => {
+            let client = anthropic::Client::new(api_key)
+                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            Ok(exploration_from_client!(client, model))
+        }
+        "gemini" => {
+            let client =
+                gemini::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            Ok(exploration_from_client!(client, model))
+        }
+        "groq" => {
+            let client =
+                groq::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            Ok(exploration_from_client!(client, model))
+        }
+        "mistral" => {
+            let client = mistral::Client::new(api_key)
+                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
+            Ok(exploration_from_client!(client, model))
+        }
+        _ => Err(LlmError::UnsupportedProvider(provider.to_string())),
+    }
+}
+
 pub async fn stream_completion<F>(
     provider: &str,
     prompt: &str,
     model: &str,
     api_key: &str,
-    workspace_path: Option<PathBuf>,
+    workspace: Option<WorkspaceToolContext>,
     chat_history: Vec<Message>,
     mut on_event: F,
 ) -> Result<StreamCompletionResult, LlmError>
@@ -178,20 +514,54 @@ where
 
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
-            let summary_tool = create_corpus_summary_tool(workspace_path.clone());
-            let query_tool = create_corpus_query_tool(workspace_path.clone());
-            let neighbors_tool = create_corpus_neighbors_tool(workspace_path.clone());
+            let builder = $client.agent($model).default_max_turns(AGENT_MAX_TURNS);
+            let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true) {
+                builder.preamble(&preamble)
+            } else {
+                builder
+            };
+            let agent = if let Some(workspace_context) = workspace.as_ref() {
+                let mut builder = builder
+                    .tool(create_read_file_tool(
+                        workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_search_code_tool(
+                        workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_find_files_tool(
+                        workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_list_directory_tool(
+                        workspace_context.workspace_path.clone(),
+                    ));
 
-            let agent = $client
-                .agent($model)
-                .preamble(CORPUS_SYSTEM_PROMPT)
-                .tool(summary_tool)
-                .tool(query_tool)
-                .tool(neighbors_tool)
-                .default_max_turns(5)
-                .build();
+                if workspace_context.corpus_available {
+                    builder = builder
+                        .tool(create_corpus_summary_tool(
+                            workspace_context.workspace_path.clone(),
+                        ))
+                        .tool(create_corpus_query_tool(
+                            workspace_context.workspace_path.clone(),
+                        ))
+                        .tool(create_corpus_neighbors_tool(
+                            workspace_context.workspace_path.clone(),
+                        ));
+                }
 
-            let request = agent.stream_chat(prompt, chat_history).multi_turn(5);
+                builder
+                    .tool(DelegateExplorationTool {
+                        workspace: workspace_context.clone(),
+                        provider: provider.to_string(),
+                        model: model.to_string(),
+                        api_key: api_key.to_string(),
+                    })
+                    .build()
+            } else {
+                builder.build()
+            };
+            let request = agent
+                .stream_chat(prompt, chat_history)
+                .multi_turn(AGENT_MAX_TURNS);
             let mut stream = request.await;
 
             let mut tool_name_by_id: std::collections::HashMap<String, String> =
@@ -226,9 +596,9 @@ where
                             let result_summary = tool_result
                                 .content
                                 .iter()
-                                .filter_map(|c| match c {
-                                    rig::completion::message::ToolResultContent::Text(t) => {
-                                        Some(t.text.clone())
+                                .filter_map(|content| match content {
+                                    rig::completion::message::ToolResultContent::Text(text) => {
+                                        Some(text.text.clone())
                                     }
                                     _ => None,
                                 })
@@ -245,7 +615,8 @@ where
                         }
                         MultiTurnStreamItem::FinalResponse(final_response) => {
                             full_response = final_response.response().to_owned();
-                            captured_history = final_response.history().map(|h| h.to_vec());
+                            captured_history =
+                                final_response.history().map(|history| history.to_vec());
                             break;
                         }
                         _ => {}
@@ -304,6 +675,18 @@ where
 mod tests {
     use super::*;
 
+    fn delegate_tool_for_test() -> DelegateExplorationTool {
+        DelegateExplorationTool {
+            workspace: WorkspaceToolContext {
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                corpus_available: false,
+            },
+            provider: "openai".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_key: "secret-api-key".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn completion_rejects_blank_api_key() {
         let error = LlmService::completion("openai", "hello", "gpt-4o-mini", "  ")
@@ -344,5 +727,66 @@ mod tests {
         let result = validate_api_key("openai", "");
 
         assert!(matches!(result, Err(LlmError::ApiKeyMissing)));
+    }
+
+    #[test]
+    fn delegate_exploration_tool_debug_redacts_api_key() {
+        let debug = format!("{:?}", delegate_tool_for_test());
+
+        assert!(debug.contains("api_key"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret-api-key"));
+    }
+
+    #[test]
+    fn delegate_exploration_tool_serialization_omits_api_key() {
+        let json = serde_json::to_string(&delegate_tool_for_test()).unwrap();
+
+        assert!(json.contains("provider"));
+        assert!(!json.contains("api_key"));
+        assert!(!json.contains("secret-api-key"));
+    }
+
+    #[test]
+    fn delegate_exploration_tool_deserializes_redacted_serialization() {
+        let value = serde_json::to_value(delegate_tool_for_test()).unwrap();
+        let tool: DelegateExplorationTool = serde_json::from_value(value).unwrap();
+
+        assert_eq!(tool.api_key, "");
+        assert_eq!(tool.provider, "openai");
+    }
+
+    #[test]
+    fn build_system_preamble_uses_live_tools_and_corpus_distinction() {
+        let preamble = build_system_preamble(
+            Some(&WorkspaceToolContext {
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                corpus_available: true,
+            }),
+            true,
+        )
+        .unwrap();
+
+        assert!(preamble.contains("Live Workspace Tools"));
+        assert!(preamble.contains("source-of-truth"));
+        assert!(preamble.contains("delegate_exploration"));
+    }
+
+    #[test]
+    fn build_system_preamble_is_empty_without_workspace_tools() {
+        assert!(build_system_preamble(None, true).is_none());
+    }
+
+    #[test]
+    fn build_exploration_prompt_includes_optional_context() {
+        let prompt = build_exploration_prompt(&DelegateExplorationArgs {
+            task: "Trace startup flow".to_string(),
+            context: Some("Focus on Tauri setup".to_string()),
+            expected_output: Some("Highlight risky assumptions".to_string()),
+        });
+
+        assert!(prompt.contains("Task:"));
+        assert!(prompt.contains("Focus on Tauri setup"));
+        assert!(prompt.contains("Highlight risky assumptions"));
     }
 }

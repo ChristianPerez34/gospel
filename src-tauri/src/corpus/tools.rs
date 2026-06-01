@@ -9,23 +9,6 @@ use serde_json::json;
 use std::path::PathBuf;
 use thiserror::Error;
 
-fn resolve_workspace_path(
-    requested_workspace_path: Option<String>,
-    default_workspace_path: Option<&PathBuf>,
-) -> PathBuf {
-    requested_workspace_path
-        .and_then(|path| {
-            let trimmed = path.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(trimmed))
-            }
-        })
-        .or_else(|| default_workspace_path.cloned())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-}
-
 #[derive(Error, Debug)]
 pub enum CorpusToolError {
     #[error("Corpus not found")]
@@ -42,10 +25,7 @@ pub enum CorpusToolError {
 
 /// Arguments for corpus_summary tool
 #[derive(Debug, Deserialize)]
-pub struct CorpusSummaryArgs {
-    /// Optional workspace path (defaults to current directory if not provided)
-    workspace_path: Option<String>,
-}
+pub struct CorpusSummaryArgs {}
 
 /// Corpus summary tool output
 #[derive(Debug, Serialize)]
@@ -61,8 +41,7 @@ pub struct CorpusSummaryOutput {
 /// Tool to get a summary of the codebase corpus
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorpusSummaryTool {
-    #[serde(default)]
-    pub default_workspace_path: Option<PathBuf>,
+    pub workspace_path: PathBuf,
 }
 
 impl Tool for CorpusSummaryTool {
@@ -78,20 +57,15 @@ impl Tool for CorpusSummaryTool {
             description: "Get a summary of the codebase structure including files, symbols, and their relationships. Use this FIRST when asked about the codebase, its structure, or what it contains.".to_string(),
             parameters: json!({
                 "type": "object",
-                "properties": {
-                    "workspace_path": {
-                        "type": "string",
-                        "description": "Optional workspace path. If not provided, uses the current directory."
-                    }
-                },
+                "properties": {},
                 "required": []
             }),
         }
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let workspace_path =
-            resolve_workspace_path(args.workspace_path, self.default_workspace_path.as_ref());
+        let _ = args;
+        let workspace_path = self.workspace_path.clone();
 
         let persistence = CorpusPersistence::new(&workspace_path)
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
@@ -147,8 +121,6 @@ impl Tool for CorpusSummaryTool {
 pub struct CorpusQueryArgs {
     /// Node ID or symbol/file name to query
     identifier: String,
-    /// Optional workspace path
-    workspace_path: Option<String>,
 }
 
 /// Query result output
@@ -163,8 +135,7 @@ pub struct CorpusQueryOutput {
 /// Tool to query details about a specific code element
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorpusQueryTool {
-    #[serde(default)]
-    pub default_workspace_path: Option<PathBuf>,
+    pub workspace_path: PathBuf,
 }
 
 impl Tool for CorpusQueryTool {
@@ -184,10 +155,6 @@ impl Tool for CorpusQueryTool {
                     "identifier": {
                         "type": "string",
                         "description": "Node ID, symbol name, or file path to query (e.g., 'main', 'DataProcessor', 'src/main.rs')"
-                    },
-                    "workspace_path": {
-                        "type": "string",
-                        "description": "Optional workspace path"
                     }
                 },
                 "required": ["identifier"]
@@ -196,8 +163,7 @@ impl Tool for CorpusQueryTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let workspace_path =
-            resolve_workspace_path(args.workspace_path, self.default_workspace_path.as_ref());
+        let workspace_path = self.workspace_path.clone();
 
         let persistence = CorpusPersistence::new(&workspace_path)
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
@@ -255,15 +221,12 @@ pub struct CorpusNeighborsArgs {
     identifier: String,
     /// Minimum confidence: "high", "medium", or "low"
     min_confidence: Option<String>,
-    /// Optional workspace path
-    workspace_path: Option<String>,
 }
 
 /// Tool to get relationships for a code element
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorpusNeighborsTool {
-    #[serde(default)]
-    pub default_workspace_path: Option<PathBuf>,
+    pub workspace_path: PathBuf,
 }
 
 impl Tool for CorpusNeighborsTool {
@@ -288,10 +251,6 @@ impl Tool for CorpusNeighborsTool {
                         "type": "string",
                         "enum": ["high", "medium", "low"],
                         "description": "Minimum confidence (default: low)"
-                    },
-                    "workspace_path": {
-                        "type": "string",
-                        "description": "Optional workspace path"
                     }
                 },
                 "required": ["identifier"]
@@ -300,8 +259,7 @@ impl Tool for CorpusNeighborsTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let workspace_path =
-            resolve_workspace_path(args.workspace_path, self.default_workspace_path.as_ref());
+        let workspace_path = self.workspace_path.clone();
 
         let persistence = CorpusPersistence::new(&workspace_path)
             .map_err(|e| CorpusToolError::CorpusAccessError(e.to_string()))?;
@@ -343,24 +301,16 @@ impl Tool for CorpusNeighborsTool {
     }
 }
 
-pub fn create_corpus_summary_tool(default_workspace_path: Option<PathBuf>) -> CorpusSummaryTool {
-    CorpusSummaryTool {
-        default_workspace_path,
-    }
+pub fn create_corpus_summary_tool(workspace_path: PathBuf) -> CorpusSummaryTool {
+    CorpusSummaryTool { workspace_path }
 }
 
-pub fn create_corpus_query_tool(default_workspace_path: Option<PathBuf>) -> CorpusQueryTool {
-    CorpusQueryTool {
-        default_workspace_path,
-    }
+pub fn create_corpus_query_tool(workspace_path: PathBuf) -> CorpusQueryTool {
+    CorpusQueryTool { workspace_path }
 }
 
-pub fn create_corpus_neighbors_tool(
-    default_workspace_path: Option<PathBuf>,
-) -> CorpusNeighborsTool {
-    CorpusNeighborsTool {
-        default_workspace_path,
-    }
+pub fn create_corpus_neighbors_tool(workspace_path: PathBuf) -> CorpusNeighborsTool {
+    CorpusNeighborsTool { workspace_path }
 }
 
 /// System prompt to add when corpus tools are available
@@ -368,7 +318,7 @@ pub const CORPUS_SYSTEM_PROMPT: &str = r#"
 
 ## Codebase Knowledge
 
-You have access to a **corpus** - a structured knowledge graph of the workspace's code with files, symbols, and their relationships.
+You have access to a **corpus** - a structured knowledge graph of the active workspace with files, symbols, and their relationships.
 
 ### Available Tools
 
@@ -391,9 +341,7 @@ You have access to a **corpus** - a structured knowledge graph of the workspace'
 3. Use `corpus_neighbors` to understand dependencies
 
 **Important:**
-- Mention when you're using the corpus
-- If corpus doesn't exist, guide user to build it via "Build Corpus" command
-- Corpus provides structural knowledge; use file reads for detailed code content
+- Corpus provides structural knowledge for the active workspace; use live file reads for source-of-truth code content
 
 "#;
 
@@ -402,35 +350,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_workspace_path_arg_uses_default_workspace() {
-        let default = PathBuf::from("/tmp/default-workspace");
-
-        assert_eq!(
-            resolve_workspace_path(Some("".to_string()), Some(&default)),
-            default
-        );
-    }
-
-    #[test]
-    fn whitespace_workspace_path_arg_uses_default_workspace() {
-        let default = PathBuf::from("/tmp/default-workspace");
-
-        assert_eq!(
-            resolve_workspace_path(Some("  \t\n  ".to_string()), Some(&default)),
-            default
-        );
-    }
-
-    #[test]
-    fn explicit_workspace_path_arg_wins_over_default_workspace() {
-        let default = PathBuf::from("/tmp/default-workspace");
-
-        assert_eq!(
-            resolve_workspace_path(
-                Some(" /tmp/requested-workspace ".to_string()),
-                Some(&default)
-            ),
-            PathBuf::from("/tmp/requested-workspace")
-        );
+    fn corpus_prompt_mentions_live_reads_as_source_of_truth() {
+        assert!(CORPUS_SYSTEM_PROMPT.contains("source-of-truth"));
     }
 }

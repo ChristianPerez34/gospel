@@ -19,10 +19,19 @@ interface ChatViewProps {
 }
 
 function ToolActivityIndicator({ activity }: { activity: ToolCallActivity }) {
+  const toolLabels: Record<string, string> = {
+    read_file: "Reading file",
+    search_code: "Searching code",
+    find_files: "Finding files",
+    list_directory: "Listing directory",
+    delegate_exploration: "Exploration Agent investigating",
+  };
   const displayName = activity.name
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
   const isCalling = activity.status === "calling";
+  const baseLabel = toolLabels[activity.name] ?? displayName;
+  const label = `${baseLabel}${isCalling ? "..." : ""}`;
 
   const statusColor = isCalling ? "text-accent-action" : "text-text-muted";
   const iconAnim = isCalling ? "animate-spin" : "";
@@ -33,7 +42,7 @@ function ToolActivityIndicator({ activity }: { activity: ToolCallActivity }) {
         {isCalling ? "⟳" : "✓"}
       </span>
       <span className="font-mono">
-        {isCalling ? `Searching ${displayName}...` : displayName}
+        {label}
       </span>
     </div>
   );
