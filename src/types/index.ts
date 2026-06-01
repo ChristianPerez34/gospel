@@ -31,6 +31,7 @@ export interface ActionCard {
   summary: string;
   content?: string;
   expanded?: boolean;
+  status?: "calling" | "completed";
 }
 
 export interface Session {

@@ -9,6 +9,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { SettingsModal } from "./SettingsModal";
 import { ToastContainer, useToasts } from "./Toast";
 import { useWorkspaces } from "../hooks/useWorkspaces";
+import { toolActivitiesToActionCards } from "../toolActivityCards";
 import type {
   Message,
   Session,
@@ -103,6 +104,7 @@ export function AppShell() {
   const [isThinking, setIsThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [toolActivities, setToolActivities] = useState<ToolCallActivity[]>([]);
+  const toolActivitiesRef = useRef<ToolCallActivity[]>([]);
   const { toasts, dismissToast, showError, showSuccess } = useToasts();
   const providersRef = useRef(providers);
   providersRef.current = providers;
@@ -173,6 +175,22 @@ export function AppShell() {
   }, [availableModels, providers]);
 
   useEffect(() => {
+    if (!activeSessionId) return;
+
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.id === activeSessionId
+          ? {
+              ...session,
+              messages,
+              timestamp: messages[messages.length - 1]?.timestamp ?? session.timestamp,
+            }
+          : session
+      )
+    );
+  }, [activeSessionId, messages]);
+
+  useEffect(() => {
     let cancelled = false;
     let cleanup: (() => void) | null = null;
 
@@ -187,6 +205,10 @@ export function AppShell() {
           }),
           listen<string>("llm-done", (event) => {
             const content = event.payload;
+            const actionCards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
+              (card) => ({ ...card, expanded: false, status: "completed" as const })
+            );
+
             if (content) {
               setMessages((prev) => [
                 ...prev,
@@ -195,18 +217,51 @@ export function AppShell() {
                   role: "agent",
                   content,
                   timestamp: new Date(),
+                  actionCards: actionCards.length > 0 ? actionCards : undefined,
+                },
+              ]);
+            } else if (actionCards.length > 0) {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `m-${Date.now()}`,
+                  role: "agent",
+                  content: "Completed.",
+                  timestamp: new Date(),
+                  actionCards,
                 },
               ]);
             }
+
             setStreamingContent("");
+            toolActivitiesRef.current = [];
             setToolActivities([]);
             setIsThinking(false);
             setStatus("connected");
           }),
           listen<{ code: string; message: string }>("llm-error", (event) => {
             const err = event.payload;
+            const actionCards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
+              (card) => ({ ...card, expanded: false, status: "completed" as const })
+            );
+
+            if (err?.message || actionCards.length > 0) {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `m-${Date.now()}`,
+                  role: "agent",
+                  content: "",
+                  timestamp: new Date(),
+                  actionCards: actionCards.length > 0 ? actionCards : undefined,
+                  error: err?.message || "Completion failed.",
+                },
+              ]);
+            }
+
             setIsThinking(false);
             setStreamingContent("");
+            toolActivitiesRef.current = [];
             setToolActivities([]);
             setStatus("error");
 
@@ -223,10 +278,19 @@ export function AppShell() {
             }
           }),
           listen<{ name: string; arguments?: unknown }>("llm-tool-call", (event) => {
-            setToolActivities((prev) => [
-              ...prev,
-              { name: event.payload.name, arguments: event.payload.arguments, status: "calling" },
-            ]);
+            setToolActivities((prev) => {
+              const next = [
+                ...prev,
+                {
+                  name: event.payload.name,
+                  arguments: event.payload.arguments,
+                  status: "calling" as const,
+                },
+              ];
+
+              toolActivitiesRef.current = next;
+              return next;
+            });
             setStatus("acting");
           }),
           listen<{ name: string; result: string }>("llm-tool-result", (event) => {
@@ -235,9 +299,21 @@ export function AppShell() {
               if (idx >= 0) {
                 const updated = [...prev];
                 updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
+                toolActivitiesRef.current = updated;
                 return updated;
               }
-              return [...prev, { name: event.payload.name, result: event.payload.result, status: "completed" as const }];
+
+              const next = [
+                ...prev,
+                {
+                  name: event.payload.name,
+                  result: event.payload.result,
+                  status: "completed" as const,
+                },
+              ];
+
+              toolActivitiesRef.current = next;
+              return next;
             });
             setStatus("acting");
           }),
@@ -290,6 +366,7 @@ export function AppShell() {
     setIsThinking(true);
     setStatus("thinking");
     setStreamingContent("");
+    toolActivitiesRef.current = [];
     setToolActivities([]);
 
     let effectiveSessionId = activeSessionId;
@@ -336,6 +413,7 @@ export function AppShell() {
     setActiveSessionId(null);
     setMessages([]);
     setStreamingContent("");
+    toolActivitiesRef.current = [];
     setToolActivities([]);
     setIsThinking(false);
     setSessionDrawerOpen(false);

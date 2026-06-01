@@ -1,6 +1,8 @@
-import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
 import type { Message, ToolCallActivity } from "../types";
+import {
+  summarizeLiveToolActivity,
+  toolActivitiesToActionCards,
+} from "../toolActivityCards";
 import { MessageBlock } from "./MessageBlock";
 import { ActionCard } from "./ActionCard";
 
@@ -18,36 +20,6 @@ interface ChatViewProps {
   toolActivities?: ToolCallActivity[];
 }
 
-function ToolActivityIndicator({ activity }: { activity: ToolCallActivity }) {
-  const toolLabels: Record<string, string> = {
-    read_file: "Reading file",
-    search_code: "Searching code",
-    find_files: "Finding files",
-    list_directory: "Listing directory",
-    delegate_exploration: "Exploration Agent investigating",
-  };
-  const displayName = activity.name
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  const isCalling = activity.status === "calling";
-  const baseLabel = toolLabels[activity.name] ?? displayName;
-  const label = `${baseLabel}${isCalling ? "..." : ""}`;
-
-  const statusColor = isCalling ? "text-accent-action" : "text-text-muted";
-  const iconAnim = isCalling ? "animate-spin" : "";
-
-  return (
-    <div className={`flex items-center gap-2 py-1 px-2 rounded-sm text-caption bg-surface-elevated animate-fade-slide-in-fast ${statusColor}`}>
-      <span className={`shrink-0 w-3.5 text-center ${iconAnim}`}>
-        {isCalling ? "⟳" : "✓"}
-      </span>
-      <span className="font-mono">
-        {label}
-      </span>
-    </div>
-  );
-}
-
 export function ChatView({
   messages,
   workspacePath,
@@ -56,11 +28,38 @@ export function ChatView({
   toolActivities,
 }: ChatViewProps) {
   const isEmpty = messages.length === 0;
-  const hasToolActivities = toolActivities && toolActivities.length > 0;
+  const activities = toolActivities ?? [];
+  const liveActionCards = toolActivitiesToActionCards(activities);
+  const hasToolActivities = liveActionCards.length > 0;
+  const liveStatus = summarizeLiveToolActivity(activities, isThinking);
+  const showLiveTurn =
+    isThinking ||
+    hasToolActivities ||
+    typeof currentAction === "string" ||
+    typeof currentAction === "object";
+
+  const liveContent =
+    typeof currentAction === "object" && currentAction?.type === "streaming"
+      ? currentAction.content
+      : typeof currentAction === "string"
+        ? currentAction
+        : hasToolActivities
+          ? "Working..."
+          : "Thinking...";
+
+  const liveMessage: Message = {
+    id: "live-agent-turn",
+    role: "agent",
+    content: liveContent,
+    timestamp: new Date(),
+  };
 
   if (isEmpty) {
     return (
-      <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center" role="main">
+      <div
+        className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center"
+        role="main"
+      >
         <div className="flex flex-col items-center gap-3 animate-fade-slide-in">
           <p className="font-mono text-body-sm text-text-muted">{workspacePath}</p>
           <p className="text-body text-text-secondary">
@@ -72,38 +71,34 @@ export function ChatView({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col relative" role="main" aria-live="polite">
-      {(isThinking || hasToolActivities) && (
-        <div className="overflow-hidden shrink-0 py-2 px-4">
-          {hasToolActivities && (
-            <div className="flex flex-col gap-1">
-              {toolActivities!.map((activity, i) => (
-                <ToolActivityIndicator key={`${activity.name}-${i}`} activity={activity} />
-              ))}
-            </div>
-          )}
-          {isThinking && !hasToolActivities && (
-            <div className="prose text-body leading-relaxed text-text-primary py-3 px-4 rounded-md bg-surface-elevated border-l-2 border-l-accent-action max-h-[200px] overflow-y-auto">
-              <Streamdown animated isAnimating={isThinking} plugins={{ code }}>
-                {typeof currentAction === "object" && currentAction?.type === "streaming"
-                  ? currentAction.content
-                  : typeof currentAction === "string"
-                  ? currentAction
-                  : "Thinking..."}
-              </Streamdown>
-            </div>
-          )}
+    <div
+      className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col relative"
+      role="main"
+      aria-live="polite"
+    >
+      {liveStatus && (
+        <div className="sticky top-0 z-10 px-4 pt-2 shrink-0">
+          <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-surface-overlay bg-surface-base py-1 px-2 text-caption text-text-muted animate-fade-slide-in-fast">
+            <span
+              className={`h-1.5 w-1.5 rounded-full shrink-0 ${hasToolActivities ? "bg-accent-action animate-pulse" : "bg-text-muted"}`}
+              aria-hidden="true"
+            />
+            <span className="font-mono truncate">{liveStatus}</span>
+          </div>
         </div>
       )}
       <div className="flex-1 flex flex-col gap-6 py-6 px-4 max-w-full">
         {messages.map((msg) => (
           <div key={msg.id} className="flex flex-col gap-2 animate-fade-slide-in-fast">
-            <MessageBlock message={msg} />
+            {msg.content && <MessageBlock message={msg} />}
             {msg.actionCards?.map((card) => (
               <ActionCard key={card.id} card={card} />
             ))}
             {msg.error && (
-              <div className="ml-7 border-l-2 border-l-status-error py-3 px-4 rounded-r-md bg-surface-elevated" role="alert">
+              <div
+                className="ml-7 border-l-2 border-l-status-error py-3 px-4 rounded-r-md bg-surface-elevated"
+                role="alert"
+              >
                 <div className="text-body-sm text-text-primary mb-2">
                   {msg.error}
                 </div>
@@ -116,6 +111,14 @@ export function ChatView({
             )}
           </div>
         ))}
+        {showLiveTurn && (
+          <div className="flex flex-col gap-2 animate-fade-slide-in-fast">
+            {liveActionCards.map((card) => (
+              <ActionCard key={card.id} card={card} />
+            ))}
+            <MessageBlock message={liveMessage} showActions={false} />
+          </div>
+        )}
       </div>
     </div>
   );
