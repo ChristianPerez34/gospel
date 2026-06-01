@@ -24,6 +24,7 @@ export function ActionCard({ card }: ActionCardProps) {
 
   const borderClass = TYPE_BORDER[card.type] || TYPE_BORDER.file;
   const chevronClass = expanded ? "rotate-180" : "";
+  const isRunning = card.status === "calling";
 
   return (
     <div className="ml-7 mr-6 rounded-md overflow-hidden bg-surface-elevated animate-fade-slide-in" role="region" aria-label={card.summary}>
@@ -36,6 +37,11 @@ export function ActionCard({ card }: ActionCardProps) {
           {TYPE_ICONS[card.type] || TYPE_ICONS.file}
         </span>
         <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm">{card.summary}</span>
+        {isRunning && (
+          <span className="shrink-0 font-mono text-caption text-accent-action">
+            Running
+          </span>
+        )}
         <svg
           className={`text-text-muted transition-transform duration-150 ease-out-quart shrink-0 ${chevronClass}`}
           width="12"
