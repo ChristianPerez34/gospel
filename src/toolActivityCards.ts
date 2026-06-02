@@ -384,7 +384,8 @@ function corpusNeighborsCard(activity: ToolCallActivity): Partial<ActionCard> {
   const args = parsedArguments(activity);
   const result = parsedResult(activity);
   const hasResult = activity.result != null;
-  const neighbors = asArray(result);
+  const hasNeighborList = Array.isArray(result);
+  const neighbors = hasNeighborList ? result : [];
   const rows = neighbors.map((neighbor) => {
     const item = asRecord(neighbor) ?? {};
     return {
@@ -397,9 +398,10 @@ function corpusNeighborsCard(activity: ToolCallActivity): Partial<ActionCard> {
     fieldsSection("Neighbors", [
       field("Identifier", args?.identifier),
       field("Confidence", args?.min_confidence ?? "low"),
-      hasResult ? field("Count", neighbors.length) : undefined,
+      hasNeighborList ? field("Count", neighbors.length) : undefined,
     ]),
-    hasResult ? rowsSection("Relationships", rows, "No relationships returned.") : undefined,
+    hasNeighborList ? rowsSection("Relationships", rows, "No relationships returned.") : undefined,
+    hasResult && !hasNeighborList ? textSection("Result", result, true) : undefined,
     ...waitingSection(activity),
   ].filter(isRenderableSection);
 
