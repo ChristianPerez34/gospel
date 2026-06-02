@@ -1,5 +1,8 @@
 import { useState } from "react";
-import type { ActionCard as ActionCardType } from "../types";
+import type {
+  ActionCard as ActionCardType,
+  ActionCardSection,
+} from "../types";
 
 interface ActionCardProps {
   card: ActionCardType;
@@ -7,62 +10,181 @@ interface ActionCardProps {
 
 const TYPE_ICONS: Record<string, string> = {
   file: "F",
-  terminal: "▶",
+  terminal: ">",
   diff: "±",
-  search: "?",
+  search: "S",
 };
 
-const TYPE_BORDER: Record<string, string> = {
-  file: "border-l-accent-action",
-  terminal: "border-l-accent-data",
-  diff: "border-l-accent-structure",
-  search: "border-l-accent-signal",
+const TYPE_ACCENT: Record<string, string> = {
+  file: "text-accent-action",
+  terminal: "text-accent-data",
+  diff: "text-accent-structure",
+  search: "text-accent-signal",
 };
+
+function renderSection(section: ActionCardSection) {
+  if (section.type === "fields") {
+    return (
+      <section className="grid gap-2" key={`${section.title}-fields`}>
+        {section.title && (
+          <h4 className="font-mono text-caption font-semibold uppercase tracking-[0.04em] text-text-muted">
+            {section.title}
+          </h4>
+        )}
+        <dl className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {section.fields.map((item) => (
+            <div className="min-w-0 rounded-sm bg-surface-overlay p-2" key={`${item.label}-${item.value}`}>
+              <dt className="mb-1 font-mono text-caption uppercase tracking-[0.04em] text-text-muted">
+                {item.label}
+              </dt>
+              <dd className="truncate font-mono text-body-sm text-text-primary" title={item.value}>
+                {item.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+    );
+  }
+
+  if (section.type === "rows") {
+    return (
+      <section className="grid gap-2" key={`${section.title}-rows`}>
+        {section.title && (
+          <h4 className="font-mono text-caption font-semibold uppercase tracking-[0.04em] text-text-muted">
+            {section.title}
+          </h4>
+        )}
+        {section.rows.length === 0 ? (
+          <p className="m-0 text-body-sm text-text-muted">
+            {section.emptyText ?? "No rows returned."}
+          </p>
+        ) : (
+          <ul className="m-0 grid list-none gap-1 p-0">
+            {section.rows.map((row, index) => (
+              <li
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-sm bg-surface-base px-2 py-1.5 font-mono text-body-sm"
+                key={`${row.primary}-${row.meta ?? index}`}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-text-primary" title={row.primary}>
+                    {row.primary}
+                  </span>
+                  {row.secondary && (
+                    <span className="block truncate text-text-muted" title={row.secondary}>
+                      {row.secondary}
+                    </span>
+                  )}
+                </span>
+                {row.meta && <span className="text-text-muted">{row.meta}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="grid gap-2" key={`${section.title}-text`}>
+      {section.title && (
+        <h4 className="font-mono text-caption font-semibold uppercase tracking-[0.04em] text-text-muted">
+          {section.title}
+        </h4>
+      )}
+      <pre
+        className={`m-0 max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 text-text-primary ${
+          section.monospace ? "font-mono text-mono" : "font-body text-body-sm"
+        }`}
+      >
+        {section.content}
+      </pre>
+    </section>
+  );
+}
 
 export function ActionCard({ card }: ActionCardProps) {
   const [expanded, setExpanded] = useState(card.expanded ?? false);
+  const [showRaw, setShowRaw] = useState(false);
 
-  const borderClass = TYPE_BORDER[card.type] || TYPE_BORDER.file;
+  const accentClass = TYPE_ACCENT[card.type] || TYPE_ACCENT.file;
   const chevronClass = expanded ? "rotate-180" : "";
   const isRunning = card.status === "calling";
+  const hasBody = (card.sections?.length ?? 0) > 0 || card.rawPayload;
 
   return (
-    <div className="ml-7 mr-6 rounded-md overflow-hidden bg-surface-elevated animate-fade-slide-in" role="region" aria-label={card.summary}>
+    <section
+      className="ml-7 mr-6 overflow-hidden rounded-md border border-surface-overlay bg-surface-elevated animate-fade-slide-in"
+      aria-label={card.summary}
+    >
       <button
-        className={`flex items-center gap-2 w-full py-2 px-3 border-l-2 ${borderClass} text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart min-h-[36px] hover:bg-surface-overlay`}
+        type="button"
+        className="grid min-h-[42px] w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 px-3 py-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay disabled:cursor-default"
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
+        disabled={!hasBody}
       >
-        <span className="font-mono text-caption font-semibold text-text-muted w-[18px] h-[18px] flex items-center justify-center rounded-sm bg-surface-overlay shrink-0" aria-hidden="true">
+        <span
+          className={`flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-sm bg-surface-overlay font-mono text-caption font-semibold ${accentClass}`}
+          aria-hidden="true"
+        >
           {TYPE_ICONS[card.type] || TYPE_ICONS.file}
         </span>
-        <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm">{card.summary}</span>
+        <span className="min-w-0">
+          <span className="block truncate font-body text-body-sm font-medium text-text-primary">
+            {card.summary}
+          </span>
+          {card.detail && (
+            <span className="block truncate font-mono text-caption text-text-muted" title={card.detail}>
+              {card.detail}
+            </span>
+          )}
+        </span>
         {isRunning && (
           <span className="shrink-0 font-mono text-caption text-accent-action">
             Running
           </span>
         )}
-        <svg
-          className={`text-text-muted transition-transform duration-150 ease-out-quart shrink-0 ${chevronClass}`}
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-        >
-          <path
-            d="M4 4.5L6 6.5L8 4.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+        {hasBody && (
+          <svg
+            className={`shrink-0 text-text-muted transition-transform duration-150 ease-out-quart ${chevronClass}`}
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+          >
+            <path
+              d="M4 4.5L6 6.5L8 4.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
       </button>
-      {expanded && card.content && (
-        <div className="px-3 pb-3 max-h-[400px] overflow-y-auto animate-fade-slide-in-fast">
-          <pre className="font-mono text-mono-lg leading-relaxed text-text-primary whitespace-pre-wrap break-all m-0">{card.content}</pre>
+      {expanded && hasBody && (
+        <div className="grid max-h-[520px] gap-3 overflow-y-auto border-t border-surface-overlay p-3 animate-fade-slide-in-fast">
+          {card.sections?.map(renderSection)}
+          {card.rawPayload && (
+            <section className="grid gap-2">
+              <button
+                type="button"
+                className="justify-self-start rounded-sm border border-surface-overlay px-2 py-1 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
+                onClick={() => setShowRaw((value) => !value)}
+                aria-expanded={showRaw}
+              >
+                {showRaw ? "Hide raw JSON" : "Show raw JSON"}
+              </button>
+              {showRaw && (
+                <pre className="m-0 max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 font-mono text-mono text-text-primary">
+                  {card.rawPayload}
+                </pre>
+              )}
+            </section>
+          )}
         </div>
       )}
-    </div>
+    </section>
   );
 }
