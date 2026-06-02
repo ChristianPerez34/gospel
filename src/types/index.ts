@@ -30,10 +30,42 @@ export interface ActionCard {
   id: string;
   type: ActionCardType;
   summary: string;
-  content?: string;
+  detail?: string;
+  sections?: ActionCardSection[];
+  rawPayload?: string;
   expanded?: boolean;
   status?: "calling" | "completed";
 }
+
+export interface ActionCardField {
+  label: string;
+  value: string;
+}
+
+export interface ActionCardRow {
+  primary: string;
+  secondary?: string;
+  meta?: string;
+}
+
+export type ActionCardSection =
+  | {
+      type: "fields";
+      title?: string;
+      fields: ActionCardField[];
+    }
+  | {
+      type: "rows";
+      title?: string;
+      rows: ActionCardRow[];
+      emptyText?: string;
+    }
+  | {
+      type: "text";
+      title?: string;
+      content: string;
+      monospace?: boolean;
+    };
 
 export interface Session {
   id: string;
