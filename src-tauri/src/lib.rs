@@ -6,6 +6,7 @@ pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+mod turn;
 mod workspace_tools;
 
 #[cfg(not(test))]
@@ -38,7 +39,7 @@ use corpus::commands::{
 };
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
-use llm::{LlmError, LlmService, StreamEvent, WorkspaceToolContext};
+use llm::{LlmError, LlmService};
 use models::ModelInfo;
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
@@ -607,117 +608,18 @@ async fn complete_streaming(
     model: String,
     session_id: Option<String>,
 ) -> Result<(), llm::LlmErrorDto> {
-    let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(std::path::PathBuf::from),
-        None => None,
-    };
-    eprintln!(
-        "[CORPUS-AUTO] complete_streaming workspace path: {}",
-        workspace_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string())
-    );
-
-    let workspace_context = if let Some(path) = workspace_path.clone() {
-        match validate_active_workspace_path(&path) {
-            Ok(()) => {
-                let corpus_available = match ensure_workspace_corpus(&app, &path).await {
-                    Ok(_) => true,
-                    Err(e) => {
-                        tracing::warn!(
-                            "[CORPUS-AUTO] continuing without corpus for {}: {}",
-                            path.display(),
-                            e
-                        );
-                        emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
-                        false
-                    }
-                };
-
-                Some(WorkspaceToolContext {
-                    workspace_path: path,
-                    corpus_available,
-                })
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "[CORPUS-AUTO] workspace tools unavailable for {}: {}",
-                    path.display(),
-                    e
-                );
-                emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let api_key = if provider == "chatgpt" {
-        String::new()
-    } else {
-        keychain::retrieve(&provider).map_err(|_| LlmError::ApiKeyMissing.to_dto())?
-    };
-
-    let chat_history = match &session_id {
-        Some(sid) => {
-            let mut store = conversation_state.store.lock().unwrap();
-            store.get_history(sid)
-        }
-        None => vec![],
-    };
-
-    let app_clone = app.clone();
-    let result = llm::stream_completion(
-        &provider,
-        &prompt,
-        &model,
-        &api_key,
-        workspace_context,
-        chat_history,
-        move |event| match event {
-            StreamEvent::Text(token) => {
-                let _ = app_clone.emit("llm-token", token);
-            }
-            StreamEvent::ToolCall {
-                id,
-                name,
-                arguments,
-            } => {
-                let _ = app_clone.emit(
-                    "llm-tool-call",
-                    serde_json::json!({ "id": id, "name": name, "arguments": arguments }),
-                );
-            }
-            StreamEvent::ToolResult { id, name, result } => {
-                let _ = app_clone.emit(
-                    "llm-tool-result",
-                    serde_json::json!({ "id": id, "name": name, "result": result }),
-                );
-            }
+    turn::run_streaming_turn(
+        &app,
+        &app_config,
+        &conversation_state,
+        turn::StreamingTurnRequest {
+            provider,
+            prompt,
+            model,
+            session_id,
         },
     )
-    .await;
-
-    match result {
-        Ok(stream_result) => {
-            if let (Some(sid), Some(history)) = (&session_id, stream_result.history) {
-                let mut store = conversation_state.store.lock().unwrap();
-                store.store_history(sid, history);
-            }
-            let _ = app.emit("llm-done", stream_result.full_response);
-            Ok(())
-        }
-        Err(e) => {
-            let _ = app.emit("llm-error", e.to_dto());
-            Err(e.to_dto())
-        }
-    }
+    .await
 }
 
 #[tauri::command]
