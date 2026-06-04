@@ -464,8 +464,13 @@ fn detect_interpreter(script_path: &Path) -> Result<String, String> {
     if first_line.starts_with("#!") {
         let shebang = first_line[2..].trim().to_string();
         if !shebang.is_empty() {
-            let interpreter = shebang.split_whitespace().next().unwrap_or(&shebang);
-            return Ok(interpreter.to_string());
+            let tokens: Vec<&str> = shebang.split_whitespace().collect();
+            let interpreter = if tokens[0].ends_with("/env") || tokens[0] == "env" {
+                tokens[1..].join(" ")
+            } else {
+                tokens.join(" ")
+            };
+            return Ok(interpreter);
         }
     }
 
@@ -515,7 +520,12 @@ pub async fn run_skill_script(
         Err(e) => return Err(format!("Script not found '{}': {}", script_name, e)),
     };
 
-    if !canonical_script.starts_with(&skill_dir) {
+    let canonical_scripts_dir = match fs::canonicalize(&scripts_dir) {
+        Ok(p) => p,
+        Err(e) => return Err(format!("Failed to resolve scripts directory: {}", e)),
+    };
+
+    if !canonical_script.starts_with(&canonical_scripts_dir) {
         return Err(format!(
             "Script '{}' escapes the skill directory",
             script_name
@@ -527,10 +537,14 @@ pub async fn run_skill_script(
     }
 
     let interpreter = detect_interpreter(&canonical_script)?;
+    let interpreter_parts: Vec<&str> = interpreter.split_whitespace().collect();
 
     let timeout_secs = skill.timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
 
-    let mut cmd = tokio::process::Command::new(&interpreter);
+    let mut cmd = tokio::process::Command::new(interpreter_parts[0]);
+    for arg in &interpreter_parts[1..] {
+        cmd.arg(arg);
+    }
     cmd.kill_on_drop(true);
     cmd.arg(&canonical_script);
 

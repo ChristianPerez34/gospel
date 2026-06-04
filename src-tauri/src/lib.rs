@@ -698,8 +698,13 @@ async fn complete_streaming(
                 if let Some(cached) = cache.get(key) {
                     cached.clone()
                 } else {
+                    drop(cache);
                     let global_dir = skills::global_skills_dir();
-                    skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref())
+                    let discovered = skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref());
+                    if let Ok(mut cache) = skill_cache.cache.write() {
+                        cache.insert(key.clone(), discovered.clone());
+                    }
+                    discovered
                 }
             } else {
                 let global_dir = skills::global_skills_dir();

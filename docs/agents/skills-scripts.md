@@ -28,8 +28,8 @@ The interpreter is determined by reading the first line of the script:
 
 The script path is resolved via `canonicalize()`. The canonical script path must start with the canonical skill directory. This prevents symlink escapes:
 
-```
-canonicalize(skill_dir) == canonicalize(script_path.parent())
+```text
+canonicalize(script_path).starts_with(canonicalize(skill_dir / "scripts"))
 ```
 
 If the check fails, an error string is returned to the LLM (not a panic).

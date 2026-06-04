@@ -31,7 +31,7 @@ Users can type `/<skill-name>` in the input bar to explicitly invoke a skill:
 
 - The slash must lead the first non-whitespace line of the input.
 - Multi-line args are captured: `/<skill-name> first line\n\nremaining text`.
-- Selecting from the palette inserts `/skill-name ` and closes the menu.
+- Selecting from the palette inserts `/skill-name` followed by a space and closes the menu.
 - Sending `/skill-name args` strips the slash, captures `args`, and calls `complete_streaming` with `invokedSkill: { name, args }`.
 - The invoked skill's full body is injected into the preamble; the auto-match list is suppressed.
 - Unknown skill names show an inline warning. Pressing Esc sends the literal text unchanged.
