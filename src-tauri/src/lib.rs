@@ -6,6 +6,7 @@ pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+pub mod skills;
 mod workspace_tools;
 
 #[cfg(not(test))]
@@ -43,9 +44,11 @@ use models::ModelInfo;
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
 use serde::Serialize;
+use skills::SkillSummary;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::RwLock,
     time::Duration,
 };
 use tauri::{Emitter, Manager};
@@ -54,6 +57,10 @@ use tauri_plugin_opener::OpenerExt;
 
 static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
+
+pub struct SkillCache {
+    pub cache: RwLock<HashMap<PathBuf, Vec<skills::Skill>>>,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "gospel", about = "Gospel AI coding assistant")]
@@ -597,15 +604,24 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
     }
 }
 
+#[derive(serde::Deserialize)]
+struct InvokedSkill {
+    name: String,
+    #[serde(default)]
+    args: Option<String>,
+}
+
 #[tauri::command]
 async fn complete_streaming(
     app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
     conversation_state: tauri::State<'_, ConversationState>,
+    skill_cache: tauri::State<'_, SkillCache>,
     provider: String,
     prompt: String,
     model: String,
     session_id: Option<String>,
+    invoked_skill: Option<InvokedSkill>,
 ) -> Result<(), llm::LlmErrorDto> {
     let workspace_path = match &app_config.store {
         Some(store) => store
@@ -672,14 +688,63 @@ async fn complete_streaming(
         None => vec![],
     };
 
+    let all_skills = {
+        let canonical_key = workspace_path
+            .as_ref()
+            .and_then(|p| std::fs::canonicalize(p).ok());
+
+        if let Some(ref key) = canonical_key {
+            if let Ok(cache) = skill_cache.cache.read() {
+                if let Some(cached) = cache.get(key) {
+                    cached.clone()
+                } else {
+                    let global_dir = skills::global_skills_dir();
+                    skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref())
+                }
+            } else {
+                let global_dir = skills::global_skills_dir();
+                skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref())
+            }
+        } else {
+            let global_dir = skills::global_skills_dir();
+            skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref())
+        }
+    };
+
+    let (matched_skills_section, invoked_skill_section, effective_prompt) =
+        if let Some(ref invoked) = invoked_skill {
+            match all_skills.iter().find(|s| s.name == invoked.name) {
+                Some(skill) => {
+                    let preamble = skills::format_invoked_skill_preamble(skill);
+                    let user_msg = invoked
+                        .args
+                        .as_deref()
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty())
+                        .unwrap_or_else(|| prompt.clone());
+                    (None, Some(preamble), user_msg)
+                }
+                None => {
+                    tracing::warn!("Unknown skill '{}'; proceeding as normal turn", invoked.name);
+                    (None, None, prompt.clone())
+                }
+            }
+        } else {
+            let matched = skills::match_skills(&prompt, &all_skills);
+            let section = skills::format_skills_preamble_section(&matched);
+            (section, None, prompt.clone())
+        };
+
     let app_clone = app.clone();
     let result = llm::stream_completion(
         &provider,
-        &prompt,
+        &effective_prompt,
         &model,
         &api_key,
         workspace_context,
         chat_history,
+        matched_skills_section,
+        invoked_skill_section,
         move |event| match event {
             StreamEvent::Text(token) => {
                 let _ = app_clone.emit("llm-token", token);
@@ -1000,11 +1065,22 @@ async fn ensure_workspace_corpus(
 fn set_active_workspace(
     app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
+    skill_cache: tauri::State<'_, SkillCache>,
     id: String,
 ) -> Result<(), String> {
     match &app_config.store {
         Some(store) => {
+            let old_path = store.get_workspace_path().ok().flatten();
             store.set_active_workspace(&id).map_err(|e| e.to_string())?;
+
+            if let Some(ref old) = old_path {
+                if let Ok(canonical) = std::fs::canonicalize(old) {
+                    if let Ok(mut cache) = skill_cache.cache.write() {
+                        cache.remove(&canonical);
+                    }
+                }
+            }
+
             match store.get_active_workspace().map_err(|e| e.to_string()) {
                 Ok(Some(workspace)) => {
                     tracing::debug!(
@@ -1012,6 +1088,11 @@ fn set_active_workspace(
                         workspace.name,
                         workspace.path
                     );
+                    if let Ok(canonical) = std::fs::canonicalize(&workspace.path) {
+                        if let Ok(mut cache) = skill_cache.cache.write() {
+                            cache.remove(&canonical);
+                        }
+                    }
                     spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
                 }
                 Ok(None) => {
@@ -1046,6 +1127,78 @@ fn get_active_workspace(
             .clone()
             .unwrap_or_else(|| "App config store is unavailable".to_string())),
     }
+}
+
+#[tauri::command]
+fn list_skills(
+    app_config: tauri::State<'_, AppConfigState>,
+    skill_cache: tauri::State<'_, SkillCache>,
+) -> Result<Vec<SkillSummary>, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        None => None,
+    };
+
+    let canonical_key = workspace_path
+        .as_ref()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+
+    if let Some(ref key) = canonical_key {
+        if let Ok(cache) = skill_cache.cache.read() {
+            if let Some(cached) = cache.get(key) {
+                return Ok(cached.iter().map(skills::SkillSummary::from).collect());
+            }
+        }
+    }
+
+    let global_dir = skills::global_skills_dir();
+    let discovered = skills::discover_skills(
+        workspace_path.as_deref(),
+        global_dir.as_deref(),
+    );
+
+    if let Some(ref key) = canonical_key {
+        if let Ok(mut cache) = skill_cache.cache.write() {
+            cache.insert(key.clone(), discovered.clone());
+        }
+    }
+
+    Ok(discovered.iter().map(skills::SkillSummary::from).collect())
+}
+
+#[tauri::command]
+fn reload_skills(
+    app_config: tauri::State<'_, AppConfigState>,
+    skill_cache: tauri::State<'_, SkillCache>,
+) -> Result<Vec<SkillSummary>, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        None => None,
+    };
+
+    let canonical_key = workspace_path
+        .as_ref()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+
+    if let Some(ref key) = canonical_key {
+        if let Ok(mut cache) = skill_cache.cache.write() {
+            cache.remove(key);
+        }
+    }
+
+    let global_dir = skills::global_skills_dir();
+    let discovered = skills::discover_skills(
+        workspace_path.as_deref(),
+        global_dir.as_deref(),
+    );
+
+    if let Some(ref key) = canonical_key {
+        if let Ok(mut cache) = skill_cache.cache.write() {
+            cache.insert(key.clone(), discovered.clone());
+        }
+    }
+
+    Ok(discovered.iter().map(skills::SkillSummary::from).collect())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1101,6 +1254,9 @@ pub fn run() {
         .manage(ConversationState {
             store: std::sync::Mutex::new(ConversationStore::new()),
         })
+        .manage(SkillCache {
+            cache: RwLock::new(HashMap::new()),
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -1126,6 +1282,8 @@ pub fn run() {
             remove_workspace,
             set_active_workspace,
             get_active_workspace,
+            list_skills,
+            reload_skills,
             // Corpus commands
             build_corpus,
             get_corpus_status,

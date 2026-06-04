@@ -349,7 +349,7 @@ export function AppShell() {
     };
   }, [showError, showSuccess]);
 
-  const handleSend = useCallback(async (message: string) => {
+  const handleSend = useCallback(async (message: string, invokedSkill?: { name: string; args?: string }) => {
     if (!selectedModel || !availableModels.some((m) => m.model === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {
       showError("Select an available model before sending.", {
         label: "Open Settings",
@@ -361,7 +361,7 @@ export function AppShell() {
     const userMsg: Message = {
       id: `m-${Date.now()}-user`,
       role: "user",
-      content: message,
+      content: invokedSkill ? `/${invokedSkill.name}${invokedSkill.args ? " " + invokedSkill.args : ""}` : message,
       timestamp: new Date(),
     };
     setMessages((prev) => [...prev, userMsg]);
@@ -393,6 +393,7 @@ export function AppShell() {
         prompt: message,
         model: selectedModel.model,
         sessionId: effectiveSessionId,
+        invokedSkill: invokedSkill ?? null,
       });
     } catch (e) {
       setIsThinking(false);
@@ -467,6 +468,7 @@ export function AppShell() {
           unavailableDetail={noModels.detail}
           unavailableActionLabel={noModels.actionLabel}
           onUnavailableAction={() => setSettingsOpen(true)}
+          workspacePath={activeWorkspace?.path}
         />
       </div>
       <SessionDrawer
