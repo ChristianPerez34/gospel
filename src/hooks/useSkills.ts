@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface SkillSummary {
@@ -13,29 +13,42 @@ export interface SkillSummary {
 export function useSkills(workspacePath?: string) {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const requestIdRef = useRef(0);
 
   const fetchSkills = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     try {
       const result = await invoke<SkillSummary[]>("list_skills");
-      setSkills(result.filter((s) => s.user_invocable));
+      if (requestId === requestIdRef.current) {
+        setSkills(result.filter((s) => s.user_invocable));
+      }
     } catch (e) {
       console.warn("Failed to load skills:", e);
-      setSkills([]);
+      if (requestId === requestIdRef.current) {
+        setSkills([]);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   const reloadSkills = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     try {
       const result = await invoke<SkillSummary[]>("reload_skills");
-      setSkills(result.filter((s) => s.user_invocable));
+      if (requestId === requestIdRef.current) {
+        setSkills(result.filter((s) => s.user_invocable));
+      }
     } catch (e) {
       console.warn("Failed to reload skills:", e);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 

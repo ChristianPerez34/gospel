@@ -81,14 +81,18 @@ export function InputBar({
   const handleSlashSelect = useCallback(
     (name: string) => {
       selectedFromMenu.current = true;
-      const rest = value.split("\n").slice(1).join("\n").trim();
-      setValue(`/${name} ${rest ? rest + " " : ""}`);
+      setValue((current) => {
+        const lines = current.split("\n");
+        const firstLine = lines[0] ?? "";
+        const updatedFirstLine = firstLine.replace(/^\/[a-z0-9-]*/, `/${name}`);
+        return [updatedFirstLine, ...lines.slice(1)].join("\n");
+      });
       setShowSlashMenu(false);
       setSlashFilter("");
       setUnknownSkill(null);
       textareaRef.current?.focus();
     },
-    [value]
+    []
   );
 
   const doSend = useCallback(
@@ -134,7 +138,7 @@ export function InputBar({
                 bestName = s.name;
               }
             }
-            if (bestName) {
+            if (bestName && bestDist <= 3) {
               e.preventDefault();
               handleSlashSelect(bestName);
               return;

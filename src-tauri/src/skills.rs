@@ -531,6 +531,7 @@ pub async fn run_skill_script(
     let timeout_secs = skill.timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
 
     let mut cmd = tokio::process::Command::new(&interpreter);
+    cmd.kill_on_drop(true);
     cmd.arg(&canonical_script);
 
     if let Some(ws) = workspace_path {
