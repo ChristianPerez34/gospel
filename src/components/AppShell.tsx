@@ -375,7 +375,7 @@ export function AppShell() {
     if (!activeSessionId) {
       const newSession: Session = {
         id: `s-${Date.now()}`,
-        title: message.slice(0, 50) + (message.length > 50 ? "..." : ""),
+        title: userMsg.content.slice(0, 50) + (userMsg.content.length > 50 ? "..." : ""),
         provider: selectedModel.provider,
         model: selectedModel.model,
         timestamp: new Date(),

@@ -25,7 +25,7 @@ interface InputBarProps {
   workspacePath?: string;
 }
 
-const SLASH_REGEX = /^\/([a-z0-9-]+)(?:[ \t]+([\s\S]*))?$/;
+const SLASH_REGEX = /^\/([a-zA-Z0-9-]+)(?:[ \t]+([\s\S]*))?$/;
 
 export function InputBar({
   models,
@@ -61,9 +61,9 @@ export function InputBar({
       return;
     }
 
-    const firstLine = value.split("\n")[0] ?? "";
+      const firstLine = value.split("\n")[0] ?? "";
     if (firstLine.startsWith("/")) {
-      const match = firstLine.match(/^\/([a-z0-9-]*)/);
+      const match = firstLine.match(/^\/([a-zA-Z0-9-]*)/);
       if (match) {
         setSlashFilter(match[1]);
         setShowSlashMenu(true);
@@ -84,7 +84,7 @@ export function InputBar({
       setValue((current) => {
         const lines = current.split("\n");
         const firstLine = lines[0] ?? "";
-        const updatedFirstLine = firstLine.replace(/^\/[a-z0-9-]*/, `/${name}`);
+        const updatedFirstLine = firstLine.replace(/^\/[a-zA-Z0-9-]*/, `/${name}`);
         return [updatedFirstLine, ...lines.slice(1)].join("\n");
       });
       setShowSlashMenu(false);
@@ -97,13 +97,16 @@ export function InputBar({
 
   const doSend = useCallback(
     (text: string) => {
-      const match = text.match(SLASH_REGEX);
+      const firstLine = text.split("\n")[0] ?? text;
+      const rest = text.split("\n").slice(1).join("\n").trim();
+      const match = firstLine.match(SLASH_REGEX);
       if (match) {
-        const skillName = match[1];
+        let skillName = match[1];
         const args = match[2]?.trim();
-        const known = skills.some((s) => s.name === skillName);
-        if (known) {
-          onSend(args || "", { name: skillName, args: args || undefined });
+        const knownSkill = skills.find((s) => s.name.toLowerCase() === skillName.toLowerCase());
+        if (knownSkill) {
+          const promptMessage = [args, rest].filter(Boolean).join("\n");
+          onSend(promptMessage || "", { name: knownSkill.name, args: args || undefined });
         } else {
           setUnknownSkill(skillName);
           return;
@@ -124,7 +127,7 @@ export function InputBar({
     (e: React.KeyboardEvent) => {
       if (e.key === "Tab" && showSlashMenu) {
         const firstLine = value.split("\n")[0] ?? "";
-        const match = firstLine.match(/^\/([a-z0-9-]*)/);
+        const match = firstLine.match(/^\/([a-zA-Z0-9-]*)/);
         if (match) {
           const lower = match[1].toLowerCase();
           const exact = skills.find((s) => s.name.toLowerCase() === lower);

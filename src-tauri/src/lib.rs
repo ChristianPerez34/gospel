@@ -740,6 +740,22 @@ async fn complete_streaming(
             (section, None, prompt.clone())
         };
 
+    let skill_script_tool = {
+        let scriptable: Vec<_> = all_skills
+            .iter()
+            .filter(|s| !s.scripts.is_empty())
+            .cloned()
+            .collect();
+        if scriptable.is_empty() {
+            None
+        } else {
+            Some(skills::RunSkillScriptTool {
+                available_skills: scriptable,
+                workspace_path: workspace_path.clone(),
+            })
+        }
+    };
+
     let app_clone = app.clone();
     let result = llm::stream_completion(
         &provider,
@@ -750,6 +766,7 @@ async fn complete_streaming(
         chat_history,
         matched_skills_section,
         invoked_skill_section,
+        skill_script_tool,
         move |event| match event {
             StreamEvent::Text(token) => {
                 let _ = app_clone.emit("llm-token", token);
@@ -930,10 +947,23 @@ fn add_workspace(
 #[tauri::command]
 fn remove_workspace(
     app_config: tauri::State<'_, AppConfigState>,
+    skill_cache: tauri::State<'_, SkillCache>,
     id: String,
 ) -> Result<(), String> {
     match &app_config.store {
-        Some(store) => store.remove_workspace(&id).map_err(|e| e.to_string()),
+        Some(store) => {
+            // Clear any cached skills for the workspace being removed (by path)
+            if let Ok(workspaces) = store.list_workspaces() {
+                if let Some(ws) = workspaces.into_iter().find(|w| w.id == id) {
+                    if let Ok(canonical) = std::fs::canonicalize(&ws.path) {
+                        if let Ok(mut cache) = skill_cache.cache.write() {
+                            cache.remove(&canonical);
+                        }
+                    }
+                }
+            }
+            store.remove_workspace(&id).map_err(|e| e.to_string())
+        }
         None => Err(app_config
             .init_warning
             .clone()

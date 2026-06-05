@@ -1,9 +1,13 @@
+use rig::completion::ToolDefinition;
+use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SkillFrontmatter {
     pub name: String,
     pub description: String,
@@ -21,7 +25,7 @@ pub struct SkillFrontmatter {
     pub license: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -36,7 +40,7 @@ pub struct Skill {
     pub scripts: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SkillSource {
     Workspace,
     Global,
@@ -61,6 +65,141 @@ impl From<&Skill> for SkillSummary {
             scripts: skill.scripts.clone(),
             user_invocable: skill.user_invocable,
             argument_hint: skill.argument_hint.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RunSkillScriptArgs {
+    pub skill: String,
+    pub script: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSkillScriptTool {
+    pub available_skills: Vec<Skill>,
+    pub workspace_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunSkillScriptOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct RunSkillScriptError(String);
+
+impl std::fmt::Display for RunSkillScriptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for RunSkillScriptError {}
+
+impl Tool for RunSkillScriptTool {
+    const NAME: &'static str = "run_skill_script";
+
+    type Error = RunSkillScriptError;
+    type Args = RunSkillScriptArgs;
+    type Output = RunSkillScriptOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        let scriptable: Vec<String> = self
+            .available_skills
+            .iter()
+            .filter(|s| !s.scripts.is_empty())
+            .map(|s| {
+                let scripts = s.scripts.join(", ");
+                format!("{}: [{}]", s.name, scripts)
+            })
+            .collect();
+
+        let scripts_desc = if scriptable.is_empty() {
+            "No scriptable skills are currently active.".to_string()
+        } else {
+            format!(
+                "The following skills expose scripts you may run: {}. Pass the exact skill name and exact script filename.",
+                scriptable.join("; ")
+            )
+        };
+
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: format!(
+                "Run an executable script bundled with a skill (from its scripts/ dir). {}. The script runs in the workspace dir if available, with per-skill timeout and 16KiB output caps. Returns captured stdout, stderr, exit code and truncation flag. Only use when the active/invoked skill's instructions explicitly direct you to execute one of its scripts.",
+                scripts_desc
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "Exact name of the skill that owns the script (must be one that lists scripts)."
+                    },
+                    "script": {
+                        "type": "string",
+                        "description": "Exact filename of the script to execute (e.g. 'hello', 'run.sh'). Must be listed for that skill."
+                    }
+                },
+                "required": ["skill", "script"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let skill = match self.available_skills.iter().find(|s| s.name == args.skill) {
+            Some(s) => s,
+            None => {
+                return Ok(RunSkillScriptOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: -1,
+                    truncated: false,
+                    error: Some(format!("Unknown skill '{}'", args.skill)),
+                });
+            }
+        };
+
+        if !skill.scripts.contains(&args.script) {
+            return Ok(RunSkillScriptOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: -1,
+                truncated: false,
+                error: Some(format!(
+                    "Script '{}' not found for skill '{}'. Available: {}",
+                    args.script,
+                    args.skill,
+                    skill.scripts.join(", ")
+                )),
+            });
+        }
+
+        match run_skill_script(skill, &args.script, self.workspace_path.as_deref()).await {
+            Ok(res) => Ok(RunSkillScriptOutput {
+                success: true,
+                stdout: res.stdout,
+                stderr: res.stderr,
+                exit_code: res.exit_code,
+                truncated: res.truncated,
+                error: None,
+            }),
+            Err(e) => Ok(RunSkillScriptOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: e.clone(),
+                exit_code: -1,
+                truncated: false,
+                error: Some(e),
+            }),
         }
     }
 }
@@ -861,6 +1000,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_kebab_case_frontmatter_fields() {
+        let dir = tempdir().unwrap();
+        let skills_dir = dir.path().join(".agents").join("skills");
+        let skill_dir = skills_dir.join("kebab-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: kebab-skill\ndescription: Has kebab\nargument-hint: \"[foo] [bar]\"\nuser-invocable: false\ndisable-model-invocation: true\nallowed-tools:\n  - read_file\n  - search_code\ntimeout-seconds: 42\nlicense: MIT\n---\n\nbody here",
+        )
+        .unwrap();
+
+        let skills = discover_skills(Some(dir.path()), None);
+        assert_eq!(skills.len(), 1);
+        let s = &skills[0];
+        assert_eq!(s.argument_hint.as_deref(), Some("[foo] [bar]"));
+        assert_eq!(s.user_invocable, false);
+        assert_eq!(s.disable_model_invocation, true);
+        assert_eq!(s.allowed_tools, vec!["read_file".to_string(), "search_code".to_string()]);
+        assert_eq!(s.timeout_seconds, Some(42));
+        assert_eq!(s.license.as_deref(), Some("MIT"));
+    }
+
+    #[test]
     fn all_15_repo_skills_are_discoverable() {
         let repo_skills_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1126,5 +1288,35 @@ mod tests {
         let skill = make_skill("test-skill", "test", SkillSource::Workspace);
         let result = run_skill_script(&skill, "nonexistent.sh", Some(dir.path())).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_skill_script_tool_returns_failure_for_unknown_skill() {
+        let tool = RunSkillScriptTool {
+            available_skills: vec![],
+            workspace_path: None,
+        };
+        let out = tool
+            .call(RunSkillScriptArgs {
+                skill: "nope".into(),
+                script: "foo.sh".into(),
+            })
+            .await
+            .unwrap();
+        assert!(!out.success);
+        assert!(out.error.unwrap().contains("Unknown skill"));
+    }
+
+    #[tokio::test]
+    async fn run_skill_script_tool_includes_scripts_in_definition() {
+        let mut sk = make_skill("with-scr", "d", SkillSource::Global);
+        sk.scripts = vec!["do-it".to_string()];
+        let tool = RunSkillScriptTool {
+            available_skills: vec![sk],
+            workspace_path: None,
+        };
+        let def = tool.definition("".into()).await;
+        assert_eq!(def.name, "run_skill_script");
+        assert!(def.description.contains("with-scr: [do-it]"));
     }
 }

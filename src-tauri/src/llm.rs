@@ -516,6 +516,7 @@ pub async fn stream_completion<F>(
     chat_history: Vec<Message>,
     matched_skills_section: Option<String>,
     invoked_skill_section: Option<String>,
+    skill_script_tool: Option<crate::skills::RunSkillScriptTool>,
     mut on_event: F,
 ) -> Result<StreamCompletionResult, LlmError>
 where
@@ -535,7 +536,7 @@ where
                 builder
             };
             let agent = if let Some(workspace_context) = workspace.as_ref() {
-                let mut builder = builder
+                let mut b = builder
                     .tool(create_read_file_tool(
                         workspace_context.workspace_path.clone(),
                     ))
@@ -550,7 +551,7 @@ where
                     ));
 
                 if workspace_context.corpus_available {
-                    builder = builder
+                    b = b
                         .tool(create_corpus_summary_tool(
                             workspace_context.workspace_path.clone(),
                         ))
@@ -562,14 +563,18 @@ where
                         ));
                 }
 
-                builder
-                    .tool(DelegateExplorationTool {
-                        workspace: workspace_context.clone(),
-                        provider: provider.to_string(),
-                        model: model.to_string(),
-                        api_key: api_key.to_string(),
-                    })
-                    .build()
+                b = b.tool(DelegateExplorationTool {
+                    workspace: workspace_context.clone(),
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    api_key: api_key.to_string(),
+                });
+                if let Some(st) = skill_script_tool {
+                    b = b.tool(st);
+                }
+                b.build()
+            } else if let Some(st) = skill_script_tool {
+                builder.tool(st).build()
             } else {
                 builder.build()
             };
@@ -722,6 +727,7 @@ mod tests {
             "",
             None,
             vec![],
+            None,
             None,
             None,
             |event| events.push(event),
