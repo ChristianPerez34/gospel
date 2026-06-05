@@ -1,6 +1,9 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import type { ModelOption } from "../types";
 import { ContextPill } from "./ContextPill";
+import { SlashCommandMenu } from "./SlashCommandMenu";
+import { useSkills } from "../hooks/useSkills";
+import { levenshtein } from "../utils/levenshtein";
 
 interface ContextFile {
   name: string;
@@ -11,7 +14,7 @@ interface InputBarProps {
   models: ModelOption[];
   selectedModel: string;
   onModelChange: (modelId: string) => void;
-  onSend: (message: string) => void;
+  onSend: (message: string, invokedSkill?: { name: string; args?: string }) => void;
   contextFiles: ContextFile[];
   onRemoveContext: (path: string) => void;
   disabled?: boolean;
@@ -19,7 +22,10 @@ interface InputBarProps {
   unavailableDetail?: string;
   unavailableActionLabel?: string;
   onUnavailableAction?: () => void;
+  workspacePath?: string;
 }
+
+const SLASH_REGEX = /^\/([a-zA-Z0-9-]+)(?:[ \t]+([\s\S]*))?$/;
 
 export function InputBar({
   models,
@@ -33,29 +39,136 @@ export function InputBar({
   unavailableDetail,
   unavailableActionLabel = "Open Settings",
   onUnavailableAction,
+  workspacePath,
 }: InputBarProps) {
   const [value, setValue] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
+  const [slashFilter, setSlashFilter] = useState("");
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [unknownSkill, setUnknownSkill] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const selectedFromMenu = useRef(false);
+
+  const { skills, reloadSkills } = useSkills(workspacePath);
 
   const currentModel = models.find((m) => m.id === selectedModel);
   const noModels = models.length === 0;
   const sendDisabled = disabled || noModels;
 
+  useEffect(() => {
+    if (selectedFromMenu.current) {
+      selectedFromMenu.current = false;
+      return;
+    }
+
+      const firstLine = value.split("\n")[0] ?? "";
+    if (firstLine.startsWith("/")) {
+      const match = firstLine.match(/^\/([a-zA-Z0-9-]*)/);
+      if (match) {
+        setSlashFilter(match[1]);
+        setShowSlashMenu(true);
+        setUnknownSkill(null);
+      } else {
+        setShowSlashMenu(false);
+      }
+    } else {
+      setShowSlashMenu(false);
+      setSlashFilter("");
+      setUnknownSkill(null);
+    }
+  }, [value]);
+
+  const handleSlashSelect = useCallback(
+    (name: string) => {
+      selectedFromMenu.current = true;
+      setValue((current) => {
+        const lines = current.split("\n");
+        const firstLine = lines[0] ?? "";
+        const updatedFirstLine = firstLine.replace(/^\/[a-zA-Z0-9-]*/, `/${name}`);
+        return [updatedFirstLine, ...lines.slice(1)].join("\n");
+      });
+      setShowSlashMenu(false);
+      setSlashFilter("");
+      setUnknownSkill(null);
+      textareaRef.current?.focus();
+    },
+    []
+  );
+
+  const doSend = useCallback(
+    (text: string) => {
+      const firstLine = text.split("\n")[0] ?? text;
+      const rest = text.split("\n").slice(1).join("\n").trim();
+      const match = firstLine.match(SLASH_REGEX);
+      if (match) {
+        let skillName = match[1];
+        const args = match[2]?.trim();
+        const knownSkill = skills.find((s) => s.name.toLowerCase() === skillName.toLowerCase());
+        if (knownSkill) {
+          const promptMessage = [args, rest].filter(Boolean).join("\n");
+          onSend(promptMessage || "", { name: knownSkill.name, args: args || undefined });
+        } else {
+          setUnknownSkill(skillName);
+          return;
+        }
+      } else {
+        onSend(text);
+      }
+      setValue("");
+      setUnknownSkill(null);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+    },
+    [skills, onSend]
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        if (value.trim() && !sendDisabled) {
-          onSend(value.trim());
-          setValue("");
-          if (textareaRef.current) {
-            textareaRef.current.style.height = "auto";
+      if (e.key === "Tab" && showSlashMenu) {
+        const firstLine = value.split("\n")[0] ?? "";
+        const match = firstLine.match(/^\/([a-zA-Z0-9-]*)/);
+        if (match) {
+          const lower = match[1].toLowerCase();
+          const exact = skills.find((s) => s.name.toLowerCase() === lower);
+          if (!exact) {
+            let bestName = "";
+            let bestDist = Infinity;
+            for (const s of skills) {
+              const dist = levenshtein(lower, s.name.toLowerCase());
+              if (dist < bestDist) {
+                bestDist = dist;
+                bestName = s.name;
+              }
+            }
+            if (bestName && bestDist <= 3) {
+              e.preventDefault();
+              handleSlashSelect(bestName);
+              return;
+            }
           }
         }
       }
+
+      if (e.key === "Escape" && unknownSkill) {
+        e.preventDefault();
+        onSend(value);
+        setValue("");
+        setUnknownSkill(null);
+        if (textareaRef.current) {
+          textareaRef.current.style.height = "auto";
+        }
+        return;
+      }
+
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (value.trim() && !sendDisabled) {
+          doSend(value.trim());
+        }
+      }
     },
-    [value, sendDisabled, onSend]
+    [value, sendDisabled, doSend, showSlashMenu, skills, handleSlashSelect, unknownSkill, onSend]
   );
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -76,6 +189,22 @@ export function InputBar({
               onRemove={() => onRemoveContext(file.path)}
             />
           ))}
+        </div>
+      )}
+      <div className="relative">
+        <SlashCommandMenu
+          skills={skills}
+          filter={slashFilter}
+          visible={showSlashMenu}
+          onSelect={handleSlashSelect}
+          onReload={reloadSkills}
+        />
+      </div>
+      {unknownSkill && (
+        <div className="px-3 pt-2 text-status-error text-caption">
+          Unknown skill:{" "}
+          <span className="font-mono">/{unknownSkill}</span>. Press Esc to
+          send anyway.
         </div>
       )}
       <div className="flex items-end gap-2 p-3 min-h-[--input-min-height]">
@@ -136,7 +265,7 @@ export function InputBar({
         <textarea
           ref={textareaRef}
           className="flex-1 min-h-[28px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary py-1 overflow-y-auto placeholder:text-text-muted disabled:opacity-50 bg-transparent"
-          placeholder={noModels ? unavailableMessage : "Type a prompt (Shift+Enter for new line)"}
+          placeholder={noModels ? unavailableMessage : "Type a prompt or /skill-name (Shift+Enter for new line)"}
           value={value}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
@@ -149,11 +278,7 @@ export function InputBar({
           disabled={sendDisabled || !value.trim()}
           onClick={() => {
             if (value.trim() && !sendDisabled) {
-              onSend(value.trim());
-              setValue("");
-              if (textareaRef.current) {
-                textareaRef.current.style.height = "auto";
-              }
+              doSend(value.trim());
             }
           }}
           aria-label="Send message"

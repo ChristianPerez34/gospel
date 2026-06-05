@@ -352,8 +352,18 @@ where
 fn build_system_preamble(
     workspace: Option<&WorkspaceToolContext>,
     allow_delegate: bool,
+    matched_skills_section: Option<String>,
+    invoked_skill_section: Option<String>,
 ) -> Option<String> {
     let mut sections = Vec::new();
+
+    if let Some(ref invoked) = invoked_skill_section {
+        sections.push(invoked.clone());
+    }
+
+    if let Some(ref matched) = matched_skills_section {
+        sections.push(matched.clone());
+    }
 
     if workspace.is_some() {
         sections.push(WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string());
@@ -408,7 +418,7 @@ async fn run_exploration_agent(
     let tool_names = hook.tools.clone();
     let agent_preamble = format!(
         "{}\n\n{}",
-        build_system_preamble(Some(workspace), false).unwrap_or_default(),
+        build_system_preamble(Some(workspace), false, None, None).unwrap_or_default(),
         EXPLORATION_AGENT_PROMPT.trim()
     );
 
@@ -504,6 +514,9 @@ pub async fn stream_completion<F>(
     api_key: &str,
     workspace: Option<WorkspaceToolContext>,
     chat_history: Vec<Message>,
+    matched_skills_section: Option<String>,
+    invoked_skill_section: Option<String>,
+    skill_script_tool: Option<crate::skills::RunSkillScriptTool>,
     mut on_event: F,
 ) -> Result<StreamCompletionResult, LlmError>
 where
@@ -517,13 +530,13 @@ where
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
             let builder = $client.agent($model).default_max_turns(AGENT_MAX_TURNS);
-            let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true) {
+            let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true, matched_skills_section.clone(), invoked_skill_section.clone()) {
                 builder.preamble(&preamble)
             } else {
                 builder
             };
             let agent = if let Some(workspace_context) = workspace.as_ref() {
-                let mut builder = builder
+                let mut b = builder
                     .tool(create_read_file_tool(
                         workspace_context.workspace_path.clone(),
                     ))
@@ -538,7 +551,7 @@ where
                     ));
 
                 if workspace_context.corpus_available {
-                    builder = builder
+                    b = b
                         .tool(create_corpus_summary_tool(
                             workspace_context.workspace_path.clone(),
                         ))
@@ -550,14 +563,18 @@ where
                         ));
                 }
 
-                builder
-                    .tool(DelegateExplorationTool {
-                        workspace: workspace_context.clone(),
-                        provider: provider.to_string(),
-                        model: model.to_string(),
-                        api_key: api_key.to_string(),
-                    })
-                    .build()
+                b = b.tool(DelegateExplorationTool {
+                    workspace: workspace_context.clone(),
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    api_key: api_key.to_string(),
+                });
+                if let Some(st) = skill_script_tool {
+                    b = b.tool(st);
+                }
+                b.build()
+            } else if let Some(st) = skill_script_tool {
+                builder.tool(st).build()
             } else {
                 builder.build()
             };
@@ -710,6 +727,9 @@ mod tests {
             "",
             None,
             vec![],
+            None,
+            None,
+            None,
             |event| events.push(event),
         )
         .await
@@ -768,6 +788,8 @@ mod tests {
                 corpus_available: true,
             }),
             true,
+            None,
+            None,
         )
         .unwrap();
 
@@ -778,7 +800,7 @@ mod tests {
 
     #[test]
     fn build_system_preamble_is_empty_without_workspace_tools() {
-        assert!(build_system_preamble(None, true).is_none());
+        assert!(build_system_preamble(None, true, None, None).is_none());
     }
 
     #[test]

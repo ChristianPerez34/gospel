@@ -10,3 +10,7 @@
 - **Turn**: One LLM inference cycle, which may include tool execution. A turn ends when the LLM produces a final text response (not a tool call).
 - **Conversation**: A sequence of user/agent message pairs within a session. Conversations are identified by session ID and stored server-side.
 - **Tool**: A registered function the LLM can invoke during a turn. Tools execute and return results that feed back into the next turn.
+- **Skill**: A user-authored directive (a `SKILL.md` file with YAML frontmatter and a markdown body) that can be injected into the LLM preamble to steer behaviour. Skills may bundle executable scripts. Skills are discovered from `<workspace>/.agents/skills/` and the global user data directory.
+- **Skill Source**: The origin of a discovered skill. Either `Workspace` (from the active workspace's `.agents/skills/` directory) or `Global` (from the user's global data directory). Workspace skills take precedence over global skills when names collide.
+- **Skill Match**: An automatic per-turn process that compares the user's prompt tokens against the name and description of all discovered skills. The top-3 matches above a score threshold are emitted as a `## Active Skills` section in the system preamble. Workspace skills win score ties over global skills.
+- **Skill Invocation**: A user-initiated slash command (`/<skill-name>`) that suppresses the auto-match list and injects the full skill body into the system preamble for that turn. Unknown skill names fall back to normal turn behaviour with a warning.
