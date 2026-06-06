@@ -16,6 +16,7 @@ const TOOL_LABELS: Record<string, string> = {
   corpus_summary: "Corpus summary",
   corpus_query: "Corpus query",
   corpus_neighbors: "Corpus neighbors",
+  write_harness_file: "Update plan",
   bash: "Run command",
   terminal: "Run command",
   apply_patch: "Edit files",
@@ -411,6 +412,26 @@ function corpusNeighborsCard(activity: ToolCallActivity): Partial<ActionCard> {
   };
 }
 
+function writeHarnessFileCard(activity: ToolCallActivity): Partial<ActionCard> {
+  const args = parsedArguments(activity);
+  const result = resultRecord(activity);
+  const path = result?.path ?? args?.path;
+  const sections = [
+    fieldsSection("Harness file", [
+      field("Path", path),
+      result ? field("Size", byteSize(result.size_bytes)) : undefined,
+    ]),
+    ...failureSection(result),
+    textSection("Content", args?.content, true),
+    ...waitingSection(activity),
+  ].filter(isRenderableSection);
+
+  return {
+    detail: displayValue(path),
+    sections,
+  };
+}
+
 function fallbackCard(activity: ToolCallActivity): Partial<ActionCard> {
   const sections = [
     textSection("Arguments", formatValue(activity.arguments), true),
@@ -507,4 +528,5 @@ const TOOL_CARD_FORMATTERS: Record<string, (activity: ToolCallActivity) => Parti
   corpus_summary: corpusSummaryCard,
   corpus_query: corpusQueryCard,
   corpus_neighbors: corpusNeighborsCard,
+  write_harness_file: writeHarnessFileCard,
 };

@@ -22,7 +22,8 @@ use crate::corpus::tools::{
 };
 use crate::workspace_tools::{
     create_find_files_tool, create_list_directory_tool, create_read_file_tool,
-    create_search_code_tool, truncate_text_bytes, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    create_search_code_tool, create_write_harness_file_tool, truncate_text_bytes,
+    HARNESS_CONTROL_AREA_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
 const AGENT_MAX_TURNS: usize = 20;
@@ -353,11 +354,12 @@ fn build_system_preamble(
     workspace: Option<&WorkspaceToolContext>,
     allow_delegate: bool,
     matched_skills_section: Option<String>,
-    invoked_skill_section: Option<String>,
+    invoked_skills_section: Option<String>,
+    include_harness: bool,
 ) -> Option<String> {
     let mut sections = Vec::new();
 
-    if let Some(ref invoked) = invoked_skill_section {
+    if let Some(ref invoked) = invoked_skills_section {
         sections.push(invoked.clone());
     }
 
@@ -367,6 +369,9 @@ fn build_system_preamble(
 
     if workspace.is_some() {
         sections.push(WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string());
+        if include_harness {
+            sections.push(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.trim().to_string());
+        }
     }
 
     if workspace.map(|ctx| ctx.corpus_available).unwrap_or(false) {
@@ -418,7 +423,7 @@ async fn run_exploration_agent(
     let tool_names = hook.tools.clone();
     let agent_preamble = format!(
         "{}\n\n{}",
-        build_system_preamble(Some(workspace), false, None, None).unwrap_or_default(),
+        build_system_preamble(Some(workspace), false, None, None, false).unwrap_or_default(),
         EXPLORATION_AGENT_PROMPT.trim()
     );
 
@@ -530,7 +535,7 @@ where
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
             let builder = $client.agent($model).default_max_turns(AGENT_MAX_TURNS);
-            let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true, matched_skills_section.clone(), invoked_skill_section.clone()) {
+            let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true, matched_skills_section.clone(), invoked_skill_section.clone(), true) {
                 builder.preamble(&preamble)
             } else {
                 builder
@@ -547,6 +552,9 @@ where
                         workspace_context.workspace_path.clone(),
                     ))
                     .tool(create_list_directory_tool(
+                        workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_write_harness_file_tool(
                         workspace_context.workspace_path.clone(),
                     ));
 
@@ -790,17 +798,20 @@ mod tests {
             true,
             None,
             None,
+            true,
         )
         .unwrap();
 
         assert!(preamble.contains("Live Workspace Tools"));
         assert!(preamble.contains("source-of-truth"));
         assert!(preamble.contains("delegate_exploration"));
+        assert!(preamble.contains("Harness Control Area"));
+        assert!(preamble.contains(".gospel/PLAN.md"));
     }
 
     #[test]
     fn build_system_preamble_is_empty_without_workspace_tools() {
-        assert!(build_system_preamble(None, true, None, None).is_none());
+        assert!(build_system_preamble(None, true, None, None, true).is_none());
     }
 
     #[test]

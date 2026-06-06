@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
@@ -28,6 +29,47 @@ You can inspect the active Gospel workspace with live tools.
 - Prefer `find_files` or `search_code` before making broad claims.
 - If corpus tools are available, use them for fast structural orientation and live reads for verification.
 - Stay within the active workspace.
+"#;
+
+pub const HARNESS_CONTROL_AREA_SYSTEM_PROMPT: &str = r#"
+## Harness Control Area (Persistent Substrate)
+
+The `.gospel/` directory is the persistent harness substrate for this workspace. It stores durable control artifacts that survive across turns and sessions.
+
+### Primary Artifact: `.gospel/PLAN.md`
+
+When working on multi-step or long-horizon tasks, maintain a system plan at `.gospel/PLAN.md`. This is the agent's outer persistent record of goal, progress, evidence, and next actions.
+
+**Required lightweight structure** (use these exact headings):
+
+```markdown
+# Plan
+
+## Goal
+<one-sentence description of what we are trying to accomplish>
+
+## Steps
+- [x] <completed step>
+- [ ] <current or future step>
+
+## Evidence / Verification
+<what has been verified so far — test results, manual checks, tool outputs>
+
+## Open Questions / Risks
+<blockers, unknowns, decisions still needed>
+
+## Next Action
+<the single most important thing to do next>
+```
+
+### Guidance
+
+- Use `read_file` with path `.gospel/PLAN.md` to read the current plan at the start of a task or when resuming.
+- Use `write_harness_file` with path `.gospel/PLAN.md` to create or update the plan after meaningful progress.
+- Keep the plan concise and current. Update Steps, Evidence, and Next Action as work progresses.
+- The plan is the source of truth for what has been done and what remains. Prefer updating it over relying on conversational memory.
+- **When a skill is active** (e.g. /tdd, /diagnose, or any other invoked or matched skill), still maintain the plan. The skill governs the workflow discipline; the plan is the outer persistent record that tracks goal, progress, and evidence across turns. Initialize the plan when the skill starts, update it after each meaningful step, and mark it complete when the skill's work is done.
+- The `.gospel/corpus/` subdirectory is managed internally and should not be edited directly.
 "#;
 
 const READ_DEFAULT_LINE_CAP: usize = 200;
@@ -63,6 +105,8 @@ static HIDDEN_ALLOWLIST: Lazy<GlobSet> = Lazy::new(|| {
         ".agents/**",
         ".opencode",
         ".opencode/**",
+        ".gospel",
+        ".gospel/**",
         ".gitignore",
         ".gitattributes",
         ".gitmodules",
@@ -941,6 +985,291 @@ pub fn create_list_directory_tool(workspace_root: PathBuf) -> ListDirectoryTool 
     ListDirectoryTool { workspace_root }
 }
 
+const HARNESS_PREFIX: &str = ".gospel/";
+const HARNESS_CORPUS_PREFIX: &str = ".gospel/corpus/";
+const HARNESS_CONTENT_BYTES_CAP: usize = 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+pub struct WriteHarnessFileArgs {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteHarnessFileTool {
+    workspace_root: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WriteHarnessFileOutput {
+    success: bool,
+    message: String,
+    reason: Option<String>,
+    path: Option<String>,
+    size_bytes: Option<u64>,
+}
+
+impl Tool for WriteHarnessFileTool {
+    const NAME: &'static str = "write_harness_file";
+
+    type Error = WorkspaceToolError;
+    type Args = WriteHarnessFileArgs;
+    type Output = WriteHarnessFileOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Create or update a file inside the harness control substrate (.gospel/). Use this to maintain PLAN.md and other harness artifacts. The path must be under .gospel/.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path under .gospel/ (e.g. '.gospel/PLAN.md')."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full content to write to the file."
+                    }
+                },
+                "required": ["path", "content"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let access = WorkspaceAccess::new(&self.workspace_root)?;
+
+        let trimmed_path = args.path.trim();
+        if trimmed_path.is_empty() {
+            return Ok(harness_failure("blocked", "Path must not be empty."));
+        }
+
+        let normalized = normalize_path(&PathBuf::from(trimmed_path));
+        let relative_str = path_to_slash(&normalized);
+
+        if !relative_str.starts_with(HARNESS_PREFIX) {
+            return Ok(harness_failure(
+                "blocked",
+                &format!("Path must be under .gospel/ prefix. Got: {}", trimmed_path),
+            ));
+        }
+
+        if relative_str.starts_with(HARNESS_CORPUS_PREFIX) || relative_str == ".gospel/corpus" {
+            return Ok(harness_failure(
+                "blocked",
+                &format!(
+                    "Writing to .gospel/corpus/ is prohibited. Got: {}",
+                    trimmed_path
+                ),
+            ));
+        }
+
+        if args.content.len() > HARNESS_CONTENT_BYTES_CAP {
+            return Ok(harness_failure(
+                "oversized",
+                &format!(
+                    "Content exceeds the 1 MiB cap ({} bytes).",
+                    args.content.len()
+                ),
+            ));
+        }
+
+        let resolved = match access.resolve_path(Some(trimmed_path)) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return Ok(harness_failure(
+                    access_failure_reason(&error),
+                    &match error {
+                        AccessFailure::Blocked(m)
+                        | AccessFailure::NotFound(m)
+                        | AccessFailure::Io(m) => m,
+                    },
+                ));
+            }
+        };
+
+        let (canonical_gospel, canonical_corpus) =
+            match validate_harness_write_target(&access, &resolved.absolute_path) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    return Ok(harness_failure(
+                        access_failure_reason(&error),
+                        &match error {
+                            AccessFailure::Blocked(m)
+                            | AccessFailure::NotFound(m)
+                            | AccessFailure::Io(m) => m,
+                        },
+                    ));
+                }
+            };
+
+        if let Some(parent) = resolved.absolute_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                return Ok(harness_failure(
+                    "io_error",
+                    &format!("Failed to create parent directories: {}", e),
+                ));
+            }
+        }
+        let write_target = &resolved.absolute_path;
+        let canonical_parent = match write_target.parent() {
+            Some(parent) => match fs::canonicalize(parent) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(harness_failure(
+                        "io_error",
+                        &format!("Failed to canonicalize write target parent: {}", e),
+                    ));
+                }
+            },
+            None => {
+                return Ok(harness_failure(
+                    "blocked",
+                    "Write target has no parent directory.",
+                ));
+            }
+        };
+        if !canonical_parent.starts_with(&canonical_gospel) {
+            return Ok(harness_failure(
+                "blocked",
+                "Resolved path escapes .gospel/ via symlink.",
+            ));
+        }
+        if canonical_parent.starts_with(&canonical_corpus) {
+            return Ok(harness_failure(
+                "blocked",
+                "Resolved path points into .gospel/corpus/ via symlink.",
+            ));
+        }
+
+        let write_result = (|| -> Result<(), String> {
+            use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let count = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+
+            let parent_dir = resolved
+                .absolute_path
+                .parent()
+                .ok_or_else(|| "Write target has no parent directory.".to_string())?;
+            let file_name = resolved
+                .absolute_path
+                .file_name()
+                .unwrap_or_default()
+                .to_os_string();
+            let mut temp_name = std::ffi::OsString::from(".");
+            temp_name.push(&file_name);
+            temp_name.push(format!(".tmp.{}.{}", std::process::id(), count));
+            let temp_path = parent_dir.join(temp_name);
+
+            let mut file = fs::File::create(&temp_path)
+                .map_err(|e| format!("Failed to create temp file for atomic write: {}", e))?;
+            file.write_all(args.content.as_bytes()).map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                format!("Failed to write content to temp file: {}", e)
+            })?;
+            file.sync_all().map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                format!("Failed to sync temp file: {}", e)
+            })?;
+            drop(file);
+
+            fs::rename(&temp_path, &resolved.absolute_path).map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                format!("Failed to rename temp file to target: {}", e)
+            })?;
+
+            if let Ok(dir_handle) = fs::File::open(parent_dir) {
+                let _ = dir_handle.sync_all();
+            }
+
+            Ok(())
+        })();
+
+        if let Err(e) = write_result {
+            return Ok(harness_failure(
+                "io_error",
+                &format!("Failed to write file: {}", e),
+            ));
+        }
+
+        Ok(WriteHarnessFileOutput {
+            success: true,
+            message: format!(
+                "Wrote {} bytes to {}.",
+                args.content.len(),
+                display_rel_path(&resolved.relative_path)
+            ),
+            reason: None,
+            path: Some(display_rel_path(&resolved.relative_path)),
+            size_bytes: Some(args.content.len() as u64),
+        })
+    }
+}
+
+pub fn create_write_harness_file_tool(workspace_root: PathBuf) -> WriteHarnessFileTool {
+    WriteHarnessFileTool { workspace_root }
+}
+
+fn validate_harness_write_target(
+    access: &WorkspaceAccess,
+    target_path: &Path,
+) -> Result<(PathBuf, PathBuf), AccessFailure> {
+    let canonical_gospel = access.canonical_root.join(".gospel");
+    let canonical_corpus = canonical_gospel.join("corpus");
+    let relative_target = target_path
+        .strip_prefix(&access.canonical_root)
+        .map_err(|_| AccessFailure::Blocked("Path escapes the active workspace.".to_string()))?;
+
+    let mut current = access.canonical_root.clone();
+    for component in relative_target.components() {
+        current.push(component.as_os_str());
+
+        match fs::symlink_metadata(&current) {
+            Ok(_) => {
+                let canonical_current = fs::canonicalize(&current).map_err(|e| {
+                    AccessFailure::Io(format!(
+                        "Failed to canonicalize harness path component {}: {}",
+                        current.display(),
+                        e
+                    ))
+                })?;
+
+                if !canonical_current.starts_with(&canonical_gospel) {
+                    return Err(AccessFailure::Blocked(
+                        "Resolved path escapes .gospel/ via symlink.".to_string(),
+                    ));
+                }
+                if canonical_current.starts_with(&canonical_corpus) {
+                    return Err(AccessFailure::Blocked(
+                        "Resolved path points into .gospel/corpus/ via symlink.".to_string(),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(AccessFailure::Io(format!(
+                    "Failed to inspect harness path component {}: {}",
+                    current.display(),
+                    error
+                )));
+            }
+        }
+    }
+
+    Ok((canonical_gospel, canonical_corpus))
+}
+
+fn harness_failure(reason: &str, message: &str) -> WriteHarnessFileOutput {
+    WriteHarnessFileOutput {
+        success: false,
+        message: message.to_string(),
+        reason: Some(reason.to_string()),
+        path: None,
+        size_bytes: None,
+    }
+}
+
 pub(crate) fn truncate_text_bytes(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
         return (text.to_string(), false);
@@ -1782,6 +2111,7 @@ mod tests {
             ".cargo",
             ".agents",
             ".opencode",
+            ".gospel",
         ] {
             assert!(
                 blocked_path_reason(Path::new(path), PathKind::Directory, true).is_none(),
@@ -1987,5 +2317,141 @@ mod tests {
             .entries
             .iter()
             .all(|entry| entry.path != "alias/src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn write_harness_file_creates_file_and_directories() {
+        let dir = tempdir().unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/PLAN.md".to_string(),
+                content: "# Plan\n\n## Goal\nTest.\n".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.path.as_deref(), Some(".gospel/PLAN.md"));
+        assert_eq!(output.size_bytes, Some(22));
+        let written = fs::read_to_string(dir.path().join(".gospel/PLAN.md")).unwrap();
+        assert_eq!(written, "# Plan\n\n## Goal\nTest.\n");
+    }
+
+    #[tokio::test]
+    async fn write_harness_file_rejects_path_outside_gospel() {
+        let dir = tempdir().unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: "src/main.rs".to_string(),
+                content: "fn main() {}".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("blocked"));
+    }
+
+    #[tokio::test]
+    async fn write_harness_file_rejects_oversized_content() {
+        let dir = tempdir().unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+        let big_content = "x".repeat(1024 * 1024 + 1);
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/PLAN.md".to_string(),
+                content: big_content,
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("oversized"));
+    }
+
+    #[tokio::test]
+    async fn write_harness_file_rejects_empty_path() {
+        let dir = tempdir().unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: "".to_string(),
+                content: "content".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("blocked"));
+    }
+
+    #[tokio::test]
+    async fn write_harness_file_allows_nested_paths_under_gospel() {
+        let dir = tempdir().unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/notes/design.md".to_string(),
+                content: "# Design notes".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.path.as_deref(), Some(".gospel/notes/design.md"));
+        let written = fs::read_to_string(dir.path().join(".gospel/notes/design.md")).unwrap();
+        assert_eq!(written, "# Design notes");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_harness_file_rejects_symlink_escape() {
+        let dir = tempdir().unwrap();
+        let gospel_dir = dir.path().join(".gospel");
+        fs::create_dir_all(&gospel_dir).unwrap();
+        symlink(dir.path(), gospel_dir.join("escape")).unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/escape/src/pwned.rs".to_string(),
+                content: "fn main() {}".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("blocked"));
+        assert!(!dir.path().join("src").exists());
+        assert!(!dir.path().join("src/pwned.rs").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_harness_file_rejects_corpus_symlink_alias() {
+        let dir = tempdir().unwrap();
+        let corpus_dir = dir.path().join(".gospel/corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        symlink(&corpus_dir, dir.path().join(".gospel/alias")).unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/alias/manifest.json".to_string(),
+                content: "{}".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("blocked"));
+        assert!(!corpus_dir.join("manifest.json").exists());
     }
 }
