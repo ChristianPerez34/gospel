@@ -22,7 +22,8 @@ use crate::corpus::tools::{
 };
 use crate::workspace_tools::{
     create_find_files_tool, create_list_directory_tool, create_read_file_tool,
-    create_search_code_tool, truncate_text_bytes, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    create_search_code_tool, create_write_harness_file_tool, truncate_text_bytes,
+    HARNESS_CONTROL_AREA_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
 const AGENT_MAX_TURNS: usize = 20;
@@ -367,6 +368,7 @@ fn build_system_preamble(
 
     if workspace.is_some() {
         sections.push(WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string());
+        sections.push(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.trim().to_string());
     }
 
     if workspace.map(|ctx| ctx.corpus_available).unwrap_or(false) {
@@ -547,6 +549,9 @@ where
                         workspace_context.workspace_path.clone(),
                     ))
                     .tool(create_list_directory_tool(
+                        workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_write_harness_file_tool(
                         workspace_context.workspace_path.clone(),
                     ));
 
@@ -796,6 +801,8 @@ mod tests {
         assert!(preamble.contains("Live Workspace Tools"));
         assert!(preamble.contains("source-of-truth"));
         assert!(preamble.contains("delegate_exploration"));
+        assert!(preamble.contains("Harness Control Area"));
+        assert!(preamble.contains(".gospel/PLAN.md"));
     }
 
     #[test]

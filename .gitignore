@@ -13,6 +13,10 @@ dist-ssr
 .superpowers/
 *.local
 
+# Harness corpus data (workspace-local, regenerated automatically)
+# .gospel/PLAN.md and other harness artifacts are version-controlled.
+.gospel/corpus/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
