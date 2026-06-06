@@ -2,8 +2,10 @@ use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use tracing;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,6 +488,49 @@ pub fn list_skill_summaries(
         .iter()
         .map(SkillSummary::from)
         .collect()
+}
+
+pub struct SkillLoader {
+    cache: RwLock<HashMap<PathBuf, Vec<Skill>>>,
+}
+
+impl SkillLoader {
+    pub fn new() -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn load(&self, workspace_path: Option<&Path>) -> Vec<Skill> {
+        let canonical_key = workspace_path.and_then(|p| std::fs::canonicalize(p).ok());
+
+        if let Some(ref key) = canonical_key {
+            if let Ok(cache) = self.cache.read() {
+                if let Some(cached) = cache.get(key) {
+                    return cached.clone();
+                }
+            }
+        }
+
+        let global_dir = self::global_skills_dir();
+        let discovered = discover_skills(workspace_path, global_dir.as_deref());
+
+        if let Some(ref key) = canonical_key {
+            if let Ok(mut cache) = self.cache.write() {
+                cache.insert(key.clone(), discovered.clone());
+            }
+        }
+
+        discovered
+    }
+
+    pub fn invalidate(&self, workspace_path: &Path) {
+        if let Ok(canonical) = std::fs::canonicalize(workspace_path) {
+            if let Ok(mut cache) = self.cache.write() {
+                cache.remove(&canonical);
+            }
+        }
+    }
 }
 
 static STOPWORDS: once_cell::sync::Lazy<Vec<String>> = once_cell::sync::Lazy::new(|| {

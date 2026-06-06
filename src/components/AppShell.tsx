@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { TopBar } from "./TopBar";
 import { ChatView } from "./ChatView";
 import { InputBar } from "./InputBar";
@@ -9,80 +8,17 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { SettingsModal } from "./SettingsModal";
 import { ToastContainer, useToasts } from "./Toast";
 import { useWorkspaces } from "../hooks/useWorkspaces";
-import { toolActivitiesToActionCards } from "../toolActivityCards";
+import { useModelAvailability } from "../hooks/useModelAvailability";
+import { useChatStream } from "../hooks/useChatStream";
 import type {
   Message,
   Session,
-  ModelOption,
   AgentStatus,
-  ToolCallActivity,
 } from "../types";
-import type { ProviderConfig, ProviderId } from "./ProviderSelector";
 import { noModelCopy } from "../modelAvailabilityCopy";
-
-interface ProviderAvailability {
-  provider: ProviderId;
-  display_name: string;
-  auth_type: "api_key" | "oauth";
-  credentialed: boolean;
-  visible: boolean;
-  model_fetch_status: string;
-  model_count: number;
-  error_kind?: string | null;
-  error_detail?: string | null;
-}
-
-interface ModelAvailabilitySnapshot {
-  providers: ProviderAvailability[];
-  available_models: { model: string; provider: string }[];
-  empty_reason?: string | null;
-  warnings: string[];
-}
-
-interface CorpusAutoBuildComplete {
-  success: boolean;
-  symbol_count: number;
-}
-
-interface SelectedModel {
-  provider: string;
-  model: string;
-}
 
 function modelOptionId(provider: string, model: string) {
   return `${provider.toLowerCase()}::${model}`;
-}
-
-function providerConfigFromAvailability(provider: ProviderAvailability, existing?: ProviderConfig): ProviderConfig {
-  return {
-    id: provider.provider,
-    name: provider.display_name,
-    authType: provider.auth_type,
-    credentialed: provider.credentialed,
-    visible: provider.visible,
-    modelFetchStatus: provider.model_fetch_status,
-    modelCount: provider.model_count,
-    errorKind: provider.error_kind ?? undefined,
-    errorDetail: provider.error_detail ?? undefined,
-    apiKey: provider.credentialed ? "" : existing?.apiKey ?? "",
-    enabled: provider.visible,
-    status: existing?.status ?? (provider.credentialed ? "success" : "idle"),
-    testMessage: existing?.testMessage ?? "",
-    isOAuth: provider.auth_type === "oauth",
-    isAuthenticated: provider.auth_type === "oauth" ? provider.credentialed : undefined,
-  };
-}
-
-function buildModelOptions(models: { model: string; provider: string }[], providers: ProviderConfig[]): ModelOption[] {
-  return models.map((m) => {
-    const provider = providers.find((p) => p.id === m.provider.toLowerCase() as ProviderId);
-    return {
-      id: modelOptionId(m.provider, m.model),
-      name: m.model,
-      provider: m.provider,
-      configured: provider?.credentialed ?? true,
-    };
-  });
 }
 
 export function AppShell() {
@@ -93,86 +29,30 @@ export function AppShell() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [availabilitySnapshot, setAvailabilitySnapshot] = useState<ModelAvailabilitySnapshot | null>(null);
-  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
+  const { toasts, dismissToast, showError, showSuccess } = useToasts();
+  const {
+    models,
+    providers,
+    setProviders,
+    selectedModel,
+    setSelectedModel,
+    availabilitySnapshot,
+    isRefreshingModels,
+    refreshModelAvailability,
+  } = useModelAvailability({
+    onError: showError,
+    onSuccess: showSuccess,
+  });
+
   const [status, setStatus] = useState<AgentStatus>("idle");
   const statusRef = useRef(status);
   statusRef.current = status;
-  const [isThinking, setIsThinking] = useState(false);
-  const [streamingContent, setStreamingContent] = useState("");
-  const [toolActivities, setToolActivities] = useState<ToolCallActivity[]>([]);
-  const toolActivitiesRef = useRef<ToolCallActivity[]>([]);
-  const { toasts, dismissToast, showError, showSuccess } = useToasts();
-  const providersRef = useRef(providers);
-  providersRef.current = providers;
-
-  const [availableModels, setAvailableModels] = useState<{ model: string; provider: string }[]>([]);
-  const isRefreshingModelsRef = useRef(false);
-
-  const refreshModelAvailability = useCallback(async (forceRefresh = false) => {
-    if (forceRefresh && isRefreshingModelsRef.current) return;
-    if (forceRefresh) {
-      setIsRefreshingModels(true);
-      isRefreshingModelsRef.current = true;
-    }
-    try {
-      const snapshot = await invoke<ModelAvailabilitySnapshot>("get_model_availability", { forceRefresh });
-      setAvailabilitySnapshot(snapshot);
-      setAvailableModels(snapshot.available_models);
-      setProviders((current) =>
-        snapshot.providers.map((provider) =>
-          providerConfigFromAvailability(provider, current.find((p) => p.id === provider.provider))
-        )
-      );
-      if (statusRef.current !== "thinking") {
-        setStatus(snapshot.available_models.length > 0 ? "connected" : "idle");
-      }
-      if (forceRefresh) {
-        const failedProvider = snapshot.providers.find((p) => p.error_kind || p.model_fetch_status === "failed");
-        if (failedProvider) {
-          showError(`${failedProvider.display_name}: ${failedProvider.error_detail || "Model refresh failed."}`);
-        } else {
-          showSuccess("Models refreshed.");
-        }
-      }
-    } catch (e) {
-      if (forceRefresh) {
-        showError(`Model refresh failed: ${e}`);
-      } else {
-        setAvailabilitySnapshot(null);
-        if (statusRef.current !== "thinking") {
-          setStatus("idle");
-        }
-      }
-    } finally {
-      if (forceRefresh) {
-        setIsRefreshingModels(false);
-        isRefreshingModelsRef.current = false;
-      }
-    }
-  }, [showError, showSuccess]);
 
   useEffect(() => {
-    void refreshModelAvailability();
-  }, [refreshModelAvailability]);
-
-  useEffect(() => {
-    const models = buildModelOptions(availableModels, providers);
-    setModels(models);
-    if (models.length === 0 || availableModels.length === 0) {
-      setSelectedModel(null);
-      return;
+    if (statusRef.current !== "thinking") {
+      setStatus(availabilitySnapshot?.available_models?.length ? "connected" : "idle");
     }
-    setSelectedModel((prev) => {
-      if (prev && availableModels.some((m) => m.model === prev.model && m.provider.toLowerCase() === prev.provider.toLowerCase())) {
-        return prev;
-      }
-      return { provider: availableModels[0].provider, model: availableModels[0].model };
-    });
-  }, [availableModels, providers]);
+  }, [availabilitySnapshot]);
 
   useEffect(() => {
     if (!activeSessionId) return;
@@ -190,167 +70,23 @@ export function AppShell() {
     );
   }, [activeSessionId, messages]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let cleanup: (() => void) | null = null;
-
-    (async () => {
-      const unlisteners: (() => void)[] = [];
-
-      try {
-        const [u1, u2, u3, u4, u5, u6] = await Promise.all([
-          listen<string>("llm-token", (event) => {
-            setStreamingContent((prev) => prev + event.payload);
-            setIsThinking(false);
-          }),
-          listen<string>("llm-done", (event) => {
-            const content = event.payload;
-            const actionCards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
-              (card) => ({ ...card, expanded: false, status: "completed" as const })
-            );
-
-            if (content) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: `m-${Date.now()}`,
-                  role: "agent",
-                  content,
-                  timestamp: new Date(),
-                  actionCards: actionCards.length > 0 ? actionCards : undefined,
-                },
-              ]);
-            } else if (actionCards.length > 0) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: `m-${Date.now()}`,
-                  role: "agent",
-                  content: "Completed.",
-                  timestamp: new Date(),
-                  actionCards,
-                },
-              ]);
-            }
-
-            setStreamingContent("");
-            toolActivitiesRef.current = [];
-            setToolActivities([]);
-            setIsThinking(false);
-            setStatus("connected");
-          }),
-          listen<{ code: string; message: string }>("llm-error", (event) => {
-            const err = event.payload;
-            const actionCards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
-              (card) => ({ ...card, expanded: false, status: "completed" as const })
-            );
-
-            if (err?.message || actionCards.length > 0) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: `m-${Date.now()}`,
-                  role: "agent",
-                  content: "",
-                  timestamp: new Date(),
-                  actionCards: actionCards.length > 0 ? actionCards : undefined,
-                  error: err?.message || "Completion failed.",
-                },
-              ]);
-            }
-
-            setIsThinking(false);
-            setStreamingContent("");
-            toolActivitiesRef.current = [];
-            setToolActivities([]);
-            setStatus("error");
-
-            if (err?.code === "API_KEY_MISSING") {
-              showError(err.message, {
-                label: "Open Settings",
-                onClick: () => setSettingsOpen(true),
-              });
-            } else {
-              showError(err?.message || "Completion failed.", {
-                label: "Retry",
-                onClick: () => {},
-              });
-            }
-          }),
-          listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
-            setToolActivities((prev) => {
-              const next = [
-                ...prev,
-                {
-                  id: event.payload.id,
-                  name: event.payload.name,
-                  arguments: event.payload.arguments,
-                  status: "calling" as const,
-                },
-              ];
-
-              toolActivitiesRef.current = next;
-              return next;
-            });
-            setStatus("acting");
-          }),
-          listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
-            setToolActivities((prev) => {
-              const idx = prev.findIndex((a) => a.id === event.payload.id);
-              if (idx >= 0) {
-                const updated = [...prev];
-                updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
-                toolActivitiesRef.current = updated;
-                return updated;
-              }
-
-              const next = [
-                ...prev,
-                {
-                  id: event.payload.id,
-                  name: event.payload.name,
-                  result: event.payload.result,
-                  status: "completed" as const,
-                },
-              ];
-
-              toolActivitiesRef.current = next;
-              return next;
-            });
-            setStatus("acting");
-          }),
-          listen<CorpusAutoBuildComplete>("corpus-auto-build-complete", (event) => {
-            if (event.payload.success) {
-              showSuccess(`Corpus ready with ${event.payload.symbol_count} symbols.`);
-            } else {
-              showError("Corpus auto-build failed. Use Build Corpus to retry.");
-            }
-          }),
-        ]);
-        unlisteners.push(u1, u2, u3, u4, u5, u6);
-      } catch (error) {
-        unlisteners.forEach((unlisten) => unlisten());
-        throw error;
-      }
-
-      cleanup = () => {
-        unlisteners.forEach((unlisten) => unlisten());
-      };
-
-      if (cancelled) {
-        cleanup();
-        return;
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      cleanup?.();
-    };
-  }, [showError, showSuccess]);
+  const {
+    streamingContent,
+    toolActivities,
+    isThinking,
+    setIsThinking,
+    startStream,
+    resetStream,
+  } = useChatStream({
+    onMessages: setMessages,
+    onStatusChange: setStatus,
+    onErrorToast: showError,
+    onSuccessToast: showSuccess,
+    onOpenSettings: () => setSettingsOpen(true),
+  });
 
   const handleSend = useCallback(async (message: string, invokedSkill?: { name: string; args?: string }) => {
-    if (!selectedModel || !availableModels.some((m) => m.model === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {
+    if (!selectedModel || !models.some((m) => m.name === selectedModel.model && m.provider.toLowerCase() === selectedModel.provider.toLowerCase())) {
       showError("Select an available model before sending.", {
         label: "Open Settings",
         onClick: () => setSettingsOpen(true),
@@ -367,9 +103,7 @@ export function AppShell() {
     setMessages((prev) => [...prev, userMsg]);
     setIsThinking(true);
     setStatus("thinking");
-    setStreamingContent("");
-    toolActivitiesRef.current = [];
-    setToolActivities([]);
+    resetStream();
 
     let effectiveSessionId = activeSessionId;
     if (!activeSessionId) {
@@ -388,7 +122,7 @@ export function AppShell() {
     }
 
     try {
-      await invoke("complete_streaming", {
+      await startStream({
         provider: selectedModel.provider,
         prompt: message,
         model: selectedModel.model,
@@ -398,13 +132,13 @@ export function AppShell() {
     } catch (e) {
       setIsThinking(false);
       setStatus("error");
-      setStreamingContent("");
+      resetStream();
       showError(`Failed to send: ${e}`, {
         label: "Open Settings",
         onClick: () => setSettingsOpen(true),
       });
     }
-  }, [activeSessionId, availableModels, selectedModel, showError]);
+  }, [activeSessionId, models, selectedModel, showError, resetStream, startStream, setIsThinking]);
 
   const handleSessionSelect = useCallback((session: Session) => {
     setActiveSessionId(session.id);
@@ -415,12 +149,10 @@ export function AppShell() {
   const handleNewSession = useCallback(() => {
     setActiveSessionId(null);
     setMessages([]);
-    setStreamingContent("");
-    toolActivitiesRef.current = [];
-    setToolActivities([]);
+    resetStream();
     setIsThinking(false);
     setSessionDrawerOpen(false);
-  }, []);
+  }, [resetStream, setIsThinking]);
 
   const handleWorkspaceSwitcherClose = useCallback(() => {
     setWorkspaceSwitcherOpen(false);

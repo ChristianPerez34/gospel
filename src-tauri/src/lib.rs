@@ -48,7 +48,6 @@ use skills::SkillSummary;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::RwLock,
     time::Duration,
 };
 use tauri::{Emitter, Manager};
@@ -59,7 +58,15 @@ static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::syn
 const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
 
 pub struct SkillCache {
-    pub cache: RwLock<HashMap<PathBuf, Vec<skills::Skill>>>,
+    pub loader: skills::SkillLoader,
+}
+
+impl SkillCache {
+    fn new() -> Self {
+        Self {
+            loader: skills::SkillLoader::new(),
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -688,33 +695,7 @@ async fn complete_streaming(
         None => vec![],
     };
 
-    let all_skills = {
-        let canonical_key = workspace_path
-            .as_ref()
-            .and_then(|p| std::fs::canonicalize(p).ok());
-
-        if let Some(ref key) = canonical_key {
-            if let Ok(cache) = skill_cache.cache.read() {
-                if let Some(cached) = cache.get(key) {
-                    cached.clone()
-                } else {
-                    drop(cache);
-                    let global_dir = skills::global_skills_dir();
-                    let discovered = skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref());
-                    if let Ok(mut cache) = skill_cache.cache.write() {
-                        cache.insert(key.clone(), discovered.clone());
-                    }
-                    discovered
-                }
-            } else {
-                let global_dir = skills::global_skills_dir();
-                skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref())
-            }
-        } else {
-            let global_dir = skills::global_skills_dir();
-            skills::discover_skills(workspace_path.as_deref(), global_dir.as_deref())
-        }
-    };
+    let all_skills = skill_cache.loader.load(workspace_path.as_deref());
 
     let (matched_skills_section, invoked_skill_section, effective_prompt) =
         if let Some(ref invoked) = invoked_skill {
@@ -952,14 +933,9 @@ fn remove_workspace(
 ) -> Result<(), String> {
     match &app_config.store {
         Some(store) => {
-            // Clear any cached skills for the workspace being removed (by path)
             if let Ok(workspaces) = store.list_workspaces() {
                 if let Some(ws) = workspaces.into_iter().find(|w| w.id == id) {
-                    if let Ok(canonical) = std::fs::canonicalize(&ws.path) {
-                        if let Ok(mut cache) = skill_cache.cache.write() {
-                            cache.remove(&canonical);
-                        }
-                    }
+                    skill_cache.loader.invalidate(&PathBuf::from(&ws.path));
                 }
             }
             store.remove_workspace(&id).map_err(|e| e.to_string())
@@ -1109,11 +1085,7 @@ fn set_active_workspace(
             store.set_active_workspace(&id).map_err(|e| e.to_string())?;
 
             if let Some(ref old) = old_path {
-                if let Ok(canonical) = std::fs::canonicalize(old) {
-                    if let Ok(mut cache) = skill_cache.cache.write() {
-                        cache.remove(&canonical);
-                    }
-                }
+                skill_cache.loader.invalidate(&PathBuf::from(old));
             }
 
             match store.get_active_workspace().map_err(|e| e.to_string()) {
@@ -1123,11 +1095,7 @@ fn set_active_workspace(
                         workspace.name,
                         workspace.path
                     );
-                    if let Ok(canonical) = std::fs::canonicalize(&workspace.path) {
-                        if let Ok(mut cache) = skill_cache.cache.write() {
-                            cache.remove(&canonical);
-                        }
-                    }
+                    skill_cache.loader.invalidate(&PathBuf::from(&workspace.path));
                     spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
                 }
                 Ok(None) => {
@@ -1174,31 +1142,8 @@ fn list_skills(
         None => None,
     };
 
-    let canonical_key = workspace_path
-        .as_ref()
-        .and_then(|p| std::fs::canonicalize(p).ok());
-
-    if let Some(ref key) = canonical_key {
-        if let Ok(cache) = skill_cache.cache.read() {
-            if let Some(cached) = cache.get(key) {
-                return Ok(cached.iter().map(skills::SkillSummary::from).collect());
-            }
-        }
-    }
-
-    let global_dir = skills::global_skills_dir();
-    let discovered = skills::discover_skills(
-        workspace_path.as_deref(),
-        global_dir.as_deref(),
-    );
-
-    if let Some(ref key) = canonical_key {
-        if let Ok(mut cache) = skill_cache.cache.write() {
-            cache.insert(key.clone(), discovered.clone());
-        }
-    }
-
-    Ok(discovered.iter().map(skills::SkillSummary::from).collect())
+    let skills = skill_cache.loader.load(workspace_path.as_deref());
+    Ok(skills.iter().map(skills::SkillSummary::from).collect())
 }
 
 #[tauri::command]
@@ -1211,29 +1156,12 @@ fn reload_skills(
         None => None,
     };
 
-    let canonical_key = workspace_path
-        .as_ref()
-        .and_then(|p| std::fs::canonicalize(p).ok());
-
-    if let Some(ref key) = canonical_key {
-        if let Ok(mut cache) = skill_cache.cache.write() {
-            cache.remove(key);
-        }
+    if let Some(ref path) = workspace_path {
+        skill_cache.loader.invalidate(path);
     }
 
-    let global_dir = skills::global_skills_dir();
-    let discovered = skills::discover_skills(
-        workspace_path.as_deref(),
-        global_dir.as_deref(),
-    );
-
-    if let Some(ref key) = canonical_key {
-        if let Ok(mut cache) = skill_cache.cache.write() {
-            cache.insert(key.clone(), discovered.clone());
-        }
-    }
-
-    Ok(discovered.iter().map(skills::SkillSummary::from).collect())
+    let skills = skill_cache.loader.load(workspace_path.as_deref());
+    Ok(skills.iter().map(skills::SkillSummary::from).collect())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1289,9 +1217,7 @@ pub fn run() {
         .manage(ConversationState {
             store: std::sync::Mutex::new(ConversationStore::new()),
         })
-        .manage(SkillCache {
-            cache: RwLock::new(HashMap::new()),
-        })
+        .manage(SkillCache::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
