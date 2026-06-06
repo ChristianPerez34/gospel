@@ -1042,10 +1042,7 @@ impl Tool for WriteHarnessFileTool {
 
         let trimmed_path = args.path.trim();
         if trimmed_path.is_empty() {
-            return Ok(harness_failure(
-                "blocked",
-                "Path must not be empty.",
-            ));
+            return Ok(harness_failure("blocked", "Path must not be empty."));
         }
 
         let normalized = normalize_path(&PathBuf::from(trimmed_path));
@@ -1054,16 +1051,11 @@ impl Tool for WriteHarnessFileTool {
         if !relative_str.starts_with(HARNESS_PREFIX) {
             return Ok(harness_failure(
                 "blocked",
-                &format!(
-                    "Path must be under .gospel/ prefix. Got: {}",
-                    trimmed_path
-                ),
+                &format!("Path must be under .gospel/ prefix. Got: {}", trimmed_path),
             ));
         }
 
-        if relative_str.starts_with(HARNESS_CORPUS_PREFIX)
-            || relative_str == ".gospel/corpus"
-        {
+        if relative_str.starts_with(HARNESS_CORPUS_PREFIX) || relative_str == ".gospel/corpus" {
             return Ok(harness_failure(
                 "blocked",
                 &format!(
@@ -1097,6 +1089,21 @@ impl Tool for WriteHarnessFileTool {
             }
         };
 
+        let (canonical_gospel, canonical_corpus) =
+            match validate_harness_write_target(&access, &resolved.absolute_path) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    return Ok(harness_failure(
+                        access_failure_reason(&error),
+                        &match error {
+                            AccessFailure::Blocked(m)
+                            | AccessFailure::NotFound(m)
+                            | AccessFailure::Io(m) => m,
+                        },
+                    ));
+                }
+            };
+
         if let Some(parent) = resolved.absolute_path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 return Ok(harness_failure(
@@ -1105,17 +1112,6 @@ impl Tool for WriteHarnessFileTool {
                 ));
             }
         }
-
-        let canonical_root = match fs::canonicalize(&self.workspace_root) {
-            Ok(path) => path,
-            Err(e) => {
-                return Ok(harness_failure(
-                    "io_error",
-                    &format!("Failed to canonicalize workspace root: {}", e),
-                ));
-            }
-        };
-        let canonical_gospel = canonical_root.join(".gospel");
         let write_target = &resolved.absolute_path;
         let canonical_parent = match write_target.parent() {
             Some(parent) => match fs::canonicalize(parent) {
@@ -1140,15 +1136,22 @@ impl Tool for WriteHarnessFileTool {
                 "Resolved path escapes .gospel/ via symlink.",
             ));
         }
+        if canonical_parent.starts_with(&canonical_corpus) {
+            return Ok(harness_failure(
+                "blocked",
+                "Resolved path points into .gospel/corpus/ via symlink.",
+            ));
+        }
 
         let write_result = (|| -> Result<(), String> {
             use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
             static COUNTER: AtomicU64 = AtomicU64::new(0);
             let count = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
 
-            let parent_dir = resolved.absolute_path.parent().ok_or_else(|| {
-                "Write target has no parent directory.".to_string()
-            })?;
+            let parent_dir = resolved
+                .absolute_path
+                .parent()
+                .ok_or_else(|| "Write target has no parent directory.".to_string())?;
             let file_name = resolved
                 .absolute_path
                 .file_name()
@@ -1159,9 +1162,8 @@ impl Tool for WriteHarnessFileTool {
             temp_name.push(format!(".tmp.{}.{}", std::process::id(), count));
             let temp_path = parent_dir.join(temp_name);
 
-            let mut file = fs::File::create(&temp_path).map_err(|e| {
-                format!("Failed to create temp file for atomic write: {}", e)
-            })?;
+            let mut file = fs::File::create(&temp_path)
+                .map_err(|e| format!("Failed to create temp file for atomic write: {}", e))?;
             file.write_all(args.content.as_bytes()).map_err(|e| {
                 let _ = fs::remove_file(&temp_path);
                 format!("Failed to write content to temp file: {}", e)
@@ -1185,7 +1187,10 @@ impl Tool for WriteHarnessFileTool {
         })();
 
         if let Err(e) = write_result {
-            return Ok(harness_failure("io_error", &format!("Failed to write file: {}", e)));
+            return Ok(harness_failure(
+                "io_error",
+                &format!("Failed to write file: {}", e),
+            ));
         }
 
         Ok(WriteHarnessFileOutput {
@@ -1204,6 +1209,55 @@ impl Tool for WriteHarnessFileTool {
 
 pub fn create_write_harness_file_tool(workspace_root: PathBuf) -> WriteHarnessFileTool {
     WriteHarnessFileTool { workspace_root }
+}
+
+fn validate_harness_write_target(
+    access: &WorkspaceAccess,
+    target_path: &Path,
+) -> Result<(PathBuf, PathBuf), AccessFailure> {
+    let canonical_gospel = access.canonical_root.join(".gospel");
+    let canonical_corpus = canonical_gospel.join("corpus");
+    let relative_target = target_path
+        .strip_prefix(&access.canonical_root)
+        .map_err(|_| AccessFailure::Blocked("Path escapes the active workspace.".to_string()))?;
+
+    let mut current = access.canonical_root.clone();
+    for component in relative_target.components() {
+        current.push(component.as_os_str());
+
+        match fs::symlink_metadata(&current) {
+            Ok(_) => {
+                let canonical_current = fs::canonicalize(&current).map_err(|e| {
+                    AccessFailure::Io(format!(
+                        "Failed to canonicalize harness path component {}: {}",
+                        current.display(),
+                        e
+                    ))
+                })?;
+
+                if !canonical_current.starts_with(&canonical_gospel) {
+                    return Err(AccessFailure::Blocked(
+                        "Resolved path escapes .gospel/ via symlink.".to_string(),
+                    ));
+                }
+                if canonical_current.starts_with(&canonical_corpus) {
+                    return Err(AccessFailure::Blocked(
+                        "Resolved path points into .gospel/corpus/ via symlink.".to_string(),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(AccessFailure::Io(format!(
+                    "Failed to inspect harness path component {}: {}",
+                    current.display(),
+                    error
+                )));
+            }
+        }
+    }
+
+    Ok((canonical_gospel, canonical_corpus))
 }
 
 fn harness_failure(reason: &str, message: &str) -> WriteHarnessFileOutput {
@@ -2356,6 +2410,7 @@ mod tests {
         assert_eq!(written, "# Design notes");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn write_harness_file_rejects_symlink_escape() {
         let dir = tempdir().unwrap();
@@ -2374,6 +2429,29 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.reason.as_deref(), Some("blocked"));
+        assert!(!dir.path().join("src").exists());
         assert!(!dir.path().join("src/pwned.rs").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_harness_file_rejects_corpus_symlink_alias() {
+        let dir = tempdir().unwrap();
+        let corpus_dir = dir.path().join(".gospel/corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        symlink(&corpus_dir, dir.path().join(".gospel/alias")).unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/alias/manifest.json".to_string(),
+                content: "{}".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("blocked"));
+        assert!(!corpus_dir.join("manifest.json").exists());
     }
 }
