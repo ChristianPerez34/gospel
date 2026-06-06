@@ -1092,6 +1092,41 @@ impl Tool for WriteHarnessFileTool {
             }
         }
 
+        let canonical_root = match fs::canonicalize(&self.workspace_root) {
+            Ok(path) => path,
+            Err(e) => {
+                return Ok(harness_failure(
+                    "io_error",
+                    &format!("Failed to canonicalize workspace root: {}", e),
+                ));
+            }
+        };
+        let canonical_gospel = canonical_root.join(".gospel");
+        let write_target = &resolved.absolute_path;
+        let canonical_parent = match write_target.parent() {
+            Some(parent) => match fs::canonicalize(parent) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(harness_failure(
+                        "io_error",
+                        &format!("Failed to canonicalize write target parent: {}", e),
+                    ));
+                }
+            },
+            None => {
+                return Ok(harness_failure(
+                    "blocked",
+                    "Write target has no parent directory.",
+                ));
+            }
+        };
+        if !canonical_parent.starts_with(&canonical_gospel) {
+            return Ok(harness_failure(
+                "blocked",
+                "Resolved path escapes .gospel/ via symlink.",
+            ));
+        }
+
         if let Err(e) = fs::write(&resolved.absolute_path, args.content.as_bytes()) {
             return Ok(harness_failure(
                 "io_error",
@@ -2265,5 +2300,26 @@ mod tests {
         assert_eq!(output.path.as_deref(), Some(".gospel/notes/design.md"));
         let written = fs::read_to_string(dir.path().join(".gospel/notes/design.md")).unwrap();
         assert_eq!(written, "# Design notes");
+    }
+
+    #[tokio::test]
+    async fn write_harness_file_rejects_symlink_escape() {
+        let dir = tempdir().unwrap();
+        let gospel_dir = dir.path().join(".gospel");
+        fs::create_dir_all(&gospel_dir).unwrap();
+        symlink(dir.path(), gospel_dir.join("escape")).unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/escape/src/pwned.rs".to_string(),
+                content: "fn main() {}".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("blocked"));
+        assert!(!dir.path().join("src/pwned.rs").exists());
     }
 }
