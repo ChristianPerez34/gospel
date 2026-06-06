@@ -1068,6 +1068,41 @@ mod tests {
     }
 
     #[test]
+    fn loader_load_caches_results() {
+        let dir = tempdir().unwrap();
+        let skills_dir = dir.path().join(".agents").join("skills");
+        write_skill(&skills_dir, "test", "test", "desc", "body");
+
+        let loader = SkillLoader::new();
+        let skills1 = loader.load(Some(dir.path()));
+        assert_eq!(skills1.len(), 1);
+
+        // Delete the skill file to verify cache is used
+        fs::remove_dir_all(skills_dir).unwrap();
+        let skills2 = loader.load(Some(dir.path()));
+        assert_eq!(skills2.len(), 1);
+        assert_eq!(skills2[0].name, "test");
+    }
+
+    #[test]
+    fn loader_invalidate_clears_cache() {
+        let dir = tempdir().unwrap();
+        let skills_dir = dir.path().join(".agents").join("skills");
+        write_skill(&skills_dir, "test", "test", "desc", "body");
+
+        let loader = SkillLoader::new();
+        loader.load(Some(dir.path()));
+
+        loader.invalidate(dir.path());
+        
+        // After invalidation, it should try to discover again
+        // We removed the directory, so it should be empty now
+        fs::remove_dir_all(skills_dir).unwrap();
+        let skills = loader.load(Some(dir.path()));
+        assert_eq!(skills.len(), 0);
+    }
+
+    #[test]
     fn all_15_repo_skills_are_discoverable() {
         let repo_skills_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
