@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
@@ -985,6 +986,7 @@ pub fn create_list_directory_tool(workspace_root: PathBuf) -> ListDirectoryTool 
 }
 
 const HARNESS_PREFIX: &str = ".gospel/";
+const HARNESS_CORPUS_PREFIX: &str = ".gospel/corpus/";
 const HARNESS_CONTENT_BYTES_CAP: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -1059,6 +1061,18 @@ impl Tool for WriteHarnessFileTool {
             ));
         }
 
+        if relative_str.starts_with(HARNESS_CORPUS_PREFIX)
+            || relative_str == ".gospel/corpus"
+        {
+            return Ok(harness_failure(
+                "blocked",
+                &format!(
+                    "Writing to .gospel/corpus/ is prohibited. Got: {}",
+                    trimmed_path
+                ),
+            ));
+        }
+
         if args.content.len() > HARNESS_CONTENT_BYTES_CAP {
             return Ok(harness_failure(
                 "oversized",
@@ -1127,11 +1141,51 @@ impl Tool for WriteHarnessFileTool {
             ));
         }
 
-        if let Err(e) = fs::write(&resolved.absolute_path, args.content.as_bytes()) {
-            return Ok(harness_failure(
-                "io_error",
-                &format!("Failed to write file: {}", e),
-            ));
+        let write_result = (|| -> Result<(), String> {
+            use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let count = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+
+            let parent_dir = resolved.absolute_path.parent().ok_or_else(|| {
+                "Write target has no parent directory.".to_string()
+            })?;
+            let file_name = resolved
+                .absolute_path
+                .file_name()
+                .unwrap_or_default()
+                .to_os_string();
+            let mut temp_name = std::ffi::OsString::from(".");
+            temp_name.push(&file_name);
+            temp_name.push(format!(".tmp.{}.{}", std::process::id(), count));
+            let temp_path = parent_dir.join(temp_name);
+
+            let mut file = fs::File::create(&temp_path).map_err(|e| {
+                format!("Failed to create temp file for atomic write: {}", e)
+            })?;
+            file.write_all(args.content.as_bytes()).map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                format!("Failed to write content to temp file: {}", e)
+            })?;
+            file.sync_all().map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                format!("Failed to sync temp file: {}", e)
+            })?;
+            drop(file);
+
+            fs::rename(&temp_path, &resolved.absolute_path).map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                format!("Failed to rename temp file to target: {}", e)
+            })?;
+
+            if let Ok(dir_handle) = fs::File::open(parent_dir) {
+                let _ = dir_handle.sync_all();
+            }
+
+            Ok(())
+        })();
+
+        if let Err(e) = write_result {
+            return Ok(harness_failure("io_error", &format!("Failed to write file: {}", e)));
         }
 
         Ok(WriteHarnessFileOutput {
