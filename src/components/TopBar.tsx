@@ -7,7 +7,6 @@ interface TopBarProps {
   sessionTitle: string;
   model: string;
   status: AgentStatus;
-  onSessionTitleChange: (title: string) => void;
   onWorkspaceSwitch: () => void;
   onToggleSessions: () => void;
   onOpenSettings: () => void;
@@ -19,7 +18,6 @@ export function TopBar({
   sessionTitle,
   model,
   status,
-  onSessionTitleChange,
   onWorkspaceSwitch,
   onToggleSessions,
   onOpenSettings,
@@ -42,7 +40,6 @@ export function TopBar({
 
   const handleSubmit = () => {
     setEditing(false);
-    onSessionTitleChange(title);
   };
 
   const sessionToggleClass = sessionsOpen
