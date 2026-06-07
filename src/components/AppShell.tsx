@@ -65,7 +65,7 @@ export function AppShell() {
         <ChatView
           messages={session.messages}
           workspacePath={activeWorkspace?.path ?? ""}
-          isThinking={session.isStreaming}
+          isThinking={session.isThinking}
           currentAction={session.streamingContent ? { type: "streaming" as const, content: session.streamingContent } : undefined}
           toolActivities={session.toolActivities}
         />

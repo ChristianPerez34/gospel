@@ -32,6 +32,7 @@ export interface UseSessionManagerResult {
   streamingContent: string;
   toolActivities: ToolCallActivity[];
   isStreaming: boolean;
+  isThinking: boolean;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
   handleSessionSelect: (session: Session) => void;
   handleNewSession: () => void;
@@ -65,6 +66,7 @@ export function useSessionManager({
   });
 
   const isStreaming = status === "thinking" || status === "acting";
+  const isThinking = isStreaming && streamingContent === "";
 
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
@@ -171,6 +173,7 @@ export function useSessionManager({
     streamingContent,
     toolActivities,
     isStreaming,
+    isThinking,
     handleSend,
     handleSessionSelect,
     handleNewSession,
