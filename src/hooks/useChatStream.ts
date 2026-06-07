@@ -29,7 +29,6 @@ interface StartStreamOptions {
 export function useChatStream(options: UseChatStreamOptions = {}) {
   const [streamingContent, setStreamingContent] = useState("");
   const [toolActivities, setToolActivities] = useState<ToolCallActivity[]>([]);
-  const [isThinking, setIsThinking] = useState(false);
   const toolActivitiesRef = useRef<ToolCallActivity[]>([]);
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -46,7 +45,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         await Promise.all([
           track(listen<string>("llm-token", (event) => {
             setStreamingContent((prev) => prev + event.payload);
-            setIsThinking(false);
           })),
           track(listen<string>("llm-done", (event) => {
             const content = event.payload;
@@ -81,7 +79,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             setStreamingContent("");
             toolActivitiesRef.current = [];
             setToolActivities([]);
-            setIsThinking(false);
             optionsRef.current.onStatusChange?.("connected");
           })),
           track(listen<{ code: string; message: string }>("llm-error", (event) => {
@@ -104,7 +101,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               ]);
             }
 
-            setIsThinking(false);
             setStreamingContent("");
             toolActivitiesRef.current = [];
             setToolActivities([]);
@@ -205,14 +201,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     setStreamingContent("");
     toolActivitiesRef.current = [];
     setToolActivities([]);
-    setIsThinking(false);
   }, []);
 
   return {
     streamingContent,
     toolActivities,
-    isThinking,
-    setIsThinking,
     startStream,
     resetStream,
   };
