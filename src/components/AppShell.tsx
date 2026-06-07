@@ -101,9 +101,9 @@ export function AppShell() {
       timestamp: new Date(),
     };
     setMessages((prev) => [...prev, userMsg]);
-    setIsThinking(true);
     setStatus("thinking");
     resetStream();
+    setIsThinking(true);
 
     let effectiveSessionId = activeSessionId;
     if (!activeSessionId) {
