@@ -1,22 +1,14 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { ModelOption } from "../types";
-import { ContextPill } from "./ContextPill";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { useSkills } from "../hooks/useSkills";
 import { levenshtein } from "../utils/levenshtein";
-
-interface ContextFile {
-  name: string;
-  path: string;
-}
 
 interface InputBarProps {
   models: ModelOption[];
   selectedModel: string;
   onModelChange: (modelId: string) => void;
   onSend: (message: string, invokedSkill?: { name: string; args?: string }) => void;
-  contextFiles: ContextFile[];
-  onRemoveContext: (path: string) => void;
   disabled?: boolean;
   unavailableMessage?: string;
   unavailableDetail?: string;
@@ -32,8 +24,6 @@ export function InputBar({
   selectedModel,
   onModelChange,
   onSend,
-  contextFiles,
-  onRemoveContext,
   disabled = false,
   unavailableMessage = "No available models",
   unavailableDetail,
@@ -180,17 +170,6 @@ export function InputBar({
 
   return (
     <div className="bg-surface-elevated border-t border-surface-overlay flex flex-col shrink-0 z-[--z-sticky-input]">
-      {contextFiles.length > 0 && (
-        <div className="flex gap-1 pt-2 px-3 overflow-x-auto flex-nowrap">
-          {contextFiles.map((file) => (
-            <ContextPill
-              key={file.path}
-              name={file.name}
-              onRemove={() => onRemoveContext(file.path)}
-            />
-          ))}
-        </div>
-      )}
       <div className="relative">
         <SlashCommandMenu
           skills={skills}
