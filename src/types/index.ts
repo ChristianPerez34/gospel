@@ -95,3 +95,7 @@ export interface ProviderStatus {
   provider: string;
   configured: boolean;
 }
+
+export function modelOptionId(provider: string, model: string): string {
+  return `${provider.toLowerCase()}::${model}`;
+}

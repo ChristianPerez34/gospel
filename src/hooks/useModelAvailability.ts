@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ModelOption } from "../types";
+import { modelOptionId, type ModelOption } from "../types";
 import type { ProviderConfig, ProviderId } from "../components/ProviderSelector";
 
 interface ProviderAvailability {
@@ -25,10 +25,6 @@ export interface ModelAvailabilitySnapshot {
 export interface SelectedModel {
   provider: string;
   model: string;
-}
-
-function modelOptionId(provider: string, model: string) {
-  return `${provider.toLowerCase()}::${model}`;
 }
 
 function providerConfigFromAvailability(
