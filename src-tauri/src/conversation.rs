@@ -364,4 +364,11 @@ mod tests {
 
         assert_eq!(restored, original);
     }
+
+    #[test]
+    fn export_conversation_not_found() {
+        let mut store = ConversationStore::new();
+        let history = store.get_history("non-existent-session");
+        assert!(history.is_empty());
+    }
 }

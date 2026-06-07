@@ -799,7 +799,7 @@ fn clear_conversation_history(
 }
 
 #[tauri::command]
-async fn export_conversation(
+fn export_conversation(
     conversation_state: tauri::State<'_, ConversationState>,
     session_id: String,
 ) -> Result<String, String> {
