@@ -152,6 +152,7 @@ export function useSessionManager({
   );
 
   const handleSessionSelect = useCallback((session: Session) => {
+    if (statusRef.current === "thinking" || statusRef.current === "acting") return;
     setActiveSessionId(session.id);
     setMessages(session.messages);
   }, []);
