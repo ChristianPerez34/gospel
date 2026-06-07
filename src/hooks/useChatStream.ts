@@ -15,6 +15,7 @@ interface UseChatStreamOptions {
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
   onOpenSettings?: () => void;
+  onRetry?: () => void;
 }
 
 interface StartStreamOptions {
@@ -116,7 +117,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             } else {
               optionsRef.current.onErrorToast?.(err?.message || "Completion failed.", {
                 label: "Retry",
-                onClick: () => {},
+                onClick: optionsRef.current.onRetry ?? (() => {}),
               });
             }
           }),

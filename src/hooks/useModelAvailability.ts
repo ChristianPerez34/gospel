@@ -82,6 +82,10 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
   const [availableModels, setAvailableModels] = useState<{ model: string; provider: string }[]>([]);
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const isRefreshingModelsRef = useRef(false);
+  const onErrorRef = useRef(onError);
+  const onSuccessRef = useRef(onSuccess);
+  onErrorRef.current = onError;
+  onSuccessRef.current = onSuccess;
 
   const refreshModelAvailability = useCallback(async (forceRefresh = false) => {
     if (forceRefresh && isRefreshingModelsRef.current) return;
@@ -103,14 +107,14 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
           (p) => p.error_kind || p.model_fetch_status === "failed",
         );
         if (failedProvider) {
-          onError?.(`${failedProvider.display_name}: ${failedProvider.error_detail || "Model refresh failed."}`);
+          onErrorRef.current?.(`${failedProvider.display_name}: ${failedProvider.error_detail || "Model refresh failed."}`);
         } else {
-          onSuccess?.("Models refreshed.");
+          onSuccessRef.current?.("Models refreshed.");
         }
       }
     } catch (e) {
       if (forceRefresh) {
-        onError?.(`Model refresh failed: ${e}`);
+        onErrorRef.current?.(`Model refresh failed: ${e}`);
       } else {
         setAvailabilitySnapshot(null);
       }
@@ -120,7 +124,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
         isRefreshingModelsRef.current = false;
       }
     }
-  }, [onError, onSuccess]);
+  }, []);
 
   useEffect(() => {
     void refreshModelAvailability();
