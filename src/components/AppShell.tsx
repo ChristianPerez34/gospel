@@ -150,9 +150,8 @@ export function AppShell() {
     setActiveSessionId(null);
     setMessages([]);
     resetStream();
-    setIsThinking(false);
     setSessionDrawerOpen(false);
-  }, [resetStream, setIsThinking]);
+  }, [resetStream]);
 
   const handleWorkspaceSwitcherClose = useCallback(() => {
     setWorkspaceSwitcherOpen(false);

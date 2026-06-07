@@ -41,13 +41,14 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     (async () => {
       const unlisteners: (() => void)[] = [];
 
+      const track = (p: Promise<() => void>) => p.then((u) => { unlisteners.push(u); return u; });
       try {
-        const [u1, u2, u3, u4, u5, u6] = await Promise.all([
-          listen<string>("llm-token", (event) => {
+        await Promise.all([
+          track(listen<string>("llm-token", (event) => {
             setStreamingContent((prev) => prev + event.payload);
             setIsThinking(false);
-          }),
-          listen<string>("llm-done", (event) => {
+          })),
+          track(listen<string>("llm-done", (event) => {
             const content = event.payload;
             const cards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
               (card) => ({ ...card, expanded: false, status: "completed" as const }),
@@ -82,8 +83,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             setToolActivities([]);
             setIsThinking(false);
             optionsRef.current.onStatusChange?.("connected");
-          }),
-          listen<{ code: string; message: string }>("llm-error", (event) => {
+          })),
+          track(listen<{ code: string; message: string }>("llm-error", (event) => {
             const err = event.payload;
             const cards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
               (card) => ({ ...card, expanded: false, status: "completed" as const }),
@@ -120,8 +121,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 onClick: optionsRef.current.onRetry ?? (() => {}),
               });
             }
-          }),
-          listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
+          })),
+          track(listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
             setToolActivities((prev) => {
               const next = [
                 ...prev,
@@ -136,8 +137,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               return next;
             });
             optionsRef.current.onStatusChange?.("acting");
-          }),
-          listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
+          })),
+          track(listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
             setToolActivities((prev) => {
               const idx = prev.findIndex((a) => a.id === event.payload.id);
               if (idx >= 0) {
@@ -160,16 +161,15 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               return next;
             });
             optionsRef.current.onStatusChange?.("acting");
-          }),
-          listen<CorpusAutoBuildComplete>("corpus-auto-build-complete", (event) => {
+          })),
+          track(listen<CorpusAutoBuildComplete>("corpus-auto-build-complete", (event) => {
             if (event.payload.success) {
               optionsRef.current.onSuccessToast?.(`Corpus ready with ${event.payload.symbol_count} symbols.`);
             } else {
               optionsRef.current.onErrorToast?.("Corpus auto-build failed. Use Build Corpus to retry.");
             }
-          }),
+          })),
         ]);
-        unlisteners.push(u1, u2, u3, u4, u5, u6);
       } catch (error) {
         unlisteners.forEach((unlisten) => unlisten());
         throw error;
@@ -211,7 +211,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   return {
     streamingContent,
     toolActivities,
-    toolActivitiesRef,
     isThinking,
     setIsThinking,
     startStream,
