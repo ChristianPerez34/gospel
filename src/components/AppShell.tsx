@@ -88,8 +88,16 @@ export function AppShell() {
       <SessionDrawer
         sessions={session.sessions}
         activeSessionId={session.activeSessionId ?? undefined}
-        onSelect={(s) => { session.handleSessionSelect(s); setSessionDrawerOpen(false); }}
-        onNewSession={() => { session.handleNewSession(); setSessionDrawerOpen(false); }}
+        onSelect={(s) => {
+          if (session.isStreaming) return;
+          session.handleSessionSelect(s);
+          setSessionDrawerOpen(false);
+        }}
+        onNewSession={() => {
+          if (session.isStreaming) return;
+          session.handleNewSession();
+          setSessionDrawerOpen(false);
+        }}
         onClose={() => setSessionDrawerOpen(false)}
         open={sessionDrawerOpen}
       />
