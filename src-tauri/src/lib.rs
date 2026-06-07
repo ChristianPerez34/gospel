@@ -799,6 +799,19 @@ fn clear_conversation_history(
 }
 
 #[tauri::command]
+async fn export_conversation(
+    conversation_state: tauri::State<'_, ConversationState>,
+    session_id: String,
+) -> Result<String, String> {
+    let mut store = conversation_state.store.lock().unwrap();
+    let history = store.get_history(&session_id);
+    if history.is_empty() {
+        return Err("Conversation not found".to_string());
+    }
+    serde_json::to_string_pretty(&history).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn start_chatgpt_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, String> {
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
@@ -1233,6 +1246,7 @@ pub fn run() {
             complete,
             complete_streaming,
             clear_conversation_history,
+            export_conversation,
             test_connection,
             start_chatgpt_oauth,
             is_chatgpt_authenticated,

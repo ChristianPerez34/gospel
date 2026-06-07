@@ -20,6 +20,7 @@
 - **PEV Loop**: Plan → Execute → Verify. The minimal outer loop for long-horizon agent work: maintain a plan, execute the next step, verify the result, then update the plan. The PEV Loop is the rhythm that explicit planning makes visible.
 - **Shared Harness Substrate**: A persistent, workspace-scoped location (`.gospel/`) where harness artifacts live across turns and sessions. Shared between the human (who can inspect and edit) and the agent (who can read and write via tools).
 - **Harness Control Area**: The `.gospel/` directory and its contents, treated as the agent's persistent control surface. The primary artifact is `PLAN.md`.
+- **Conversation Export**: A serialized snapshot of a Conversation’s message history, emitted as raw rig::Message JSON for external analysis.
 
 ## Harness Interface Baseline
 

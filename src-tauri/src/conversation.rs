@@ -349,4 +349,19 @@ mod tests {
         assert!(!store.conversations.contains_key("s2"));
         assert!(store.conversations.contains_key("s1"));
     }
+
+    #[test]
+    fn export_conversation_round_trips() {
+        let mut store = ConversationStore::new();
+        let original = vec![
+            make_user_message("hello"),
+            make_assistant_message("hi there"),
+        ];
+        store.store_history("export-test", original.clone());
+
+        let json = serde_json::to_string_pretty(&store.get_history("export-test")).unwrap();
+        let restored: Vec<Message> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored, original);
+    }
 }
