@@ -1364,10 +1364,12 @@ impl Tool for ContextSearchTool {
 }
 
 fn truncate_snippet(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
-        content.to_string()
+    let mut chars = content.chars();
+    let snippet: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}...", snippet)
     } else {
-        format!("{}...", &content[..max_chars])
+        snippet
     }
 }
 
@@ -2169,6 +2171,12 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn truncate_snippet_is_utf8_safe() {
+        assert_eq!(truncate_snippet("aé🙂bc", 3), "aé🙂...");
+        assert_eq!(truncate_snippet("short", 10), "short");
     }
 
     #[tokio::test]

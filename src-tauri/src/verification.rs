@@ -1,7 +1,19 @@
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::time::timeout;
 
+use crate::corpus::tools::{
+    create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
+    CORPUS_SYSTEM_PROMPT,
+};
 use crate::llm::WorkspaceToolContext;
-use crate::workspace_tools::WORKSPACE_TOOLS_SYSTEM_PROMPT;
+use crate::workspace_tools::{
+    create_context_search_tool, create_find_files_tool, create_list_directory_tool,
+    create_read_file_tool, create_search_code_tool, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+};
+use rig::client::CompletionClient;
+use rig::completion::Prompt;
+use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
@@ -51,15 +63,156 @@ Return your assessment as JSON with exactly these fields:
 If you cannot verify something, set status to "unavailable" and explain why in the summary.
 Be concise and focused on concrete issues, not stylistic preferences."#;
 
+const VERIFICATION_MAX_TURNS: usize = 6;
+const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(90);
+
 pub async fn run_verification(
-    _provider: &str,
-    _model: &str,
-    _api_key: &str,
-    _workspace: &WorkspaceToolContext,
-    _response_to_verify: &str,
-    _user_prompt: &str,
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    workspace: &WorkspaceToolContext,
+    response_to_verify: &str,
+    user_prompt: &str,
 ) -> VerificationResult {
-    // TODO: Implement actual verification using LLM
-    // For now, return unavailable to not block the main response
-    VerificationResult::default()
+    if provider != "chatgpt" && api_key.trim().is_empty() {
+        return unavailable("Verification unavailable: API key is not configured.");
+    }
+
+    let prompt = build_verification_prompt(workspace, response_to_verify, user_prompt);
+    let output = match timeout(
+        VERIFICATION_TIMEOUT,
+        run_verification_agent(provider, model, api_key, workspace, &prompt),
+    )
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            return unavailable(&format!("Verification unavailable: {}", error));
+        }
+        Err(_) => {
+            return unavailable("Verification unavailable: verification agent timed out.");
+        }
+    };
+
+    parse_verification_output(&output).unwrap_or_else(|| {
+        unavailable("Verification unavailable: verification agent returned malformed JSON.")
+    })
+}
+
+async fn run_verification_agent(
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    workspace: &WorkspaceToolContext,
+    prompt: &str,
+) -> Result<String, String> {
+    let preamble = build_verification_preamble(workspace);
+
+    macro_rules! verify_from_client {
+        ($client:expr, $model:expr) => {{
+            let mut builder = $client
+                .agent($model)
+                .preamble(&preamble)
+                .default_max_turns(VERIFICATION_MAX_TURNS)
+                .tool(create_read_file_tool(workspace.workspace_path.clone()))
+                .tool(create_search_code_tool(workspace.workspace_path.clone()))
+                .tool(create_find_files_tool(workspace.workspace_path.clone()))
+                .tool(create_list_directory_tool(workspace.workspace_path.clone()));
+
+            if workspace.corpus_available {
+                builder = builder
+                    .tool(create_corpus_summary_tool(workspace.workspace_path.clone()))
+                    .tool(create_corpus_query_tool(workspace.workspace_path.clone()))
+                    .tool(create_corpus_neighbors_tool(
+                        workspace.workspace_path.clone(),
+                    ))
+                    .tool(create_context_search_tool(workspace.workspace_path.clone()));
+            }
+
+            let agent = builder.build();
+            agent
+                .prompt(prompt)
+                .await
+                .map_err(|error| error.to_string())
+        }};
+    }
+
+    match provider {
+        "openai" => {
+            let client = openai::Client::new(api_key).map_err(|error| error.to_string())?;
+            verify_from_client!(client, model)
+        }
+        "chatgpt" => {
+            let client = chatgpt::Client::builder()
+                .oauth()
+                .build()
+                .map_err(|error| error.to_string())?;
+            verify_from_client!(client, model)
+        }
+        "anthropic" => {
+            let client = anthropic::Client::new(api_key).map_err(|error| error.to_string())?;
+            verify_from_client!(client, model)
+        }
+        "gemini" => {
+            let client = gemini::Client::new(api_key).map_err(|error| error.to_string())?;
+            verify_from_client!(client, model)
+        }
+        "groq" => {
+            let client = groq::Client::new(api_key).map_err(|error| error.to_string())?;
+            verify_from_client!(client, model)
+        }
+        "mistral" => {
+            let client = mistral::Client::new(api_key).map_err(|error| error.to_string())?;
+            verify_from_client!(client, model)
+        }
+        _ => Err(format!("unsupported provider: {}", provider)),
+    }
+}
+
+fn build_verification_preamble(workspace: &WorkspaceToolContext) -> String {
+    let mut sections = vec![
+        WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string(),
+        VERIFICATION_SYSTEM_PROMPT.trim().to_string(),
+    ];
+
+    if workspace.corpus_available {
+        sections.insert(1, CORPUS_SYSTEM_PROMPT.trim().to_string());
+    }
+
+    sections.join("\n\n")
+}
+
+fn build_verification_prompt(
+    workspace: &WorkspaceToolContext,
+    response_to_verify: &str,
+    user_prompt: &str,
+) -> String {
+    format!(
+        "Workspace root:\n{}\n\nUser prompt:\n{}\n\nAssistant response to verify:\n{}",
+        workspace.workspace_path.display(),
+        user_prompt,
+        response_to_verify
+    )
+}
+
+fn parse_verification_output(output: &str) -> Option<VerificationResult> {
+    let trimmed = output.trim();
+    serde_json::from_str::<VerificationResult>(trimmed)
+        .ok()
+        .or_else(|| {
+            let start = trimmed.find('{')?;
+            let end = trimmed.rfind('}')?;
+            if end <= start {
+                return None;
+            }
+            serde_json::from_str::<VerificationResult>(&trimmed[start..=end]).ok()
+        })
+}
+
+fn unavailable(summary: &str) -> VerificationResult {
+    VerificationResult {
+        status: VerificationStatus::Unavailable,
+        concerns: vec![],
+        summary: summary.to_string(),
+    }
 }

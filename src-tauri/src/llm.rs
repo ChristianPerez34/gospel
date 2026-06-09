@@ -116,6 +116,7 @@ impl LoopDetector {
 
     fn record_failure(&mut self, reason: &str) -> Option<LoopStatus> {
         if !DETERMINISTIC_FAILURE_REASONS.contains(&reason) {
+            self.reset_failure_streak();
             return None;
         }
 
@@ -138,6 +139,10 @@ impl LoopDetector {
     fn reset(&mut self) {
         self.last_call_hash = 0;
         self.consecutive_count = 0;
+        self.reset_failure_streak();
+    }
+
+    fn reset_failure_streak(&mut self) {
         self.last_failure_reason.clear();
         self.failure_streak = 0;
     }
@@ -618,9 +623,7 @@ async fn run_exploration_agent(
                     .tool(create_corpus_neighbors_tool(
                         workspace.workspace_path.clone(),
                     ))
-                    .tool(create_context_search_tool(
-                        workspace.workspace_path.clone(),
-                    ));
+                    .tool(create_context_search_tool(workspace.workspace_path.clone()));
             }
 
             let agent = builder.build();
@@ -844,32 +847,37 @@ where
                                 .unwrap_or_else(|| tool_result.id.clone());
 
                             // Check for repeated deterministic failures
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&result_summary) {
-                                if let Some(reason) = parsed.get("reason").and_then(|r| r.as_str()) {
-                                    if let Some(status) = loop_detector.record_failure(reason) {
-                                        match status {
-                                            LoopStatus::Ok => {}
-                                            LoopStatus::Warning(count) => {
-                                                on_event(StreamEvent::LoopWarning {
-                                                    count,
-                                                    tool_name: tool_name.clone(),
-                                                });
-                                            }
-                                            LoopStatus::Stop => {
-                                                let msg = format!(
-                                                    "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
-                                                    reason, loop_detector.failure_streak
-                                                );
-                                                on_event(StreamEvent::LoopStopped {
-                                                    count: loop_detector.failure_streak,
-                                                    tool_name: tool_name.clone(),
-                                                    message: msg.clone(),
-                                                });
-                                                return Err(LlmError::ControlledStop(msg));
+                            match serde_json::from_str::<serde_json::Value>(&result_summary) {
+                                Ok(parsed) => {
+                                    if let Some(reason) = parsed.get("reason").and_then(|r| r.as_str()) {
+                                        if let Some(status) = loop_detector.record_failure(reason) {
+                                            match status {
+                                                LoopStatus::Ok => {}
+                                                LoopStatus::Warning(count) => {
+                                                    on_event(StreamEvent::LoopWarning {
+                                                        count,
+                                                        tool_name: tool_name.clone(),
+                                                    });
+                                                }
+                                                LoopStatus::Stop => {
+                                                    let msg = format!(
+                                                        "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
+                                                        reason, loop_detector.failure_streak
+                                                    );
+                                                    on_event(StreamEvent::LoopStopped {
+                                                        count: loop_detector.failure_streak,
+                                                        tool_name: tool_name.clone(),
+                                                        message: msg.clone(),
+                                                    });
+                                                    return Err(LlmError::ControlledStop(msg));
+                                                }
                                             }
                                         }
+                                    } else {
+                                        loop_detector.reset_failure_streak();
                                     }
                                 }
+                                Err(_) => loop_detector.reset_failure_streak(),
                             }
 
                             on_event(StreamEvent::ToolResult {

@@ -1,6 +1,6 @@
 //! Tauri commands for Corpus functionality
 
-use crate::context_search::{self, ContextSearchIndex, SearchChunk};
+use crate::context_search::{self, ContextSearchIndex, SearchChunk, MAX_CONTEXT_SEARCH_LIMIT};
 use crate::corpus::{
     dto::{NeighborDto, NodeDto},
     extractor::extract_directory,
@@ -34,7 +34,7 @@ fn build_context_search_index(
     workspace_path: &Path,
     corpus: &Corpus,
 ) -> Result<context_search::ContextSearchStats, String> {
-    let index = ContextSearchIndex::new(workspace_path)
+    let mut index = ContextSearchIndex::new(workspace_path)
         .map_err(|e| format!("Failed to create context search index: {}", e))?;
 
     index.clear().map_err(|e| e.to_string())?;
@@ -57,10 +57,7 @@ fn build_context_search_index(
                 let full_path = workspace_path.join(path);
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
                     let chunks = if language == "markdown" || path.ends_with(".md") {
-                        context_search::chunk_markdown_file(
-                            std::path::Path::new(path),
-                            &content,
-                        )
+                        context_search::chunk_markdown_file(std::path::Path::new(path), &content)
                     } else {
                         context_search::chunk_source_file(std::path::Path::new(path), &content)
                     };
@@ -95,9 +92,7 @@ fn build_context_search_index(
         }
     }
 
-    index
-        .index_chunks(&all_chunks)
-        .map_err(|e| e.to_string())?;
+    index.index_chunks(&all_chunks).map_err(|e| e.to_string())?;
 
     index.get_stats().map_err(|e| e.to_string())
 }
@@ -122,7 +117,7 @@ fn should_skip_for_indexing(path: &str) -> bool {
     ];
 
     for pattern in &skip_patterns {
-        if path.contains(pattern) {
+        if path_matches_skip_pattern(path, pattern) {
             return true;
         }
     }
@@ -141,6 +136,31 @@ fn should_skip_for_indexing(path: &str) -> bool {
     }
 
     false
+}
+
+fn path_matches_skip_pattern(path: &str, pattern: &str) -> bool {
+    let path_components: Vec<_> = Path::new(path)
+        .components()
+        .map(|component| component.as_os_str())
+        .collect();
+    let pattern_components: Vec<_> = Path::new(pattern)
+        .components()
+        .map(|component| component.as_os_str())
+        .collect();
+
+    if pattern_components.is_empty() {
+        return false;
+    }
+
+    if pattern_components.len() == 1 {
+        return path_components
+            .iter()
+            .any(|component| *component == pattern_components[0]);
+    }
+
+    path_components
+        .windows(pattern_components.len())
+        .any(|window| window == pattern_components.as_slice())
 }
 
 /// Build a corpus for the active workspace
@@ -349,7 +369,7 @@ pub fn get_corpus_status(
     };
 
     // Get context search stats
-    let context_search_stats = ContextSearchIndex::new(&workspace_path)
+    let context_search_stats = ContextSearchIndex::open_if_exists(&workspace_path)
         .ok()
         .and_then(|index| index.get_stats().ok());
 
@@ -504,10 +524,29 @@ pub fn context_search(
     let index = ContextSearchIndex::new(&workspace_path)
         .map_err(|e| format!("Failed to open context search index: {}", e))?;
 
-    let search_limit = limit.unwrap_or(10);
+    let search_limit = limit.unwrap_or(10).clamp(1, MAX_CONTEXT_SEARCH_LIMIT);
     index
         .search(&query, search_limit)
         .map_err(|e| format!("Context search failed: {}", e))
 }
 
 // NodeDto and NeighborDto are defined in dto.rs for shared use
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_patterns_match_exact_path_components() {
+        assert!(should_skip_for_indexing(
+            "frontend/node_modules/react/index.js"
+        ));
+        assert!(should_skip_for_indexing(
+            ".gospel/context_search/search_index.db"
+        ));
+        assert!(should_skip_for_indexing("Cargo.lock"));
+
+        assert!(!should_skip_for_indexing("src/node_modules_helper.rs"));
+        assert!(!should_skip_for_indexing("src/targeted.rs"));
+    }
+}

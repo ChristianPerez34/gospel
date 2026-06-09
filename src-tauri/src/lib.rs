@@ -37,7 +37,7 @@ mod model_fetch {
 use app_config::{AppConfigError, AppConfigState, Workspace};
 use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
-use session_store::{SessionDetail, SessionRecord, SessionStoreState};
+use session_store::{SessionDetail, SessionRecord, SessionStore, SessionStoreState};
 use trace::TraceState;
 use corpus::commands::{
     build_corpus, context_search, get_corpus_neighbors, get_corpus_status, get_corpus_summary,
@@ -913,15 +913,17 @@ async fn complete_streaming(
 
                 if is_high_risk {
                     if let Some(ref workspace_ctx) = workspace_for_verify {
-                        Some(verification::run_verification(
-                            &provider,
-                            &model,
-                            &api_key,
-                            workspace_ctx,
-                            &response_for_verify,
-                            &effective_prompt,
+                        Some(
+                            verification::run_verification(
+                                &provider,
+                                &model,
+                                &api_key,
+                                workspace_ctx,
+                                &response_for_verify,
+                                &effective_prompt,
+                            )
+                            .await,
                         )
-                        .await)
                     } else {
                         None
                     }
@@ -1446,13 +1448,18 @@ fn create_session(
 fn get_session(
     session_store: tauri::State<'_, SessionStoreState>,
     conversation_state: tauri::State<'_, ConversationState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
 ) -> Result<SessionDetail, String> {
     let detail = match &session_store.store {
-        Some(store) => store
-            .get_session(&session_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("Session not found: {}", session_id))?,
+        Some(store) => {
+            let detail = store
+                .get_session(&session_id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("Session not found: {}", session_id))?;
+            validate_session_access(store, &session_id, app_config.inner())?;
+            detail
+        }
         None => {
             return Err(session_store
                 .init_warning
@@ -1519,10 +1526,14 @@ fn list_sessions(
 #[tauri::command]
 fn delete_session_cmd(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
 ) -> Result<(), String> {
     match &session_store.store {
-        Some(store) => store.delete_session(&session_id).map_err(|e| e.to_string()),
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store.delete_session(&session_id).map_err(|e| e.to_string())
+        }
         None => Err(session_store
             .init_warning
             .clone()
@@ -1551,6 +1562,7 @@ enum ExportFormat {
 #[tauri::command]
 fn export_session(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
     format: ExportFormat,
 ) -> Result<String, String> {
@@ -1560,6 +1572,7 @@ fn export_session(
                 .get_session(&session_id)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("Session not found: {}", session_id))?;
+            validate_session_access(store, &session_id, app_config.inner())?;
 
             match format {
                 ExportFormat::Transcript => {
@@ -1615,15 +1628,24 @@ fn get_workspace_session_count(
 #[tauri::command]
 fn create_session_note(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
     note_type: String,
     content: String,
     source_message_id: Option<String>,
 ) -> Result<session_store::SessionNote, String> {
     match &session_store.store {
-        Some(store) => store
-            .create_note(&session_id, &note_type, &content, source_message_id.as_deref())
-            .map_err(|e| e.to_string()),
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .create_note(
+                    &session_id,
+                    &note_type,
+                    &content,
+                    source_message_id.as_deref(),
+                )
+                .map_err(|e| e.to_string())
+        }
         None => Err("Session store not initialized".to_string()),
     }
 }
@@ -1631,12 +1653,16 @@ fn create_session_note(
 #[tauri::command]
 fn list_session_notes(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
 ) -> Result<Vec<session_store::SessionNote>, String> {
     match &session_store.store {
-        Some(store) => store
-            .list_unresolved_notes(&session_id)
-            .map_err(|e| e.to_string()),
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .list_unresolved_notes(&session_id)
+                .map_err(|e| e.to_string())
+        }
         None => Ok(vec![]),
     }
 }
@@ -1644,12 +1670,46 @@ fn list_session_notes(
 #[tauri::command]
 fn resolve_session_note(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     note_id: String,
 ) -> Result<(), String> {
     match &session_store.store {
-        Some(store) => store.resolve_note(&note_id).map_err(|e| e.to_string()),
+        Some(store) => {
+            validate_note_access(store, &note_id, app_config.inner())?;
+            store.resolve_note(&note_id).map_err(|e| e.to_string())
+        }
         None => Err("Session store not initialized".to_string()),
     }
+}
+
+fn active_workspace_id(app_config: &AppConfigState) -> Option<String> {
+    match &app_config.store {
+        Some(store) => store.get_active_workspace().ok().flatten().map(|ws| ws.id),
+        None => None,
+    }
+}
+
+fn validate_session_access(
+    store: &SessionStore,
+    session_id: &str,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    let active_ws_id = active_workspace_id(app_config);
+    store
+        .validate_workspace_binding(session_id, active_ws_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+fn validate_note_access(
+    store: &SessionStore,
+    note_id: &str,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    let session_id = store
+        .note_session_id(note_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Session note not found: {}", note_id))?;
+    validate_session_access(store, &session_id, app_config)
 }
 
 fn build_display_transcript(

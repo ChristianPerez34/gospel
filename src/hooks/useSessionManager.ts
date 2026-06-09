@@ -54,6 +54,7 @@ export function useSessionManager({
   const [status, setStatus] = useState<AgentStatus>("idle");
   const statusRef = useRef(status);
   statusRef.current = status;
+  const latestSelectedSessionRef = useRef<string | null>(null);
 
   // Load persisted sessions from backend on mount
   useEffect(() => {
@@ -80,8 +81,9 @@ export function useSessionManager({
   const prevWorkspaceRef = useRef(activeWorkspaceId);
   useEffect(() => {
     if (prevWorkspaceRef.current !== activeWorkspaceId) {
-      prevWorkspaceRef.current = activeWorkspaceId;
       if (statusRef.current === "thinking" || statusRef.current === "acting") return;
+      prevWorkspaceRef.current = activeWorkspaceId;
+      latestSelectedSessionRef.current = null;
       setActiveSessionId(null);
       setMessages([]);
       // Reload sessions for the new workspace
@@ -103,7 +105,7 @@ export function useSessionManager({
           console.warn("Failed to reload sessions after workspace change:", e);
         });
     }
-  }, [activeWorkspaceId]);
+  }, [activeWorkspaceId, status]);
 
   const {
     streamingContent,
@@ -226,6 +228,8 @@ export function useSessionManager({
   const handleSessionSelect = useCallback(
     async (session: Session) => {
       if (statusRef.current === "thinking" || statusRef.current === "acting") return;
+      const selectionId = session.id;
+      latestSelectedSessionRef.current = selectionId;
 
       // If session was backend-created and has no local messages, load from backend
       if (session.backendCreated && session.messages.length === 0) {
@@ -234,6 +238,8 @@ export function useSessionManager({
             id: string;
             display_transcript: string;
           }>("get_session", { sessionId: session.id });
+
+          if (latestSelectedSessionRef.current !== selectionId) return;
 
           const transcript = JSON.parse(detail.display_transcript) as Array<{
             role: string;
@@ -255,10 +261,12 @@ export function useSessionManager({
           );
           return;
         } catch (e) {
+          if (latestSelectedSessionRef.current !== selectionId) return;
           console.warn("Failed to load session detail from backend:", e);
         }
       }
 
+      if (latestSelectedSessionRef.current !== selectionId) return;
       setActiveSessionId(session.id);
       setMessages(session.messages);
     },
@@ -266,6 +274,7 @@ export function useSessionManager({
   );
 
   const handleNewSession = useCallback(() => {
+    latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
     resetStream();

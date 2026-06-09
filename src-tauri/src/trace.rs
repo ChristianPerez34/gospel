@@ -77,44 +77,41 @@ impl TraceLogger {
     }
 
     pub fn write_event(&self, event: &TraceEvent) {
-        if let Ok(mut line) = serde_json::to_string(event) {
-            // Redact sensitive content
-            redact_sensitive(&mut line);
-
-            let mut guard = self.current_file.lock().unwrap();
-            let file_name = guard
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| {
+        if let Ok(mut value) = serde_json::to_value(event) {
+            redact_sensitive_value(&mut value);
+            if let Ok(line) = serde_json::to_string(&value) {
+                let mut guard = self.current_file.lock().unwrap();
+                let file_name = guard.as_ref().cloned().unwrap_or_else(|| {
                     let name = format!("trace-{}.jsonl", current_timestamp());
                     *guard = Some(name.clone());
                     name
                 });
 
-            let file_path = self.trace_dir.join(&file_name);
+                let file_path = self.trace_dir.join(&file_name);
 
-            // Check file size and rotate if needed
-            if let Ok(metadata) = fs::metadata(&file_path) {
-                if metadata.len() > MAX_TRACE_FILE_SIZE {
-                    let new_name = format!("trace-{}.jsonl", current_timestamp());
-                    *guard = Some(new_name.clone());
-                    if let Ok(mut file) = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(self.trace_dir.join(&new_name))
-                    {
-                        let _ = writeln!(file, "{}", line);
+                // Check file size and rotate if needed
+                if let Ok(metadata) = fs::metadata(&file_path) {
+                    if metadata.len() > MAX_TRACE_FILE_SIZE {
+                        let new_name = format!("trace-{}.jsonl", current_timestamp());
+                        *guard = Some(new_name.clone());
+                        if let Ok(mut file) = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(self.trace_dir.join(&new_name))
+                        {
+                            let _ = writeln!(file, "{}", line);
+                        }
+                        return;
                     }
-                    return;
                 }
-            }
 
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file_path)
-            {
-                let _ = writeln!(file, "{}", line);
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file_path)
+                {
+                    let _ = writeln!(file, "{}", line);
+                }
             }
         }
     }
@@ -183,29 +180,64 @@ pub fn current_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-fn redact_sensitive(json_str: &mut String) {
-    // Simple pattern-based redaction for sensitive values
-    // Redact patterns like "key":"value" -> "key":"[REDACTED]"
-    let patterns = &[
-        "api_key",
-        "apiKey",
-        "api-key",
-        "access_token",
-        "accessToken",
-        "refresh_token",
-        "refreshToken",
-        "password",
-        "secret",
-        "token",
-    ];
+const SENSITIVE_KEYS: &[&str] = &[
+    "api_key",
+    "apiKey",
+    "api-key",
+    "access_token",
+    "accessToken",
+    "refresh_token",
+    "refreshToken",
+    "password",
+    "secret",
+    "token",
+];
 
-    for pattern in patterns {
+fn redact_sensitive_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if SENSITIVE_KEYS.contains(&key.as_str()) {
+                    *child = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_sensitive_value(child);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                redact_sensitive_value(child);
+            }
+        }
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim_start();
+            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                if let Ok(mut nested) = serde_json::from_str::<serde_json::Value>(text) {
+                    redact_sensitive_value(&mut nested);
+                    if let Ok(redacted) = serde_json::to_string(&nested) {
+                        *text = redacted;
+                        return;
+                    }
+                }
+            }
+
+            redact_sensitive(text);
+        }
+        _ => {}
+    }
+}
+
+fn redact_sensitive(json_str: &mut String) {
+    for pattern in SENSITIVE_KEYS {
         let search = format!("\"{}\":\"", pattern);
-        while let Some(start) = json_str.find(&search) {
+        let mut search_from = 0;
+        while let Some(relative_start) = json_str[search_from..].find(&search) {
+            let start = search_from + relative_start;
             let value_start = start + search.len();
             if let Some(end) = json_str[value_start..].find('"') {
                 let redacted = format!("\"{}\":\"[REDACTED]\"", pattern);
                 json_str.replace_range(start..value_start + end, &redacted);
+                search_from = start + redacted.len();
             } else {
                 break;
             }
@@ -261,5 +293,19 @@ mod tests {
         redact_sensitive(&mut s);
         assert!(s.contains("[REDACTED]"));
         assert!(!s.contains("token123"));
+    }
+
+    #[test]
+    fn redacts_nested_json_strings() {
+        let mut value = serde_json::json!({
+            "type": "tool_call",
+            "arguments_redacted": "{\"api_key\":\"sk-nested\",\"query\":\"ok\"}"
+        });
+
+        redact_sensitive_value(&mut value);
+        let serialized = serde_json::to_string(&value).unwrap();
+
+        assert!(serialized.contains("[REDACTED]"));
+        assert!(!serialized.contains("sk-nested"));
     }
 }

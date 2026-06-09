@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -36,6 +36,8 @@ pub struct ContextSearchIndex {
     conn: Connection,
 }
 
+pub const MAX_CONTEXT_SEARCH_LIMIT: usize = 50;
+
 impl ContextSearchIndex {
     pub fn new(workspace_path: &Path) -> Result<Self, ContextSearchError> {
         let index_dir = workspace_path.join(".gospel").join("context_search");
@@ -66,40 +68,56 @@ impl ContextSearchIndex {
         Ok(Self { conn })
     }
 
+    pub fn open_if_exists(workspace_path: &Path) -> Result<Self, ContextSearchError> {
+        let db_path = workspace_path
+            .join(".gospel")
+            .join("context_search")
+            .join("search_index.db");
+        if !db_path.exists() {
+            return Err(ContextSearchError::NotInitialized);
+        }
+
+        let conn = Connection::open(db_path)?;
+        Ok(Self { conn })
+    }
+
     pub fn clear(&self) -> Result<(), ContextSearchError> {
-        self.conn
-            .execute("DELETE FROM search_chunks", [])?;
+        self.conn.execute("DELETE FROM search_chunks", [])?;
         Ok(())
     }
 
-    pub fn index_chunks(&self, chunks: &[SearchChunk]) -> Result<(), ContextSearchError> {
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO search_chunks (id, source_type, source_path, chunk_index, content, start_line, end_line)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        )?;
+    pub fn index_chunks(&mut self, chunks: &[SearchChunk]) -> Result<(), ContextSearchError> {
+        let tx = self.conn.transaction()?;
 
-        for chunk in chunks {
-            stmt.execute(params![
-                chunk.id,
-                chunk.source_type,
-                chunk.source_path,
-                chunk.chunk_index,
-                chunk.content,
-                chunk.start_line,
-                chunk.end_line,
-            ])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO search_chunks (id, source_type, source_path, chunk_index, content, start_line, end_line)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+
+            for chunk in chunks {
+                stmt.execute(params![
+                    chunk.id,
+                    chunk.source_type,
+                    chunk.source_path,
+                    chunk.chunk_index,
+                    chunk.content,
+                    chunk.start_line,
+                    chunk.end_line,
+                ])?;
+            }
         }
 
-        // Update metadata
-        self.conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO search_meta (key, value) VALUES ('chunk_count', ?1)",
             params![chunks.len().to_string()],
         )?;
-        self.conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO search_meta (key, value) VALUES ('last_updated', ?1)",
             params![chrono::Utc::now().to_rfc3339()],
         )?;
 
+        tx.commit()?;
         Ok(())
     }
 
@@ -140,11 +158,10 @@ impl ContextSearchIndex {
     pub fn get_stats(&self) -> Result<ContextSearchStats, ContextSearchError> {
         let chunk_count: i64 =
             self.conn
-                .query_row("SELECT COUNT(*) FROM search_chunks", [], |row| {
-                    row.get(0)
-                })?;
+                .query_row("SELECT COUNT(*) FROM search_chunks", [], |row| row.get(0))?;
 
-        let last_updated: Option<String> = self.conn
+        let last_updated: Option<String> = self
+            .conn
             .query_row(
                 "SELECT value FROM search_meta WHERE key = 'last_updated'",
                 [],

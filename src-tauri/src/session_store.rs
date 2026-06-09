@@ -67,7 +67,9 @@ impl SessionStore {
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("sessions.sqlite3"))?;
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (
+            "PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY NOT NULL,
                 title TEXT NOT NULL,
                 provider TEXT NOT NULL,
@@ -162,7 +164,7 @@ impl SessionStore {
         let mut stmt = conn.prepare(
             "SELECT id, title, provider, model, status, workspace_id, created_at, updated_at
              FROM sessions
-             WHERE workspace_id IS ?1 AND status != 'draft'
+             WHERE (workspace_id IS NULL OR workspace_id IS ?1) AND status != 'draft'
              ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map(params![workspace_id], |row| {
@@ -184,11 +186,7 @@ impl SessionStore {
         Ok(sessions)
     }
 
-    pub fn update_status(
-        &self,
-        id: &str,
-        status: &str,
-    ) -> Result<(), SessionStoreError> {
+    pub fn update_status(&self, id: &str, status: &str) -> Result<(), SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
             "UPDATE sessions SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -238,10 +236,7 @@ impl SessionStore {
         Ok(rows)
     }
 
-    pub fn workspace_session_count(
-        &self,
-        workspace_id: &str,
-    ) -> Result<i64, SessionStoreError> {
+    pub fn workspace_session_count(&self, workspace_id: &str) -> Result<i64, SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sessions WHERE workspace_id = ?1 AND status != 'draft'",
@@ -261,18 +256,16 @@ impl SessionStore {
             Some(s) => {
                 match (&s.workspace_id, active_workspace_id) {
                     (Some(session_ws), Some(active_ws)) if session_ws == active_ws => Ok(()),
-                    (Some(session_ws), Some(active_ws)) => Err(SessionStoreError::NotFound(
-                        format!(
+                    (Some(session_ws), Some(active_ws)) => {
+                        Err(SessionStoreError::NotFound(format!(
                             "Session {} belongs to workspace {}, but active workspace is {}",
                             session_id, session_ws, active_ws
-                        ),
-                    )),
-                    (Some(_), None) => Err(SessionStoreError::NotFound(
-                        format!(
-                            "Session {} is workspace-bound but no workspace is active",
-                            session_id
-                        ),
-                    )),
+                        )))
+                    }
+                    (Some(_), None) => Err(SessionStoreError::NotFound(format!(
+                        "Session {} is workspace-bound but no workspace is active",
+                        session_id
+                    ))),
                     (None, _) => Ok(()), // unscoped sessions can continue from any workspace
                 }
             }
@@ -341,6 +334,18 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn note_session_id(&self, note_id: &str) -> Result<Option<String>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let session_id = conn
+            .query_row(
+                "SELECT session_id FROM session_notes WHERE id = ?1",
+                params![note_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(session_id)
+    }
+
     pub fn resolve_notes_for_message(
         &self,
         session_id: &str,
@@ -372,7 +377,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let conn = Connection::open(dir.join("test.sqlite3")).unwrap();
         conn.execute_batch(
-            "CREATE TABLE sessions (
+            "PRAGMA foreign_keys = ON;
+
+            CREATE TABLE sessions (
                 id TEXT PRIMARY KEY NOT NULL,
                 title TEXT NOT NULL,
                 provider TEXT NOT NULL,
@@ -383,6 +390,17 @@ mod tests {
                 model_history TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE session_notes (
+                id TEXT PRIMARY KEY NOT NULL,
+                session_id TEXT NOT NULL,
+                note_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source_message_id TEXT,
+                resolved INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );",
         )
         .unwrap();
@@ -408,7 +426,9 @@ mod tests {
     #[test]
     fn list_filters_drafts() {
         let store = test_store();
-        store.create_session("Draft", "openai", "gpt-4", Some("ws1")).unwrap();
+        store
+            .create_session("Draft", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
         let s = store
             .create_session("Active", "openai", "gpt-4", Some("ws1"))
             .unwrap();
@@ -420,24 +440,79 @@ mod tests {
     }
 
     #[test]
+    fn list_workspace_includes_unscoped_sessions() {
+        let store = test_store();
+        let unscoped = store
+            .create_session("Unscoped", "openai", "gpt-4", None)
+            .unwrap();
+        let scoped = store
+            .create_session("Scoped", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let other = store
+            .create_session("Other", "openai", "gpt-4", Some("ws2"))
+            .unwrap();
+
+        store.update_status(&unscoped.id, "active").unwrap();
+        store.update_status(&scoped.id, "active").unwrap();
+        store.update_status(&other.id, "active").unwrap();
+
+        let titles: Vec<_> = store
+            .list_sessions_for_workspace(Some("ws1"))
+            .unwrap()
+            .into_iter()
+            .map(|session| session.title)
+            .collect();
+
+        assert!(titles.contains(&"Unscoped".to_string()));
+        assert!(titles.contains(&"Scoped".to_string()));
+        assert!(!titles.contains(&"Other".to_string()));
+    }
+
+    #[test]
     fn delete_session_removes_record() {
         let store = test_store();
-        let s = store.create_session("To Delete", "openai", "gpt-4", None).unwrap();
+        let s = store
+            .create_session("To Delete", "openai", "gpt-4", None)
+            .unwrap();
         store.delete_session(&s.id).unwrap();
         assert!(store.get_session(&s.id).unwrap().is_none());
     }
 
     #[test]
+    fn delete_session_cascades_notes() {
+        let store = test_store();
+        let s = store
+            .create_session("With Note", "openai", "gpt-4", None)
+            .unwrap();
+        let note = store
+            .create_note(&s.id, "verification_concern", "Check this", None)
+            .unwrap();
+
+        store.delete_session(&s.id).unwrap();
+
+        assert!(store.note_session_id(&note.id).unwrap().is_none());
+    }
+
+    #[test]
     fn persist_turn_stores_transcript_and_history() {
         let store = test_store();
-        let s = store.create_session("Turn Test", "openai", "gpt-4", None).unwrap();
+        let s = store
+            .create_session("Turn Test", "openai", "gpt-4", None)
+            .unwrap();
         store
-            .persist_turn(&s.id, "[{\"role\":\"user\"}]", Some("[{\"role\":\"user\"}]"))
+            .persist_turn(
+                &s.id,
+                "[{\"role\":\"user\"}]",
+                Some("[{\"role\":\"user\"}]"),
+            )
             .unwrap();
 
         let detail = store.get_session(&s.id).unwrap().unwrap();
         assert_eq!(detail.display_transcript, "[{\"role\":\"user\"}]");
-        assert_eq!(detail.model_history, Some("[{\"role\":\"user\"}]".to_string()));
+        assert_eq!(
+            detail.model_history,
+            Some("[{\"role\":\"user\"}]".to_string())
+        );
         assert_eq!(detail.status, "active");
     }
 
@@ -446,7 +521,9 @@ mod tests {
         use rig::completion::message::{AssistantContent, Message, Text, UserContent};
 
         let store = test_store();
-        let s = store.create_session("Round Trip", "openai", "gpt-4", None).unwrap();
+        let s = store
+            .create_session("Round Trip", "openai", "gpt-4", None)
+            .unwrap();
 
         let original: Vec<Message> = vec![
             Message::User {
@@ -468,7 +545,10 @@ mod tests {
 
         let detail = store.get_session(&s.id).unwrap().unwrap();
         let restored: Vec<Message> = serde_json::from_str(
-            detail.model_history.as_deref().expect("model_history stored"),
+            detail
+                .model_history
+                .as_deref()
+                .expect("model_history stored"),
         )
         .expect("model_history must deserialize into Vec<Message>");
 
