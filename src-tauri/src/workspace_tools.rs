@@ -23,6 +23,13 @@ You can inspect the active Gospel workspace with live tools.
 - Use `search_code` to find where text or symbols appear.
 - Use `read_file` to verify exact code and content.
 
+### Context Search
+
+- Use `context_search` for broad natural-language retrieval across source, docs, and project artifacts.
+- Context Search returns ranked results with path, line range, content type, snippet, and score.
+- **Always verify important claims with live workspace tools** (read_file, search_code) after using Context Search.
+- Use Context Search to find likely relevant areas, then use live tools to confirm details.
+
 ### Guidance
 
 - Live workspace tools are the source of truth for file contents.
@@ -1211,6 +1218,166 @@ pub fn create_write_harness_file_tool(workspace_root: PathBuf) -> WriteHarnessFi
     WriteHarnessFileTool { workspace_root }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ContextSearchArgs {
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextSearchTool {
+    workspace_root: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContextSearchOutput {
+    success: bool,
+    results: Vec<ContextSearchResultDto>,
+    query: String,
+    total_results: usize,
+    index_available: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContextSearchResultDto {
+    path: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    content_type: String,
+    snippet: String,
+    score: f64,
+}
+
+impl Tool for ContextSearchTool {
+    const NAME: &'static str = "context_search";
+
+    type Error = WorkspaceToolError;
+    type Args = ContextSearchArgs;
+    type Output = ContextSearchOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Search the pre-built Context Search index for relevant source code, documentation, and project artifacts using natural language queries. Use this for broad retrieval to find likely relevant areas, then verify important hits with live workspace tools (read_file, search_code) before making claims. Returns ranked results with path, line range, content type, snippet, and score.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language search query (e.g. 'authentication middleware', 'error handling pattern', 'database connection setup')."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default: 10, max: 50)."
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let query = args.query.trim().to_string();
+        if query.is_empty() {
+            return Ok(ContextSearchOutput {
+                success: false,
+                results: vec![],
+                query: query.clone(),
+                total_results: 0,
+                index_available: false,
+            });
+        }
+
+        let limit = args.limit.unwrap_or(10).min(50);
+
+        // Try to open the context search index
+        let index =
+            match crate::context_search::ContextSearchIndex::open_if_exists(&self.workspace_root) {
+                Ok(index) => index,
+                Err(_) => {
+                    return Ok(ContextSearchOutput {
+                        success: false,
+                        results: vec![],
+                        query,
+                        total_results: 0,
+                        index_available: false,
+                    });
+                }
+            };
+
+        // Check if index has any data
+        let stats = match index.get_stats() {
+            Ok(stats) => stats,
+            Err(_) => {
+                return Ok(ContextSearchOutput {
+                    success: false,
+                    results: vec![],
+                    query,
+                    total_results: 0,
+                    index_available: false,
+                });
+            }
+        };
+
+        if stats.chunk_count == 0 {
+            return Ok(ContextSearchOutput {
+                success: true,
+                results: vec![],
+                query,
+                total_results: 0,
+                index_available: true,
+            });
+        }
+
+        // Perform search
+        match index.search(&query, limit) {
+            Ok(search_results) => {
+                let results: Vec<ContextSearchResultDto> = search_results
+                    .into_iter()
+                    .map(|r| ContextSearchResultDto {
+                        path: r.chunk.source_path,
+                        start_line: r.chunk.start_line,
+                        end_line: r.chunk.end_line,
+                        content_type: r.chunk.source_type,
+                        snippet: truncate_snippet(&r.chunk.content, 300),
+                        score: r.rank,
+                    })
+                    .collect();
+
+                let total = results.len();
+                Ok(ContextSearchOutput {
+                    success: true,
+                    results,
+                    query,
+                    total_results: total,
+                    index_available: true,
+                })
+            }
+            Err(_) => Ok(ContextSearchOutput {
+                success: false,
+                results: vec![],
+                query,
+                total_results: 0,
+                index_available: true,
+            }),
+        }
+    }
+}
+
+fn truncate_snippet(content: &str, max_chars: usize) -> String {
+    let mut chars = content.chars();
+    let snippet: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}...", snippet)
+    } else {
+        snippet
+    }
+}
+
+pub fn create_context_search_tool(workspace_root: PathBuf) -> ContextSearchTool {
+    ContextSearchTool { workspace_root }
+}
+
 fn validate_harness_write_target(
     access: &WorkspaceAccess,
     target_path: &Path,
@@ -2005,6 +2172,12 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn truncate_snippet_is_utf8_safe() {
+        assert_eq!(truncate_snippet("aé🙂bc", 3), "aé🙂...");
+        assert_eq!(truncate_snippet("short", 10), "short");
     }
 
     #[tokio::test]

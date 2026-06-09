@@ -38,6 +38,7 @@ export function AppShell() {
   const session = useSessionManager({
     models,
     selectedModel,
+    activeWorkspaceId: activeWorkspace?.id,
     onError: showError,
     onSuccess: showSuccess,
     onOpenSettings: openSettings,

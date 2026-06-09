@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { AgentStatus, Message, ModelOption, Session, ToolCallActivity } from "../types";
 import type { SelectedModel } from "./useModelAvailability";
 import { useChatStream } from "./useChatStream";
@@ -19,6 +20,7 @@ export interface SessionManagerErrorAction {
 export interface UseSessionManagerParams {
   models: ModelOption[];
   selectedModel: SelectedModel | null;
+  activeWorkspaceId?: string;
   onError?: (message: string, action?: SessionManagerErrorAction) => void;
   onSuccess?: (message: string) => void;
   onOpenSettings?: () => void;
@@ -41,6 +43,7 @@ export interface UseSessionManagerResult {
 export function useSessionManager({
   models,
   selectedModel,
+  activeWorkspaceId,
   onError,
   onSuccess,
   onOpenSettings,
@@ -51,6 +54,58 @@ export function useSessionManager({
   const [status, setStatus] = useState<AgentStatus>("idle");
   const statusRef = useRef(status);
   statusRef.current = status;
+  const latestSelectedSessionRef = useRef<string | null>(null);
+
+  // Load persisted sessions from backend on mount
+  useEffect(() => {
+    invoke<Array<{ id: string; title: string; provider: string; model: string; status: string; updated_at: string }>>("list_sessions")
+      .then((backendSessions) => {
+        const loaded: Session[] = backendSessions.map((s) => ({
+          id: s.id,
+          title: s.title,
+          provider: s.provider,
+          model: s.model,
+          timestamp: new Date(s.updated_at),
+          messages: [],
+          status: s.status === "active" ? "idle" : "error",
+          backendCreated: true,
+        }));
+        setSessions(loaded);
+      })
+      .catch((e) => {
+        console.warn("Failed to load sessions from backend:", e);
+      });
+  }, []);
+
+  // Clear active session on workspace change
+  const prevWorkspaceRef = useRef(activeWorkspaceId);
+  useEffect(() => {
+    if (prevWorkspaceRef.current !== activeWorkspaceId) {
+      if (statusRef.current === "thinking" || statusRef.current === "acting") return;
+      prevWorkspaceRef.current = activeWorkspaceId;
+      latestSelectedSessionRef.current = null;
+      setActiveSessionId(null);
+      setMessages([]);
+      // Reload sessions for the new workspace
+      invoke<Array<{ id: string; title: string; provider: string; model: string; status: string; updated_at: string }>>("list_sessions")
+        .then((backendSessions) => {
+          const loaded: Session[] = backendSessions.map((s) => ({
+            id: s.id,
+            title: s.title,
+            provider: s.provider,
+            model: s.model,
+            timestamp: new Date(s.updated_at),
+            messages: [],
+            status: s.status === "active" ? "idle" : "error",
+            backendCreated: true,
+          }));
+          setSessions(loaded);
+        })
+        .catch((e) => {
+          console.warn("Failed to reload sessions after workspace change:", e);
+        });
+    }
+  }, [activeWorkspaceId, status]);
 
   const {
     streamingContent,
@@ -119,18 +174,35 @@ export function useSessionManager({
 
       let effectiveSessionId = activeSessionId;
       if (!activeSessionId) {
+        const title =
+          userMsg.content.slice(0, 50) + (userMsg.content.length > 50 ? "..." : "");
+
+        // Try backend session creation first
+        let backendSession: { id: string } | null = null;
+        try {
+          backendSession = await invoke<{ id: string }>("create_session", {
+            title,
+            provider: selectedModel.provider,
+            model: selectedModel.model,
+          });
+        } catch (e) {
+          console.warn("Backend session creation failed, using local session:", e);
+        }
+
+        const sessionId = backendSession?.id ?? `s-${Date.now()}`;
         const newSession: Session = {
-          id: `s-${Date.now()}`,
-          title: userMsg.content.slice(0, 50) + (userMsg.content.length > 50 ? "..." : ""),
+          id: sessionId,
+          title,
           provider: selectedModel.provider,
           model: selectedModel.model,
           timestamp: new Date(),
           messages: [userMsg],
           status: "active",
+          backendCreated: !!backendSession,
         };
         setSessions((prev) => [newSession, ...prev]);
-        setActiveSessionId(newSession.id);
-        effectiveSessionId = newSession.id;
+        setActiveSessionId(sessionId);
+        effectiveSessionId = sessionId;
       }
 
       try {
@@ -153,13 +225,56 @@ export function useSessionManager({
     [activeSessionId, models, selectedModel, onError, onOpenSettings, resetStream, startStream],
   );
 
-  const handleSessionSelect = useCallback((session: Session) => {
-    if (statusRef.current === "thinking" || statusRef.current === "acting") return;
-    setActiveSessionId(session.id);
-    setMessages(session.messages);
-  }, []);
+  const handleSessionSelect = useCallback(
+    async (session: Session) => {
+      if (statusRef.current === "thinking" || statusRef.current === "acting") return;
+      const selectionId = session.id;
+      latestSelectedSessionRef.current = selectionId;
+
+      // If session was backend-created and has no local messages, load from backend
+      if (session.backendCreated && session.messages.length === 0) {
+        try {
+          const detail = await invoke<{
+            id: string;
+            display_transcript: string;
+          }>("get_session", { sessionId: session.id });
+
+          if (latestSelectedSessionRef.current !== selectionId) return;
+
+          const transcript = JSON.parse(detail.display_transcript) as Array<{
+            role: string;
+            content: string;
+          }>;
+          const loadedMessages: Message[] = transcript.map((msg, i) => ({
+            id: `m-${session.id}-${i}-${msg.role}`,
+            role: msg.role === "user" ? ("user" as const) : ("agent" as const),
+            content: msg.content,
+            timestamp: new Date(session.timestamp),
+          }));
+
+          setActiveSessionId(session.id);
+          setMessages(loadedMessages);
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === session.id ? { ...s, messages: loadedMessages } : s,
+            ),
+          );
+          return;
+        } catch (e) {
+          if (latestSelectedSessionRef.current !== selectionId) return;
+          console.warn("Failed to load session detail from backend:", e);
+        }
+      }
+
+      if (latestSelectedSessionRef.current !== selectionId) return;
+      setActiveSessionId(session.id);
+      setMessages(session.messages);
+    },
+    [],
+  );
 
   const handleNewSession = useCallback(() => {
+    latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
     resetStream();
