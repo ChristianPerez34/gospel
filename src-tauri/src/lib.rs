@@ -1445,18 +1445,43 @@ fn create_session(
 #[tauri::command]
 fn get_session(
     session_store: tauri::State<'_, SessionStoreState>,
+    conversation_state: tauri::State<'_, ConversationState>,
     session_id: String,
 ) -> Result<SessionDetail, String> {
-    match &session_store.store {
+    let detail = match &session_store.store {
         Some(store) => store
             .get_session(&session_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("Session not found: {}", session_id)),
-        None => Err(session_store
-            .init_warning
-            .clone()
-            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+            .ok_or_else(|| format!("Session not found: {}", session_id))?,
+        None => {
+            return Err(session_store
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "Session store is unavailable".to_string()));
+        }
+    };
+
+    // Hydrate the in-memory conversation store with the persisted Model History
+    // so a subsequent `complete_streaming` call can continue the conversation
+    // with prior turns visible to the LLM, not just the UI transcript.
+    if let Some(model_history_json) = detail.model_history.as_deref() {
+        match serde_json::from_str::<Vec<rig::completion::message::Message>>(model_history_json) {
+            Ok(messages) if !messages.is_empty() => {
+                let mut store = conversation_state.store.lock().unwrap();
+                store.store_history(&session_id, messages);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to parse model history for session {}: {}",
+                    session_id,
+                    e
+                );
+            }
+        }
     }
+
+    Ok(detail)
 }
 
 #[tauri::command]

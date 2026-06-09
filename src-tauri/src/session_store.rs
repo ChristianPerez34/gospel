@@ -440,4 +440,38 @@ mod tests {
         assert_eq!(detail.model_history, Some("[{\"role\":\"user\"}]".to_string()));
         assert_eq!(detail.status, "active");
     }
+
+    #[test]
+    fn model_history_round_trips_into_rig_messages() {
+        use rig::completion::message::{AssistantContent, Message, Text, UserContent};
+
+        let store = test_store();
+        let s = store.create_session("Round Trip", "openai", "gpt-4", None).unwrap();
+
+        let original: Vec<Message> = vec![
+            Message::User {
+                content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
+                    text: "hi".to_string(),
+                })),
+            },
+            Message::Assistant {
+                id: None,
+                content: rig::one_or_many::OneOrMany::one(AssistantContent::Text(Text {
+                    text: "hello back".to_string(),
+                })),
+            },
+        ];
+        let history_json = serde_json::to_string(&original).unwrap();
+        store
+            .persist_turn(&s.id, "[]", Some(&history_json))
+            .unwrap();
+
+        let detail = store.get_session(&s.id).unwrap().unwrap();
+        let restored: Vec<Message> = serde_json::from_str(
+            detail.model_history.as_deref().expect("model_history stored"),
+        )
+        .expect("model_history must deserialize into Vec<Message>");
+
+        assert_eq!(restored, original);
+    }
 }
