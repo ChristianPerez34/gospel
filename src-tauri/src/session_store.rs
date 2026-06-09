@@ -164,7 +164,7 @@ impl SessionStore {
         let mut stmt = conn.prepare(
             "SELECT id, title, provider, model, status, workspace_id, created_at, updated_at
              FROM sessions
-             WHERE (workspace_id IS NULL OR workspace_id IS ?1) AND status != 'draft'
+             WHERE workspace_id IS ?1 AND status != 'draft'
              ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map(params![workspace_id], |row| {
@@ -253,22 +253,22 @@ impl SessionStore {
     ) -> Result<(), SessionStoreError> {
         let session = self.get_session(session_id)?;
         match session {
-            Some(s) => {
-                match (&s.workspace_id, active_workspace_id) {
-                    (Some(session_ws), Some(active_ws)) if session_ws == active_ws => Ok(()),
-                    (Some(session_ws), Some(active_ws)) => {
-                        Err(SessionStoreError::NotFound(format!(
-                            "Session {} belongs to workspace {}, but active workspace is {}",
-                            session_id, session_ws, active_ws
-                        )))
-                    }
-                    (Some(_), None) => Err(SessionStoreError::NotFound(format!(
-                        "Session {} is workspace-bound but no workspace is active",
-                        session_id
-                    ))),
-                    (None, _) => Ok(()), // unscoped sessions can continue from any workspace
-                }
-            }
+            Some(s) => match (&s.workspace_id, active_workspace_id) {
+                (Some(session_ws), Some(active_ws)) if session_ws == active_ws => Ok(()),
+                (Some(session_ws), Some(active_ws)) => Err(SessionStoreError::NotFound(format!(
+                    "Session {} belongs to workspace {}, but active workspace is {}",
+                    session_id, session_ws, active_ws
+                ))),
+                (Some(_), None) => Err(SessionStoreError::NotFound(format!(
+                    "Session {} is workspace-bound but no workspace is active",
+                    session_id
+                ))),
+                (None, None) => Ok(()),
+                (None, Some(active_ws)) => Err(SessionStoreError::NotFound(format!(
+                    "Session {} is unscoped, but active workspace is {}",
+                    session_id, active_ws
+                ))),
+            },
             None => Err(SessionStoreError::NotFound(session_id.to_string())),
         }
     }
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn list_workspace_includes_unscoped_sessions() {
+    fn list_workspace_excludes_unscoped_sessions() {
         let store = test_store();
         let unscoped = store
             .create_session("Unscoped", "openai", "gpt-4", None)
@@ -463,9 +463,31 @@ mod tests {
             .map(|session| session.title)
             .collect();
 
-        assert!(titles.contains(&"Unscoped".to_string()));
+        assert!(!titles.contains(&"Unscoped".to_string()));
         assert!(titles.contains(&"Scoped".to_string()));
         assert!(!titles.contains(&"Other".to_string()));
+
+        let unscoped_titles: Vec<_> = store
+            .list_sessions_for_workspace(None)
+            .unwrap()
+            .into_iter()
+            .map(|session| session.title)
+            .collect();
+        assert!(unscoped_titles.contains(&"Unscoped".to_string()));
+        assert!(!unscoped_titles.contains(&"Scoped".to_string()));
+    }
+
+    #[test]
+    fn unscoped_sessions_cannot_continue_inside_workspace() {
+        let store = test_store();
+        let unscoped = store
+            .create_session("Unscoped", "openai", "gpt-4", None)
+            .unwrap();
+
+        assert!(store.validate_workspace_binding(&unscoped.id, None).is_ok());
+        assert!(store
+            .validate_workspace_binding(&unscoped.id, Some("ws1"))
+            .is_err());
     }
 
     #[test]

@@ -53,7 +53,10 @@ describe("useSessionManager", () => {
       capturedListeners[eventName].push(callback as ListenerCallback);
       return () => {};
     });
-    vi.mocked(invoke).mockResolvedValue(undefined);
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_sessions") return [];
+      return undefined;
+    });
   });
 
   afterEach(() => {
@@ -160,6 +163,7 @@ describe("useSessionManager", () => {
 
     it("handleSessionSelect hydrates a backend-created session via get_session so the next turn continues prior history", async () => {
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "list_sessions") return [];
         if (cmd === "get_session") {
           return {
             id: "s-restored",
@@ -292,7 +296,11 @@ describe("useSessionManager", () => {
     });
 
     it("invokes onError and sets status to error when startStream throws", async () => {
-      vi.mocked(invoke).mockRejectedValueOnce(new Error("network down"));
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "list_sessions") return [];
+        if (cmd === "complete_streaming") throw new Error("network down");
+        return undefined;
+      });
 
       const onError = vi.fn();
       const { result } = renderHook(() =>

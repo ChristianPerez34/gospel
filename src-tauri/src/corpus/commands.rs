@@ -308,7 +308,7 @@ pub(crate) async fn run_corpus_build_inner(
             );
 
             // Return status
-            let context_search_stats = ContextSearchIndex::new(workspace_path)
+            let context_search_stats = ContextSearchIndex::open_if_exists(workspace_path)
                 .ok()
                 .and_then(|index| index.get_stats().ok());
 
@@ -521,7 +521,7 @@ pub fn context_search(
     let workspace = workspace.ok_or("No active workspace selected")?;
     let workspace_path = PathBuf::from(workspace.path);
 
-    let index = ContextSearchIndex::new(&workspace_path)
+    let index = ContextSearchIndex::open_if_exists(&workspace_path)
         .map_err(|e| format!("Failed to open context search index: {}", e))?;
 
     let search_limit = limit.unwrap_or(10).clamp(1, MAX_CONTEXT_SEARCH_LIMIT);

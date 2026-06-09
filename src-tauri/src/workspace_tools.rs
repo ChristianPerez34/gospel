@@ -1291,18 +1291,19 @@ impl Tool for ContextSearchTool {
         let limit = args.limit.unwrap_or(10).min(50);
 
         // Try to open the context search index
-        let index = match crate::context_search::ContextSearchIndex::new(&self.workspace_root) {
-            Ok(index) => index,
-            Err(_) => {
-                return Ok(ContextSearchOutput {
-                    success: false,
-                    results: vec![],
-                    query,
-                    total_results: 0,
-                    index_available: false,
-                });
-            }
-        };
+        let index =
+            match crate::context_search::ContextSearchIndex::open_if_exists(&self.workspace_root) {
+                Ok(index) => index,
+                Err(_) => {
+                    return Ok(ContextSearchOutput {
+                        success: false,
+                        results: vec![],
+                        query,
+                        total_results: 0,
+                        index_available: false,
+                    });
+                }
+            };
 
         // Check if index has any data
         let stats = match index.get_stats() {

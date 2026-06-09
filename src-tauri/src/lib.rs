@@ -1,8 +1,8 @@
 #![recursion_limit = "2048"]
 
 mod app_config;
-mod conversation;
 pub mod context_search;
+mod conversation;
 pub mod corpus;
 pub mod keychain;
 mod llm;
@@ -37,12 +37,9 @@ mod model_fetch {
 use app_config::{AppConfigError, AppConfigState, Workspace};
 use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
-use session_store::{SessionDetail, SessionRecord, SessionStore, SessionStoreState};
-use trace::TraceState;
 use corpus::commands::{
     build_corpus, context_search, get_corpus_neighbors, get_corpus_status, get_corpus_summary,
-    query_corpus,
-    run_corpus_build_inner,
+    query_corpus, run_corpus_build_inner,
 };
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
@@ -51,6 +48,7 @@ use models::ModelInfo;
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
 use serde::Serialize;
+use session_store::{SessionDetail, SessionRecord, SessionStore, SessionStoreState};
 use skills::SkillSummary;
 use std::{
     collections::HashMap,
@@ -60,6 +58,7 @@ use std::{
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+use trace::TraceState;
 
 static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
@@ -731,7 +730,10 @@ async fn complete_streaming(
                     (None, Some(preamble), user_msg)
                 }
                 None => {
-                    tracing::warn!("Unknown skill '{}'; proceeding as normal turn", invoked.name);
+                    tracing::warn!(
+                        "Unknown skill '{}'; proceeding as normal turn",
+                        invoked.name
+                    );
                     (None, None, prompt.clone())
                 }
             }
@@ -889,8 +891,7 @@ async fn complete_streaming(
                     let display_transcript =
                         serde_json::to_string(&build_display_transcript(&history))
                             .unwrap_or_else(|_| "[]".to_string());
-                    let model_history_json =
-                        serde_json::to_string(&history).ok();
+                    let model_history_json = serde_json::to_string(&history).ok();
                     if let Err(e) = session_store.persist_turn(
                         sid,
                         &display_transcript,
@@ -903,86 +904,84 @@ async fn complete_streaming(
                 }
             }
 
-            // Create session notes from verification result synchronously
-            let verification_result = {
-                let response_for_verify = stream_result.full_response.clone();
-                let is_high_risk = response_for_verify.contains("```")
-                    || response_for_verify.contains("write_file")
-                    || response_for_verify.contains("write_harness_file")
-                    || response_for_verify.len() > 2000;
+            let response_for_verify = stream_result.full_response.clone();
+            let _ = app.emit("llm-done", response_for_verify.clone());
 
-                if is_high_risk {
-                    if let Some(ref workspace_ctx) = workspace_for_verify {
-                        Some(
-                            verification::run_verification(
-                                &provider,
-                                &model,
-                                &api_key,
-                                workspace_ctx,
-                                &response_for_verify,
-                                &effective_prompt,
-                            )
-                            .await,
+            let is_high_risk = response_for_verify.contains("```")
+                || response_for_verify.contains("write_file")
+                || response_for_verify.contains("write_harness_file")
+                || response_for_verify.len() > 2000;
+
+            if is_high_risk {
+                if let Some(workspace_ctx) = workspace_for_verify {
+                    let app_for_verify = app.clone();
+                    let provider_for_verify = provider.clone();
+                    let model_for_verify = model.clone();
+                    let api_key_for_verify = api_key.clone();
+                    let prompt_for_verify = effective_prompt.clone();
+                    let session_id_for_verify = session_id.clone();
+
+                    tauri::async_runtime::spawn(async move {
+                        let result = verification::run_verification(
+                            &provider_for_verify,
+                            &model_for_verify,
+                            &api_key_for_verify,
+                            &workspace_ctx,
+                            &response_for_verify,
+                            &prompt_for_verify,
                         )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
+                        .await;
 
-            // Store verification notes in session store
-            if let Some(result) = verification_result {
-                if let Some(ref session_store) = session_store_state.store {
-                    if let Some(ref sid) = session_id {
-                        match result.status {
-                            verification::VerificationStatus::Concerns => {
-                                for concern in &result.concerns {
-                                    let _ = session_store.create_note(
-                                        sid,
-                                        "verification_concern",
-                                        concern,
-                                        None,
-                                    );
-                                }
-                            }
-                            verification::VerificationStatus::Fail => {
-                                let _ = session_store.create_note(
-                                    sid,
-                                    "verification_fail",
-                                    &result.summary,
-                                    None,
-                                );
-                            }
-                            verification::VerificationStatus::Pass => {
-                                // Resolve all unresolved verification notes
-                                if let Ok(notes) = session_store.list_unresolved_notes(sid) {
-                                    for note in notes {
-                                        if note.note_type.starts_with("verification_") {
-                                            let _ = session_store.resolve_note(&note.id);
+                        if let Some(ref sid) = session_id_for_verify {
+                            let session_store_state = app_for_verify.state::<SessionStoreState>();
+                            if let Some(ref session_store) = session_store_state.store {
+                                match &result.status {
+                                    verification::VerificationStatus::Concerns => {
+                                        for concern in &result.concerns {
+                                            let _ = session_store.create_note(
+                                                sid,
+                                                "verification_concern",
+                                                concern,
+                                                None,
+                                            );
                                         }
                                     }
+                                    verification::VerificationStatus::Fail => {
+                                        let _ = session_store.create_note(
+                                            sid,
+                                            "verification_fail",
+                                            &result.summary,
+                                            None,
+                                        );
+                                    }
+                                    verification::VerificationStatus::Pass => {
+                                        if let Ok(notes) = session_store.list_unresolved_notes(sid)
+                                        {
+                                            for note in notes {
+                                                if note.note_type.starts_with("verification_") {
+                                                    let _ = session_store.resolve_note(&note.id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    verification::VerificationStatus::Unavailable => {}
                                 }
                             }
-                            _ => {}
                         }
-                    }
-                }
 
-                // Emit verification event
-                let _ = app.emit(
-                    "llm-verification",
-                    serde_json::json!({
-                        "sessionId": session_id,
-                        "status": result.status,
-                        "concerns": result.concerns,
-                        "summary": result.summary,
-                    }),
-                );
+                        let _ = app_for_verify.emit(
+                            "llm-verification",
+                            serde_json::json!({
+                                "sessionId": session_id_for_verify,
+                                "status": result.status,
+                                "concerns": result.concerns,
+                                "summary": result.summary,
+                            }),
+                        );
+                    });
+                }
             }
 
-            let _ = app.emit("llm-done", stream_result.full_response);
             Ok(())
         }
         Err(e) => {
@@ -999,8 +998,7 @@ async fn complete_streaming(
                     // Read existing display transcript and append error entry
                     if let Ok(Some(detail)) = session_store.get_session(sid) {
                         let mut transcript: Vec<serde_json::Value> =
-                            serde_json::from_str(&detail.display_transcript)
-                                .unwrap_or_default();
+                            serde_json::from_str(&detail.display_transcript).unwrap_or_default();
                         let (message, is_controlled_stop) = match &e {
                             llm::LlmError::ControlledStop(msg) => (msg.clone(), true),
                             _ => (format!("Error: {}", e.to_dto().message), false),
@@ -1013,7 +1011,11 @@ async fn complete_streaming(
                         }));
                         if let Ok(updated) = serde_json::to_string(&transcript) {
                             // Persist error/stop entry without updating Model History
-                            let _ = session_store.persist_turn(sid, &updated, detail.model_history.as_deref());
+                            let _ = session_store.persist_turn(
+                                sid,
+                                &updated,
+                                detail.model_history.as_deref(),
+                            );
                         }
                     }
                 }
@@ -1344,7 +1346,9 @@ fn set_active_workspace(
                         workspace.name,
                         workspace.path
                     );
-                    skill_cache.loader.invalidate(&PathBuf::from(&workspace.path));
+                    skill_cache
+                        .loader
+                        .invalidate(&PathBuf::from(&workspace.path));
                     spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
                 }
                 Ok(None) => {
@@ -1422,13 +1426,11 @@ fn create_session(
     model: String,
 ) -> Result<SessionRecord, String> {
     let workspace_id = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten().map(|_| {
-            store
-                .get_active_workspace()
-                .ok()
-                .flatten()
-                .map(|ws| ws.id)
-        }),
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
         None => None,
     }
     .flatten();
@@ -1497,13 +1499,11 @@ fn list_sessions(
     app_config: tauri::State<'_, AppConfigState>,
 ) -> Result<Vec<SessionRecord>, String> {
     let workspace_id = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten().map(|_| {
-            store
-                .get_active_workspace()
-                .ok()
-                .flatten()
-                .map(|ws| ws.id)
-        }),
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
         None => None,
     }
     .flatten();
