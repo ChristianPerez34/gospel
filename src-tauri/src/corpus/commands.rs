@@ -1,10 +1,11 @@
 //! Tauri commands for Corpus functionality
 
+use crate::context_search::{self, ContextSearchIndex, SearchChunk};
 use crate::corpus::{
     dto::{NeighborDto, NodeDto},
     extractor::extract_directory,
     persistence::{CorpusManifest, CorpusPersistence},
-    Corpus,
+    Corpus, NodeType,
 };
 use crate::{AppConfigState, CORPUS_BUILD_LOCK};
 use serde::Serialize;
@@ -26,6 +27,120 @@ pub struct CorpusStatus {
     pub exists: bool,
     pub manifest: Option<CorpusManifest>,
     pub corpus_dir: Option<String>,
+    pub context_search: Option<context_search::ContextSearchStats>,
+}
+
+fn build_context_search_index(
+    workspace_path: &Path,
+    corpus: &Corpus,
+) -> Result<context_search::ContextSearchStats, String> {
+    let index = ContextSearchIndex::new(workspace_path)
+        .map_err(|e| format!("Failed to create context search index: {}", e))?;
+
+    index.clear().map_err(|e| e.to_string())?;
+
+    let mut all_chunks = Vec::new();
+
+    for (_id, node) in &corpus.nodes {
+        match &node.node_type {
+            NodeType::File {
+                path,
+                language,
+                line_count,
+            } => {
+                // Skip binary/dependencies/generated files
+                if should_skip_for_indexing(path) {
+                    continue;
+                }
+
+                // Read file content
+                let full_path = workspace_path.join(path);
+                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                    let chunks = if language == "markdown" || path.ends_with(".md") {
+                        context_search::chunk_markdown_file(
+                            std::path::Path::new(path),
+                            &content,
+                        )
+                    } else {
+                        context_search::chunk_source_file(std::path::Path::new(path), &content)
+                    };
+                    all_chunks.extend(chunks);
+                }
+            }
+            NodeType::Concept {
+                name,
+                source,
+                summary,
+                keywords,
+            } => {
+                // Index concepts as documentation chunks
+                let content = format!(
+                    "# {}\n\nSource: {}\n\n{}\n\nKeywords: {}",
+                    name,
+                    source,
+                    summary,
+                    keywords.join(", ")
+                );
+                all_chunks.push(SearchChunk {
+                    id: format!("concept:{}", name),
+                    source_type: "concept".to_string(),
+                    source_path: source.clone(),
+                    chunk_index: 0,
+                    content,
+                    start_line: None,
+                    end_line: None,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    index
+        .index_chunks(&all_chunks)
+        .map_err(|e| e.to_string())?;
+
+    index.get_stats().map_err(|e| e.to_string())
+}
+
+fn should_skip_for_indexing(path: &str) -> bool {
+    let skip_patterns = [
+        "node_modules",
+        "target",
+        ".git",
+        "dist",
+        "build",
+        ".gospel/corpus",
+        ".gospel/context_search",
+        ".gospel/sessions",
+        ".gospel/traces",
+        "Cargo.lock",
+        "package-lock.json",
+        "yarn.lock",
+        ".env",
+        ".env.local",
+        ".env.production",
+    ];
+
+    for pattern in &skip_patterns {
+        if path.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Skip binary extensions
+    let binary_extensions = [
+        ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".lib", ".png", ".jpg", ".jpeg",
+        ".gif", ".bmp", ".ico", ".svg", ".mp3", ".mp4", ".avi", ".mov", ".zip", ".tar", ".gz",
+        ".rar", ".7z", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ];
+
+    for ext in &binary_extensions {
+        if path.ends_with(ext) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Build a corpus for the active workspace
@@ -141,6 +256,26 @@ pub(crate) async fn run_corpus_build_inner(
                 persistence.corpus_dir().display()
             );
 
+            // Build context search index
+            let _ = app.emit(
+                "corpus-progress",
+                CorpusProgress {
+                    phase: "indexing".to_string(),
+                    message: "Building context search index...".to_string(),
+                    current: summary.file_count + summary.symbol_count,
+                    total: None,
+                },
+            );
+
+            if let Err(e) = build_context_search_index(workspace_path, &corpus) {
+                tracing::warn!(
+                    "[CORPUS-AUTO] context search indexing failed for {}: {}",
+                    workspace_path.display(),
+                    e
+                );
+                // Non-blocking: continue even if context search indexing fails
+            }
+
             // Emit progress: complete
             let _ = app.emit(
                 "corpus-progress",
@@ -153,10 +288,15 @@ pub(crate) async fn run_corpus_build_inner(
             );
 
             // Return status
+            let context_search_stats = ContextSearchIndex::new(workspace_path)
+                .ok()
+                .and_then(|index| index.get_stats().ok());
+
             Ok(CorpusStatus {
                 exists: true,
                 manifest: persistence.load_manifest().ok(),
                 corpus_dir: persistence.corpus_dir().to_str().map(|s| s.to_string()),
+                context_search: context_search_stats,
             })
         }
         Err(e) => {
@@ -208,10 +348,16 @@ pub fn get_corpus_status(
         None
     };
 
+    // Get context search stats
+    let context_search_stats = ContextSearchIndex::new(&workspace_path)
+        .ok()
+        .and_then(|index| index.get_stats().ok());
+
     Ok(CorpusStatus {
         exists,
         manifest,
         corpus_dir,
+        context_search: context_search_stats,
     })
 }
 
@@ -336,6 +482,32 @@ pub struct CorpusSummaryDto {
     pub relationship_count: usize,
     pub relationship_counts: std::collections::HashMap<String, usize>,
     pub top_symbols: Vec<(String, usize)>,
+}
+
+/// Search context index for the active workspace
+#[tauri::command]
+pub fn context_search(
+    app_config: tauri::State<'_, AppConfigState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<context_search::SearchResult>, String> {
+    let workspace = match &app_config.store {
+        Some(store) => store
+            .get_active_workspace()
+            .map_err(|e| format!("Failed to get active workspace: {}", e))?,
+        None => return Err("App config store unavailable".to_string()),
+    };
+
+    let workspace = workspace.ok_or("No active workspace selected")?;
+    let workspace_path = PathBuf::from(workspace.path);
+
+    let index = ContextSearchIndex::new(&workspace_path)
+        .map_err(|e| format!("Failed to open context search index: {}", e))?;
+
+    let search_limit = limit.unwrap_or(10);
+    index
+        .search(&query, search_limit)
+        .map_err(|e| format!("Context search failed: {}", e))
 }
 
 // NodeDto and NeighborDto are defined in dto.rs for shared use

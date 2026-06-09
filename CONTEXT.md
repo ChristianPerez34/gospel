@@ -20,7 +20,19 @@
 - **PEV Loop**: Plan → Execute → Verify. The minimal outer loop for long-horizon agent work: maintain a plan, execute the next step, verify the result, then update the plan. The PEV Loop is the rhythm that explicit planning makes visible.
 - **Shared Harness Substrate**: A persistent, workspace-scoped location (`.gospel/`) where harness artifacts live across turns and sessions. Shared between the human (who can inspect and edit) and the agent (who can read and write via tools).
 - **Harness Control Area**: The `.gospel/` directory and its contents, treated as the agent's persistent control surface. The primary artifact is `PLAN.md`.
-- **Conversation Export**: A serialized snapshot of a Conversation’s message history, emitted as raw rig::Message JSON for external analysis.
+- **Conversation Export**: A serialized snapshot of a Conversation's message history, emitted as raw rig::Message JSON for external analysis.
+- **Session**: A backend-owned persistent unit of interaction identified by a UUID. A Session carries a Display Transcript (user-visible messages), backend Model History (provider continuation state), a workspace binding or unscoped flag, and metadata (title, provider, model, status). Sessions are stored in app-global SQLite, not in the shared harness substrate. See ADR-0004 and ADR-0005.
+- **Display Transcript**: The user-visible message history within a Session — user prompts and assistant replies in a clean, exportable format. Stored separately from Model History so it can be shared, exported, or deleted without exposing backend internals. See ADR-0005.
+- **Model History**: The full provider-native conversation state (including tool calls, tool results, and internal context) needed to continue a conversation with the same provider/model. Stored separately from the Display Transcript and only updated on successful turn completion. Not exposed through UI or normal export flows. See ADR-0005.
+- **Workspace-Affine Session**: A Session bound to a specific workspace. Only appears in the session list when that workspace is active. Backend rejects attempts to continue a workspace-affine Session from a different active workspace.
+- **Unscoped Session**: A Session with no workspace binding. Appears only in unscoped mode (no active workspace). Useful for general-purpose chat that is not tied to a specific codebase.
+- **Draft Session**: A Session created on first message send but before a successful turn completion. Drafts with zero display messages are hidden by default and cleaned up when stale.
+- **Trace Log**: A redacted, capped JSONL file recording agent activity (role, timing, tool calls, warnings, stops, errors) for observability. Stored in app-global storage, capped at 250 MB global with 30-day retention. Never exposed as agent-readable memory.
+- **Controlled Stop**: A clean agent termination triggered by run guards (e.g., identical tool call loops or repeated deterministic failures). Emits warning and stopped events, persists a plain-language stopped assistant message, and does not update Model History. Distinct from provider/runtime errors.
+- **Loop Detection**: The mechanism that identifies repeated identical tool calls by tool name plus canonicalized JSON arguments. Warns at three consecutive identical calls and controlled-stops at five.
+- **Verification Agent**: A backend sub-agent that runs asynchronously after high-risk completed responses to verify correctness. Uses read-only tools, lower turn budgets, and produces pass/concerns/fail/unavailable results. Failure or timeout is non-blocking.
+- **Context Search**: An offline broad-retrieval index built on SQLite FTS as part of the corpus subsystem. Covers safe source files, documentation, workspace skills, and harness planning artifacts. Used by agents to find likely relevant areas, then verified with live workspace tools.
+- **Session Context Note**: A session-scoped note injected into future turns as context (not persisted into provider Model History). Version one creates notes from Verification Agent concerns. The note shape is generic for future note kinds.
 
 ## Harness Interface Baseline
 

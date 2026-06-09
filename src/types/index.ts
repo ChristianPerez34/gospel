@@ -75,6 +75,8 @@ export interface Session {
   timestamp: Date;
   messages: Message[];
   status: "idle" | "active" | "error";
+  workspaceId?: string;
+  backendCreated?: boolean;
 }
 
 export interface Workspace {

@@ -10,20 +10,172 @@ use rig::tool::Tool;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::time::{timeout, Duration};
+
+/// Role-specific thresholds for run guards.
+const MAIN_AGENT_LOOP_WARN: usize = 3;
+const MAIN_AGENT_LOOP_STOP: usize = 5;
+const EXPLORATION_AGENT_LOOP_WARN: usize = 3;
+const EXPLORATION_AGENT_LOOP_STOP: usize = 5;
+const VERIFICATION_AGENT_LOOP_WARN: usize = 2;
+const VERIFICATION_AGENT_LOOP_STOP: usize = 3;
+
+/// Agent roles for trace logging and guard behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRole {
+    Main,
+    Exploration,
+    Verification,
+}
+
+impl AgentRole {
+    fn warn_threshold(self) -> usize {
+        match self {
+            AgentRole::Main => MAIN_AGENT_LOOP_WARN,
+            AgentRole::Exploration => EXPLORATION_AGENT_LOOP_WARN,
+            AgentRole::Verification => VERIFICATION_AGENT_LOOP_WARN,
+        }
+    }
+
+    fn stop_threshold(self) -> usize {
+        match self {
+            AgentRole::Main => MAIN_AGENT_LOOP_STOP,
+            AgentRole::Exploration => EXPLORATION_AGENT_LOOP_STOP,
+            AgentRole::Verification => VERIFICATION_AGENT_LOOP_STOP,
+        }
+    }
+}
+
+/// Deterministic failure reasons that should not be retried automatically.
+const DETERMINISTIC_FAILURE_REASONS: &[&str] = &[
+    "blocked",
+    "path_escape",
+    "secret",
+    "not_found",
+    "invalid_query",
+    "binary",
+    "too_large",
+    "invalid_range",
+];
+
+/// Detects consecutive identical tool calls and repeated deterministic failures.
+#[derive(Debug)]
+struct LoopDetector {
+    last_call_hash: u64,
+    consecutive_count: usize,
+    last_failure_reason: String,
+    failure_streak: usize,
+    warn_threshold: usize,
+    stop_threshold: usize,
+}
+
+impl LoopDetector {
+    fn new(role: AgentRole) -> Self {
+        Self {
+            last_call_hash: 0,
+            consecutive_count: 0,
+            last_failure_reason: String::new(),
+            failure_streak: 0,
+            warn_threshold: role.warn_threshold(),
+            stop_threshold: role.stop_threshold(),
+        }
+    }
+
+    fn canonicalize_args(args: &serde_json::Value) -> String {
+        let sorted = sort_json_keys(args);
+        serde_json::to_string(&sorted).unwrap_or_default()
+    }
+
+    fn record_call(&mut self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
+        let canonical = format!("{}:{}", tool_name, Self::canonicalize_args(args));
+        let mut hasher = DefaultHasher::new();
+        canonical.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        if hash == self.last_call_hash {
+            self.consecutive_count += 1;
+        } else {
+            self.last_call_hash = hash;
+            self.consecutive_count = 1;
+        }
+
+        if self.consecutive_count >= self.stop_threshold {
+            LoopStatus::Stop
+        } else if self.consecutive_count >= self.warn_threshold {
+            LoopStatus::Warning(self.consecutive_count)
+        } else {
+            LoopStatus::Ok
+        }
+    }
+
+    fn record_failure(&mut self, reason: &str) -> Option<LoopStatus> {
+        if !DETERMINISTIC_FAILURE_REASONS.contains(&reason) {
+            return None;
+        }
+
+        if reason == self.last_failure_reason {
+            self.failure_streak += 1;
+        } else {
+            self.last_failure_reason = reason.to_string();
+            self.failure_streak = 1;
+        }
+
+        if self.failure_streak >= self.stop_threshold {
+            Some(LoopStatus::Stop)
+        } else if self.failure_streak >= self.warn_threshold {
+            Some(LoopStatus::Warning(self.failure_streak))
+        } else {
+            Some(LoopStatus::Ok)
+        }
+    }
+
+    fn reset(&mut self) {
+        self.last_call_hash = 0;
+        self.consecutive_count = 0;
+        self.last_failure_reason.clear();
+        self.failure_streak = 0;
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum LoopStatus {
+    Ok,
+    Warning(usize),
+    Stop,
+}
+
+fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut sorted: Vec<_> = map.iter().collect();
+            sorted.sort_by_key(|(k, _)| k.clone());
+            let sorted_map: serde_json::Map<String, serde_json::Value> = sorted
+                .into_iter()
+                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
+                .collect();
+            serde_json::Value::Object(sorted_map)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(sort_json_keys).collect())
+        }
+        other => other.clone(),
+    }
+}
 
 use crate::corpus::tools::{
     create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
     CORPUS_SYSTEM_PROMPT,
 };
 use crate::workspace_tools::{
-    create_find_files_tool, create_list_directory_tool, create_read_file_tool,
-    create_search_code_tool, create_write_harness_file_tool, truncate_text_bytes,
-    HARNESS_CONTROL_AREA_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    create_context_search_tool, create_find_files_tool, create_list_directory_tool,
+    create_read_file_tool, create_search_code_tool, create_write_harness_file_tool,
+    truncate_text_bytes, HARNESS_CONTROL_AREA_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
 const AGENT_MAX_TURNS: usize = 20;
@@ -45,6 +197,8 @@ Investigate the active workspace and return a concise markdown report with exact
 ## Suggested Next Reads
 ## Tools Used
 
+Use `context_search` for broad workspace discovery to find relevant areas quickly.
+Verify important hits with live workspace tools (read_file, search_code) before making claims.
 Use corpus tools for fast structure when available, and live workspace tools for source-of-truth verification.
 Do not answer as the final user-facing assistant. Return findings only.
 "#;
@@ -59,6 +213,8 @@ pub enum LlmError {
     ModelUnavailable(String),
     #[error("unsupported provider: {0}")]
     UnsupportedProvider(String),
+    #[error("controlled stop: {0}")]
+    ControlledStop(String),
 }
 
 #[derive(Serialize, Clone)]
@@ -86,6 +242,10 @@ impl LlmError {
                 code: "UNSUPPORTED_PROVIDER".to_string(),
                 message: format!("Provider {} is not supported", provider),
             },
+            LlmError::ControlledStop(msg) => LlmErrorDto {
+                code: "CONTROLLED_STOP".to_string(),
+                message: msg.clone(),
+            },
         }
     }
 }
@@ -103,6 +263,15 @@ pub enum StreamEvent {
         id: String,
         name: String,
         result: String,
+    },
+    LoopWarning {
+        count: usize,
+        tool_name: String,
+    },
+    LoopStopped {
+        count: usize,
+        tool_name: String,
+        message: String,
     },
 }
 
@@ -305,6 +474,7 @@ impl Tool for DelegateExplorationTool {
                     LlmError::ApiKeyMissing => "api_key_missing".to_string(),
                     LlmError::ModelUnavailable(_) => "model_unavailable".to_string(),
                     LlmError::UnsupportedProvider(_) => "unsupported_provider".to_string(),
+                    LlmError::ControlledStop(_) => "controlled_stop".to_string(),
                 }),
             }),
         }
@@ -427,6 +597,9 @@ async fn run_exploration_agent(
         EXPLORATION_AGENT_PROMPT.trim()
     );
 
+    // Exploration agent uses tighter loop thresholds
+    let loop_detector = Arc::new(Mutex::new(LoopDetector::new(AgentRole::Exploration)));
+
     macro_rules! exploration_from_client {
         ($client:expr, $model:expr) => {{
             let mut builder = $client
@@ -443,6 +616,9 @@ async fn run_exploration_agent(
                     .tool(create_corpus_summary_tool(workspace.workspace_path.clone()))
                     .tool(create_corpus_query_tool(workspace.workspace_path.clone()))
                     .tool(create_corpus_neighbors_tool(
+                        workspace.workspace_path.clone(),
+                    ))
+                    .tool(create_context_search_tool(
                         workspace.workspace_path.clone(),
                     ));
             }
@@ -568,6 +744,9 @@ where
                         ))
                         .tool(create_corpus_neighbors_tool(
                             workspace_context.workspace_path.clone(),
+                        ))
+                        .tool(create_context_search_tool(
+                            workspace_context.workspace_path.clone(),
                         ));
                 }
 
@@ -593,6 +772,7 @@ where
 
             let mut tool_name_by_id: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
+            let mut loop_detector = LoopDetector::new(AgentRole::Main);
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -609,6 +789,32 @@ where
                                 internal_call_id,
                             },
                         ) => {
+                            // Check for identical tool call loops
+                            match loop_detector.record_call(
+                                &tool_call.function.name,
+                                &tool_call.function.arguments,
+                            ) {
+                                LoopStatus::Ok => {}
+                                LoopStatus::Warning(count) => {
+                                    on_event(StreamEvent::LoopWarning {
+                                        count,
+                                        tool_name: tool_call.function.name.clone(),
+                                    });
+                                }
+                                LoopStatus::Stop => {
+                                    let msg = format!(
+                                        "Agent stopped: repeated identical tool call '{}' detected {} times. This usually indicates the agent is stuck in a loop.",
+                                        tool_call.function.name, loop_detector.consecutive_count
+                                    );
+                                    on_event(StreamEvent::LoopStopped {
+                                        count: loop_detector.consecutive_count,
+                                        tool_name: tool_call.function.name.clone(),
+                                        message: msg.clone(),
+                                    });
+                                    return Err(LlmError::ControlledStop(msg));
+                                }
+                            }
+
                             tool_name_by_id
                                 .insert(internal_call_id.clone(), tool_call.function.name.clone());
                             on_event(StreamEvent::ToolCall {
@@ -636,6 +842,36 @@ where
                                 .get(&internal_call_id)
                                 .cloned()
                                 .unwrap_or_else(|| tool_result.id.clone());
+
+                            // Check for repeated deterministic failures
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&result_summary) {
+                                if let Some(reason) = parsed.get("reason").and_then(|r| r.as_str()) {
+                                    if let Some(status) = loop_detector.record_failure(reason) {
+                                        match status {
+                                            LoopStatus::Ok => {}
+                                            LoopStatus::Warning(count) => {
+                                                on_event(StreamEvent::LoopWarning {
+                                                    count,
+                                                    tool_name: tool_name.clone(),
+                                                });
+                                            }
+                                            LoopStatus::Stop => {
+                                                let msg = format!(
+                                                    "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
+                                                    reason, loop_detector.failure_streak
+                                                );
+                                                on_event(StreamEvent::LoopStopped {
+                                                    count: loop_detector.failure_streak,
+                                                    tool_name: tool_name.clone(),
+                                                    message: msg.clone(),
+                                                });
+                                                return Err(LlmError::ControlledStop(msg));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             on_event(StreamEvent::ToolResult {
                                 id: internal_call_id,
                                 name: tool_name,

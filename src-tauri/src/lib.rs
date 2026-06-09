@@ -2,11 +2,15 @@
 
 mod app_config;
 mod conversation;
+pub mod context_search;
 pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+pub mod session_store;
 pub mod skills;
+pub mod trace;
+pub mod verification;
 mod workspace_tools;
 
 #[cfg(not(test))]
@@ -33,8 +37,11 @@ mod model_fetch {
 use app_config::{AppConfigError, AppConfigState, Workspace};
 use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
+use session_store::{SessionDetail, SessionRecord, SessionStoreState};
+use trace::TraceState;
 use corpus::commands::{
-    build_corpus, get_corpus_neighbors, get_corpus_status, get_corpus_summary, query_corpus,
+    build_corpus, context_search, get_corpus_neighbors, get_corpus_status, get_corpus_summary,
+    query_corpus,
     run_corpus_build_inner,
 };
 use corpus::persistence::CorpusPersistence;
@@ -623,6 +630,8 @@ async fn complete_streaming(
     app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
     conversation_state: tauri::State<'_, ConversationState>,
+    session_store_state: tauri::State<'_, SessionStoreState>,
+    trace_state: tauri::State<'_, TraceState>,
     skill_cache: tauri::State<'_, SkillCache>,
     provider: String,
     prompt: String,
@@ -687,6 +696,17 @@ async fn complete_streaming(
         keychain::retrieve(&provider).map_err(|_| LlmError::ApiKeyMissing.to_dto())?
     };
 
+    // Validate workspace binding for session continuation
+    if let (Some(sid), Some(ref session_store)) = (&session_id, &session_store_state.store) {
+        let active_ws_id = match &app_config.store {
+            Some(store) => store.get_active_workspace().ok().flatten().map(|ws| ws.id),
+            None => None,
+        };
+        if let Err(e) = session_store.validate_workspace_binding(sid, active_ws_id.as_deref()) {
+            return Err(LlmError::ProviderError(e.to_string()).to_dto());
+        }
+    }
+
     let chat_history = match &session_id {
         Some(sid) => {
             let mut store = conversation_state.store.lock().unwrap();
@@ -721,6 +741,33 @@ async fn complete_streaming(
             (section, None, prompt.clone())
         };
 
+    // Inject verification concerns from previous turn if available
+    let effective_prompt = if let Some(ref sid) = session_id {
+        if let Some(ref session_store) = session_store_state.store {
+            if let Ok(notes) = session_store.list_unresolved_notes(sid) {
+                if !notes.is_empty() {
+                    let concerns_text: Vec<String> = notes
+                        .iter()
+                        .map(|n| format!("- [{}] {}", n.note_type, n.content))
+                        .collect();
+                    format!(
+                        "{}\n\n## Previous Verification Concerns\nThe following issues were flagged by the verification agent in a previous response. Please address these if applicable:\n{}",
+                        effective_prompt,
+                        concerns_text.join("\n")
+                    )
+                } else {
+                    effective_prompt
+                }
+            } else {
+                effective_prompt
+            }
+        } else {
+            effective_prompt
+        }
+    } else {
+        effective_prompt
+    };
+
     let skill_script_tool = {
         let scriptable: Vec<_> = all_skills
             .iter()
@@ -738,6 +785,12 @@ async fn complete_streaming(
     };
 
     let app_clone = app.clone();
+    let trace_sid = session_id.clone().unwrap_or_default();
+    let trace_role = "main".to_string();
+    let trace_provider = provider.clone();
+    let trace_model = model.clone();
+    let trace_ref = &trace_state;
+    let workspace_for_verify = workspace_context.clone();
     let result = llm::stream_completion(
         &provider,
         &effective_prompt,
@@ -748,7 +801,7 @@ async fn complete_streaming(
         matched_skills_section,
         invoked_skill_section,
         skill_script_tool,
-        move |event| match event {
+        move |event| match &event {
             StreamEvent::Text(token) => {
                 let _ = app_clone.emit("llm-token", token);
             }
@@ -757,15 +810,59 @@ async fn complete_streaming(
                 name,
                 arguments,
             } => {
+                trace_ref.write_event(&trace::TraceEvent::ToolCall {
+                    session_id: trace_sid.clone(),
+                    role: trace_role.clone(),
+                    tool_name: name.clone(),
+                    arguments_redacted: serde_json::to_string(arguments)
+                        .unwrap_or_default(),
+                    timestamp: trace::current_timestamp(),
+                });
                 let _ = app_clone.emit(
                     "llm-tool-call",
                     serde_json::json!({ "id": id, "name": name, "arguments": arguments }),
                 );
             }
             StreamEvent::ToolResult { id, name, result } => {
+                trace_ref.write_event(&trace::TraceEvent::ToolResult {
+                    session_id: trace_sid.clone(),
+                    role: trace_role.clone(),
+                    tool_name: name.clone(),
+                    result_summary: result.chars().take(200).collect(),
+                    timestamp: trace::current_timestamp(),
+                });
                 let _ = app_clone.emit(
                     "llm-tool-result",
                     serde_json::json!({ "id": id, "name": name, "result": result }),
+                );
+            }
+            StreamEvent::LoopWarning { count, tool_name } => {
+                trace_ref.write_event(&trace::TraceEvent::Warning {
+                    session_id: trace_sid.clone(),
+                    role: trace_role.clone(),
+                    message: format!("Loop warning: {} repeated {} times", tool_name, count),
+                    timestamp: trace::current_timestamp(),
+                });
+                let _ = app_clone.emit(
+                    "llm-loop-warning",
+                    serde_json::json!({ "count": count, "toolName": tool_name }),
+                );
+            }
+            StreamEvent::LoopStopped {
+                count,
+                tool_name,
+                message,
+            } => {
+                trace_ref.write_event(&trace::TraceEvent::Stopped {
+                    session_id: trace_sid.clone(),
+                    role: trace_role.clone(),
+                    reason: message.clone(),
+                    count: *count,
+                    timestamp: trace::current_timestamp(),
+                });
+                let _ = app_clone.emit(
+                    "llm-loop-stopped",
+                    serde_json::json!({ "count": count, "toolName": tool_name, "message": message }),
                 );
             }
         },
@@ -774,14 +871,151 @@ async fn complete_streaming(
 
     match result {
         Ok(stream_result) => {
+            trace_state.write_event(&trace::TraceEvent::Done {
+                session_id: session_id.clone().unwrap_or_default(),
+                role: "main".to_string(),
+                response_length: stream_result.full_response.len(),
+                timestamp: trace::current_timestamp(),
+            });
             if let (Some(sid), Some(history)) = (&session_id, stream_result.history) {
-                let mut store = conversation_state.store.lock().unwrap();
-                store.store_history(sid, history);
+                // Store Model History in in-memory conversation store for continuation
+                {
+                    let mut store = conversation_state.store.lock().unwrap();
+                    store.store_history(sid, history.clone());
+                }
+
+                // Persist Display Transcript and Model History to session store
+                if let Some(ref session_store) = session_store_state.store {
+                    let display_transcript =
+                        serde_json::to_string(&build_display_transcript(&history))
+                            .unwrap_or_else(|_| "[]".to_string());
+                    let model_history_json =
+                        serde_json::to_string(&history).ok();
+                    if let Err(e) = session_store.persist_turn(
+                        sid,
+                        &display_transcript,
+                        model_history_json.as_deref(),
+                    ) {
+                        tracing::warn!("Failed to persist session {}: {}", sid, e);
+                    }
+                    // Mark session as active (no longer draft)
+                    let _ = session_store.update_status(sid, "active");
+                }
             }
+
+            // Create session notes from verification result synchronously
+            let verification_result = {
+                let response_for_verify = stream_result.full_response.clone();
+                let is_high_risk = response_for_verify.contains("```")
+                    || response_for_verify.contains("write_file")
+                    || response_for_verify.contains("write_harness_file")
+                    || response_for_verify.len() > 2000;
+
+                if is_high_risk {
+                    if let Some(ref workspace_ctx) = workspace_for_verify {
+                        Some(verification::run_verification(
+                            &provider,
+                            &model,
+                            &api_key,
+                            workspace_ctx,
+                            &response_for_verify,
+                            &effective_prompt,
+                        )
+                        .await)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            // Store verification notes in session store
+            if let Some(result) = verification_result {
+                if let Some(ref session_store) = session_store_state.store {
+                    if let Some(ref sid) = session_id {
+                        match result.status {
+                            verification::VerificationStatus::Concerns => {
+                                for concern in &result.concerns {
+                                    let _ = session_store.create_note(
+                                        sid,
+                                        "verification_concern",
+                                        concern,
+                                        None,
+                                    );
+                                }
+                            }
+                            verification::VerificationStatus::Fail => {
+                                let _ = session_store.create_note(
+                                    sid,
+                                    "verification_fail",
+                                    &result.summary,
+                                    None,
+                                );
+                            }
+                            verification::VerificationStatus::Pass => {
+                                // Resolve all unresolved verification notes
+                                if let Ok(notes) = session_store.list_unresolved_notes(sid) {
+                                    for note in notes {
+                                        if note.note_type.starts_with("verification_") {
+                                            let _ = session_store.resolve_note(&note.id);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Emit verification event
+                let _ = app.emit(
+                    "llm-verification",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "status": result.status,
+                        "concerns": result.concerns,
+                        "summary": result.summary,
+                    }),
+                );
+            }
+
             let _ = app.emit("llm-done", stream_result.full_response);
             Ok(())
         }
         Err(e) => {
+            trace_state.write_event(&trace::TraceEvent::Error {
+                session_id: session_id.clone().unwrap_or_default(),
+                role: "main".to_string(),
+                error_code: e.to_dto().code,
+                error_message: e.to_dto().message,
+                timestamp: trace::current_timestamp(),
+            });
+            // On failure, append error to Display Transcript without corrupting Model History
+            if let Some(sid) = &session_id {
+                if let Some(ref session_store) = session_store_state.store {
+                    // Read existing display transcript and append error entry
+                    if let Ok(Some(detail)) = session_store.get_session(sid) {
+                        let mut transcript: Vec<serde_json::Value> =
+                            serde_json::from_str(&detail.display_transcript)
+                                .unwrap_or_default();
+                        let (message, is_controlled_stop) = match &e {
+                            llm::LlmError::ControlledStop(msg) => (msg.clone(), true),
+                            _ => (format!("Error: {}", e.to_dto().message), false),
+                        };
+                        transcript.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": message,
+                            "error": !is_controlled_stop,
+                            "controlled_stop": is_controlled_stop,
+                        }));
+                        if let Ok(updated) = serde_json::to_string(&transcript) {
+                            // Persist error/stop entry without updating Model History
+                            let _ = session_store.persist_turn(sid, &updated, detail.model_history.as_deref());
+                        }
+                    }
+                }
+            }
             let _ = app.emit("llm-error", e.to_dto());
             Err(e.to_dto())
         }
@@ -1177,6 +1411,269 @@ fn reload_skills(
     Ok(skills.iter().map(skills::SkillSummary::from).collect())
 }
 
+#[tauri::command]
+fn create_session(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    title: String,
+    provider: String,
+    model: String,
+) -> Result<SessionRecord, String> {
+    let workspace_id = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(|_| {
+            store
+                .get_active_workspace()
+                .ok()
+                .flatten()
+                .map(|ws| ws.id)
+        }),
+        None => None,
+    }
+    .flatten();
+
+    match &session_store.store {
+        Some(store) => store
+            .create_session(&title, &provider, &model, workspace_id.as_deref())
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn get_session(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+) -> Result<SessionDetail, String> {
+    match &session_store.store {
+        Some(store) => store
+            .get_session(&session_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Session not found: {}", session_id)),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn list_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+) -> Result<Vec<SessionRecord>, String> {
+    let workspace_id = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(|_| {
+            store
+                .get_active_workspace()
+                .ok()
+                .flatten()
+                .map(|ws| ws.id)
+        }),
+        None => None,
+    }
+    .flatten();
+
+    match &session_store.store {
+        Some(store) => {
+            // Clean up stale drafts on list
+            let _ = store.clean_stale_drafts();
+            store
+                .list_sessions_for_workspace(workspace_id.as_deref())
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn delete_session_cmd(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => store.delete_session(&session_id).map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn cleanup_stale_drafts(
+    session_store: tauri::State<'_, SessionStoreState>,
+) -> Result<usize, String> {
+    match &session_store.store {
+        Some(store) => store.clean_stale_drafts().map_err(|e| e.to_string()),
+        None => Ok(0),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ExportFormat {
+    Transcript,
+    Debug,
+    Internal,
+}
+
+#[tauri::command]
+fn export_session(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+    format: ExportFormat,
+) -> Result<String, String> {
+    match &session_store.store {
+        Some(store) => {
+            let detail = store
+                .get_session(&session_id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+            match format {
+                ExportFormat::Transcript => {
+                    // UI-safe: only Display Transcript, no Model History
+                    Ok(detail.display_transcript)
+                }
+                ExportFormat::Debug => {
+                    // Includes tool activity from Display Transcript
+                    Ok(detail.display_transcript)
+                }
+                ExportFormat::Internal => {
+                    // Full internal: Display Transcript + Model History
+                    let export = serde_json::json!({
+                        "session": {
+                            "id": detail.id,
+                            "title": detail.title,
+                            "provider": detail.provider,
+                            "model": detail.model,
+                            "status": detail.status,
+                            "workspace_id": detail.workspace_id,
+                            "created_at": detail.created_at,
+                            "updated_at": detail.updated_at,
+                        },
+                        "display_transcript": serde_json::from_str::<serde_json::Value>(&detail.display_transcript)
+                            .unwrap_or(serde_json::json!([])),
+                        "model_history": detail.model_history.as_ref()
+                            .and_then(|h| serde_json::from_str::<serde_json::Value>(h).ok()),
+                    });
+                    serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
+                }
+            }
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn get_workspace_session_count(
+    session_store: tauri::State<'_, SessionStoreState>,
+    workspace_id: String,
+) -> Result<i64, String> {
+    match &session_store.store {
+        Some(store) => store
+            .workspace_session_count(&workspace_id)
+            .map_err(|e| e.to_string()),
+        None => Ok(0),
+    }
+}
+
+#[tauri::command]
+fn create_session_note(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+    note_type: String,
+    content: String,
+    source_message_id: Option<String>,
+) -> Result<session_store::SessionNote, String> {
+    match &session_store.store {
+        Some(store) => store
+            .create_note(&session_id, &note_type, &content, source_message_id.as_deref())
+            .map_err(|e| e.to_string()),
+        None => Err("Session store not initialized".to_string()),
+    }
+}
+
+#[tauri::command]
+fn list_session_notes(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+) -> Result<Vec<session_store::SessionNote>, String> {
+    match &session_store.store {
+        Some(store) => store
+            .list_unresolved_notes(&session_id)
+            .map_err(|e| e.to_string()),
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn resolve_session_note(
+    session_store: tauri::State<'_, SessionStoreState>,
+    note_id: String,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => store.resolve_note(&note_id).map_err(|e| e.to_string()),
+        None => Err("Session store not initialized".to_string()),
+    }
+}
+
+fn build_display_transcript(
+    messages: &[rig::completion::message::Message],
+) -> Vec<serde_json::Value> {
+    use rig::completion::message::{AssistantContent, Message, UserContent};
+
+    messages
+        .iter()
+        .filter_map(|msg| match msg {
+            Message::User { content } => {
+                let text_parts: Vec<String> = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        UserContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if text_parts.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({
+                        "role": "user",
+                        "content": text_parts.join(""),
+                    }))
+                }
+            }
+            Message::Assistant { content, .. } => {
+                let text_parts: Vec<String> = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        AssistantContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if text_parts.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({
+                        "role": "assistant",
+                        "content": text_parts.join(""),
+                    }))
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cli = Cli::parse();
@@ -1225,11 +1722,27 @@ pub fn run() {
         },
     };
 
+    let session_store_state = match session_store::SessionStore::new() {
+        Ok(store) => SessionStoreState {
+            store: Some(store),
+            init_warning: None,
+        },
+        Err(e) => SessionStoreState {
+            store: None,
+            init_warning: Some(format!("Session store unavailable: {e}")),
+        },
+    };
+
+    let mut trace_state = TraceState::new();
+    trace_state.init();
+
     tauri::Builder::default()
         .manage(app_config_state)
         .manage(ConversationState {
             store: std::sync::Mutex::new(ConversationStore::new()),
         })
+        .manage(session_store_state)
+        .manage(trace_state)
         .manage(SkillCache::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1259,12 +1772,23 @@ pub fn run() {
             get_active_workspace,
             list_skills,
             reload_skills,
+            create_session,
+            get_session,
+            list_sessions,
+            delete_session_cmd,
+            cleanup_stale_drafts,
+            export_session,
+            get_workspace_session_count,
+            create_session_note,
+            list_session_notes,
+            resolve_session_note,
             // Corpus commands
             build_corpus,
             get_corpus_status,
             get_corpus_summary,
             query_corpus,
             get_corpus_neighbors,
+            context_search,
         ])
         .setup(|app| {
             spawn_startup_corpus_auto_build(app.handle().clone());
