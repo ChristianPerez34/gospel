@@ -102,7 +102,7 @@ impl CorpusPersistence {
                     corpus
                         .symbol_index
                         .entry(name.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(id.clone());
                 }
                 NodeType::Concept { .. } => {}

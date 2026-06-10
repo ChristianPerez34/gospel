@@ -28,6 +28,7 @@ const VERIFICATION_AGENT_LOOP_STOP: usize = 3;
 
 /// Agent roles for trace logging and guard behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum AgentRole {
     Main,
     Exploration,
@@ -136,6 +137,7 @@ impl LoopDetector {
         }
     }
 
+    #[allow(dead_code)]
     fn reset(&mut self) {
         self.last_call_hash = 0;
         self.consecutive_count = 0;
@@ -159,7 +161,7 @@ fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut sorted: Vec<_> = map.iter().collect();
-            sorted.sort_by_key(|(k, _)| k.clone());
+            sorted.sort_by_key(|(k, _)| k.as_str());
             let sorted_map: serde_json::Map<String, serde_json::Value> = sorted
                 .into_iter()
                 .map(|(k, v)| (k.clone(), sort_json_keys(v)))
@@ -215,6 +217,7 @@ pub enum LlmError {
     #[error("provider error: {0}")]
     ProviderError(String),
     #[error("model {0} is not available")]
+    #[allow(dead_code)]
     ModelUnavailable(String),
     #[error("unsupported provider: {0}")]
     UnsupportedProvider(String),
@@ -513,15 +516,15 @@ where
         }
     }
 
-    fn on_tool_result(
+    async fn on_tool_result(
         &self,
         _tool_name: &str,
         _tool_call_id: Option<String>,
         _internal_call_id: &str,
         _args: &str,
         _result: &str,
-    ) -> impl Future<Output = HookAction> + Send {
-        async { HookAction::cont() }
+    ) -> HookAction {
+        HookAction::cont()
     }
 }
 
@@ -603,7 +606,7 @@ async fn run_exploration_agent(
     );
 
     // Exploration agent uses tighter loop thresholds
-    let loop_detector = Arc::new(Mutex::new(LoopDetector::new(AgentRole::Exploration)));
+    let _loop_detector = Arc::new(Mutex::new(LoopDetector::new(AgentRole::Exploration)));
 
     macro_rules! exploration_from_client {
         ($client:expr, $model:expr) => {{

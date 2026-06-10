@@ -35,12 +35,12 @@ impl ConversationStore {
     }
 
     pub fn store_history(&mut self, session_id: &str, new_messages: Vec<Message>) {
-        if !self.conversations.contains_key(session_id) {
-            if self.conversations.len() >= MAX_CONVERSATIONS {
-                if let Some(evict_id) = self.access_order.first().cloned() {
-                    self.conversations.remove(&evict_id);
-                    self.access_order.remove(0);
-                }
+        if !self.conversations.contains_key(session_id)
+            && self.conversations.len() >= MAX_CONVERSATIONS
+        {
+            if let Some(evict_id) = self.access_order.first().cloned() {
+                self.conversations.remove(&evict_id);
+                self.access_order.remove(0);
             }
         }
 
@@ -112,7 +112,7 @@ fn trim_history_bytes(messages: &mut Vec<Message>) {
     }
 }
 
-fn trim_single_message_text_to_history_cap(messages: &mut Vec<Message>) {
+fn trim_single_message_text_to_history_cap(messages: &mut [Message]) {
     if messages.len() != 1 {
         return;
     }

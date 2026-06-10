@@ -278,7 +278,8 @@ impl CachedModelList {
 pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
     Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
-pub static PENDING_REQUESTS: Lazy<Arc<RwLock<HashMap<String, Arc<Notify>>>>> =
+type PendingMap = Arc<RwLock<HashMap<String, Arc<Notify>>>>;
+pub static PENDING_REQUESTS: Lazy<PendingMap> =
     Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
@@ -323,6 +324,7 @@ impl ModelRegistry {
         ]
     }
 
+    #[allow(dead_code)]
     pub fn get_available_models(has_key: impl Fn(&str) -> bool) -> Vec<ModelInfo> {
         Self::all_providers()
             .iter()
@@ -472,6 +474,7 @@ impl ModelRegistry {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn wait_for_fetch(cache_key: &str) -> Option<ModelInfoWithFreshness> {
         let notify = {
             let pending = PENDING_REQUESTS.read().await;
