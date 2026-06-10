@@ -120,7 +120,7 @@ impl AppConfigStore {
     }
 
     pub fn add_workspace(&self, path: &str) -> Result<Workspace, AppConfigError> {
-        let canonical = std::fs::canonicalize(path).map_err(|e| AppConfigError::Io(e))?;
+        let canonical = std::fs::canonicalize(path).map_err(AppConfigError::Io)?;
         let canonical_str = canonical.to_string_lossy().to_string();
 
         if !canonical.is_dir() {

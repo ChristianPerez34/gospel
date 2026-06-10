@@ -435,7 +435,7 @@ impl Tool for ReadFileTool {
         }
 
         let requested_end = match args.end_line {
-            Some(end_line) if end_line == 0 => {
+            Some(0) => {
                 return Ok(read_invalid_range("end_line must be 1 or greater."));
             }
             Some(end_line) if end_line < start_line => {

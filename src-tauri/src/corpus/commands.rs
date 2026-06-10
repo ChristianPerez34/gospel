@@ -41,12 +41,12 @@ fn build_context_search_index(
 
     let mut all_chunks = Vec::new();
 
-    for (_id, node) in &corpus.nodes {
+    for node in corpus.nodes.values() {
         match &node.node_type {
             NodeType::File {
                 path,
                 language,
-                line_count,
+                line_count: _,
             } => {
                 // Skip binary/dependencies/generated files
                 if should_skip_for_indexing(path) {

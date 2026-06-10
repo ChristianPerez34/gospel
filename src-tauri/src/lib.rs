@@ -1173,7 +1173,7 @@ async fn run_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf) {
 
 async fn ensure_workspace_corpus(
     app: &tauri::AppHandle,
-    workspace_path: &PathBuf,
+    workspace_path: &Path,
 ) -> Result<Option<usize>, String> {
     eprintln!(
         "[CORPUS-AUTO] ensure requested for {}",

@@ -494,6 +494,12 @@ pub struct SkillLoader {
     cache: RwLock<HashMap<PathBuf, Vec<Skill>>>,
 }
 
+impl Default for SkillLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillLoader {
     pub fn new() -> Self {
         Self {
@@ -646,7 +652,7 @@ fn detect_interpreter(script_path: &Path) -> Result<String, String> {
 
     let first_line = content.lines().next().unwrap_or("");
     if first_line.starts_with("#!") {
-        let shebang = first_line[2..].trim().to_string();
+        let shebang = first_line.strip_prefix("#!").unwrap_or("").trim().to_string();
         if !shebang.is_empty() {
             let tokens: Vec<&str> = shebang.split_whitespace().collect();
             let interpreter = if tokens[0].ends_with("/env") || tokens[0] == "env" {
@@ -1060,8 +1066,8 @@ mod tests {
         assert_eq!(skills.len(), 1);
         let s = &skills[0];
         assert_eq!(s.argument_hint.as_deref(), Some("[foo] [bar]"));
-        assert_eq!(s.user_invocable, false);
-        assert_eq!(s.disable_model_invocation, true);
+        assert!(!s.user_invocable);
+        assert!(s.disable_model_invocation);
         assert_eq!(s.allowed_tools, vec!["read_file".to_string(), "search_code".to_string()]);
         assert_eq!(s.timeout_seconds, Some(42));
         assert_eq!(s.license.as_deref(), Some("MIT"));

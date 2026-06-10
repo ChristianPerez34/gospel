@@ -223,8 +223,8 @@ impl Extractor {
                 if trimmed.starts_with("/**") {
                     break;
                 }
-                if trimmed.starts_with("*") {
-                    doc_lines.push(trimmed[1..].trim());
+                if let Some(stripped) = trimmed.strip_prefix('*') {
+                    doc_lines.push(stripped.trim());
                 }
             } else {
                 if !trimmed.is_empty() && !trimmed.starts_with("//") {
@@ -492,6 +492,7 @@ pub fn extract_directory(
     Ok(())
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn collect_files(
     root: &Path,
     current: &Path,
@@ -541,13 +542,11 @@ fn glob_match(pattern: &str, text: &str) -> bool {
         return true;
     }
 
-    if pattern.ends_with("*") {
-        let prefix = &pattern[..pattern.len() - 1];
+    if let Some(prefix) = pattern.strip_suffix('*') {
         return text.starts_with(prefix);
     }
 
-    if pattern.starts_with("*") {
-        let suffix = &pattern[1..];
+    if let Some(suffix) = pattern.strip_prefix('*') {
         return text.ends_with(suffix);
     }
 
@@ -560,6 +559,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    #[allow(dead_code)]
     fn create_temp_rust_project() -> (TempDir, std::path::PathBuf) {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -624,7 +624,7 @@ struct TestStruct {
         assert!(result.is_ok());
 
         // Should have file node and symbol nodes
-        assert!(corpus.nodes.len() >= 1);
+        assert!(!corpus.nodes.is_empty());
 
         // Check for symbols
         let symbols: Vec<_> = corpus

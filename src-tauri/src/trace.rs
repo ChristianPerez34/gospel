@@ -66,6 +66,12 @@ pub struct TraceLogger {
     current_file: Mutex<Option<String>>,
 }
 
+impl Default for TraceLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TraceLogger {
     pub fn new() -> Self {
         let trace_dir = app_data_dir().join("traces");
@@ -247,6 +253,12 @@ fn redact_sensitive(json_str: &mut String) {
 
 pub struct TraceState {
     pub logger: Option<TraceLogger>,
+}
+
+impl Default for TraceState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TraceState {
