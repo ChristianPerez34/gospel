@@ -101,7 +101,7 @@ fn append_unresolved_notes(prompt: String, unresolved_notes: &[SessionNote]) -> 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuccessfulTurnPersistence {
     pub display_transcript: String,
-    pub model_history: String,
+    pub model_history: Option<String>,
     pub history: Vec<Message>,
 }
 
@@ -117,7 +117,7 @@ pub fn successful_turn_persistence(
     let history = history?;
     let display_transcript = serde_json::to_string(&build_display_transcript(history))
         .unwrap_or_else(|_| "[]".to_string());
-    let model_history = serde_json::to_string(history).ok()?;
+    let model_history = serde_json::to_string(history).ok();
 
     Some(SuccessfulTurnPersistence {
         display_transcript,
@@ -635,7 +635,7 @@ mod tests {
                 { "role": "assistant", "content": "hi" }
             ])
         );
-        let restored: Vec<Message> = serde_json::from_str(&decision.model_history).unwrap();
+        let restored: Vec<Message> = serde_json::from_str(decision.model_history.as_ref().unwrap()).unwrap();
         assert_eq!(restored, history);
     }
 

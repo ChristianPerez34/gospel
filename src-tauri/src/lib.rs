@@ -863,7 +863,7 @@ async fn complete_streaming(
                     if let Err(e) = session_store.persist_turn(
                         sid,
                         &persistence.display_transcript,
-                        Some(&persistence.model_history),
+                        persistence.model_history.as_deref(),
                     ) {
                         tracing::warn!("Failed to persist session {}: {}", sid, e);
                     }
