@@ -8,6 +8,7 @@ pub mod keychain;
 mod llm;
 mod models;
 pub mod session_store;
+mod session_turn;
 pub mod skills;
 pub mod trace;
 pub mod verification;
@@ -43,7 +44,7 @@ use corpus::commands::{
 };
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
-use llm::{LlmError, LlmService, StreamEvent, WorkspaceToolContext};
+use llm::{LlmError, LlmService};
 use models::ModelInfo;
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
@@ -624,6 +625,128 @@ struct InvokedSkill {
     args: Option<String>,
 }
 
+impl From<&InvokedSkill> for session_turn::InvokedSkillRequest {
+    fn from(value: &InvokedSkill) -> Self {
+        Self {
+            name: value.name.clone(),
+            args: value.args.clone(),
+        }
+    }
+}
+
+fn active_workspace_selection(
+    app_config: &AppConfigState,
+) -> Option<session_turn::ActiveWorkspaceSelection> {
+    match &app_config.store {
+        Some(store) => store
+            .get_active_workspace()
+            .ok()
+            .flatten()
+            .map(|workspace| session_turn::ActiveWorkspaceSelection {
+                id: workspace.id,
+                path: PathBuf::from(workspace.path),
+            }),
+        None => None,
+    }
+}
+
+async fn resolve_streaming_active_workspace(
+    app: &tauri::AppHandle,
+    selection: Option<session_turn::ActiveWorkspaceSelection>,
+) -> session_turn::ResolvedActiveWorkspaceContext {
+    let probe = match selection {
+        Some(selection) => match validate_active_workspace_path(&selection.path) {
+            Ok(()) => match ensure_workspace_corpus(app, &selection.path).await {
+                Ok(_) => session_turn::ActiveWorkspaceProbe::CorpusAvailable { selection },
+                Err(reason) => {
+                    tracing::warn!(
+                        "[CORPUS-AUTO] continuing without corpus for {}: {}",
+                        selection.path.display(),
+                        reason
+                    );
+                    session_turn::ActiveWorkspaceProbe::CorpusUnavailable { selection, reason }
+                }
+            },
+            Err(reason) => {
+                tracing::warn!(
+                    "[CORPUS-AUTO] workspace tools unavailable for {}: {}",
+                    selection.path.display(),
+                    reason
+                );
+                session_turn::ActiveWorkspaceProbe::Invalid { selection, reason }
+            }
+        },
+        None => session_turn::ActiveWorkspaceProbe::NoWorkspace,
+    };
+
+    let resolution = session_turn::resolve_active_workspace_context(probe);
+    if resolution.corpus_failure_reason.is_some() {
+        emit_corpus_auto_build_complete(app, corpus_auto_build_failure_payload());
+    }
+    resolution
+}
+
+fn emit_session_turn_event(
+    app: &tauri::AppHandle,
+    trace_state: &TraceState,
+    session_id: &str,
+    role: &str,
+    event: &session_turn::SessionTurnEvent,
+) {
+    if let Some(trace_event) = session_turn::trace_event_for_session_turn_event(
+        event,
+        session_id,
+        role,
+        trace::current_timestamp(),
+    ) {
+        trace_state.write_event(&trace_event);
+    }
+
+    let ui_event = session_turn::ui_event_payload(event);
+    let _ = app.emit(ui_event.name, ui_event.payload);
+}
+
+fn spawn_verification_job(app: tauri::AppHandle, job: session_turn::VerificationJobRequest) {
+    tauri::async_runtime::spawn(async move {
+        let result = verification::run_verification(
+            &job.provider,
+            &job.model,
+            &job.api_key,
+            &job.workspace,
+            &job.response_to_verify,
+            &job.user_prompt,
+        )
+        .await;
+
+        if let Some(ref sid) = job.session_id {
+            let session_store_state = app.state::<SessionStoreState>();
+            if let Some(ref session_store) = session_store_state.store {
+                let unresolved_notes = session_store.list_unresolved_notes(sid).unwrap_or_default();
+                for action in session_turn::verification_note_actions(&result, &unresolved_notes) {
+                    match action {
+                        session_turn::VerificationNoteAction::Create { note_type, content } => {
+                            let _ = session_store.create_note(sid, &note_type, &content, None);
+                        }
+                        session_turn::VerificationNoteAction::Resolve { note_id } => {
+                            let _ = session_store.resolve_note(&note_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        let _ = app.emit(
+            "llm-verification",
+            serde_json::json!({
+                "sessionId": job.session_id,
+                "status": result.status,
+                "concerns": result.concerns,
+                "summary": result.summary,
+            }),
+        );
+    });
+}
+
 #[tauri::command]
 async fn complete_streaming(
     app: tauri::AppHandle,
@@ -638,14 +761,11 @@ async fn complete_streaming(
     session_id: Option<String>,
     invoked_skill: Option<InvokedSkill>,
 ) -> Result<(), llm::LlmErrorDto> {
-    let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(std::path::PathBuf::from),
-        None => None,
-    };
+    let active_workspace = active_workspace_selection(app_config.inner());
+    let workspace_resolution = resolve_streaming_active_workspace(&app, active_workspace).await;
+    let workspace_path = workspace_resolution.workspace_path.clone();
+    let workspace_context = workspace_resolution.tool_context.clone();
+
     eprintln!(
         "[CORPUS-AUTO] complete_streaming workspace path: {}",
         workspace_path
@@ -653,41 +773,6 @@ async fn complete_streaming(
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<none>".to_string())
     );
-
-    let workspace_context = if let Some(path) = workspace_path.clone() {
-        match validate_active_workspace_path(&path) {
-            Ok(()) => {
-                let corpus_available = match ensure_workspace_corpus(&app, &path).await {
-                    Ok(_) => true,
-                    Err(e) => {
-                        tracing::warn!(
-                            "[CORPUS-AUTO] continuing without corpus for {}: {}",
-                            path.display(),
-                            e
-                        );
-                        emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
-                        false
-                    }
-                };
-
-                Some(WorkspaceToolContext {
-                    workspace_path: path,
-                    corpus_available,
-                })
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "[CORPUS-AUTO] workspace tools unavailable for {}: {}",
-                    path.display(),
-                    e
-                );
-                emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     let api_key = if provider == "chatgpt" {
         String::new()
@@ -697,11 +782,9 @@ async fn complete_streaming(
 
     // Validate workspace binding for session continuation
     if let (Some(sid), Some(ref session_store)) = (&session_id, &session_store_state.store) {
-        let active_ws_id = match &app_config.store {
-            Some(store) => store.get_active_workspace().ok().flatten().map(|ws| ws.id),
-            None => None,
-        };
-        if let Err(e) = session_store.validate_workspace_binding(sid, active_ws_id.as_deref()) {
+        if let Err(e) = session_store
+            .validate_workspace_binding(sid, workspace_resolution.workspace_id.as_deref())
+        {
             return Err(LlmError::ProviderError(e.to_string()).to_dto());
         }
     }
@@ -715,158 +798,44 @@ async fn complete_streaming(
     };
 
     let all_skills = skill_cache.loader.load(workspace_path.as_deref());
-
-    let (matched_skills_section, invoked_skill_section, effective_prompt) =
-        if let Some(ref invoked) = invoked_skill {
-            match all_skills.iter().find(|s| s.name == invoked.name) {
-                Some(skill) => {
-                    let preamble = skills::format_invoked_skill_preamble(skill);
-                    let user_msg = invoked
-                        .args
-                        .as_deref()
-                        .map(|a| a.trim().to_string())
-                        .filter(|a| !a.is_empty())
-                        .unwrap_or_else(|| prompt.clone());
-                    (None, Some(preamble), user_msg)
-                }
-                None => {
-                    tracing::warn!(
-                        "Unknown skill '{}'; proceeding as normal turn",
-                        invoked.name
-                    );
-                    (None, None, prompt.clone())
-                }
-            }
+    let unresolved_notes =
+        if let (Some(sid), Some(ref session_store)) = (&session_id, &session_store_state.store) {
+            session_store.list_unresolved_notes(sid).unwrap_or_default()
         } else {
-            let matched = skills::match_skills(&prompt, &all_skills);
-            let section = skills::format_skills_preamble_section(&matched);
-            (section, None, prompt.clone())
+            Vec::new()
         };
-
-    // Inject verification concerns from previous turn if available
-    let effective_prompt = if let Some(ref sid) = session_id {
-        if let Some(ref session_store) = session_store_state.store {
-            if let Ok(notes) = session_store.list_unresolved_notes(sid) {
-                if !notes.is_empty() {
-                    let concerns_text: Vec<String> = notes
-                        .iter()
-                        .map(|n| format!("- [{}] {}", n.note_type, n.content))
-                        .collect();
-                    format!(
-                        "{}\n\n## Previous Verification Concerns\nThe following issues were flagged by the verification agent in a previous response. Please address these if applicable:\n{}",
-                        effective_prompt,
-                        concerns_text.join("\n")
-                    )
-                } else {
-                    effective_prompt
-                }
-            } else {
-                effective_prompt
-            }
-        } else {
-            effective_prompt
-        }
-    } else {
-        effective_prompt
-    };
-
-    let skill_script_tool = {
-        let scriptable: Vec<_> = all_skills
-            .iter()
-            .filter(|s| !s.scripts.is_empty())
-            .cloned()
-            .collect();
-        if scriptable.is_empty() {
-            None
-        } else {
-            Some(skills::RunSkillScriptTool {
-                available_skills: scriptable,
-                workspace_path: workspace_path.clone(),
-            })
-        }
-    };
+    let invoked_skill_request = invoked_skill
+        .as_ref()
+        .map(session_turn::InvokedSkillRequest::from);
+    let prompt_preparation = session_turn::prepare_prompt(
+        &prompt,
+        &all_skills,
+        invoked_skill_request.as_ref(),
+        &unresolved_notes,
+    );
+    if let Some(name) = prompt_preparation.unknown_invoked_skill.as_deref() {
+        tracing::warn!("Unknown skill '{}'; proceeding as normal turn", name);
+    }
+    let skill_script_tool = session_turn::skill_script_tool(&all_skills, workspace_path.clone());
 
     let app_clone = app.clone();
     let trace_sid = session_id.clone().unwrap_or_default();
     let trace_role = "main".to_string();
-    let trace_provider = provider.clone();
-    let trace_model = model.clone();
     let trace_ref = &trace_state;
     let workspace_for_verify = workspace_context.clone();
     let result = llm::stream_completion(
         &provider,
-        &effective_prompt,
+        &prompt_preparation.effective_prompt,
         &model,
         &api_key,
         workspace_context,
         chat_history,
-        matched_skills_section,
-        invoked_skill_section,
+        prompt_preparation.matched_skills_section.clone(),
+        prompt_preparation.invoked_skill_section.clone(),
         skill_script_tool,
-        move |event| match &event {
-            StreamEvent::Text(token) => {
-                let _ = app_clone.emit("llm-token", token);
-            }
-            StreamEvent::ToolCall {
-                id,
-                name,
-                arguments,
-            } => {
-                trace_ref.write_event(&trace::TraceEvent::ToolCall {
-                    session_id: trace_sid.clone(),
-                    role: trace_role.clone(),
-                    tool_name: name.clone(),
-                    arguments_redacted: serde_json::to_string(arguments)
-                        .unwrap_or_default(),
-                    timestamp: trace::current_timestamp(),
-                });
-                let _ = app_clone.emit(
-                    "llm-tool-call",
-                    serde_json::json!({ "id": id, "name": name, "arguments": arguments }),
-                );
-            }
-            StreamEvent::ToolResult { id, name, result } => {
-                trace_ref.write_event(&trace::TraceEvent::ToolResult {
-                    session_id: trace_sid.clone(),
-                    role: trace_role.clone(),
-                    tool_name: name.clone(),
-                    result_summary: result.chars().take(200).collect(),
-                    timestamp: trace::current_timestamp(),
-                });
-                let _ = app_clone.emit(
-                    "llm-tool-result",
-                    serde_json::json!({ "id": id, "name": name, "result": result }),
-                );
-            }
-            StreamEvent::LoopWarning { count, tool_name } => {
-                trace_ref.write_event(&trace::TraceEvent::Warning {
-                    session_id: trace_sid.clone(),
-                    role: trace_role.clone(),
-                    message: format!("Loop warning: {} repeated {} times", tool_name, count),
-                    timestamp: trace::current_timestamp(),
-                });
-                let _ = app_clone.emit(
-                    "llm-loop-warning",
-                    serde_json::json!({ "count": count, "toolName": tool_name }),
-                );
-            }
-            StreamEvent::LoopStopped {
-                count,
-                tool_name,
-                message,
-            } => {
-                trace_ref.write_event(&trace::TraceEvent::Stopped {
-                    session_id: trace_sid.clone(),
-                    role: trace_role.clone(),
-                    reason: message.clone(),
-                    count: *count,
-                    timestamp: trace::current_timestamp(),
-                });
-                let _ = app_clone.emit(
-                    "llm-loop-stopped",
-                    serde_json::json!({ "count": count, "toolName": tool_name, "message": message }),
-                );
-            }
+        move |event| {
+            let event = session_turn::SessionTurnEvent::from(event);
+            emit_session_turn_event(&app_clone, trace_ref, &trace_sid, &trace_role, &event);
         },
     )
     .await;
@@ -879,27 +848,26 @@ async fn complete_streaming(
                 response_length: stream_result.full_response.len(),
                 timestamp: trace::current_timestamp(),
             });
-            if let (Some(sid), Some(history)) = (&session_id, stream_result.history) {
-                // Store Model History in in-memory conversation store for continuation
+            if let (Some(sid), Some(persistence)) = (
+                &session_id,
+                session_turn::successful_turn_persistence(stream_result.history.as_deref()),
+            ) {
+                // Store Model History in in-memory conversation store for continuation.
                 {
                     let mut store = conversation_state.store.lock().unwrap();
-                    store.store_history(sid, history.clone());
+                    store.store_history(sid, persistence.history.clone());
                 }
 
-                // Persist Display Transcript and Model History to session store
+                // Persist Display Transcript and Model History to session store.
                 if let Some(ref session_store) = session_store_state.store {
-                    let display_transcript =
-                        serde_json::to_string(&build_display_transcript(&history))
-                            .unwrap_or_else(|_| "[]".to_string());
-                    let model_history_json = serde_json::to_string(&history).ok();
                     if let Err(e) = session_store.persist_turn(
                         sid,
-                        &display_transcript,
-                        model_history_json.as_deref(),
+                        &persistence.display_transcript,
+                        persistence.model_history.as_deref(),
                     ) {
                         tracing::warn!("Failed to persist session {}: {}", sid, e);
                     }
-                    // Mark session as active (no longer draft)
+                    // Mark session as active (no longer draft).
                     let _ = session_store.update_status(sid, "active");
                 }
             }
@@ -907,79 +875,16 @@ async fn complete_streaming(
             let response_for_verify = stream_result.full_response.clone();
             let _ = app.emit("llm-done", response_for_verify.clone());
 
-            let is_high_risk = response_for_verify.contains("```")
-                || response_for_verify.contains("write_file")
-                || response_for_verify.contains("write_harness_file")
-                || response_for_verify.len() > 2000;
-
-            if is_high_risk {
-                if let Some(workspace_ctx) = workspace_for_verify {
-                    let app_for_verify = app.clone();
-                    let provider_for_verify = provider.clone();
-                    let model_for_verify = model.clone();
-                    let api_key_for_verify = api_key.clone();
-                    let prompt_for_verify = effective_prompt.clone();
-                    let session_id_for_verify = session_id.clone();
-
-                    tauri::async_runtime::spawn(async move {
-                        let result = verification::run_verification(
-                            &provider_for_verify,
-                            &model_for_verify,
-                            &api_key_for_verify,
-                            &workspace_ctx,
-                            &response_for_verify,
-                            &prompt_for_verify,
-                        )
-                        .await;
-
-                        if let Some(ref sid) = session_id_for_verify {
-                            let session_store_state = app_for_verify.state::<SessionStoreState>();
-                            if let Some(ref session_store) = session_store_state.store {
-                                match &result.status {
-                                    verification::VerificationStatus::Concerns => {
-                                        for concern in &result.concerns {
-                                            let _ = session_store.create_note(
-                                                sid,
-                                                "verification_concern",
-                                                concern,
-                                                None,
-                                            );
-                                        }
-                                    }
-                                    verification::VerificationStatus::Fail => {
-                                        let _ = session_store.create_note(
-                                            sid,
-                                            "verification_fail",
-                                            &result.summary,
-                                            None,
-                                        );
-                                    }
-                                    verification::VerificationStatus::Pass => {
-                                        if let Ok(notes) = session_store.list_unresolved_notes(sid)
-                                        {
-                                            for note in notes {
-                                                if note.note_type.starts_with("verification_") {
-                                                    let _ = session_store.resolve_note(&note.id);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    verification::VerificationStatus::Unavailable => {}
-                                }
-                            }
-                        }
-
-                        let _ = app_for_verify.emit(
-                            "llm-verification",
-                            serde_json::json!({
-                                "sessionId": session_id_for_verify,
-                                "status": result.status,
-                                "concerns": result.concerns,
-                                "summary": result.summary,
-                            }),
-                        );
-                    });
-                }
+            if let Some(job) = session_turn::verification_job_request(
+                &provider,
+                &model,
+                &api_key,
+                workspace_for_verify.as_ref(),
+                &response_for_verify,
+                &prompt_preparation.effective_prompt,
+                session_id.as_deref(),
+            ) {
+                spawn_verification_job(app.clone(), job);
             }
 
             Ok(())
@@ -995,28 +900,17 @@ async fn complete_streaming(
             // On failure, append error to Display Transcript without corrupting Model History
             if let Some(sid) = &session_id {
                 if let Some(ref session_store) = session_store_state.store {
-                    // Read existing display transcript and append error entry
                     if let Ok(Some(detail)) = session_store.get_session(sid) {
-                        let mut transcript: Vec<serde_json::Value> =
-                            serde_json::from_str(&detail.display_transcript).unwrap_or_default();
-                        let (message, is_controlled_stop) = match &e {
-                            llm::LlmError::ControlledStop(msg) => (msg.clone(), true),
-                            _ => (format!("Error: {}", e.to_dto().message), false),
-                        };
-                        transcript.push(serde_json::json!({
-                            "role": "assistant",
-                            "content": message,
-                            "error": !is_controlled_stop,
-                            "controlled_stop": is_controlled_stop,
-                        }));
-                        if let Ok(updated) = serde_json::to_string(&transcript) {
-                            // Persist error/stop entry without updating Model History
-                            let _ = session_store.persist_turn(
-                                sid,
-                                &updated,
-                                detail.model_history.as_deref(),
-                            );
-                        }
+                        let persistence = session_turn::failure_turn_persistence(
+                            &detail.display_transcript,
+                            detail.model_history.as_deref(),
+                            &e,
+                        );
+                        let _ = session_store.persist_turn(
+                            sid,
+                            &persistence.display_transcript,
+                            persistence.model_history.as_deref(),
+                        );
                     }
                 }
             }
@@ -1710,53 +1604,6 @@ fn validate_note_access(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Session note not found: {}", note_id))?;
     validate_session_access(store, &session_id, app_config)
-}
-
-fn build_display_transcript(
-    messages: &[rig::completion::message::Message],
-) -> Vec<serde_json::Value> {
-    use rig::completion::message::{AssistantContent, Message, UserContent};
-
-    messages
-        .iter()
-        .filter_map(|msg| match msg {
-            Message::User { content } => {
-                let text_parts: Vec<String> = content
-                    .iter()
-                    .filter_map(|c| match c {
-                        UserContent::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if text_parts.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::json!({
-                        "role": "user",
-                        "content": text_parts.join(""),
-                    }))
-                }
-            }
-            Message::Assistant { content, .. } => {
-                let text_parts: Vec<String> = content
-                    .iter()
-                    .filter_map(|c| match c {
-                        AssistantContent::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if text_parts.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::json!({
-                        "role": "assistant",
-                        "content": text_parts.join(""),
-                    }))
-                }
-            }
-            _ => None,
-        })
-        .collect()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

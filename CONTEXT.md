@@ -8,6 +8,7 @@
 - **Live Workspace Tools**: Workspace-scoped chat tools that inspect the active Gospel workspace directly, including safe file reads, code search, and directory discovery. These are the source of truth for file contents.
 - **Exploration Agent**: A backend-only helper Agent that investigates broad multi-file or architectural questions inside the active workspace and returns a structured report to the main Agent.
 - **Turn**: One LLM inference cycle, which may include tool execution. A turn ends when the LLM produces a final text response (not a tool call).
+- **Session Turn**: The backend orchestration of one user-submitted prompt against an optional Session, from preparing Turn context through streaming, persistence, failure handling, and follow-up verification.
 - **Conversation**: A sequence of user/agent message pairs within a session. Conversations are identified by session ID and stored server-side.
 - **Tool**: A registered function the LLM can invoke during a turn. Tools execute and return results that feed back into the next turn.
 - **Skill**: A user-authored directive (a `SKILL.md` file with YAML frontmatter and a markdown body) that can be injected into the LLM preamble to steer behaviour. Skills may bundle executable scripts. Skills are discovered from `<workspace>/.agents/skills/` and the global user data directory.
@@ -27,6 +28,7 @@
 - **Workspace-Affine Session**: A Session bound to a specific workspace. Only appears in the session list when that workspace is active. Backend rejects attempts to continue a workspace-affine Session from a different active workspace.
 - **Unscoped Session**: A Session with no workspace binding. Appears only in unscoped mode (no active workspace). Useful for general-purpose chat that is not tied to a specific codebase.
 - **Draft Session**: A Session created on first message send but before a successful turn completion. Drafts with zero display messages are hidden by default and cleaned up when stale.
+- **Active Workspace Context**: The resolved active workspace path plus availability metadata needed to run workspace-aware harness behaviour.
 - **Trace Log**: A redacted, capped JSONL file recording agent activity (role, timing, tool calls, warnings, stops, errors) for observability. Stored in app-global storage, capped at 250 MB global with 30-day retention. Never exposed as agent-readable memory.
 - **Controlled Stop**: A clean agent termination triggered by run guards (e.g., identical tool call loops or repeated deterministic failures). Emits warning and stopped events, persists a plain-language stopped assistant message, and does not update Model History. Distinct from provider/runtime errors.
 - **Loop Detection**: The mechanism that identifies repeated identical tool calls by tool name plus canonicalized JSON arguments. Thresholds are role-specific: the default general agent warns at three consecutive identical calls and controlled-stops at five, while the Verification role warns at two and controlled-stops at three. Warn events surface the loop risk; controlled-stop events terminate the agent cleanly before Model History is updated.
