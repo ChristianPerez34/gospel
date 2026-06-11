@@ -7,6 +7,7 @@ pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+mod review;
 pub mod session_store;
 mod session_turn;
 pub mod skills;
@@ -616,6 +617,36 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
             Err(e) => Err(e.to_string()),
         }
     }
+}
+
+#[tauri::command]
+async fn gospel_review(
+    app_config: tauri::State<'_, AppConfigState>,
+    config: review::ReviewConfig,
+) -> Result<review::ReviewResult, String> {
+    let workspace = match &app_config.store {
+        Some(store) => store
+            .get_active_workspace()
+            .map_err(|e| format!("Failed to get active workspace: {}", e))?,
+        None => {
+            return Err(app_config
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "App config store is unavailable".to_string()))
+        }
+    }
+    .ok_or_else(|| "No active workspace selected".to_string())?;
+    let workspace_path = PathBuf::from(workspace.path);
+    validate_active_workspace_path(&workspace_path)?;
+
+    let api_key = if config.provider == "chatgpt" {
+        String::new()
+    } else {
+        keychain::retrieve(&config.provider)
+            .map_err(|_| format!("API key not configured for {}", config.provider))?
+    };
+
+    review::run_review(config, workspace_path, api_key).await
 }
 
 #[derive(serde::Deserialize)]
@@ -1693,6 +1724,7 @@ pub fn run() {
             clear_conversation_history,
             export_conversation,
             test_connection,
+            gospel_review,
             start_chatgpt_oauth,
             is_chatgpt_authenticated,
             logout_chatgpt,
