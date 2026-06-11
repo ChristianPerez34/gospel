@@ -1,4 +1,4 @@
-use super::{knowledge, ReviewAgentError, ReviewComment};
+use super::{knowledge, AgentConfig, ReviewAgentError, ReviewComment};
 use crate::llm::WorkspaceToolContext;
 use std::time::Duration;
 
@@ -49,15 +49,15 @@ pub async fn run_validator(
     workspace: &WorkspaceToolContext,
     prompt: &str,
 ) -> Result<String, ReviewAgentError> {
-    super::run_workspace_agent(
+    super::run_workspace_agent(AgentConfig {
         provider,
         model,
         api_key,
         workspace,
-        VALIDATOR_PREAMBLE,
+        preamble: VALIDATOR_PREAMBLE,
         prompt,
-        VALIDATOR_TIMEOUT,
-        VALIDATOR_MAX_TURNS,
-    )
+        timeout: VALIDATOR_TIMEOUT,
+        max_turns: VALIDATOR_MAX_TURNS,
+    })
     .await
 }

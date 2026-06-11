@@ -223,16 +223,16 @@ async fn get_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<PrDiff, St
     ensure_gh_available_and_authenticated(workspace_path).await?;
 
     let pr_arg = pr_number.to_string();
-    let diff = run_program(workspace_path, "gh", &["pr", "diff", &pr_arg])
-        .await
-        .map_err(|e| pr_fetch_error(pr_number, e))?;
-    let metadata = run_program(
-        workspace_path,
-        "gh",
-        &["pr", "view", &pr_arg, "--json", "title,body"],
-    )
-    .await
-    .map_err(|e| pr_fetch_error(pr_number, e))?;
+    let diff_args = ["pr", "diff", &pr_arg];
+    let meta_args = ["pr", "view", &pr_arg, "--json", "title,body"];
+    let diff_fut = run_program(workspace_path, "gh", &diff_args);
+    let meta_fut = run_program(workspace_path, "gh", &meta_args);
+
+    let (diff, metadata) = tokio::try_join!(
+        async { diff_fut.await.map_err(|e| pr_fetch_error(pr_number, e)) },
+        async { meta_fut.await.map_err(|e| pr_fetch_error(pr_number, e)) }
+    )?;
+
     let metadata: PrMetadata = serde_json::from_str(&metadata)
         .map_err(|e| format!("Failed to parse PR metadata for #{}: {}", pr_number, e))?;
 
@@ -919,18 +919,48 @@ async fn run_command_output(
     args: &[&str],
 ) -> Result<std::process::Output, CommandRunError> {
     let mut command = Command::new(program);
-    command.args(args).current_dir(workspace_path);
+    command
+        .args(args)
+        .current_dir(workspace_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     let command_label = command_label(program, args);
 
-    match timeout(COMMAND_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(error)) => Err(CommandRunError::Io {
-            program: program.to_string(),
-            error,
-        }),
-        Err(_) => Err(CommandRunError::Timeout {
-            command: command_label,
-        }),
+    let mut child = command.spawn().map_err(|error| CommandRunError::Io {
+        program: program.to_string(),
+        error,
+    })?;
+
+    tokio::select! {
+        result = child.wait() => {
+            let status = result.map_err(|error| CommandRunError::Io {
+                program: program.to_string(),
+                error,
+            })?;
+            let stdout = match child.stdout.take() {
+                Some(mut s) => {
+                    let mut buf = Vec::new();
+                    let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await;
+                    buf
+                }
+                None => Vec::new(),
+            };
+            let stderr = match child.stderr.take() {
+                Some(mut s) => {
+                    let mut buf = Vec::new();
+                    let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await;
+                    buf
+                }
+                None => Vec::new(),
+            };
+            Ok(std::process::Output { status, stdout, stderr })
+        }
+        _ = timeout(COMMAND_TIMEOUT, std::future::pending::<()>()) => {
+            let _ = child.kill().await;
+            Err(CommandRunError::Timeout {
+                command: command_label,
+            })
+        }
     }
 }
 
@@ -942,20 +972,24 @@ fn command_label(program: &str, args: &[&str]) -> String {
     }
 }
 
+pub(crate) struct AgentConfig<'a> {
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    pub workspace: &'a WorkspaceToolContext,
+    pub preamble: &'a str,
+    pub prompt: &'a str,
+    pub timeout: Duration,
+    pub max_turns: usize,
+}
+
 pub(crate) async fn run_workspace_agent(
-    provider: &str,
-    model: &str,
-    api_key: &str,
-    workspace: &WorkspaceToolContext,
-    preamble: &str,
-    prompt: &str,
-    timeout_duration: Duration,
-    max_turns: usize,
+    config: AgentConfig<'_>,
 ) -> Result<String, ReviewAgentError> {
-    if provider != "chatgpt" && api_key.trim().is_empty() {
+    if config.provider != "chatgpt" && config.api_key.trim().is_empty() {
         return Err(ReviewAgentError::Provider(format!(
             "API key not configured for {}",
-            provider
+            config.provider
         )));
     }
 
@@ -963,57 +997,57 @@ pub(crate) async fn run_workspace_agent(
         ($client:expr, $model:expr) => {{
             let agent = $client
                 .agent($model)
-                .preamble(preamble)
-                .default_max_turns(max_turns)
-                .tool(create_read_file_tool(workspace.workspace_path.clone()))
-                .tool(create_search_code_tool(workspace.workspace_path.clone()))
-                .tool(create_find_files_tool(workspace.workspace_path.clone()))
-                .tool(create_list_directory_tool(workspace.workspace_path.clone()))
+                .preamble(config.preamble)
+                .default_max_turns(config.max_turns)
+                .tool(create_read_file_tool(config.workspace.workspace_path.clone()))
+                .tool(create_search_code_tool(config.workspace.workspace_path.clone()))
+                .tool(create_find_files_tool(config.workspace.workspace_path.clone()))
+                .tool(create_list_directory_tool(config.workspace.workspace_path.clone()))
                 .build();
-            let future = agent.prompt(prompt).max_turns(max_turns);
-            timeout(timeout_duration, future)
+            let future = agent.prompt(config.prompt).max_turns(config.max_turns);
+            timeout(config.timeout, future)
                 .await
                 .map_err(|_| ReviewAgentError::Timeout)?
                 .map_err(|e| ReviewAgentError::Provider(e.to_string()))
         }};
     }
 
-    match provider {
+    match config.provider {
         "openai" => {
-            let client = openai::Client::new(api_key)
+            let client = openai::Client::new(config.api_key)
                 .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, model)
+            run_from_client!(client, config.model)
         }
         "chatgpt" => {
             let client = chatgpt::Client::builder()
                 .oauth()
                 .build()
                 .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, model)
+            run_from_client!(client, config.model)
         }
         "anthropic" => {
-            let client = anthropic::Client::new(api_key)
+            let client = anthropic::Client::new(config.api_key)
                 .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, model)
+            run_from_client!(client, config.model)
         }
         "gemini" => {
-            let client = gemini::Client::new(api_key)
+            let client = gemini::Client::new(config.api_key)
                 .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, model)
+            run_from_client!(client, config.model)
         }
         "groq" => {
-            let client = groq::Client::new(api_key)
+            let client = groq::Client::new(config.api_key)
                 .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, model)
+            run_from_client!(client, config.model)
         }
         "mistral" => {
-            let client = mistral::Client::new(api_key)
+            let client = mistral::Client::new(config.api_key)
                 .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, model)
+            run_from_client!(client, config.model)
         }
         _ => Err(ReviewAgentError::Provider(format!(
             "unsupported provider: {}",
-            provider
+            config.provider
         ))),
     }
 }
