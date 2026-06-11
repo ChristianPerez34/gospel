@@ -23,6 +23,8 @@ const MAX_DIFF_FILES_REVIEWED: usize = 20;
 const MAX_SCAN_INVOCATIONS: usize = 20;
 const MAX_LINES_PER_INVOCATION: usize = 500;
 const SCAN_FILE_BYTES_CAP: u64 = 256 * 1024;
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const UNPARSEABLE_REVIEW_JSON_WARNING: &str = "did not contain parseable review JSON";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewConfig {
@@ -127,6 +129,18 @@ pub(crate) enum ReviewAgentError {
     Timeout,
     #[error("{0}")]
     Provider(String),
+}
+
+#[derive(Debug, Error)]
+enum CommandRunError {
+    #[error("Timed out running {command}")]
+    Timeout { command: String },
+    #[error("Failed to run {program}: {error}")]
+    Io {
+        program: String,
+        #[source]
+        error: std::io::Error,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,23 +262,17 @@ async fn run_full_scan_review(
         });
     }
 
-    let max_files = MAX_FILES_PER_INVOCATION * MAX_SCAN_INVOCATIONS;
     let total_files = files.len();
-    let reviewed_files = if total_files > max_files {
-        warnings.push(partial_review_warning(max_files, total_files));
-        files.into_iter().take(max_files).collect()
-    } else {
-        files
-    };
 
-    let batches = chunk_scan_files(
-        reviewed_files,
-        MAX_FILES_PER_INVOCATION,
-        MAX_LINES_PER_INVOCATION,
-    );
+    let batches = chunk_scan_files(files, MAX_FILES_PER_INVOCATION, MAX_LINES_PER_INVOCATION);
+    let (batches, scan_was_capped) = cap_scan_batches(batches, MAX_SCAN_INVOCATIONS);
+    let files_scanned = batches.iter().map(Vec::len).sum();
+    if scan_was_capped {
+        warnings.push(partial_review_warning(files_scanned, total_files));
+    }
+
     let mut candidates = Vec::new();
     let mut failed_batches = 0usize;
-    let files_scanned = batches.iter().map(Vec::len).sum();
 
     for (index, batch) in batches.iter().enumerate() {
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
@@ -367,17 +375,35 @@ async fn run_diff_review(
     );
 
     let mut candidates = Vec::new();
-    for chunk in chunks {
-        let prompt = detector::build_diff_prompt(&review_context, &chunk);
-        let output = detector::run_detector(provider, model, api_key, workspace, &prompt)
-            .await
-            .map_err(|error| match error {
-                ReviewAgentError::Timeout => "Detector agent timed out".to_string(),
-                ReviewAgentError::Provider(error) => format!("Detector agent failed: {}", error),
-            })?;
-        let parsed = parse_agent_review_output(&output, "Detector");
-        warnings.extend(parsed.warnings);
-        candidates.extend(parsed.comments);
+    let mut failed_chunks = 0usize;
+    for (index, chunk) in chunks.iter().enumerate() {
+        let prompt = detector::build_diff_prompt(&review_context, chunk);
+        match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
+            Ok(output) => {
+                let parsed = parse_agent_review_output(&output, "Detector");
+                warnings.extend(parsed.warnings);
+                candidates.extend(parsed.comments);
+            }
+            Err(ReviewAgentError::Timeout) => {
+                failed_chunks += 1;
+                warnings.push(format!(
+                    "Detector agent timed out on diff chunk {}",
+                    index + 1
+                ));
+            }
+            Err(ReviewAgentError::Provider(error)) => {
+                failed_chunks += 1;
+                warnings.push(format!(
+                    "Detector agent failed on diff chunk {}: {}",
+                    index + 1,
+                    error
+                ));
+            }
+        }
+    }
+
+    if failed_chunks == chunks.len() {
+        return Err("All detector invocations failed".to_string());
     }
 
     let (comments, validated, validator_summary, validator_warnings) =
@@ -415,11 +441,10 @@ async fn validate_candidates(
     match validator::run_validator(provider, model, api_key, workspace, &prompt).await {
         Ok(output) => {
             let parsed = parse_agent_review_output(&output, "Validator");
-            if parsed.comments.is_empty() && !candidates.is_empty() {
+            if is_unparseable_agent_output(&parsed) {
                 let mut warnings = parsed.warnings;
                 warnings.push(
-                    "Validator output was unparseable or empty; returning detector candidates"
-                        .to_string(),
+                    "Validator output was unparseable; returning detector candidates".to_string(),
                 );
                 Ok((candidates.to_vec(), false, None, warnings))
             } else {
@@ -586,6 +611,17 @@ fn chunk_scan_files(
     chunks
 }
 
+fn cap_scan_batches(
+    mut batches: Vec<Vec<ScanFile>>,
+    max_batches: usize,
+) -> (Vec<Vec<ScanFile>>, bool) {
+    let was_capped = batches.len() > max_batches;
+    if was_capped {
+        batches.truncate(max_batches);
+    }
+    (batches, was_capped)
+}
+
 pub(crate) fn parse_agent_review_output(raw: &str, source: &str) -> AgentParseResult {
     for candidate in json_candidates(raw) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&candidate) {
@@ -599,10 +635,19 @@ pub(crate) fn parse_agent_review_output(raw: &str, source: &str) -> AgentParseRe
         comments: Vec::new(),
         summary: None,
         warnings: vec![format!(
-            "{} output did not contain parseable review JSON",
-            source
+            "{} output {}",
+            source, UNPARSEABLE_REVIEW_JSON_WARNING
         )],
     }
+}
+
+fn is_unparseable_agent_output(parsed: &AgentParseResult) -> bool {
+    parsed.comments.is_empty()
+        && parsed.summary.is_none()
+        && parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.contains(UNPARSEABLE_REVIEW_JSON_WARNING))
 }
 
 fn parse_agent_value(value: serde_json::Value) -> Option<AgentParseResult> {
@@ -624,11 +669,21 @@ fn parse_agent_value(value: serde_json::Value) -> Option<AgentParseResult> {
         warnings: Vec<String>,
     }
 
-    let envelope = serde_json::from_value::<Envelope>(value).ok()?;
+    let object = value.as_object()?;
+    if object.contains_key("comments") {
+        let envelope = serde_json::from_value::<Envelope>(value).ok()?;
+        return Some(AgentParseResult {
+            comments: envelope.comments,
+            summary: envelope.summary,
+            warnings: envelope.warnings,
+        });
+    }
+
+    let comment = serde_json::from_value::<ReviewComment>(value).ok()?;
     Some(AgentParseResult {
-        comments: envelope.comments,
-        summary: envelope.summary,
-        warnings: envelope.warnings,
+        comments: vec![comment],
+        summary: None,
+        warnings: Vec::new(),
     })
 }
 
@@ -792,12 +847,7 @@ fn should_skip_scan_file(path: &str) -> bool {
 }
 
 async fn ensure_gh_available_and_authenticated(workspace_path: &Path) -> Result<(), String> {
-    match Command::new("gh")
-        .arg("--version")
-        .current_dir(workspace_path)
-        .output()
-        .await
-    {
+    match run_command_output(workspace_path, "gh", &["--version"]).await {
         Ok(output) if output.status.success() => {}
         Ok(_) => {
             return Err(
@@ -805,21 +855,18 @@ async fn ensure_gh_available_and_authenticated(workspace_path: &Path) -> Result<
                     .to_string(),
             )
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => {
+        Err(CommandRunError::Io { error, .. }) if error.kind() == ErrorKind::NotFound => {
             return Err(
                 "PR review requires the GitHub CLI (gh). Install from https://cli.github.com/"
                     .to_string(),
             )
         }
-        Err(error) => return Err(format!("Failed to run gh: {}", error)),
+        Err(error) => return Err(error.to_string()),
     }
 
-    let auth = Command::new("gh")
-        .args(["auth", "status"])
-        .current_dir(workspace_path)
-        .output()
+    let auth = run_command_output(workspace_path, "gh", &["auth", "status"])
         .await
-        .map_err(|e| format!("Failed to run gh auth status: {}", e))?;
+        .map_err(|e| e.to_string())?;
     if auth.status.success() {
         Ok(())
     } else {
@@ -848,12 +895,9 @@ async fn run_program(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
-    let output = Command::new(program)
-        .args(args)
-        .current_dir(workspace_path)
-        .output()
+    let output = run_command_output(workspace_path, program, args)
         .await
-        .map_err(|e| format!("Failed to run {}: {}", program, e))?;
+        .map_err(|e| e.to_string())?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -866,6 +910,35 @@ async fn run_program(
         } else {
             detail
         })
+    }
+}
+
+async fn run_command_output(
+    workspace_path: &Path,
+    program: &str,
+    args: &[&str],
+) -> Result<std::process::Output, CommandRunError> {
+    let mut command = Command::new(program);
+    command.args(args).current_dir(workspace_path);
+    let command_label = command_label(program, args);
+
+    match timeout(COMMAND_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(CommandRunError::Io {
+            program: program.to_string(),
+            error,
+        }),
+        Err(_) => Err(CommandRunError::Timeout {
+            command: command_label,
+        }),
+    }
+}
+
+fn command_label(program: &str, args: &[&str]) -> String {
+    if args.is_empty() {
+        program.to_string()
+    } else {
+        format!("{} {}", program, args.join(" "))
     }
 }
 
@@ -1006,6 +1079,23 @@ Binary files a/icon.png and b/icon.png differ
     }
 
     #[test]
+    fn scan_cap_limits_batches_after_line_chunking() {
+        let files = (0..25)
+            .map(|index| ScanFile {
+                path: format!("large-{}.rs", index),
+                line_count: 600,
+            })
+            .collect();
+        let chunks = chunk_scan_files(files, 5, 500);
+
+        let (capped, was_capped) = cap_scan_batches(chunks, MAX_SCAN_INVOCATIONS);
+
+        assert!(was_capped);
+        assert_eq!(capped.len(), MAX_SCAN_INVOCATIONS);
+        assert_eq!(capped.iter().map(Vec::len).sum::<usize>(), 20);
+    }
+
+    #[test]
     fn parses_fenced_agent_json_envelope() {
         let raw = format!(
             "Here is the result:\n```json\n{{\"summary\":\"one\",\"comments\":[{}],\"warnings\":[\"partial\"]}}\n```",
@@ -1018,6 +1108,35 @@ Binary files a/icon.png and b/icon.png differ
         assert_eq!(parsed.comments[0].severity, Severity::High);
         assert_eq!(parsed.summary.as_deref(), Some("one"));
         assert_eq!(parsed.warnings, vec!["partial"]);
+    }
+
+    #[test]
+    fn valid_empty_agent_envelope_is_parseable() {
+        let parsed = parse_agent_review_output(
+            r#"{"summary":"Rejected all candidates","comments":[],"warnings":[]}"#,
+            "Validator",
+        );
+
+        assert!(parsed.comments.is_empty());
+        assert_eq!(parsed.summary.as_deref(), Some("Rejected all candidates"));
+        assert!(!is_unparseable_agent_output(&parsed));
+    }
+
+    #[test]
+    fn empty_object_is_not_parseable_agent_output() {
+        let parsed = parse_agent_review_output("{}", "Validator");
+
+        assert!(parsed.comments.is_empty());
+        assert!(is_unparseable_agent_output(&parsed));
+    }
+
+    #[test]
+    fn parses_single_review_comment_object() {
+        let parsed = parse_agent_review_output(&sample_comment().to_string(), "Detector");
+
+        assert_eq!(parsed.comments.len(), 1);
+        assert_eq!(parsed.comments[0].file, "src/main.rs");
+        assert_eq!(parsed.comments[0].severity, Severity::High);
     }
 
     #[test]
