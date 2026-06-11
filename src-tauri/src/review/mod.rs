@@ -922,45 +922,24 @@ async fn run_command_output(
     command
         .args(args)
         .current_dir(workspace_path)
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let command_label = command_label(program, args);
 
-    let mut child = command.spawn().map_err(|error| CommandRunError::Io {
+    let child = command.spawn().map_err(|error| CommandRunError::Io {
         program: program.to_string(),
         error,
     })?;
 
-    tokio::select! {
-        result = child.wait() => {
-            let status = result.map_err(|error| CommandRunError::Io {
-                program: program.to_string(),
-                error,
-            })?;
-            let stdout = match child.stdout.take() {
-                Some(mut s) => {
-                    let mut buf = Vec::new();
-                    let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await;
-                    buf
-                }
-                None => Vec::new(),
-            };
-            let stderr = match child.stderr.take() {
-                Some(mut s) => {
-                    let mut buf = Vec::new();
-                    let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await;
-                    buf
-                }
-                None => Vec::new(),
-            };
-            Ok(std::process::Output { status, stdout, stderr })
-        }
-        _ = timeout(COMMAND_TIMEOUT, std::future::pending::<()>()) => {
-            let _ = child.kill().await;
-            Err(CommandRunError::Timeout {
-                command: command_label,
-            })
-        }
+    match timeout(COMMAND_TIMEOUT, child.wait_with_output()).await {
+        Ok(result) => result.map_err(|error| CommandRunError::Io {
+            program: program.to_string(),
+            error,
+        }),
+        Err(_) => Err(CommandRunError::Timeout {
+            command: command_label,
+        }),
     }
 }
 
@@ -1180,5 +1159,25 @@ Binary files a/icon.png and b/icon.png differ
         assert!(should_skip_scan_file("package-lock.json"));
         assert!(!should_skip_scan_file("src/lib.rs"));
         assert!(!should_skip_scan_file("docs/agents/domain.md"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_output_drains_large_stdout_while_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = timeout(
+            Duration::from_secs(2),
+            run_command_output(dir.path(), "sh", &["-c", "yes x | head -c 131072"]),
+        )
+        .await;
+
+        let output = result
+            .expect("command should not deadlock on a full stdout pipe")
+            .expect("command should run successfully");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 131072);
+        assert!(output.stderr.is_empty());
     }
 }
