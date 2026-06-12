@@ -1,17 +1,308 @@
-use crate::llm::{LlmError, StreamEvent, WorkspaceToolContext};
+use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent, WorkspaceToolContext};
 use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
 use crate::trace;
 use crate::verification::{VerificationResult, VerificationStatus};
 use rig::completion::message::{AssistantContent, Message, UserContent};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::PathBuf;
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct InvokedSkillRequest {
     pub name: String,
+    #[serde(default)]
     pub args: Option<String>,
+}
+
+pub struct StreamingTurnRequest {
+    pub provider: String,
+    pub prompt: String,
+    pub model: String,
+    pub session_id: Option<String>,
+    pub invoked_skill: Option<InvokedSkillRequest>,
+}
+
+pub type SessionTurnFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub struct StreamingTurnDependencies<'a> {
+    pub workspace: &'a dyn SessionTurnWorkspace,
+    pub credentials: &'a dyn SessionTurnCredentials,
+    pub sessions: &'a dyn SessionTurnSessions,
+    pub conversation: &'a dyn SessionTurnConversation,
+    pub skills: &'a dyn SessionTurnSkills,
+    pub llm: &'a dyn SessionTurnLlm,
+    pub events: &'a dyn SessionTurnEvents,
+    pub verification: &'a dyn SessionTurnVerification,
+}
+
+pub trait SessionTurnWorkspace: Send + Sync {
+    fn active_workspace_selection(&self) -> Option<ActiveWorkspaceSelection>;
+
+    fn validate_workspace_path(&self, workspace_path: &Path) -> Result<(), String>;
+
+    fn ensure_workspace_corpus<'a>(
+        &'a self,
+        workspace_path: &'a Path,
+    ) -> SessionTurnFuture<'a, Result<Option<usize>, String>>;
+
+    fn emit_corpus_auto_build_failure(&self);
+}
+
+pub trait SessionTurnCredentials: Send + Sync {
+    fn api_key(&self, provider: &str) -> Result<String, LlmError>;
+}
+
+pub trait SessionTurnSessions: Send + Sync {
+    fn validate_workspace_binding(
+        &self,
+        session_id: &str,
+        active_workspace_id: Option<&str>,
+    ) -> Result<(), String>;
+
+    fn unresolved_notes(&self, session_id: &str) -> Vec<SessionNote>;
+
+    fn failure_snapshot(&self, session_id: &str) -> Option<SessionFailureSnapshot>;
+
+    fn persist_turn(
+        &self,
+        session_id: &str,
+        display_transcript: &str,
+        model_history: Option<&str>,
+    ) -> Result<(), String>;
+
+    fn update_status(&self, session_id: &str, status: &str) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFailureSnapshot {
+    pub display_transcript: String,
+    pub model_history: Option<String>,
+}
+
+pub trait SessionTurnConversation: Send + Sync {
+    fn chat_history(&self, session_id: Option<&str>) -> Vec<Message>;
+    fn store_history(&self, session_id: &str, history: Vec<Message>);
+}
+
+pub trait SessionTurnSkills: Send + Sync {
+    fn load_skills(&self, workspace_path: Option<&Path>) -> Vec<Skill>;
+}
+
+pub struct SessionTurnStreamRequest<'a> {
+    pub provider: &'a str,
+    pub prompt: &'a str,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    pub workspace: Option<WorkspaceToolContext>,
+    pub chat_history: Vec<Message>,
+    pub matched_skills_section: Option<String>,
+    pub invoked_skill_section: Option<String>,
+    pub skill_script_tool: Option<RunSkillScriptTool>,
+}
+
+pub trait SessionTurnLlm: Send + Sync {
+    fn stream_completion<'a>(
+        &'a self,
+        request: SessionTurnStreamRequest<'a>,
+        on_event: Box<dyn FnMut(SessionTurnEvent) + Send + 'a>,
+    ) -> SessionTurnFuture<'a, Result<StreamCompletionResult, LlmError>>;
+}
+
+pub trait SessionTurnEvents: Send + Sync {
+    fn emit_stream_event(&self, session_id: &str, role: &str, event: &SessionTurnEvent);
+    fn trace_done(&self, session_id: &str, role: &str, response_length: usize);
+    fn trace_error(&self, session_id: &str, role: &str, error: &LlmError);
+    fn emit_done(&self, response: &str);
+    fn emit_error(&self, error: &LlmError);
+}
+
+pub trait SessionTurnVerification: Send + Sync {
+    fn schedule_verification(&self, job: VerificationJobRequest);
+}
+
+pub async fn run_streaming_turn(
+    deps: StreamingTurnDependencies<'_>,
+    request: StreamingTurnRequest,
+) -> Result<(), llm::LlmErrorDto> {
+    let active_workspace = deps.workspace.active_workspace_selection();
+    let workspace_resolution =
+        resolve_streaming_active_workspace(deps.workspace, active_workspace).await;
+    let workspace_path = workspace_resolution.workspace_path.clone();
+    let workspace_context = workspace_resolution.tool_context.clone();
+
+    eprintln!(
+        "[CORPUS-AUTO] complete_streaming workspace path: {}",
+        workspace_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    );
+
+    let api_key = if request.provider == "chatgpt" {
+        String::new()
+    } else {
+        deps.credentials
+            .api_key(&request.provider)
+            .map_err(|error| error.to_dto())?
+    };
+
+    if let Some(sid) = &request.session_id {
+        if let Err(e) = deps
+            .sessions
+            .validate_workspace_binding(sid, workspace_resolution.workspace_id.as_deref())
+        {
+            return Err(LlmError::ProviderError(e.to_string()).to_dto());
+        }
+    }
+
+    let chat_history = deps
+        .conversation
+        .chat_history(request.session_id.as_deref());
+
+    let all_skills = deps.skills.load_skills(workspace_path.as_deref());
+    let unresolved_notes = if let Some(sid) = request.session_id.as_deref() {
+        deps.sessions.unresolved_notes(sid)
+    } else {
+        Vec::new()
+    };
+    let prompt_preparation = prepare_prompt(
+        &request.prompt,
+        &all_skills,
+        request.invoked_skill.as_ref(),
+        &unresolved_notes,
+    );
+    if let Some(name) = prompt_preparation.unknown_invoked_skill.as_deref() {
+        tracing::warn!("Unknown skill '{}'; proceeding as normal turn", name);
+    }
+    let skill_script_tool = skill_script_tool(&all_skills, workspace_path.clone());
+
+    let trace_sid = request.session_id.clone().unwrap_or_default();
+    let trace_role = "main".to_string();
+    let events = deps.events;
+    let workspace_for_verify = workspace_context.clone();
+    let result = deps
+        .llm
+        .stream_completion(
+            SessionTurnStreamRequest {
+                provider: &request.provider,
+                prompt: &prompt_preparation.effective_prompt,
+                model: &request.model,
+                api_key: &api_key,
+                workspace: workspace_context,
+                chat_history,
+                matched_skills_section: prompt_preparation.matched_skills_section.clone(),
+                invoked_skill_section: prompt_preparation.invoked_skill_section.clone(),
+                skill_script_tool,
+            },
+            Box::new(move |event| {
+                events.emit_stream_event(&trace_sid, &trace_role, &event);
+            }),
+        )
+        .await;
+
+    match result {
+        Ok(stream_result) => {
+            deps.events.trace_done(
+                &request.session_id.clone().unwrap_or_default(),
+                "main",
+                stream_result.full_response.len(),
+            );
+            if let (Some(sid), Some(persistence)) = (
+                &request.session_id,
+                successful_turn_persistence(stream_result.history.as_deref()),
+            ) {
+                deps.conversation
+                    .store_history(sid, persistence.history.clone());
+
+                if let Err(e) = deps.sessions.persist_turn(
+                    sid,
+                    &persistence.display_transcript,
+                    persistence.model_history.as_deref(),
+                ) {
+                    tracing::warn!("Failed to persist session {}: {}", sid, e);
+                }
+                let _ = deps.sessions.update_status(sid, "active");
+            }
+
+            let response_for_verify = stream_result.full_response.clone();
+            deps.events.emit_done(&response_for_verify);
+
+            if let Some(job) = verification_job_request(
+                &request.provider,
+                &request.model,
+                &api_key,
+                workspace_for_verify.as_ref(),
+                &response_for_verify,
+                &prompt_preparation.effective_prompt,
+                request.session_id.as_deref(),
+            ) {
+                deps.verification.schedule_verification(job);
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            deps.events
+                .trace_error(&request.session_id.clone().unwrap_or_default(), "main", &e);
+            if let Some(sid) = &request.session_id {
+                if let Some(snapshot) = deps.sessions.failure_snapshot(sid) {
+                    let persistence = failure_turn_persistence(
+                        &snapshot.display_transcript,
+                        snapshot.model_history.as_deref(),
+                        &e,
+                    );
+                    let _ = deps.sessions.persist_turn(
+                        sid,
+                        &persistence.display_transcript,
+                        persistence.model_history.as_deref(),
+                    );
+                }
+            }
+            deps.events.emit_error(&e);
+            Err(e.to_dto())
+        }
+    }
+}
+
+async fn resolve_streaming_active_workspace(
+    workspace: &dyn SessionTurnWorkspace,
+    selection: Option<ActiveWorkspaceSelection>,
+) -> ResolvedActiveWorkspaceContext {
+    let probe = match selection {
+        Some(selection) => match workspace.validate_workspace_path(&selection.path) {
+            Ok(()) => match workspace.ensure_workspace_corpus(&selection.path).await {
+                Ok(_) => ActiveWorkspaceProbe::CorpusAvailable { selection },
+                Err(reason) => {
+                    tracing::warn!(
+                        "[CORPUS-AUTO] continuing without corpus for {}: {}",
+                        selection.path.display(),
+                        reason
+                    );
+                    ActiveWorkspaceProbe::CorpusUnavailable { selection, reason }
+                }
+            },
+            Err(reason) => {
+                tracing::warn!(
+                    "[CORPUS-AUTO] workspace tools unavailable for {}: {}",
+                    selection.path.display(),
+                    reason
+                );
+                ActiveWorkspaceProbe::Invalid { selection, reason }
+            }
+        },
+        None => ActiveWorkspaceProbe::NoWorkspace,
+    };
+
+    let resolution = resolve_active_workspace_context(probe);
+    if resolution.corpus_failure_reason.is_some() {
+        workspace.emit_corpus_auto_build_failure();
+    }
+    resolution
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -480,6 +771,7 @@ mod tests {
     use super::*;
     use rig::completion::message::{AssistantContent, Text, UserContent};
     use rig::one_or_many::OneOrMany;
+    use std::{future, sync::Mutex};
 
     fn skill(name: &str, description: &str, body: &str) -> Skill {
         Skill {
@@ -523,6 +815,262 @@ mod tests {
             content: OneOrMany::one(AssistantContent::Text(Text {
                 text: text.to_string(),
             })),
+        }
+    }
+
+    #[derive(Debug)]
+    struct PersistedTurn {
+        session_id: String,
+        display_transcript: String,
+        model_history: Option<String>,
+    }
+
+    #[derive(Debug)]
+    struct CapturedStreamRequest {
+        provider: String,
+        prompt: String,
+        model: String,
+        api_key: String,
+        workspace: Option<WorkspaceToolContext>,
+        chat_history: Vec<Message>,
+        matched_skills_section: Option<String>,
+        invoked_skill_section: Option<String>,
+        skill_script_available: bool,
+    }
+
+    struct FakeSessionTurnAdapters {
+        active_workspace: Option<ActiveWorkspaceSelection>,
+        validate_result: Mutex<Result<(), String>>,
+        ensure_result: Mutex<Result<Option<usize>, String>>,
+        corpus_failure_emissions: Mutex<usize>,
+        api_key: String,
+        validated_bindings: Mutex<Vec<(String, Option<String>)>>,
+        unresolved_notes: Vec<SessionNote>,
+        failure_snapshot: Mutex<Option<SessionFailureSnapshot>>,
+        persisted_turns: Mutex<Vec<PersistedTurn>>,
+        statuses: Mutex<Vec<(String, String)>>,
+        chat_history: Vec<Message>,
+        stored_histories: Mutex<Vec<(String, Vec<Message>)>>,
+        skills: Vec<Skill>,
+        stream_result: Mutex<Option<Result<StreamCompletionResult, LlmError>>>,
+        stream_requests: Mutex<Vec<CapturedStreamRequest>>,
+        stream_events: Mutex<Vec<(String, String, SessionTurnEvent)>>,
+        done_traces: Mutex<Vec<(String, String, usize)>>,
+        error_traces: Mutex<Vec<(String, String, String)>>,
+        done_responses: Mutex<Vec<String>>,
+        emitted_errors: Mutex<Vec<String>>,
+        verifications: Mutex<Vec<VerificationJobRequest>>,
+    }
+
+    impl FakeSessionTurnAdapters {
+        fn with_stream_result(result: Result<StreamCompletionResult, LlmError>) -> Self {
+            Self {
+                active_workspace: Some(ActiveWorkspaceSelection {
+                    id: "workspace-1".to_string(),
+                    path: PathBuf::from("/tmp/workspace"),
+                }),
+                validate_result: Mutex::new(Ok(())),
+                ensure_result: Mutex::new(Ok(Some(3))),
+                corpus_failure_emissions: Mutex::new(0),
+                api_key: "api-key".to_string(),
+                validated_bindings: Mutex::new(Vec::new()),
+                unresolved_notes: Vec::new(),
+                failure_snapshot: Mutex::new(None),
+                persisted_turns: Mutex::new(Vec::new()),
+                statuses: Mutex::new(Vec::new()),
+                chat_history: Vec::new(),
+                stored_histories: Mutex::new(Vec::new()),
+                skills: Vec::new(),
+                stream_result: Mutex::new(Some(result)),
+                stream_requests: Mutex::new(Vec::new()),
+                stream_events: Mutex::new(Vec::new()),
+                done_traces: Mutex::new(Vec::new()),
+                error_traces: Mutex::new(Vec::new()),
+                done_responses: Mutex::new(Vec::new()),
+                emitted_errors: Mutex::new(Vec::new()),
+                verifications: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn deps(&self) -> StreamingTurnDependencies<'_> {
+            StreamingTurnDependencies {
+                workspace: self,
+                credentials: self,
+                sessions: self,
+                conversation: self,
+                skills: self,
+                llm: self,
+                events: self,
+                verification: self,
+            }
+        }
+    }
+
+    impl SessionTurnWorkspace for FakeSessionTurnAdapters {
+        fn active_workspace_selection(&self) -> Option<ActiveWorkspaceSelection> {
+            self.active_workspace.clone()
+        }
+
+        fn validate_workspace_path(&self, _workspace_path: &Path) -> Result<(), String> {
+            self.validate_result.lock().unwrap().clone()
+        }
+
+        fn ensure_workspace_corpus<'a>(
+            &'a self,
+            _workspace_path: &'a Path,
+        ) -> SessionTurnFuture<'a, Result<Option<usize>, String>> {
+            Box::pin(future::ready(self.ensure_result.lock().unwrap().clone()))
+        }
+
+        fn emit_corpus_auto_build_failure(&self) {
+            *self.corpus_failure_emissions.lock().unwrap() += 1;
+        }
+    }
+
+    impl SessionTurnCredentials for FakeSessionTurnAdapters {
+        fn api_key(&self, _provider: &str) -> Result<String, LlmError> {
+            Ok(self.api_key.clone())
+        }
+    }
+
+    impl SessionTurnSessions for FakeSessionTurnAdapters {
+        fn validate_workspace_binding(
+            &self,
+            session_id: &str,
+            active_workspace_id: Option<&str>,
+        ) -> Result<(), String> {
+            self.validated_bindings.lock().unwrap().push((
+                session_id.to_string(),
+                active_workspace_id.map(str::to_string),
+            ));
+            Ok(())
+        }
+
+        fn unresolved_notes(&self, _session_id: &str) -> Vec<SessionNote> {
+            self.unresolved_notes.clone()
+        }
+
+        fn failure_snapshot(&self, _session_id: &str) -> Option<SessionFailureSnapshot> {
+            self.failure_snapshot.lock().unwrap().clone()
+        }
+
+        fn persist_turn(
+            &self,
+            session_id: &str,
+            display_transcript: &str,
+            model_history: Option<&str>,
+        ) -> Result<(), String> {
+            self.persisted_turns.lock().unwrap().push(PersistedTurn {
+                session_id: session_id.to_string(),
+                display_transcript: display_transcript.to_string(),
+                model_history: model_history.map(str::to_string),
+            });
+            Ok(())
+        }
+
+        fn update_status(&self, session_id: &str, status: &str) -> Result<(), String> {
+            self.statuses
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), status.to_string()));
+            Ok(())
+        }
+    }
+
+    impl SessionTurnConversation for FakeSessionTurnAdapters {
+        fn chat_history(&self, _session_id: Option<&str>) -> Vec<Message> {
+            self.chat_history.clone()
+        }
+
+        fn store_history(&self, session_id: &str, history: Vec<Message>) {
+            self.stored_histories
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), history));
+        }
+    }
+
+    impl SessionTurnSkills for FakeSessionTurnAdapters {
+        fn load_skills(&self, _workspace_path: Option<&Path>) -> Vec<Skill> {
+            self.skills.clone()
+        }
+    }
+
+    impl SessionTurnLlm for FakeSessionTurnAdapters {
+        fn stream_completion<'a>(
+            &'a self,
+            request: SessionTurnStreamRequest<'a>,
+            mut on_event: Box<dyn FnMut(SessionTurnEvent) + Send + 'a>,
+        ) -> SessionTurnFuture<'a, Result<StreamCompletionResult, LlmError>> {
+            self.stream_requests
+                .lock()
+                .unwrap()
+                .push(CapturedStreamRequest {
+                    provider: request.provider.to_string(),
+                    prompt: request.prompt.to_string(),
+                    model: request.model.to_string(),
+                    api_key: request.api_key.to_string(),
+                    workspace: request.workspace.clone(),
+                    chat_history: request.chat_history.clone(),
+                    matched_skills_section: request.matched_skills_section.clone(),
+                    invoked_skill_section: request.invoked_skill_section.clone(),
+                    skill_script_available: request.skill_script_tool.is_some(),
+                });
+            on_event(SessionTurnEvent::TextToken("hello".to_string()));
+
+            let result = self
+                .stream_result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("stream result should be configured");
+            Box::pin(future::ready(result))
+        }
+    }
+
+    impl SessionTurnEvents for FakeSessionTurnAdapters {
+        fn emit_stream_event(&self, session_id: &str, role: &str, event: &SessionTurnEvent) {
+            self.stream_events.lock().unwrap().push((
+                session_id.to_string(),
+                role.to_string(),
+                event.clone(),
+            ));
+        }
+
+        fn trace_done(&self, session_id: &str, role: &str, response_length: usize) {
+            self.done_traces.lock().unwrap().push((
+                session_id.to_string(),
+                role.to_string(),
+                response_length,
+            ));
+        }
+
+        fn trace_error(&self, session_id: &str, role: &str, error: &LlmError) {
+            self.error_traces.lock().unwrap().push((
+                session_id.to_string(),
+                role.to_string(),
+                error.to_dto().code,
+            ));
+        }
+
+        fn emit_done(&self, response: &str) {
+            self.done_responses
+                .lock()
+                .unwrap()
+                .push(response.to_string());
+        }
+
+        fn emit_error(&self, error: &LlmError) {
+            self.emitted_errors
+                .lock()
+                .unwrap()
+                .push(error.to_dto().code);
+        }
+    }
+
+    impl SessionTurnVerification for FakeSessionTurnAdapters {
+        fn schedule_verification(&self, job: VerificationJobRequest) {
+            self.verifications.lock().unwrap().push(job);
         }
     }
 
@@ -635,7 +1183,8 @@ mod tests {
                 { "role": "assistant", "content": "hi" }
             ])
         );
-        let restored: Vec<Message> = serde_json::from_str(decision.model_history.as_ref().unwrap()).unwrap();
+        let restored: Vec<Message> =
+            serde_json::from_str(decision.model_history.as_ref().unwrap()).unwrap();
         assert_eq!(restored, history);
     }
 
@@ -883,5 +1432,168 @@ mod tests {
             unavailable.corpus_failure_reason.as_deref(),
             Some("build failed")
         );
+    }
+
+    #[tokio::test]
+    async fn streaming_turn_success_uses_adapters_for_persistence_events_and_verification() {
+        let history = vec![
+            user_message("write code"),
+            assistant_message("```rust\nfn main() {}\n```"),
+        ];
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+            full_response: "```rust\nfn main() {}\n```".to_string(),
+            history: Some(history.clone()),
+        }));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            StreamingTurnRequest {
+                provider: "openai".to_string(),
+                prompt: "write code".to_string(),
+                model: "gpt-test".to_string(),
+                session_id: Some("session-1".to_string()),
+                invoked_skill: None,
+            },
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        assert_eq!(
+            *adapters.validated_bindings.lock().unwrap(),
+            vec![("session-1".to_string(), Some("workspace-1".to_string()))]
+        );
+
+        let stream_requests = adapters.stream_requests.lock().unwrap();
+        assert_eq!(stream_requests.len(), 1);
+        let stream_request = &stream_requests[0];
+        assert_eq!(stream_request.provider, "openai");
+        assert_eq!(stream_request.prompt, "write code");
+        assert_eq!(stream_request.model, "gpt-test");
+        assert_eq!(stream_request.api_key, "api-key");
+        assert_eq!(stream_request.chat_history, Vec::<Message>::new());
+        assert!(stream_request.matched_skills_section.is_none());
+        assert!(stream_request.invoked_skill_section.is_none());
+        assert!(!stream_request.skill_script_available);
+        assert_eq!(
+            stream_request.workspace,
+            Some(WorkspaceToolContext {
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                corpus_available: true,
+            })
+        );
+        drop(stream_requests);
+
+        assert_eq!(
+            *adapters.stream_events.lock().unwrap(),
+            vec![(
+                "session-1".to_string(),
+                "main".to_string(),
+                SessionTurnEvent::TextToken("hello".to_string()),
+            )]
+        );
+        assert_eq!(
+            *adapters.done_traces.lock().unwrap(),
+            vec![(
+                "session-1".to_string(),
+                "main".to_string(),
+                "```rust\nfn main() {}\n```".len(),
+            )]
+        );
+        assert_eq!(
+            *adapters.done_responses.lock().unwrap(),
+            vec!["```rust\nfn main() {}\n```".to_string()]
+        );
+
+        let stored_histories = adapters.stored_histories.lock().unwrap();
+        assert_eq!(stored_histories.len(), 1);
+        assert_eq!(stored_histories[0].0, "session-1");
+        assert_eq!(stored_histories[0].1, history);
+        drop(stored_histories);
+
+        let persisted_turns = adapters.persisted_turns.lock().unwrap();
+        assert_eq!(persisted_turns.len(), 1);
+        assert_eq!(persisted_turns[0].session_id, "session-1");
+        let display: serde_json::Value =
+            serde_json::from_str(&persisted_turns[0].display_transcript).unwrap();
+        assert_eq!(
+            display,
+            json!([
+                { "role": "user", "content": "write code" },
+                { "role": "assistant", "content": "```rust\nfn main() {}\n```" },
+            ])
+        );
+        let model_history: Vec<Message> =
+            serde_json::from_str(persisted_turns[0].model_history.as_ref().unwrap()).unwrap();
+        assert_eq!(model_history, history);
+        drop(persisted_turns);
+
+        assert_eq!(
+            *adapters.statuses.lock().unwrap(),
+            vec![("session-1".to_string(), "active".to_string())]
+        );
+
+        let verifications = adapters.verifications.lock().unwrap();
+        assert_eq!(verifications.len(), 1);
+        assert_eq!(verifications[0].provider, "openai");
+        assert_eq!(verifications[0].model, "gpt-test");
+        assert_eq!(verifications[0].api_key, "api-key");
+        assert_eq!(verifications[0].session_id.as_deref(), Some("session-1"));
+        assert!(verifications[0].workspace.corpus_available);
+    }
+
+    #[tokio::test]
+    async fn streaming_turn_failure_persists_controlled_stop_without_replacing_model_history() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ControlledStop(
+            "Agent stopped".to_string(),
+        )));
+        *adapters.failure_snapshot.lock().unwrap() = Some(SessionFailureSnapshot {
+            display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
+            model_history: Some(r#"[{"provider":"history"}]"#.to_string()),
+        });
+
+        let err = run_streaming_turn(
+            adapters.deps(),
+            StreamingTurnRequest {
+                provider: "openai".to_string(),
+                prompt: "hi".to_string(),
+                model: "gpt-test".to_string(),
+                session_id: Some("session-1".to_string()),
+                invoked_skill: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.code, "CONTROLLED_STOP");
+        assert_eq!(
+            *adapters.error_traces.lock().unwrap(),
+            vec![(
+                "session-1".to_string(),
+                "main".to_string(),
+                "CONTROLLED_STOP".to_string(),
+            )]
+        );
+        assert_eq!(
+            *adapters.emitted_errors.lock().unwrap(),
+            vec!["CONTROLLED_STOP".to_string()]
+        );
+        assert!(adapters.done_responses.lock().unwrap().is_empty());
+        assert!(adapters.verifications.lock().unwrap().is_empty());
+
+        let persisted_turns = adapters.persisted_turns.lock().unwrap();
+        assert_eq!(persisted_turns.len(), 1);
+        assert_eq!(persisted_turns[0].session_id, "session-1");
+        assert_eq!(
+            persisted_turns[0].model_history.as_deref(),
+            Some(r#"[{"provider":"history"}]"#)
+        );
+        let display: serde_json::Value =
+            serde_json::from_str(&persisted_turns[0].display_transcript).unwrap();
+        assert_eq!(display[0], json!({ "role": "user", "content": "hi" }));
+        assert_eq!(display[1]["content"], "Agent stopped");
+        assert_eq!(display[1]["error"], false);
+        assert_eq!(display[1]["controlled_stop"], true);
     }
 }
