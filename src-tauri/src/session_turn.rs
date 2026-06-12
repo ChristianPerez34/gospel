@@ -143,13 +143,10 @@ pub async fn run_streaming_turn(
             .unwrap_or_else(|| "<none>".to_string())
     );
 
-    let api_key = if request.provider == "chatgpt" {
-        String::new()
-    } else {
-        deps.credentials
-            .api_key(&request.provider)
-            .map_err(|error| error.to_dto())?
-    };
+    let api_key = deps
+        .credentials
+        .api_key(&request.provider)
+        .map_err(|error| error.to_dto())?;
 
     if let Some(sid) = &request.session_id {
         if let Err(e) = deps
@@ -182,7 +179,7 @@ pub async fn run_streaming_turn(
     let skill_script_tool = skill_script_tool(&all_skills, workspace_path.clone());
 
     let trace_sid = request.session_id.clone().unwrap_or_default();
-    let trace_role = "main".to_string();
+    let trace_role = "main";
     let events = deps.events;
     let workspace_for_verify = workspace_context.clone();
     let result = deps
@@ -208,7 +205,7 @@ pub async fn run_streaming_turn(
     match result {
         Ok(stream_result) => {
             deps.events.trace_done(
-                &request.session_id.clone().unwrap_or_default(),
+                request.session_id.as_deref().unwrap_or(""),
                 "main",
                 stream_result.full_response.len(),
             );
@@ -248,7 +245,7 @@ pub async fn run_streaming_turn(
         }
         Err(e) => {
             deps.events
-                .trace_error(&request.session_id.clone().unwrap_or_default(), "main", &e);
+                .trace_error(request.session_id.as_deref().unwrap_or(""), "main", &e);
             if let Some(sid) = &request.session_id {
                 if let Some(snapshot) = deps.sessions.failure_snapshot(sid) {
                     let persistence = failure_turn_persistence(
