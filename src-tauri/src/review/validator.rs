@@ -12,7 +12,7 @@ Validate detector candidates against CWE knowledge and the workspace source. Kee
 
 CRITICAL: Enforce surgical fixes. Favor minimal, precise changes over large refactors. If a detector's "suggestion" is unnecessarily complex or adds excessive bloat compared to the severity of the issue, you MUST either rewrite the suggestion to be more surgical or reject the candidate if it cannot be fixed simply.
 
-Ensure every validated comment retains its "rationale" and "verification_plan".
+Ensure every validated comment retains its "rationale" and "verification_plan" — both are required non-empty strings and must not be null or omitted.
 
 Return only JSON shaped like this example:
 {

@@ -53,6 +53,13 @@ impl AntiPatternStore {
     }
 }
 
+/// Computes a deterministic hash from `(file, line_start, line_end, title)`.
+///
+/// **Limitation:** Because the hash anchors on line numbers, any edit that adds or
+/// removes lines above a previously-rejected finding will shift its line numbers,
+/// causing the stored hash to no longer match. The finding will then resurface on
+/// the next review. A future improvement could incorporate surrounding code context
+/// into the hash to make rejections resilient to line shifts.
 fn rejection_hash(file: &str, line_start: usize, line_end: usize, title: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"gospel-review-rejection-v1");

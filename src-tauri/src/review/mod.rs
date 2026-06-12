@@ -246,6 +246,28 @@ async fn get_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<PrDiff, St
     })
 }
 
+fn filter_rejected_comments(
+    comments: Vec<ReviewComment>,
+    store: &anti_pattern::AntiPatternStore,
+) -> Vec<ReviewComment> {
+    comments
+        .into_iter()
+        .filter(|comment| {
+            if store.is_rejected(&comment.file, comment.line_start, comment.line_end, &comment.title)
+            {
+                tracing::debug!(
+                    "Filtering out previously rejected finding: {} in {}",
+                    comment.title,
+                    comment.file
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 async fn run_full_scan_review(
     provider: &str,
     model: &str,
@@ -285,24 +307,7 @@ async fn run_full_scan_review(
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-
-                // Filter out previously rejected findings
-                for comment in parsed.comments {
-                    if anti_pattern_store.is_rejected(
-                        &comment.file,
-                        comment.line_start,
-                        comment.line_end,
-                        &comment.title,
-                    ) {
-                        tracing::debug!(
-                            "Filtering out previously rejected finding: {} in {}",
-                            comment.title,
-                            comment.file
-                        );
-                    } else {
-                        candidates.push(comment);
-                    }
-                }
+                candidates.extend(filter_rejected_comments(parsed.comments, &anti_pattern_store));
             }
             Err(ReviewAgentError::Timeout) => {
                 failed_batches += 1;
@@ -407,24 +412,7 @@ async fn run_diff_review(
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-
-                // Filter out previously rejected findings
-                for comment in parsed.comments {
-                    if anti_pattern_store.is_rejected(
-                        &comment.file,
-                        comment.line_start,
-                        comment.line_end,
-                        &comment.title,
-                    ) {
-                        tracing::debug!(
-                            "Filtering out previously rejected finding: {} in {}",
-                            comment.title,
-                            comment.file
-                        );
-                    } else {
-                        candidates.push(comment);
-                    }
-                }
+                candidates.extend(filter_rejected_comments(parsed.comments, &anti_pattern_store));
             }
             Err(ReviewAgentError::Timeout) => {
                 failed_chunks += 1;
