@@ -1778,8 +1778,13 @@ async fn remember_rejected_review_comment(
 ) -> Result<(), String> {
     let _guard = REJECTION_STORE_LOCK.lock().await;
     validate_active_workspace_path(workspace_path)?;
-    let mut store = review::anti_pattern::AntiPatternStore::load(workspace_path);
-    store.add_rejection(&comment.file, &comment.title, &comment.evidence);
+    let mut store = review::anti_pattern::AntiPatternStore::load(workspace_path)?;
+    store.add_rejection(
+        &comment.file,
+        comment.line_start,
+        comment.line_end,
+        &comment.title,
+    );
     store.save(workspace_path)
 }
 
@@ -1833,8 +1838,13 @@ mod review_rejection_tests {
             .await
             .unwrap();
 
-        let store = review::anti_pattern::AntiPatternStore::load(dir.path());
-        assert!(store.is_rejected(&first.file, &first.title, &first.evidence));
-        assert!(store.is_rejected(&second.file, &second.title, &second.evidence));
+        let store = review::anti_pattern::AntiPatternStore::load(dir.path()).unwrap();
+        assert!(store.is_rejected(&first.file, first.line_start, first.line_end, &first.title));
+        assert!(store.is_rejected(
+            &second.file,
+            second.line_start,
+            second.line_end,
+            &second.title
+        ));
     }
 }

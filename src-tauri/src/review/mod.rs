@@ -277,7 +277,7 @@ async fn run_full_scan_review(
     let mut candidates = Vec::new();
     let mut failed_batches = 0usize;
 
-    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path);
+    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path)?;
 
     for (index, batch) in batches.iter().enumerate() {
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
@@ -285,11 +285,20 @@ async fn run_full_scan_review(
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-                
+
                 // Filter out previously rejected findings
                 for comment in parsed.comments {
-                    if anti_pattern_store.is_rejected(&comment.file, &comment.title, &comment.evidence) {
-                        tracing::debug!("Filtering out previously rejected finding: {} in {}", comment.title, comment.file);
+                    if anti_pattern_store.is_rejected(
+                        &comment.file,
+                        comment.line_start,
+                        comment.line_end,
+                        &comment.title,
+                    ) {
+                        tracing::debug!(
+                            "Filtering out previously rejected finding: {} in {}",
+                            comment.title,
+                            comment.file
+                        );
                     } else {
                         candidates.push(comment);
                     }
@@ -390,7 +399,7 @@ async fn run_diff_review(
     let mut candidates = Vec::new();
     let mut failed_chunks = 0usize;
 
-    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path);
+    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path)?;
 
     for (index, chunk) in chunks.iter().enumerate() {
         let prompt = detector::build_diff_prompt(&review_context, chunk);
@@ -398,11 +407,20 @@ async fn run_diff_review(
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-                
+
                 // Filter out previously rejected findings
                 for comment in parsed.comments {
-                    if anti_pattern_store.is_rejected(&comment.file, &comment.title, &comment.evidence) {
-                        tracing::debug!("Filtering out previously rejected finding: {} in {}", comment.title, comment.file);
+                    if anti_pattern_store.is_rejected(
+                        &comment.file,
+                        comment.line_start,
+                        comment.line_end,
+                        &comment.title,
+                    ) {
+                        tracing::debug!(
+                            "Filtering out previously rejected finding: {} in {}",
+                            comment.title,
+                            comment.file
+                        );
                     } else {
                         candidates.push(comment);
                     }
