@@ -63,6 +63,8 @@ use tauri_plugin_opener::OpenerExt;
 use trace::TraceState;
 
 static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+static REJECTION_STORE_LOCK: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
 const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
 
 pub struct SkillCache {
@@ -1767,7 +1769,72 @@ async fn gospel_reject_review_comment(
     .ok_or_else(|| "No active workspace selected".to_string())?;
 
     let workspace_path = PathBuf::from(workspace.path);
-    let mut store = review::anti_pattern::AntiPatternStore::load(&workspace_path);
+    remember_rejected_review_comment(&workspace_path, &comment).await
+}
+
+async fn remember_rejected_review_comment(
+    workspace_path: &Path,
+    comment: &review::ReviewComment,
+) -> Result<(), String> {
+    let _guard = REJECTION_STORE_LOCK.lock().await;
+    validate_active_workspace_path(workspace_path)?;
+    let mut store = review::anti_pattern::AntiPatternStore::load(workspace_path);
     store.add_rejection(&comment.file, &comment.title, &comment.evidence);
-    store.save(&workspace_path)
+    store.save(workspace_path)
+}
+
+#[cfg(test)]
+mod review_rejection_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn review_comment(title: &str, evidence: &str) -> review::ReviewComment {
+        review::ReviewComment {
+            file: "src/main.rs".to_string(),
+            line_start: 10,
+            line_end: 12,
+            severity: review::Severity::High,
+            category: "injection".to_string(),
+            cwe_id: Some("CWE-78".to_string()),
+            cwe_name: Some("OS Command Injection".to_string()),
+            title: title.to_string(),
+            description: "User input reaches a shell command.".to_string(),
+            rationale: Some("Rejecting this finding should persist.".to_string()),
+            evidence: evidence.to_string(),
+            suggestion: Some("Avoid shell execution.".to_string()),
+            verification_plan: Some("Run the review again and verify it is filtered.".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_review_comment_requires_existing_workspace() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing-workspace");
+        let comment = review_comment("Unsanitized command", "Command::new(\"sh\")");
+
+        let error = remember_rejected_review_comment(&missing, &comment)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("Workspace path does not exist"));
+        assert!(!missing.exists());
+    }
+
+    #[tokio::test]
+    async fn rejected_review_comment_updates_preserve_existing_rejections() {
+        let dir = tempdir().unwrap();
+        let first = review_comment("Unsanitized command", "Command::new(\"sh\")");
+        let second = review_comment("Leaky log", "println!(\"token={token}\")");
+
+        remember_rejected_review_comment(dir.path(), &first)
+            .await
+            .unwrap();
+        remember_rejected_review_comment(dir.path(), &second)
+            .await
+            .unwrap();
+
+        let store = review::anti_pattern::AntiPatternStore::load(dir.path());
+        assert!(store.is_rejected(&first.file, &first.title, &first.evidence));
+        assert!(store.is_rejected(&second.file, &second.title, &second.evidence));
+    }
 }
