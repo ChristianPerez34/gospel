@@ -213,17 +213,16 @@ pub async fn run_streaming_turn(
                 &request.session_id,
                 successful_turn_persistence(stream_result.history.as_deref()),
             ) {
-                deps.conversation
-                    .store_history(sid, persistence.history.clone());
-
                 if let Err(e) = deps.sessions.persist_turn(
                     sid,
                     &persistence.display_transcript,
                     persistence.model_history.as_deref(),
                 ) {
                     tracing::warn!("Failed to persist session {}: {}", sid, e);
+                } else {
+                    deps.conversation
+                        .store_history(sid, persistence.history.clone());
                 }
-                let _ = deps.sessions.update_status(sid, "active");
             }
 
             let response_for_verify = stream_result.full_response.clone();
@@ -592,7 +591,7 @@ pub fn trace_event_for_session_turn_event(
             session_id: session_id.to_string(),
             role: role.to_string(),
             tool_name: name.clone(),
-            arguments_redacted: serde_json::to_string(arguments).unwrap_or_default(),
+            arguments_redacted: "[REDACTED]".to_string(),
             timestamp,
         }),
         SessionTurnEvent::ToolResult { name, result, .. } => Some(trace::TraceEvent::ToolResult {
@@ -671,18 +670,52 @@ pub fn verification_note_actions(
     unresolved_notes: &[SessionNote],
 ) -> Vec<VerificationNoteAction> {
     match result.status {
-        VerificationStatus::Concerns => result
-            .concerns
-            .iter()
-            .map(|concern| VerificationNoteAction::Create {
-                note_type: "verification_concern".to_string(),
-                content: concern.clone(),
-            })
-            .collect(),
-        VerificationStatus::Fail => vec![VerificationNoteAction::Create {
-            note_type: "verification_fail".to_string(),
-            content: result.summary.clone(),
-        }],
+        VerificationStatus::Concerns => {
+            let unresolved_concerns: std::collections::HashSet<&str> = unresolved_notes
+                .iter()
+                .filter(|n| n.note_type == "verification_concern")
+                .map(|n| n.content.as_str())
+                .collect();
+            let mut actions = Vec::new();
+            for concern in &result.concerns {
+                if !unresolved_concerns.contains(concern.as_str()) {
+                    actions.push(VerificationNoteAction::Create {
+                        note_type: "verification_concern".to_string(),
+                        content: concern.clone(),
+                    });
+                }
+            }
+            for note in unresolved_notes {
+                if note.note_type == "verification_concern"
+                    && !result.concerns.iter().any(|c| c == &note.content)
+                {
+                    actions.push(VerificationNoteAction::Resolve {
+                        note_id: note.id.clone(),
+                    });
+                }
+            }
+            actions
+        }
+        VerificationStatus::Fail => {
+            let has_fail = unresolved_notes
+                .iter()
+                .any(|n| n.note_type == "verification_fail");
+            let mut actions = Vec::new();
+            if !has_fail {
+                actions.push(VerificationNoteAction::Create {
+                    note_type: "verification_fail".to_string(),
+                    content: result.summary.clone(),
+                });
+            }
+            for note in unresolved_notes {
+                if note.note_type == "verification_concern" {
+                    actions.push(VerificationNoteAction::Resolve {
+                        note_id: note.id.clone(),
+                    });
+                }
+            }
+            actions
+        }
         VerificationStatus::Pass => unresolved_notes
             .iter()
             .filter(|note| note.note_type.starts_with("verification_"))
@@ -1526,10 +1559,7 @@ mod tests {
         assert_eq!(model_history, history);
         drop(persisted_turns);
 
-        assert_eq!(
-            *adapters.statuses.lock().unwrap(),
-            vec![("session-1".to_string(), "active".to_string())]
-        );
+        assert!(adapters.statuses.lock().unwrap().is_empty());
 
         let verifications = adapters.verifications.lock().unwrap();
         assert_eq!(verifications.len(), 1);

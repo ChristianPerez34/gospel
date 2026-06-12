@@ -705,32 +705,24 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         session_id: &str,
         active_workspace_id: Option<&str>,
     ) -> Result<(), String> {
-        if let Some(ref session_store) = self.session_store_state.store {
-            session_store
+        match &self.session_store_state.store {
+            Some(store) => store
                 .validate_workspace_binding(session_id, active_workspace_id)
-                .map_err(|e| e.to_string())
-        } else {
-            Ok(())
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
         }
     }
 
     fn unresolved_notes(&self, session_id: &str) -> Vec<session_store::SessionNote> {
-        self.session_store_state
-            .store
-            .as_ref()
-            .and_then(|store| store.list_unresolved_notes(session_id).ok())
-            .unwrap_or_default()
+        match &self.session_store_state.store {
+            Some(store) => store.list_unresolved_notes(session_id).unwrap_or_default(),
+            None => Vec::new(),
+        }
     }
 
     fn failure_snapshot(&self, session_id: &str) -> Option<session_turn::SessionFailureSnapshot> {
-        let detail = self
-            .session_store_state
-            .store
-            .as_ref()?
-            .get_session(session_id)
-            .ok()
-            .flatten()?;
-
+        let store = self.session_store_state.store.as_ref()?;
+        let detail = store.get_session(session_id).ok().flatten()?;
         Some(session_turn::SessionFailureSnapshot {
             display_transcript: detail.display_transcript,
             model_history: detail.model_history,
@@ -743,22 +735,20 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         display_transcript: &str,
         model_history: Option<&str>,
     ) -> Result<(), String> {
-        if let Some(ref session_store) = self.session_store_state.store {
-            session_store
+        match &self.session_store_state.store {
+            Some(store) => store
                 .persist_turn(session_id, display_transcript, model_history)
-                .map_err(|e| e.to_string())
-        } else {
-            Ok(())
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
         }
     }
 
     fn update_status(&self, session_id: &str, status: &str) -> Result<(), String> {
-        if let Some(ref session_store) = self.session_store_state.store {
-            session_store
+        match &self.session_store_state.store {
+            Some(store) => store
                 .update_status(session_id, status)
-                .map_err(|e| e.to_string())
-        } else {
-            Ok(())
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
         }
     }
 }
