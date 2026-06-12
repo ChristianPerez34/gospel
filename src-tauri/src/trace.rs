@@ -186,6 +186,12 @@ pub fn current_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn redacted_json_string(value: &serde_json::Value) -> String {
+    let mut redacted = value.clone();
+    redact_sensitive_value(&mut redacted);
+    serde_json::to_string(&redacted).unwrap_or_default()
+}
+
 const SENSITIVE_KEYS: &[&str] = &[
     "api_key",
     "apiKey",
@@ -319,5 +325,20 @@ mod tests {
 
         assert!(serialized.contains("[REDACTED]"));
         assert!(!serialized.contains("sk-nested"));
+    }
+
+    #[test]
+    fn redacted_json_string_preserves_safe_arguments() {
+        let arguments = serde_json::json!({
+            "path": "src/lib.rs",
+            "api_key": "sk-secret"
+        });
+
+        let redacted = redacted_json_string(&arguments);
+        let value: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+
+        assert_eq!(value["path"], "src/lib.rs");
+        assert_eq!(value["api_key"], "[REDACTED]");
+        assert!(!redacted.contains("sk-secret"));
     }
 }

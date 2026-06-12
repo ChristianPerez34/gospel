@@ -220,6 +220,9 @@ pub async fn run_streaming_turn(
                 ) {
                     tracing::warn!("Failed to persist session {}: {}", sid, e);
                 } else {
+                    if let Err(e) = deps.sessions.update_status(sid, "active") {
+                        tracing::warn!("Failed to update session {} status: {}", sid, e);
+                    }
                     deps.conversation
                         .store_history(sid, persistence.history.clone());
                 }
@@ -591,7 +594,7 @@ pub fn trace_event_for_session_turn_event(
             session_id: session_id.to_string(),
             role: role.to_string(),
             tool_name: name.clone(),
-            arguments_redacted: "[REDACTED]".to_string(),
+            arguments_redacted: trace::redacted_json_string(arguments),
             timestamp,
         }),
         SessionTurnEvent::ToolResult { name, result, .. } => Some(trace::TraceEvent::ToolResult {
@@ -1317,6 +1320,28 @@ mod tests {
     #[test]
     fn trace_events_are_derived_without_a_tauri_app_handle() {
         let trace = trace_event_for_session_turn_event(
+            &SessionTurnEvent::ToolCall {
+                id: "call-1".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({ "path": "src/lib.rs", "api_key": "sk-test" }),
+            },
+            "session-1",
+            "main",
+            123,
+        )
+        .unwrap();
+
+        let value = serde_json::to_value(trace).unwrap();
+        assert_eq!(value["type"], "tool_call");
+        assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["tool_name"], "read_file");
+        let arguments: serde_json::Value =
+            serde_json::from_str(value["arguments_redacted"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments["path"], "src/lib.rs");
+        assert_eq!(arguments["api_key"], "[REDACTED]");
+        assert!(!value["arguments_redacted"].as_str().unwrap().contains("sk-test"));
+
+        let trace = trace_event_for_session_turn_event(
             &SessionTurnEvent::ToolResult {
                 id: "call-1".to_string(),
                 name: "read_file".to_string(),
@@ -1559,7 +1584,10 @@ mod tests {
         assert_eq!(model_history, history);
         drop(persisted_turns);
 
-        assert!(adapters.statuses.lock().unwrap().is_empty());
+        assert_eq!(
+            *adapters.statuses.lock().unwrap(),
+            vec![("session-1".to_string(), "active".to_string())]
+        );
 
         let verifications = adapters.verifications.lock().unwrap();
         assert_eq!(verifications.len(), 1);
