@@ -1,3 +1,4 @@
+pub mod anti_pattern;
 pub mod detector;
 pub mod knowledge;
 pub mod validator;
@@ -88,8 +89,10 @@ pub struct ReviewComment {
     pub cwe_name: Option<String>,
     pub title: String,
     pub description: String,
+    pub rationale: Option<String>,
     pub evidence: String,
     pub suggestion: Option<String>,
+    pub verification_plan: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -274,13 +277,23 @@ async fn run_full_scan_review(
     let mut candidates = Vec::new();
     let mut failed_batches = 0usize;
 
+    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path);
+
     for (index, batch) in batches.iter().enumerate() {
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-                candidates.extend(parsed.comments);
+                
+                // Filter out previously rejected findings
+                for comment in parsed.comments {
+                    if anti_pattern_store.is_rejected(&comment.file, &comment.title, &comment.evidence) {
+                        tracing::debug!("Filtering out previously rejected finding: {} in {}", comment.title, comment.file);
+                    } else {
+                        candidates.push(comment);
+                    }
+                }
             }
             Err(ReviewAgentError::Timeout) => {
                 failed_batches += 1;
@@ -376,13 +389,24 @@ async fn run_diff_review(
 
     let mut candidates = Vec::new();
     let mut failed_chunks = 0usize;
+
+    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path);
+
     for (index, chunk) in chunks.iter().enumerate() {
         let prompt = detector::build_diff_prompt(&review_context, chunk);
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-                candidates.extend(parsed.comments);
+                
+                // Filter out previously rejected findings
+                for comment in parsed.comments {
+                    if anti_pattern_store.is_rejected(&comment.file, &comment.title, &comment.evidence) {
+                        tracing::debug!("Filtering out previously rejected finding: {} in {}", comment.title, comment.file);
+                    } else {
+                        candidates.push(comment);
+                    }
+                }
             }
             Err(ReviewAgentError::Timeout) => {
                 failed_chunks += 1;
@@ -1046,8 +1070,10 @@ mod tests {
             "cwe_name": "OS Command Injection",
             "title": "Unsanitized command",
             "description": "User input reaches a shell command.",
+            "rationale": "Direct shell execution is dangerous as it allows command injection if input is not perfectly sanitized. Using specialized APIs is safer.",
             "evidence": "Command::new(\"sh\").arg(user_input)",
-            "suggestion": "Avoid shell execution."
+            "suggestion": "Avoid shell execution.",
+            "verification_plan": "Run the program with a payload like '; touch pwned' and verify the file is not created."
         })
     }
 

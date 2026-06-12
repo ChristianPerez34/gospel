@@ -1743,6 +1743,7 @@ pub fn run() {
             query_corpus,
             get_corpus_neighbors,
             context_search,
+            gospel_reject_review_comment,
         ])
         .setup(|app| {
             spawn_startup_corpus_auto_build(app.handle().clone());
@@ -1750,4 +1751,23 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn gospel_reject_review_comment(
+    app_config: tauri::State<'_, AppConfigState>,
+    comment: review::ReviewComment,
+) -> Result<(), String> {
+    let workspace = match &app_config.store {
+        Some(store) => store
+            .get_active_workspace()
+            .map_err(|e| format!("Failed to get active workspace: {}", e))?,
+        None => return Err("App config store is unavailable".to_string()),
+    }
+    .ok_or_else(|| "No active workspace selected".to_string())?;
+
+    let workspace_path = PathBuf::from(workspace.path);
+    let mut store = review::anti_pattern::AntiPatternStore::load(&workspace_path);
+    store.add_rejection(&comment.file, &comment.title, &comment.evidence);
+    store.save(&workspace_path)
 }
