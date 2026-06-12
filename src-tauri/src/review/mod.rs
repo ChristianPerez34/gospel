@@ -253,8 +253,12 @@ fn filter_rejected_comments(
     comments
         .into_iter()
         .filter(|comment| {
-            if store.is_rejected(&comment.file, comment.line_start, comment.line_end, &comment.title)
-            {
+            if store.is_rejected(
+                &comment.file,
+                comment.line_start,
+                comment.line_end,
+                &comment.title,
+            ) {
                 tracing::debug!(
                     "Filtering out previously rejected finding: {} in {}",
                     comment.title,
@@ -266,6 +270,24 @@ fn filter_rejected_comments(
             }
         })
         .collect()
+}
+
+fn load_anti_pattern_store_for_review(
+    workspace_path: &Path,
+    warnings: &mut Vec<String>,
+) -> anti_pattern::AntiPatternStore {
+    match anti_pattern::AntiPatternStore::load(workspace_path) {
+        Ok(store) => store,
+        Err(error) => {
+            let warning = format!(
+                "Ignored rejected findings store because it could not be loaded: {}",
+                error
+            );
+            tracing::warn!("{}", warning);
+            warnings.push(warning);
+            anti_pattern::AntiPatternStore::default()
+        }
+    }
 }
 
 async fn run_full_scan_review(
@@ -299,7 +321,8 @@ async fn run_full_scan_review(
     let mut candidates = Vec::new();
     let mut failed_batches = 0usize;
 
-    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path)?;
+    let anti_pattern_store =
+        load_anti_pattern_store_for_review(&workspace.workspace_path, &mut warnings);
 
     for (index, batch) in batches.iter().enumerate() {
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
@@ -307,7 +330,10 @@ async fn run_full_scan_review(
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-                candidates.extend(filter_rejected_comments(parsed.comments, &anti_pattern_store));
+                candidates.extend(filter_rejected_comments(
+                    parsed.comments,
+                    &anti_pattern_store,
+                ));
             }
             Err(ReviewAgentError::Timeout) => {
                 failed_batches += 1;
@@ -331,8 +357,15 @@ async fn run_full_scan_review(
         return Err("All detector invocations failed".to_string());
     }
 
-    let (comments, validated, validator_summary, validator_warnings) =
-        validate_candidates(provider, model, api_key, workspace, &candidates).await?;
+    let (comments, validated, validator_summary, validator_warnings) = validate_candidates(
+        provider,
+        model,
+        api_key,
+        workspace,
+        &candidates,
+        &anti_pattern_store,
+    )
+    .await?;
     warnings.extend(validator_warnings);
 
     Ok(ReviewResult {
@@ -404,7 +437,8 @@ async fn run_diff_review(
     let mut candidates = Vec::new();
     let mut failed_chunks = 0usize;
 
-    let anti_pattern_store = anti_pattern::AntiPatternStore::load(&workspace.workspace_path)?;
+    let anti_pattern_store =
+        load_anti_pattern_store_for_review(&workspace.workspace_path, &mut warnings);
 
     for (index, chunk) in chunks.iter().enumerate() {
         let prompt = detector::build_diff_prompt(&review_context, chunk);
@@ -412,7 +446,10 @@ async fn run_diff_review(
             Ok(output) => {
                 let parsed = parse_agent_review_output(&output, "Detector");
                 warnings.extend(parsed.warnings);
-                candidates.extend(filter_rejected_comments(parsed.comments, &anti_pattern_store));
+                candidates.extend(filter_rejected_comments(
+                    parsed.comments,
+                    &anti_pattern_store,
+                ));
             }
             Err(ReviewAgentError::Timeout) => {
                 failed_chunks += 1;
@@ -436,8 +473,15 @@ async fn run_diff_review(
         return Err("All detector invocations failed".to_string());
     }
 
-    let (comments, validated, validator_summary, validator_warnings) =
-        validate_candidates(provider, model, api_key, workspace, &candidates).await?;
+    let (comments, validated, validator_summary, validator_warnings) = validate_candidates(
+        provider,
+        model,
+        api_key,
+        workspace,
+        &candidates,
+        &anti_pattern_store,
+    )
+    .await?;
     warnings.extend(validator_warnings);
 
     Ok(ReviewResult {
@@ -456,6 +500,7 @@ async fn validate_candidates(
     api_key: &str,
     workspace: &WorkspaceToolContext,
     candidates: &[ReviewComment],
+    anti_pattern_store: &anti_pattern::AntiPatternStore,
 ) -> Result<(Vec<ReviewComment>, bool, Option<String>, Vec<String>), String> {
     if candidates.is_empty() {
         return Ok((
@@ -471,15 +516,11 @@ async fn validate_candidates(
     match validator::run_validator(provider, model, api_key, workspace, &prompt).await {
         Ok(output) => {
             let parsed = parse_agent_review_output(&output, "Validator");
-            if is_unparseable_agent_output(&parsed) {
-                let mut warnings = parsed.warnings;
-                warnings.push(
-                    "Validator output was unparseable; returning detector candidates".to_string(),
-                );
-                Ok((candidates.to_vec(), false, None, warnings))
-            } else {
-                Ok((parsed.comments, true, parsed.summary, parsed.warnings))
-            }
+            Ok(review_validator_parse_result(
+                parsed,
+                candidates,
+                anti_pattern_store,
+            ))
         }
         Err(ReviewAgentError::Timeout) => Ok((
             candidates.to_vec(),
@@ -494,6 +535,29 @@ async fn validate_candidates(
             vec![format!("Validator agent failed: {}", error)],
         )),
     }
+}
+
+fn review_validator_parse_result(
+    parsed: AgentParseResult,
+    candidates: &[ReviewComment],
+    anti_pattern_store: &anti_pattern::AntiPatternStore,
+) -> (Vec<ReviewComment>, bool, Option<String>, Vec<String>) {
+    if is_unparseable_agent_output(&parsed) {
+        let mut warnings = parsed.warnings;
+        warnings
+            .push("Validator output was unparseable; returning detector candidates".to_string());
+        return (candidates.to_vec(), false, None, warnings);
+    }
+
+    let original_count = parsed.comments.len();
+    let comments = filter_rejected_comments(parsed.comments, anti_pattern_store);
+    let summary = if comments.len() == original_count {
+        parsed.summary
+    } else {
+        None
+    };
+
+    (comments, true, summary, parsed.warnings)
 }
 
 fn summarize_comments(comments: &[ReviewComment], validated: bool) -> String {
@@ -1064,6 +1128,7 @@ pub(crate) async fn run_workspace_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn sample_comment() -> serde_json::Value {
         serde_json::json!({
@@ -1081,6 +1146,10 @@ mod tests {
             "suggestion": "Avoid shell execution.",
             "verification_plan": "Run the program with a payload like '; touch pwned' and verify the file is not created."
         })
+    }
+
+    fn sample_review_comment() -> ReviewComment {
+        serde_json::from_value(sample_comment()).unwrap()
     }
 
     #[test]
@@ -1173,6 +1242,47 @@ Binary files a/icon.png and b/icon.png differ
 
         assert!(parsed.comments.is_empty());
         assert!(is_unparseable_agent_output(&parsed));
+    }
+
+    #[test]
+    fn review_store_loader_warns_and_uses_empty_store_when_file_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let gospel_dir = dir.path().join(".gospel");
+        fs::create_dir_all(&gospel_dir).unwrap();
+        fs::write(gospel_dir.join("rejected_findings.json"), "{not json").unwrap();
+        let mut warnings = Vec::new();
+
+        let store = load_anti_pattern_store_for_review(dir.path(), &mut warnings);
+
+        assert!(store.rejected_hashes.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Ignored rejected findings store"));
+        assert!(warnings[0].contains("Failed to parse rejected findings store"));
+    }
+
+    #[test]
+    fn validator_parse_result_is_filtered_against_rejected_findings() {
+        let comment = sample_review_comment();
+        let mut store = anti_pattern::AntiPatternStore::default();
+        store.add_rejection(
+            &comment.file,
+            comment.line_start,
+            comment.line_end,
+            &comment.title,
+        );
+        let parsed = AgentParseResult {
+            comments: vec![comment],
+            summary: Some("Found 1 validated security finding.".to_string()),
+            warnings: Vec::new(),
+        };
+
+        let (comments, validated, summary, warnings) =
+            review_validator_parse_result(parsed, &[], &store);
+
+        assert!(comments.is_empty());
+        assert!(validated);
+        assert!(summary.is_none());
+        assert!(warnings.is_empty());
     }
 
     #[test]
