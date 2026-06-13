@@ -4,6 +4,8 @@ import type {
   ActionCardRow,
   ActionCardSection,
   ActionCardType,
+  ReviewComment,
+  ReviewResult,
   ToolCallActivity,
 } from "./types";
 
@@ -17,6 +19,8 @@ const TOOL_LABELS: Record<string, string> = {
   corpus_query: "Corpus query",
   corpus_neighbors: "Corpus neighbors",
   write_harness_file: "Update plan",
+  run_security_review: "Security review",
+  record_review_outcome: "Record review outcome",
   bash: "Run command",
   terminal: "Run command",
   apply_patch: "Edit files",
@@ -432,6 +436,98 @@ function writeHarnessFileCard(activity: ToolCallActivity): Partial<ActionCard> {
   };
 }
 
+function reviewModeLabel(mode: unknown) {
+  const record = asRecord(mode);
+  const type = displayValue(record?.type);
+  if (type === "pull_request") {
+    return record?.pr_number ? `PR #${record.pr_number}` : "PR";
+  }
+  if (type === "full_scan") return "Full scan";
+  if (type === "local") return "Local";
+  return displayValue(mode);
+}
+
+function severityBadge(comment: Partial<ReviewComment>) {
+  return compactList([comment.severity, comment.signal_tier, comment.category]);
+}
+
+function runSecurityReviewCard(activity: ToolCallActivity): Partial<ActionCard> {
+  const args = parsedArguments(activity);
+  const result = resultRecord(activity);
+  const review = asRecord(result?.review) as ReviewResult | undefined;
+  const findings = asArray(result?.findings);
+  const comments = review?.comments ?? [];
+  const rows = findings.length > 0
+    ? findings.map((finding, fallbackIndex) => {
+        const item = asRecord(finding) ?? {};
+        const index = displayValue(item.index) ?? String(fallbackIndex + 1);
+        return {
+          primary: `[${index}] ${displayValue(item.title) ?? "Untitled finding"}`,
+          secondary: compactList([
+            item.file,
+            item.line_start ? `line ${item.line_start}` : undefined,
+            severityBadge(item as Partial<ReviewComment>),
+          ]),
+          meta: displayValue(item.comment_id),
+        };
+      })
+    : comments.map((comment, index) => ({
+        primary: `[${index + 1}] ${comment.title}`,
+        secondary: compactList([
+          comment.file,
+          `line ${comment.line_start}`,
+          severityBadge(comment),
+        ]),
+        meta: comment.comment_id,
+      }));
+
+  const totalFindings = review
+    ? review.comments.length + review.suppressed_count
+    : rows.length || undefined;
+  const sections = [
+    fieldsSection("Review", [
+      field("Mode", reviewModeLabel(review?.mode) ?? args?.mode),
+      field("Run", review?.run_id),
+      field("Findings", totalFindings),
+      field("Shown", review?.comments.length),
+      field("Suppressed", review?.suppressed_count),
+      field("SNR", review ? `${review.snr_percent}%` : undefined),
+      field("Files", review?.files_scanned),
+      field("Visible", review?.user_visible),
+    ]),
+    ...failureSection(result),
+    textSection("Summary", result?.message ?? review?.summary),
+    rowsSection("Findings", rows, "No findings returned."),
+    ...waitingSection(activity),
+  ].filter(isRenderableSection);
+
+  return {
+    detail: compactList([args?.mode, review?.run_id]),
+    sections,
+  };
+}
+
+function recordReviewOutcomeCard(activity: ToolCallActivity): Partial<ActionCard> {
+  const args = parsedArguments(activity);
+  const result = resultRecord(activity);
+  const sections = [
+    fieldsSection("Outcome", [
+      field("Run", result?.run_id ?? args?.run_id),
+      field("Comment", result?.comment_id ?? args?.comment_id),
+      field("Outcome", result?.outcome ?? args?.outcome),
+      field("Success", result?.success),
+      field("Reason", result?.reason),
+    ]),
+    textSection("Message", result?.message),
+    ...waitingSection(activity),
+  ].filter(isRenderableSection);
+
+  return {
+    detail: compactList([args?.outcome, args?.comment_id]),
+    sections,
+  };
+}
+
 function fallbackCard(activity: ToolCallActivity): Partial<ActionCard> {
   const sections = [
     textSection("Arguments", formatValue(activity.arguments), true),
@@ -448,7 +544,8 @@ function actionCardTypeForTool(name: string): ActionCardType {
   if (
     normalized.includes("search") ||
     normalized.includes("find") ||
-    normalized.includes("exploration")
+    normalized.includes("exploration") ||
+    normalized.includes("review")
   ) {
     return "search";
   }
@@ -529,4 +626,6 @@ const TOOL_CARD_FORMATTERS: Record<string, (activity: ToolCallActivity) => Parti
   corpus_query: corpusQueryCard,
   corpus_neighbors: corpusNeighborsCard,
   write_harness_file: writeHarnessFileCard,
+  run_security_review: runSecurityReviewCard,
+  record_review_outcome: recordReviewOutcomeCard,
 };

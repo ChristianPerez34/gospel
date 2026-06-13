@@ -9,8 +9,10 @@ interface TopBarProps {
   status: AgentStatus;
   onWorkspaceSwitch: () => void;
   onToggleSessions: () => void;
+  onOpenReview: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
+  reviewOpen?: boolean;
 }
 
 export function TopBar({
@@ -20,8 +22,10 @@ export function TopBar({
   status,
   onWorkspaceSwitch,
   onToggleSessions,
+  onOpenReview,
   onOpenSettings,
   sessionsOpen,
+  reviewOpen = false,
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(sessionTitle);
@@ -44,6 +48,9 @@ export function TopBar({
 
   const sessionToggleClass = sessionsOpen
     ? "bg-surface-overlay text-accent-structure"
+    : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
+  const reviewToggleClass = reviewOpen
+    ? "bg-surface-overlay text-accent-action"
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
 
   return (
@@ -116,6 +123,25 @@ export function TopBar({
           {model}
         </span>
         <StatusIndicator status={status} />
+        <button
+          className={`w-7 h-7 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${reviewToggleClass}`}
+          aria-label="Open security review"
+          title="Security review"
+          onClick={onOpenReview}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            aria-hidden="true"
+          >
+            <path d="M8 2 13 4v3.4c0 3.1-1.9 5.2-5 6.6-3.1-1.4-5-3.5-5-6.6V4l5-2Z" strokeLinejoin="round" />
+            <path d="m5.7 8.1 1.4 1.4 3.2-3.1" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
         <button
           className="w-7 h-7 flex items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
           aria-label="Settings"

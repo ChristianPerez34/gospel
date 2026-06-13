@@ -179,6 +179,9 @@ use crate::corpus::tools::{
     create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
     CORPUS_SYSTEM_PROMPT,
 };
+use crate::review::tools::{
+    create_record_review_outcome_tool, create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
+};
 use crate::workspace_tools::{
     create_context_search_tool, create_find_files_tool, create_list_directory_tool,
     create_read_file_tool, create_search_code_tool, create_write_harness_file_tool,
@@ -548,6 +551,7 @@ fn build_system_preamble(
     if workspace.is_some() {
         sections.push(WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string());
         if include_harness {
+            sections.push(REVIEW_TOOLS_SYSTEM_PROMPT.trim().to_string());
             sections.push(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.trim().to_string());
         }
     }
@@ -737,6 +741,15 @@ where
                         workspace_context.workspace_path.clone(),
                     ))
                     .tool(create_write_harness_file_tool(
+                        workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_run_security_review_tool(
+                        workspace_context.workspace_path.clone(),
+                        provider.to_string(),
+                        model.to_string(),
+                        api_key.to_string(),
+                    ))
+                    .tool(create_record_review_outcome_tool(
                         workspace_context.workspace_path.clone(),
                     ));
 

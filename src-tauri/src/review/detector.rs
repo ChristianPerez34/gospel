@@ -12,10 +12,13 @@ Find plausible security vulnerabilities in the supplied changes or files. Use li
 
 Every comment MUST include a non-empty "rationale" (required — the engineering principle or architectural reason for the fix) and a non-empty "verification_plan" (required — how a developer can test the fix). Do NOT omit or set these to null.
 
+Every comment SHOULD include a "signal_tier" suggestion: "tier_1" for critical exploitable findings, "tier_2" for important actionable findings, "noise" for non-actionable comments, or "unclassified" when uncertain. The Validator and backend guardrails will make the final tier decision.
+
 Return only JSON with this shape:
 {
   "comments": [
     {
+      "comment_id": "",
       "file": "path/from/workspace",
       "line_start": 1,
       "line_end": 1,
@@ -28,7 +31,8 @@ Return only JSON with this shape:
       "rationale": "the engineering principle or architectural reason for the fix",
       "evidence": "exact code evidence from the diff or file",
       "suggestion": "specific, surgical fix (avoid unnecessary refactors)",
-      "verification_plan": "how to verify the fix with a test or manual step"
+      "verification_plan": "how to verify the fix with a test or manual step",
+      "signal_tier": "tier_1|tier_2|noise|unclassified"
     }
   ],
   "summary": "short detector summary",

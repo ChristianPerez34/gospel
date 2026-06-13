@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -8,9 +9,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static STORE_SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RejectedFindingRecord {
+    pub hash: String,
+    pub rejected_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AntiPatternStore {
+    #[serde(default)]
     pub rejected_hashes: HashSet<String>,
+    #[serde(default)]
+    pub rejected_findings: Vec<RejectedFindingRecord>,
 }
 
 impl AntiPatternStore {
@@ -19,13 +29,17 @@ impl AntiPatternStore {
             .join(".gospel")
             .join("rejected_findings.json");
         match fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).map_err(|e| {
-                format!(
-                    "Failed to parse rejected findings store {}: {}",
-                    path.display(),
-                    e
-                )
-            }),
+            Ok(content) => {
+                let mut store: Self = serde_json::from_str(&content).map_err(|e| {
+                    format!(
+                        "Failed to parse rejected findings store {}: {}",
+                        path.display(),
+                        e
+                    )
+                })?;
+                store.normalize_loaded();
+                Ok(store)
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(format!(
                 "Failed to read rejected findings store {}: {}",
@@ -46,13 +60,59 @@ impl AntiPatternStore {
     }
 
     pub fn add_rejection(&mut self, file: &str, line_start: usize, line_end: usize, title: &str) {
+        self.add_rejection_at(file, line_start, line_end, title, Utc::now());
+    }
+
+    pub fn add_rejection_at(
+        &mut self,
+        file: &str,
+        line_start: usize,
+        line_end: usize,
+        title: &str,
+        rejected_at: DateTime<Utc>,
+    ) {
         let hash = rejection_hash(file, line_start, line_end, title);
-        self.rejected_hashes.insert(hash);
+        self.rejected_hashes.insert(hash.clone());
+        if let Some(record) = self
+            .rejected_findings
+            .iter_mut()
+            .find(|record| record.hash == hash)
+        {
+            record.rejected_at = rejected_at;
+        } else {
+            self.rejected_findings
+                .push(RejectedFindingRecord { hash, rejected_at });
+        }
     }
 
     pub fn is_rejected(&self, file: &str, line_start: usize, line_end: usize, title: &str) -> bool {
         let hash = rejection_hash(file, line_start, line_end, title);
         self.rejected_hashes.contains(&hash)
+            || self
+                .rejected_findings
+                .iter()
+                .any(|record| record.hash == hash)
+    }
+
+    fn normalize_loaded(&mut self) {
+        for record in &self.rejected_findings {
+            self.rejected_hashes.insert(record.hash.clone());
+        }
+
+        let now = Utc::now();
+        let recorded_hashes = self
+            .rejected_findings
+            .iter()
+            .map(|record| record.hash.clone())
+            .collect::<HashSet<_>>();
+        for hash in self.rejected_hashes.clone() {
+            if !recorded_hashes.contains(&hash) {
+                self.rejected_findings.push(RejectedFindingRecord {
+                    hash,
+                    rejected_at: now,
+                });
+            }
+        }
     }
 }
 
@@ -159,6 +219,7 @@ mod tests {
         let store = AntiPatternStore::load(dir.path()).unwrap();
 
         assert!(store.rejected_hashes.is_empty());
+        assert!(store.rejected_findings.is_empty());
     }
 
     #[test]
@@ -171,5 +232,18 @@ mod tests {
         let error = AntiPatternStore::load(dir.path()).unwrap_err();
 
         assert!(error.contains("Failed to parse rejected findings store"));
+    }
+
+    #[test]
+    fn rejection_records_include_timestamps() {
+        let mut store = AntiPatternStore::default();
+
+        store.add_rejection("src/main.rs", 10, 12, "Unsanitized command");
+
+        assert_eq!(store.rejected_findings.len(), 1);
+        assert_eq!(
+            store.rejected_findings[0].hash,
+            rejection_hash("src/main.rs", 10, 12, "Unsanitized command")
+        );
     }
 }

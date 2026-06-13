@@ -6,6 +6,7 @@ import { InputBar } from "./InputBar";
 import { SessionDrawer } from "./SessionDrawer";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { SettingsModal } from "./SettingsModal";
+import { ReviewPanel } from "./ReviewPanel";
 import { ToastContainer, useToasts } from "./Toast";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useModelAvailability } from "../hooks/useModelAvailability";
@@ -17,6 +18,7 @@ export function AppShell() {
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
 
   const { workspaces, activeWorkspace, addWorkspace, removeWorkspace, switchWorkspace, loading: workspacesLoading } = useWorkspaces();
@@ -59,8 +61,10 @@ export function AppShell() {
         status={session.status}
         onWorkspaceSwitch={() => setWorkspaceSwitcherOpen(true)}
         onToggleSessions={() => setSessionDrawerOpen(!sessionDrawerOpen)}
+        onOpenReview={() => setReviewOpen((value) => !value)}
         onOpenSettings={openSettings}
         sessionsOpen={sessionDrawerOpen}
+        reviewOpen={reviewOpen}
       />
       <div className="flex flex-col flex-1 min-h-0 relative">
         <ChatView
@@ -84,6 +88,15 @@ export function AppShell() {
           unavailableActionLabel={noModels.actionLabel}
           onUnavailableAction={openSettings}
           workspacePath={activeWorkspace?.path}
+        />
+        <ReviewPanel
+          open={reviewOpen}
+          provider={selectedModel?.provider}
+          model={selectedModel?.model}
+          workspacePath={activeWorkspace?.path}
+          onClose={() => setReviewOpen(false)}
+          onError={showError}
+          onSuccess={showSuccess}
         />
       </div>
       <SessionDrawer
