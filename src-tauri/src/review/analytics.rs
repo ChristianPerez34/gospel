@@ -132,9 +132,10 @@ pub fn append_review_metrics(
                 error
             )
         })?;
-    serde_json::to_writer(&mut file, record)
+    let mut line = serde_json::to_vec(record)
         .map_err(|error| format!("Failed to serialize review metrics: {}", error))?;
-    file.write_all(b"\n")
+    line.push(b'\n');
+    file.write_all(&line)
         .map_err(|error| format!("Failed to append review metrics: {}", error))?;
     file.flush()
         .map_err(|error| format!("Failed to flush review metrics: {}", error))

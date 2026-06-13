@@ -106,12 +106,12 @@ impl Default for SignalRules {
 
 impl SignalRules {
     pub fn merge(&mut self, override_rules: PartialSignalRules) {
-        extend_unique(&mut self.tier1_cwes, override_rules.tier1_cwes);
-        extend_unique(&mut self.tier2_cwes, override_rules.tier2_cwes);
-        extend_unique(&mut self.noise_cwes, override_rules.noise_cwes);
-        extend_unique(&mut self.tier1_categories, override_rules.tier1_categories);
-        extend_unique(&mut self.tier2_categories, override_rules.tier2_categories);
-        extend_unique(&mut self.noise_categories, override_rules.noise_categories);
+        extend_unique_cwes(&mut self.tier1_cwes, override_rules.tier1_cwes);
+        extend_unique_cwes(&mut self.tier2_cwes, override_rules.tier2_cwes);
+        extend_unique_cwes(&mut self.noise_cwes, override_rules.noise_cwes);
+        extend_unique_categories(&mut self.tier1_categories, override_rules.tier1_categories);
+        extend_unique_categories(&mut self.tier2_categories, override_rules.tier2_categories);
+        extend_unique_categories(&mut self.noise_categories, override_rules.noise_categories);
     }
 }
 
@@ -163,10 +163,11 @@ pub fn classify_comment(comment: &ReviewComment, rules: &SignalRules) -> SignalT
         return SignalTier::Noise;
     }
 
-    if cwe_in(&rules.tier2_cwes) || category_in(&rules.tier2_categories) {
-        if matches!(comment.severity, Severity::High | Severity::Medium) {
-            return SignalTier::Tier2;
-        }
+    if comment.signal_tier == SignalTier::Unclassified
+        && matches!(comment.severity, Severity::High | Severity::Medium)
+        && (cwe_in(&rules.tier2_cwes) || category_in(&rules.tier2_categories))
+    {
+        return SignalTier::Tier2;
     }
 
     comment.signal_tier
@@ -208,17 +209,29 @@ pub fn comment_id_for(comment: &ReviewComment) -> String {
     format!("rc_{}", &digest[..24])
 }
 
-fn extend_unique(target: &mut Vec<String>, values: Option<Vec<String>>) {
+fn extend_unique_cwes(target: &mut Vec<String>, values: Option<Vec<String>>) {
+    extend_unique_with(target, values, normalize_cwe);
+}
+
+fn extend_unique_categories(target: &mut Vec<String>, values: Option<Vec<String>>) {
+    extend_unique_with(target, values, normalize_category);
+}
+
+fn extend_unique_with(
+    target: &mut Vec<String>,
+    values: Option<Vec<String>>,
+    normalize: impl Fn(&str) -> String,
+) {
     let Some(values) = values else {
         return;
     };
 
     let mut seen = target
         .iter()
-        .map(|value| normalize_category(value))
+        .map(|value| normalize(value))
         .collect::<BTreeSet<_>>();
     for value in values {
-        let key = normalize_category(&value);
+        let key = normalize(&value);
         if seen.insert(key) {
             target.push(value);
         }
@@ -317,6 +330,50 @@ mod tests {
             classify_comment(&finding, &SignalRules::default()),
             SignalTier::Tier2
         );
+    }
+
+    #[test]
+    fn tier2_rules_promote_unclassified_high_or_medium_findings() {
+        let finding = comment(
+            Severity::High,
+            Some("CWE-200"),
+            "style",
+            SignalTier::Unclassified,
+        );
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn tier2_rules_preserve_explicit_model_tiers() {
+        let finding = comment(Severity::High, Some("CWE-200"), "style", SignalTier::Noise);
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Noise
+        );
+    }
+
+    #[test]
+    fn merge_deduplicates_cwes_with_classifier_normalization() {
+        let mut rules = SignalRules {
+            tier1_cwes: vec!["CWE 78".to_string()],
+            tier2_cwes: Vec::new(),
+            noise_cwes: Vec::new(),
+            tier1_categories: Vec::new(),
+            tier2_categories: Vec::new(),
+            noise_categories: Vec::new(),
+        };
+
+        rules.merge(PartialSignalRules {
+            tier1_cwes: Some(vec!["cwe 78".to_string(), "CWE-78".to_string()]),
+            ..PartialSignalRules::default()
+        });
+
+        assert_eq!(rules.tier1_cwes, vec!["CWE 78", "CWE-78"]);
     }
 
     #[test]

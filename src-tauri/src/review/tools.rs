@@ -1,10 +1,12 @@
 use super::outcome::{record_review_outcome, ReviewOutcome};
 use super::{run_review, ReviewComment, ReviewConfig, ReviewResult};
 use crate::workspace_tools::WorkspaceToolError;
+use crate::REJECTION_STORE_LOCK;
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::fmt;
 use std::path::PathBuf;
 
 pub const REVIEW_TOOLS_SYSTEM_PROMPT: &str = r#"
@@ -25,12 +27,25 @@ pub struct RunSecurityReviewArgs {
     pr_number: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RunSecurityReviewTool {
     workspace_root: PathBuf,
     provider: String,
     model: String,
+    #[serde(skip_serializing, skip_deserializing)]
     api_key: String,
+}
+
+impl fmt::Debug for RunSecurityReviewTool {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RunSecurityReviewTool")
+            .field("workspace_root", &self.workspace_root)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &"REDACTED")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,6 +187,7 @@ impl Tool for RecordReviewOutcomeTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let _guard = REJECTION_STORE_LOCK.lock().await;
         match record_review_outcome(
             &self.workspace_root,
             &args.run_id,
@@ -214,4 +230,27 @@ pub fn create_run_security_review_tool(
 
 pub fn create_record_review_outcome_tool(workspace_root: PathBuf) -> RecordReviewOutcomeTool {
     RecordReviewOutcomeTool { workspace_root }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_security_review_tool_redacts_api_key_from_debug_and_serialization() {
+        let tool = create_run_security_review_tool(
+            PathBuf::from("/workspace"),
+            "openai".to_string(),
+            "gpt-test".to_string(),
+            "sk-secret-value".to_string(),
+        );
+
+        let debug = format!("{:?}", tool);
+        assert!(debug.contains("REDACTED"));
+        assert!(!debug.contains("sk-secret-value"));
+
+        let serialized = serde_json::to_string(&tool).unwrap();
+        assert!(!serialized.contains("api_key"));
+        assert!(!serialized.contains("sk-secret-value"));
+    }
 }

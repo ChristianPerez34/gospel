@@ -126,6 +126,7 @@ export function TopBar({
         <button
           className={`w-7 h-7 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${reviewToggleClass}`}
           aria-label="Open security review"
+          aria-pressed={reviewOpen}
           title="Security review"
           onClick={onOpenReview}
         >

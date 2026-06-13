@@ -262,6 +262,22 @@ fn write_file_atomically(path: &Path, content: &str) -> Result<(), String> {
         let _ = fs::remove_file(&temp_path);
         format!("Failed to replace store file: {}", error)
     })?;
+    let parent_handle = fs::File::open(parent_dir).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        format!(
+            "Failed to open store directory {} for sync: {}",
+            parent_dir.display(),
+            error
+        )
+    })?;
+    parent_handle.sync_all().map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        format!(
+            "Failed to sync store directory {}: {}",
+            parent_dir.display(),
+            error
+        )
+    })?;
     Ok(())
 }
 

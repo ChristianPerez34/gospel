@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { normalize, resolve } from "@tauri-apps/api/path";
 import { openPath } from "@tauri-apps/plugin-opener";
 import type {
   ReviewComment,
@@ -60,13 +61,37 @@ function fileRange(comment: ReviewComment) {
   return `${comment.file}:${comment.line_start}-${comment.line_end}`;
 }
 
-function absoluteFilePath(workspacePath: string | undefined, file: string) {
-  if (!workspacePath) return file;
-  return `${workspacePath.replace(/\/$/, "")}/${file.replace(/^\//, "")}`;
+function pathComparisonKey(value: string) {
+  let key = value.replace(/[\\/]+/g, "/");
+  if (/^[A-Za-z]:\/+$/.test(key)) {
+    key = `${key.slice(0, 2)}/`;
+  } else if (key.length > 1) {
+    key = key.replace(/\/+$/, "");
+  }
+  return /^[A-Za-z]:\//.test(key) ? key.toLowerCase() : key;
+}
+
+function isInsideWorkspace(workspaceRoot: string, filePath: string) {
+  const root = pathComparisonKey(workspaceRoot);
+  const target = pathComparisonKey(filePath);
+  if (root === "/") return target.startsWith("/");
+  return target === root || target.startsWith(`${root}/`);
+}
+
+async function absoluteFilePath(workspacePath: string | undefined, file: string) {
+  if (!workspacePath) return null;
+  const workspaceRoot = await normalize(workspacePath);
+  const resolved = await resolve(workspaceRoot, file);
+  const normalized = await normalize(resolved);
+  return isInsideWorkspace(workspaceRoot, normalized) ? normalized : null;
 }
 
 function isActionable(tier: SignalTier) {
   return tier === "tier_1" || tier === "tier_2";
+}
+
+function isHidden(comment: ReviewComment) {
+  return (comment.signal_tier as string) === "hidden";
 }
 
 function ThumbUpIcon() {
@@ -144,6 +169,10 @@ export function ReviewPanel({
     () => result?.comments.filter((comment) => isActionable(comment.signal_tier)).length ?? 0,
     [result],
   );
+  const shownCount = useMemo(
+    () => result?.comments.filter((comment) => !isHidden(comment)).length ?? 0,
+    [result],
+  );
   const canRun = Boolean(provider && model && workspacePath && !loading);
 
   if (!open) return null;
@@ -209,7 +238,14 @@ export function ReviewPanel({
 
   const openFile = async (comment: ReviewComment) => {
     try {
-      await openPath(absoluteFilePath(workspacePath, comment.file));
+      const filePath = await absoluteFilePath(workspacePath, comment.file);
+      if (!filePath) {
+        const message = `Refusing to open ${comment.file}: path is outside the workspace.`;
+        setError(message);
+        onError?.(message);
+        return;
+      }
+      await openPath(filePath);
     } catch (err) {
       const message = `Failed to open ${comment.file}: ${err}`;
       setError(message);
@@ -297,7 +333,10 @@ export function ReviewPanel({
                 {totalFindings} total
               </Badge>
               <Badge className="border-accent-signal text-accent-signal">
-                {actionableCount} shown
+                {shownCount} shown
+              </Badge>
+              <Badge className="border-accent-data text-accent-data">
+                {actionableCount} actionable
               </Badge>
               <Badge className="border-text-muted text-text-muted">
                 {result.suppressed_count} suppressed
