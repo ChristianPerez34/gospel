@@ -127,9 +127,7 @@ pub struct PartialSignalRules {
 
 pub fn normalize_review_comment(comment: &mut ReviewComment, rules: &SignalRules) {
     comment.signal_tier = classify_comment(comment, rules);
-    if comment.comment_id.trim().is_empty() {
-        comment.comment_id = comment_id_for(comment);
-    }
+    comment.comment_id = comment_id_for(comment);
 }
 
 pub fn classify_comment(comment: &ReviewComment, rules: &SignalRules) -> SignalTier {
@@ -319,5 +317,23 @@ mod tests {
             classify_comment(&finding, &SignalRules::default()),
             SignalTier::Tier2
         );
+    }
+
+    #[test]
+    fn normalize_overrides_model_supplied_comment_id_with_deterministic_hash() {
+        let mut finding = comment(
+            Severity::High,
+            Some("CWE-78"),
+            "injection",
+            SignalTier::Tier1,
+        );
+        let model_id = "rc_unstable_or_hallucinated".to_string();
+        finding.comment_id = model_id.clone();
+
+        normalize_review_comment(&mut finding, &SignalRules::default());
+
+        assert_ne!(finding.comment_id, model_id);
+        assert_eq!(finding.comment_id, comment_id_for(&finding));
+        assert!(finding.comment_id.starts_with("rc_"));
     }
 }

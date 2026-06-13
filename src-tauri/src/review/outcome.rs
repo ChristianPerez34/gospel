@@ -141,7 +141,29 @@ fn record_acceptance(
             title: comment.title.clone(),
         });
     }
-    save_accepted_findings(workspace_path, &store)
+    save_accepted_findings(workspace_path, &store)?;
+
+    clear_prior_rejection(workspace_path, comment)
+}
+
+fn clear_prior_rejection(workspace_path: &Path, comment: &ReviewComment) -> Result<(), String> {
+    let rejected_store_path = workspace_path
+        .join(".gospel")
+        .join("rejected_findings.json");
+    if !rejected_store_path.exists() {
+        return Ok(());
+    }
+
+    let mut store = AntiPatternStore::load(workspace_path)?;
+    if !store.remove_rejection(
+        &comment.file,
+        comment.line_start,
+        comment.line_end,
+        &comment.title,
+    ) {
+        return Ok(());
+    }
+    store.save(workspace_path)
 }
 
 fn record_rejection(
@@ -305,5 +327,26 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("does not exist"));
+    }
+
+    #[test]
+    fn acceptance_clears_prior_rejection_for_same_finding() {
+        let dir = tempdir().unwrap();
+        let run = ReviewRunRecord {
+            run_id: "run-1".to_string(),
+            timestamp: Utc::now(),
+            mode: ReviewMode::Local,
+            comments: vec![comment()],
+        };
+        save_review_run(dir.path(), &run).unwrap();
+
+        record_review_outcome(dir.path(), "run-1", "rc_abc", ReviewOutcome::Rejected).unwrap();
+        let rejected_before = AntiPatternStore::load(dir.path()).unwrap();
+        assert!(rejected_before.is_rejected("src/main.rs", 10, 12, "Unsanitized command"));
+
+        record_review_outcome(dir.path(), "run-1", "rc_abc", ReviewOutcome::Accepted).unwrap();
+
+        let rejected_after = AntiPatternStore::load(dir.path()).unwrap();
+        assert!(!rejected_after.is_rejected("src/main.rs", 10, 12, "Unsanitized command"));
     }
 }

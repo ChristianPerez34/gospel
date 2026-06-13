@@ -94,6 +94,20 @@ impl AntiPatternStore {
                 .any(|record| record.hash == hash)
     }
 
+    pub fn remove_rejection(
+        &mut self,
+        file: &str,
+        line_start: usize,
+        line_end: usize,
+        title: &str,
+    ) -> bool {
+        let hash = rejection_hash(file, line_start, line_end, title);
+        self.rejected_hashes.remove(&hash);
+        let before = self.rejected_findings.len();
+        self.rejected_findings.retain(|record| record.hash != hash);
+        before != self.rejected_findings.len()
+    }
+
     fn normalize_loaded(&mut self) {
         for record in &self.rejected_findings {
             self.rejected_hashes.insert(record.hash.clone());
