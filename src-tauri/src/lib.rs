@@ -1746,6 +1746,7 @@ pub fn run() {
             get_corpus_neighbors,
             context_search,
             gospel_reject_review_comment,
+            gospel_record_review_outcome,
         ])
         .setup(|app| {
             spawn_startup_corpus_auto_build(app.handle().clone());
@@ -1788,6 +1789,27 @@ async fn remember_rejected_review_comment(
     store.save(workspace_path)
 }
 
+#[tauri::command]
+async fn gospel_record_review_outcome(
+    app_config: tauri::State<'_, AppConfigState>,
+    run_id: String,
+    comment_id: String,
+    outcome: review::ReviewOutcome,
+) -> Result<review::ReviewOutcomeOutput, String> {
+    let workspace = match &app_config.store {
+        Some(store) => store
+            .get_active_workspace()
+            .map_err(|e| format!("Failed to get active workspace: {}", e))?,
+        None => return Err("App config store is unavailable".to_string()),
+    }
+    .ok_or_else(|| "No active workspace selected".to_string())?;
+
+    let workspace_path = PathBuf::from(workspace.path);
+    let _guard = REJECTION_STORE_LOCK.lock().await;
+    validate_active_workspace_path(&workspace_path)?;
+    review::outcome::record_review_outcome(&workspace_path, &run_id, &comment_id, outcome)
+}
+
 #[cfg(test)]
 mod review_rejection_tests {
     use super::*;
@@ -1795,6 +1817,7 @@ mod review_rejection_tests {
 
     fn review_comment(title: &str, evidence: &str) -> review::ReviewComment {
         review::ReviewComment {
+            comment_id: String::new(),
             file: "src/main.rs".to_string(),
             line_start: 10,
             line_end: 12,
@@ -1808,6 +1831,7 @@ mod review_rejection_tests {
             evidence: evidence.to_string(),
             suggestion: Some("Avoid shell execution.".to_string()),
             verification_plan: Some("Run the review again and verify it is filtered.".to_string()),
+            signal_tier: review::SignalTier::Tier1,
         }
     }
 

@@ -1,6 +1,11 @@
+pub mod analytics;
 pub mod anti_pattern;
+pub mod config;
 pub mod detector;
 pub mod knowledge;
+pub mod outcome;
+pub mod signal;
+pub mod tools;
 pub mod validator;
 
 use crate::llm::WorkspaceToolContext;
@@ -18,6 +23,10 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::process::Command;
 use tokio::time::timeout;
+use uuid::Uuid;
+
+pub use outcome::{ReviewOutcome, ReviewOutcomeOutput};
+pub use signal::SignalTier;
 
 const MAX_FILES_PER_INVOCATION: usize = 5;
 const MAX_DIFF_FILES_REVIEWED: usize = 20;
@@ -32,7 +41,7 @@ pub struct ReviewConfig {
     pub provider: String,
     pub model: String,
     pub mode: String,
-    #[serde(default)]
+    #[serde(default, alias = "prNumber")]
     pub pr_number: Option<u64>,
 }
 
@@ -63,7 +72,7 @@ pub enum ReviewMode {
     FullScan,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum Severity {
     #[serde(alias = "critical", alias = "CRITICAL")]
@@ -80,6 +89,8 @@ pub enum Severity {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReviewComment {
+    #[serde(default)]
+    pub comment_id: String,
     pub file: String,
     pub line_start: usize,
     pub line_end: usize,
@@ -93,16 +104,22 @@ pub struct ReviewComment {
     pub evidence: String,
     pub suggestion: Option<String>,
     pub verification_plan: Option<String>,
+    #[serde(default)]
+    pub signal_tier: SignalTier,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReviewResult {
+    pub run_id: String,
     pub comments: Vec<ReviewComment>,
     pub summary: String,
     pub validated: bool,
     pub warnings: Vec<String>,
     pub files_scanned: usize,
     pub mode: ReviewMode,
+    pub suppressed_count: usize,
+    pub snr_percent: f64,
+    pub user_visible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,7 +186,7 @@ pub async fn run_review(
         corpus_available: false,
     };
 
-    match mode {
+    let result = match mode {
         ReviewMode::Local => {
             let diff = get_local_diff(&workspace.workspace_path).await?;
             run_diff_review(
@@ -204,7 +221,85 @@ pub async fn run_review(
         ReviewMode::FullScan => {
             run_full_scan_review(&config.provider, &config.model, &api_key, &workspace).await
         }
+    }?;
+
+    finalize_review_result(
+        &config.provider,
+        &config.model,
+        &workspace.workspace_path,
+        result,
+    )
+}
+
+fn finalize_review_result(
+    provider: &str,
+    model: &str,
+    workspace_path: &Path,
+    mut result: ReviewResult,
+) -> Result<ReviewResult, String> {
+    let mut warnings = Vec::new();
+    let review_config =
+        config::load_workspace_review_config_with_warnings(workspace_path, &mut warnings);
+    result.warnings.extend(warnings);
+
+    let run_id = Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now();
+    for comment in &mut result.comments {
+        signal::normalize_review_comment(comment, &review_config.signal_rules);
     }
+
+    let original_comments = result.comments.clone();
+    let total_count = original_comments.len();
+    let snr_percent = signal::snr_percent(&original_comments);
+    let below_threshold = total_count > 0 && snr_percent < review_config.noise_threshold_percent;
+
+    if below_threshold {
+        result.comments = original_comments
+            .iter()
+            .filter(|comment| signal::is_actionable(comment.signal_tier))
+            .cloned()
+            .collect();
+        result.suppressed_count = total_count.saturating_sub(result.comments.len());
+        if result.suppressed_count > 0 {
+            result.summary = suppression_summary(total_count, result.comments.len(), snr_percent);
+        }
+    } else {
+        result.suppressed_count = 0;
+    }
+
+    result.run_id = run_id.clone();
+    result.snr_percent = snr_percent;
+    result.user_visible = total_count == 0 || !result.comments.is_empty();
+
+    let metrics = analytics::ReviewMetricsRecord::from_comments(
+        run_id.clone(),
+        timestamp,
+        result.mode.clone(),
+        provider.to_string(),
+        model.to_string(),
+        &original_comments,
+        result.files_scanned,
+        result.user_visible,
+    );
+    if let Err(error) = analytics::append_review_metrics(workspace_path, &metrics) {
+        result
+            .warnings
+            .push(format!("Failed to write review metrics: {}", error));
+    }
+
+    let run_record = outcome::ReviewRunRecord {
+        run_id,
+        timestamp,
+        mode: result.mode.clone(),
+        comments: original_comments,
+    };
+    if let Err(error) = outcome::save_review_run(workspace_path, &run_record) {
+        result
+            .warnings
+            .push(format!("Failed to write review run index: {}", error));
+    }
+
+    Ok(result)
 }
 
 pub async fn get_local_diff(workspace_path: &Path) -> Result<String, String> {
@@ -299,14 +394,14 @@ async fn run_full_scan_review(
     let mut warnings = Vec::new();
     let files = get_full_scan_files(&workspace.workspace_path).await?;
     if files.is_empty() {
-        return Ok(ReviewResult {
-            comments: Vec::new(),
-            summary: "No tracked files found".to_string(),
-            validated: true,
+        return Ok(review_result(
+            Vec::new(),
+            "No tracked files found".to_string(),
+            true,
             warnings,
-            files_scanned: 0,
-            mode: ReviewMode::FullScan,
-        });
+            0,
+            ReviewMode::FullScan,
+        ));
     }
 
     let total_files = files.len();
@@ -367,15 +462,16 @@ async fn run_full_scan_review(
     )
     .await?;
     warnings.extend(validator_warnings);
+    let summary = validator_summary.unwrap_or_else(|| summarize_comments(&comments, validated));
 
-    Ok(ReviewResult {
-        summary: validator_summary.unwrap_or_else(|| summarize_comments(&comments, validated)),
+    Ok(review_result(
         comments,
+        summary,
         validated,
         warnings,
         files_scanned,
-        mode: ReviewMode::FullScan,
-    })
+        ReviewMode::FullScan,
+    ))
 }
 
 async fn run_diff_review(
@@ -388,14 +484,14 @@ async fn run_diff_review(
     diff: String,
 ) -> Result<ReviewResult, String> {
     if diff.trim().is_empty() {
-        return Ok(ReviewResult {
-            comments: Vec::new(),
-            summary: "No changes found to review".to_string(),
-            validated: true,
-            warnings: Vec::new(),
-            files_scanned: 0,
+        return Ok(review_result(
+            Vec::new(),
+            "No changes found to review".to_string(),
+            true,
+            Vec::new(),
+            0,
             mode,
-        });
+        ));
     }
 
     let mut warnings = Vec::new();
@@ -407,14 +503,14 @@ async fn run_diff_review(
     if file_diffs.is_empty() {
         warnings
             .push("Only binary files were present in the diff; nothing was reviewed".to_string());
-        return Ok(ReviewResult {
-            comments: Vec::new(),
-            summary: "No text changes found to review".to_string(),
-            validated: true,
+        return Ok(review_result(
+            Vec::new(),
+            "No text changes found to review".to_string(),
+            true,
             warnings,
-            files_scanned: 0,
+            0,
             mode,
-        });
+        ));
     }
 
     let total_files = file_diffs.len();
@@ -483,15 +579,16 @@ async fn run_diff_review(
     )
     .await?;
     warnings.extend(validator_warnings);
+    let summary = validator_summary.unwrap_or_else(|| summarize_comments(&comments, validated));
 
-    Ok(ReviewResult {
-        summary: validator_summary.unwrap_or_else(|| summarize_comments(&comments, validated)),
+    Ok(review_result(
         comments,
+        summary,
         validated,
         warnings,
         files_scanned,
         mode,
-    })
+    ))
 }
 
 async fn validate_candidates(
@@ -572,6 +669,50 @@ fn summarize_comments(comments: &[ReviewComment], validated: bool) -> String {
         validation,
         if comments.len() == 1 { "" } else { "s" }
     )
+}
+
+fn suppression_summary(total: usize, visible: usize, snr_percent: f64) -> String {
+    let suppressed = total.saturating_sub(visible);
+    format!(
+        "Found {} potential issue{}. Showing {} actionable finding{} (SNR: {}%). {} low-signal comment{} suppressed.",
+        total,
+        if total == 1 { "" } else { "s" },
+        visible,
+        if visible == 1 { "" } else { "s" },
+        format_percent(snr_percent),
+        suppressed,
+        if suppressed == 1 { "" } else { "s" }
+    )
+}
+
+fn format_percent(value: f64) -> String {
+    if (value.fract()).abs() < f64::EPSILON {
+        format!("{}", value as usize)
+    } else {
+        format!("{:.1}", value)
+    }
+}
+
+fn review_result(
+    comments: Vec<ReviewComment>,
+    summary: String,
+    validated: bool,
+    warnings: Vec<String>,
+    files_scanned: usize,
+    mode: ReviewMode,
+) -> ReviewResult {
+    ReviewResult {
+        run_id: String::new(),
+        comments,
+        summary,
+        validated,
+        warnings,
+        files_scanned,
+        mode,
+        suppressed_count: 0,
+        snr_percent: 100.0,
+        user_visible: true,
+    }
 }
 
 fn partial_review_warning(reviewed: usize, total: usize) -> String {
@@ -1072,10 +1213,18 @@ pub(crate) async fn run_workspace_agent(
                 .agent($model)
                 .preamble(config.preamble)
                 .default_max_turns(config.max_turns)
-                .tool(create_read_file_tool(config.workspace.workspace_path.clone()))
-                .tool(create_search_code_tool(config.workspace.workspace_path.clone()))
-                .tool(create_find_files_tool(config.workspace.workspace_path.clone()))
-                .tool(create_list_directory_tool(config.workspace.workspace_path.clone()))
+                .tool(create_read_file_tool(
+                    config.workspace.workspace_path.clone(),
+                ))
+                .tool(create_search_code_tool(
+                    config.workspace.workspace_path.clone(),
+                ))
+                .tool(create_find_files_tool(
+                    config.workspace.workspace_path.clone(),
+                ))
+                .tool(create_list_directory_tool(
+                    config.workspace.workspace_path.clone(),
+                ))
                 .build();
             let future = agent.prompt(config.prompt).max_turns(config.max_turns);
             timeout(config.timeout, future)
@@ -1150,6 +1299,15 @@ mod tests {
 
     fn sample_review_comment() -> ReviewComment {
         serde_json::from_value(sample_comment()).unwrap()
+    }
+
+    fn tiered_comment(severity: Severity, category: &str, tier: SignalTier) -> ReviewComment {
+        ReviewComment {
+            severity,
+            category: category.to_string(),
+            signal_tier: tier,
+            ..sample_review_comment()
+        }
     }
 
     #[test]
@@ -1292,6 +1450,77 @@ Binary files a/icon.png and b/icon.png differ
         assert_eq!(parsed.comments.len(), 1);
         assert_eq!(parsed.comments[0].file, "src/main.rs");
         assert_eq!(parsed.comments[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn noise_gate_preserves_results_at_exact_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let comments = vec![
+            tiered_comment(Severity::Medium, "business logic", SignalTier::Tier1),
+            tiered_comment(Severity::Medium, "business logic", SignalTier::Tier2),
+            tiered_comment(Severity::Medium, "business logic", SignalTier::Tier2),
+            tiered_comment(Severity::Low, "style", SignalTier::Noise),
+            tiered_comment(Severity::Low, "style", SignalTier::Noise),
+        ];
+        let result = review_result(
+            comments,
+            "Found 5 validated security findings.".to_string(),
+            true,
+            Vec::new(),
+            3,
+            ReviewMode::Local,
+        );
+
+        let finalized = finalize_review_result("openai", "model", dir.path(), result).unwrap();
+
+        assert_eq!(finalized.comments.len(), 5);
+        assert_eq!(finalized.suppressed_count, 0);
+        assert_eq!(finalized.snr_percent, 60.0);
+        assert!(finalized.user_visible);
+    }
+
+    #[test]
+    fn noise_gate_handles_empty_comment_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = review_result(
+            Vec::new(),
+            "No security findings detected.".to_string(),
+            true,
+            Vec::new(),
+            0,
+            ReviewMode::FullScan,
+        );
+
+        let finalized = finalize_review_result("openai", "model", dir.path(), result).unwrap();
+
+        assert!(finalized.comments.is_empty());
+        assert_eq!(finalized.suppressed_count, 0);
+        assert_eq!(finalized.snr_percent, 100.0);
+        assert!(finalized.user_visible);
+    }
+
+    #[test]
+    fn noise_gate_suppresses_all_noise_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = review_result(
+            vec![
+                tiered_comment(Severity::Low, "style", SignalTier::Tier2),
+                tiered_comment(Severity::Info, "formatting", SignalTier::Unclassified),
+            ],
+            "Found 2 validated security findings.".to_string(),
+            true,
+            Vec::new(),
+            2,
+            ReviewMode::Local,
+        );
+
+        let finalized = finalize_review_result("openai", "model", dir.path(), result).unwrap();
+
+        assert!(finalized.comments.is_empty());
+        assert_eq!(finalized.suppressed_count, 2);
+        assert_eq!(finalized.snr_percent, 0.0);
+        assert!(!finalized.user_visible);
+        assert!(finalized.summary.contains("Showing 0 actionable findings"));
     }
 
     #[test]
