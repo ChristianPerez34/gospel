@@ -62,7 +62,13 @@ const DETERMINISTIC_FAILURE_REASONS: &[&str] = &[
     "invalid_query",
     "binary",
     "too_large",
+    "oversized",
+    "invalid_utf8",
     "invalid_range",
+    "invalid_replacement",
+    "no_match",
+    "ambiguous_match",
+    "no_op",
 ];
 
 /// Detects consecutive identical tool calls and repeated deterministic failures.
@@ -184,8 +190,9 @@ use crate::review::tools::{
 };
 use crate::workspace_tools::{
     create_context_search_tool, create_find_files_tool, create_list_directory_tool,
-    create_read_file_tool, create_search_code_tool, create_write_harness_file_tool,
-    truncate_text_bytes, HARNESS_CONTROL_AREA_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    create_read_file_tool, create_search_code_tool, create_source_edit_tool,
+    create_write_harness_file_tool, truncate_text_bytes, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
+    WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
 const AGENT_MAX_TURNS: usize = 20;
@@ -378,6 +385,7 @@ impl LlmService {
 pub struct StreamCompletionResult {
     pub full_response: String,
     pub history: Option<Vec<Message>>,
+    pub source_edit_succeeded: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -717,6 +725,7 @@ where
 
     let mut full_response = String::new();
     let mut captured_history: Option<Vec<Message>> = None;
+    let mut source_edit_succeeded = false;
 
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
@@ -738,6 +747,9 @@ where
                         workspace_context.workspace_path.clone(),
                     ))
                     .tool(create_list_directory_tool(
+                        workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_source_edit_tool(
                         workspace_context.workspace_path.clone(),
                     ))
                     .tool(create_write_harness_file_tool(
@@ -862,6 +874,12 @@ where
                                 .cloned()
                                 .unwrap_or_else(|| tool_result.id.clone());
 
+                            if tool_name == "source_edit"
+                                && source_edit_result_changed(&result_summary)
+                            {
+                                source_edit_succeeded = true;
+                            }
+
                             // Check for repeated deterministic failures
                             match serde_json::from_str::<serde_json::Value>(&result_summary) {
                                 Ok(parsed) => {
@@ -957,7 +975,19 @@ where
     Ok(StreamCompletionResult {
         full_response,
         history: captured_history,
+        source_edit_succeeded,
     })
+}
+
+fn source_edit_result_changed(result_summary: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(result_summary)
+        .ok()
+        .and_then(|value| {
+            let success = value.get("success").and_then(|item| item.as_bool())?;
+            let changed = value.get("changed").and_then(|item| item.as_bool())?;
+            Some(success && changed)
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -1085,5 +1115,19 @@ mod tests {
         assert!(prompt.contains("Task:"));
         assert!(prompt.contains("Focus on Tauri setup"));
         assert!(prompt.contains("Highlight risky assumptions"));
+    }
+
+    #[test]
+    fn source_edit_result_changed_requires_success_and_changed() {
+        assert!(source_edit_result_changed(
+            r#"{"success":true,"changed":true,"path":"src/lib.rs"}"#
+        ));
+        assert!(!source_edit_result_changed(
+            r#"{"success":true,"changed":false,"reason":"no_op"}"#
+        ));
+        assert!(!source_edit_result_changed(
+            r#"{"success":false,"changed":false,"reason":"blocked"}"#
+        ));
+        assert!(!source_edit_result_changed("not json"));
     }
 }

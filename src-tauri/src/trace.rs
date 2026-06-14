@@ -203,6 +203,8 @@ const SENSITIVE_KEYS: &[&str] = &[
     "password",
     "secret",
     "token",
+    "old_text",
+    "new_text",
 ];
 
 fn redact_sensitive_value(value: &mut serde_json::Value) {
@@ -340,5 +342,23 @@ mod tests {
         assert_eq!(value["path"], "src/lib.rs");
         assert_eq!(value["api_key"], "[REDACTED]");
         assert!(!redacted.contains("sk-secret"));
+    }
+
+    #[test]
+    fn redacted_json_string_redacts_source_edit_snippets() {
+        let arguments = serde_json::json!({
+            "path": "src/lib.rs",
+            "old_text": "raw old",
+            "new_text": "raw new"
+        });
+
+        let redacted = redacted_json_string(&arguments);
+        let value: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+
+        assert_eq!(value["path"], "src/lib.rs");
+        assert_eq!(value["old_text"], "[REDACTED]");
+        assert_eq!(value["new_text"], "[REDACTED]");
+        assert!(!redacted.contains("raw old"));
+        assert!(!redacted.contains("raw new"));
     }
 }

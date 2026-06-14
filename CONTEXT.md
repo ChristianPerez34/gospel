@@ -5,7 +5,9 @@
 - **Credentialed Provider**: A supported model provider for which Gospel can access a usable credential source. API-key providers are credentialed when a key exists in the OS keychain. ChatGPT Plus/Pro is credentialed when a reusable OAuth session exists in the local ChatGPT auth cache.
 - **Provider Visibility**: A non-secret user preference that determines whether a credentialed provider should contribute models to the model picker. Missing visibility data defaults to visible.
 - **Available Model**: A backend-returned provider/model entry that is selectable because its provider is credentialed, visible, and model loading returned a live or cached model list.
-- **Live Workspace Tools**: Workspace-scoped chat tools that inspect the active Gospel workspace directly, including safe file reads, code search, and directory discovery. These are the source of truth for file contents.
+- **Live Workspace Tools**: Workspace-scoped chat tools that inspect and narrowly mutate the active Gospel workspace directly, including safe file reads, code search, directory discovery, and exact source edits. These are the source of truth for file contents.
+- **Source Edit Tool**: The `source_edit` Live Workspace Tool registered only for the main workspace-aware agent. It applies exactly one in-place replacement to an existing safe UTF-8 file, rejects unsafe or ambiguous targets, returns a capped replacement-scoped diff preview, and redacts raw replacement snippets from UI and Trace Log argument payloads. See ADR-0006.
+- **Exact Replacement**: A source-edit safety contract where the agent supplies non-empty `old_text` that must occur exactly once in the target file and distinct `new_text` to replace it. Missing, repeated, or no-op replacement attempts fail without mutating the file.
 - **Exploration Agent**: A backend-only helper Agent that investigates broad multi-file or architectural questions inside the active workspace and returns a structured report to the main Agent.
 - **Turn**: One LLM inference cycle, which may include tool execution. A turn ends when the LLM produces a final text response (not a tool call).
 - **Session Turn**: The backend orchestration of one user-submitted prompt against an optional Session, from preparing Turn context through streaming, persistence, failure handling, and follow-up verification. A Session Turn owns resolution of the Active Workspace Context for that Turn, including corpus availability fallback before constructing Live Workspace Tools. It owns the persistence policy for successful, failed, and controlled-stopped Turns: Display Transcript updates, Model History preservation or replacement, in-memory Conversation continuation, and draft-to-active Session status. It also owns the policy for whether a Verification Agent should run after the Turn; storage, event emission, LLM streaming, and background verification execution sit behind adapters.
@@ -48,7 +50,7 @@ Code plays three roles in any agent-assisted workflow:
 Before explicit planning, Gospel's Harness Interface consisted of:
 - **System preamble**: assembled from workspace tools prompt, corpus prompt, delegation prompt, and matched/invoked skills.
 - **Skills**: user-authored directives (`SKILL.md`) injected into the preamble, steering behaviour per-turn or per-invocation.
-- **Live Workspace Tools**: four safe, workspace-scoped tools (read_file, search_code, find_files, list_directory) that give the agent source-of-truth access to the codebase.
+- **Live Workspace Tools**: safe, workspace-scoped tools (read_file, search_code, find_files, list_directory, source_edit) that give the main agent source-of-truth access to the codebase and a narrow exact-replacement mutation path.
 - **Exploration Agent**: a delegated sub-agent for broad architectural investigation.
 - **Conversation history**: the implicit memory within a session.
 
@@ -72,3 +74,13 @@ The first deliberate Harness Mechanism addition: a persistent, inspectable plan 
 **Visibility**: The `.gospel/` directory is added to the hidden allowlist, making it traversable by all Live Workspace Tools. Every workspace session preamble includes a `## Harness Control Area` section documenting the substrate, the PLAN.md structure, and guidance on maintaining it.
 
 **Skill-agnostic contract**: The plan maintenance guidance lives in the harness prompt, not in individual skills. Skills (like `/tdd` and `/diagnose`) are external plugins that govern workflow discipline; the plan is the outer persistent record that tracks goal, progress, and evidence across turns regardless of which skill is active. This keeps skills decoupled from gospel-specific concerns while still giving the agent a clear contract for when and how to maintain the plan.
+
+## Source Edit Mechanism
+
+The second Harness Mechanism addition: a narrow mutation tool for source files.
+
+**Tool contract**: The `source_edit` tool applies one exact in-place replacement to an existing UTF-8 file in the active workspace. It fails when `old_text` is empty, appears zero times, appears more than once, or matches `new_text`.
+
+**Safety policy**: Source edits reject workspace escapes, symlinked files, `.gospel/**`, hidden control directories, secret-like files, generated/noisy directories, lockfiles, generated files, binary or invalid UTF-8 files, and oversized files. Harness files remain writable only through `write_harness_file`.
+
+**Visibility and verification**: Successful source edits render as **Edit file** action cards with capped diff previews. Raw replacement snippets are redacted from UI tool-call payloads and Trace Log arguments. Completed turns with successful source edits schedule the read-only Verification Agent even when the assistant response is otherwise short.

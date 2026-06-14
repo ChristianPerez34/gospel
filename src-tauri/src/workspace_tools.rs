@@ -22,6 +22,7 @@ You can inspect the active Gospel workspace with live tools.
 - Use `list_directory` to inspect directory structure.
 - Use `search_code` to find where text or symbols appear.
 - Use `read_file` to verify exact code and content.
+- Use `source_edit` to apply one exact replacement to an existing safe UTF-8 source file after verifying the current contents.
 
 ### Context Search
 
@@ -36,6 +37,7 @@ You can inspect the active Gospel workspace with live tools.
 - Prefer `find_files` or `search_code` before making broad claims.
 - If corpus tools are available, use them for fast structural orientation and live reads for verification.
 - Stay within the active workspace.
+- `source_edit` is for narrow in-place changes only. It requires one exact `old_text` match, rejects unsafe targets, and returns a capped diff preview.
 "#;
 
 pub const HARNESS_CONTROL_AREA_SYSTEM_PROMPT: &str = r#"
@@ -83,6 +85,9 @@ const READ_DEFAULT_LINE_CAP: usize = 200;
 const READ_ABSOLUTE_LINE_CAP: usize = 400;
 const READ_RESPONSE_BYTES_CAP: usize = 64 * 1024;
 const READ_FILE_BYTES_CAP: u64 = 1024 * 1024;
+const SOURCE_EDIT_FILE_BYTES_CAP: u64 = 1024 * 1024;
+const SOURCE_EDIT_DIFF_PREVIEW_BYTES_CAP: usize = 16 * 1024;
+const SOURCE_EDIT_CONTEXT_LINES: usize = 3;
 const SEARCH_DEFAULT_MATCH_CAP: usize = 50;
 const SEARCH_ABSOLUTE_MATCH_CAP: usize = 200;
 const SEARCH_FILE_SCAN_CAP: usize = 500;
@@ -992,6 +997,239 @@ pub fn create_list_directory_tool(workspace_root: PathBuf) -> ListDirectoryTool 
     ListDirectoryTool { workspace_root }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SourceEditArgs {
+    path: String,
+    old_text: String,
+    new_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceEditTool {
+    workspace_root: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SourceEditOutput {
+    success: bool,
+    message: String,
+    reason: Option<String>,
+    path: Option<String>,
+    changed: bool,
+    replacements: usize,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    size_bytes: Option<u64>,
+    diff_preview: Option<String>,
+    truncated: bool,
+}
+
+impl Tool for SourceEditTool {
+    const NAME: &'static str = "source_edit";
+
+    type Error = WorkspaceToolError;
+    type Args = SourceEditArgs;
+    type Output = SourceEditOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Apply exactly one in-place replacement to an existing safe UTF-8 workspace source file. The target must not be hidden control data, generated/noisy output, a lockfile, a secret-like file, a symlink, binary, oversized, or outside the active workspace.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative or absolute file path inside the active workspace."
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "Exact existing text to replace. It must occur exactly once."
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text."
+                    }
+                },
+                "required": ["path", "old_text", "new_text"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let access = WorkspaceAccess::new(&self.workspace_root)?;
+        let path = args.path.trim();
+        if path.is_empty() {
+            return Ok(source_edit_failure(
+                "blocked",
+                "Path must not be empty.",
+                None,
+            ));
+        }
+
+        if args.old_text.is_empty() {
+            return Ok(source_edit_failure(
+                "invalid_replacement",
+                "old_text must not be empty.",
+                None,
+            ));
+        }
+
+        if args.old_text == args.new_text {
+            return Ok(source_edit_failure(
+                "no_op",
+                "old_text and new_text are identical; no edit was applied.",
+                None,
+            ));
+        }
+
+        let resolved = match access.resolve_path(Some(path)) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return Ok(source_edit_failure(
+                    access_failure_reason(&error),
+                    &match error {
+                        AccessFailure::Blocked(m)
+                        | AccessFailure::NotFound(m)
+                        | AccessFailure::Io(m) => m,
+                    },
+                    None,
+                ));
+            }
+        };
+
+        if !resolved.exists {
+            return Ok(source_edit_failure(
+                "not_found",
+                "File does not exist in the active workspace.",
+                None,
+            ));
+        }
+
+        let display_path = display_rel_path(&resolved.relative_path);
+
+        if !resolved.is_file {
+            return Ok(source_edit_failure(
+                "blocked",
+                "Path points to a directory, not a file.",
+                Some(display_path),
+            ));
+        }
+
+        if resolved.is_symlink {
+            return Ok(source_edit_failure(
+                "blocked",
+                "Symlinked files cannot be edited from chat.",
+                Some(display_path),
+            ));
+        }
+
+        if let Some(reason) = source_edit_blocked_path_reason(&resolved.relative_path) {
+            return Ok(source_edit_failure("blocked", &reason, Some(display_path)));
+        }
+
+        let metadata = fs::metadata(&resolved.absolute_path)
+            .map_err(|e| WorkspaceToolError::Internal(format!("Failed to read metadata: {}", e)))?;
+        if metadata.len() > SOURCE_EDIT_FILE_BYTES_CAP {
+            return Ok(source_edit_failure(
+                "oversized",
+                &format!(
+                    "File is too large to edit safely ({} bytes).",
+                    metadata.len()
+                ),
+                Some(display_path),
+            ));
+        }
+
+        let bytes = fs::read(&resolved.absolute_path)
+            .map_err(|e| WorkspaceToolError::Internal(format!("Failed to read file: {}", e)))?;
+        if bytes.contains(&0) {
+            return Ok(source_edit_failure(
+                "binary",
+                "Binary files cannot be edited from chat.",
+                Some(display_path),
+            ));
+        }
+
+        let original = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                return Ok(source_edit_failure(
+                    "invalid_utf8",
+                    "File is not valid UTF-8 and cannot be edited from chat.",
+                    Some(display_path),
+                ));
+            }
+        };
+
+        let mut matches = original.match_indices(&args.old_text);
+        let first_match = matches.next();
+        let second_match = matches.next();
+        let Some((start_index, _)) = first_match else {
+            return Ok(source_edit_failure(
+                "no_match",
+                "old_text was not found in the target file.",
+                Some(display_path),
+            ));
+        };
+
+        if second_match.is_some() {
+            return Ok(source_edit_failure(
+                "ambiguous_match",
+                "old_text occurs more than once; source_edit requires exactly one match.",
+                Some(display_path),
+            ));
+        }
+
+        let end_index = start_index + args.old_text.len();
+        let start_line = source_edit_line_number(&original, start_index);
+        let end_line = source_edit_line_number(
+            &original,
+            if args.old_text.ends_with('\n') {
+                end_index.saturating_sub(1)
+            } else {
+                end_index
+            },
+        );
+        let (diff_preview, truncated) = source_edit_diff_preview(
+            &display_path,
+            &original,
+            start_index,
+            end_index,
+            &args.old_text,
+            &args.new_text,
+        );
+
+        let mut edited = original.clone();
+        edited.replace_range(start_index..end_index, &args.new_text);
+
+        write_atomic_replacement(
+            &resolved.absolute_path,
+            edited.as_bytes(),
+            metadata.permissions(),
+        )
+        .map_err(|e| WorkspaceToolError::Internal(format!("Failed to write file: {}", e)))?;
+
+        Ok(SourceEditOutput {
+            success: true,
+            message: format!("Edited {} with one exact replacement.", display_path),
+            reason: None,
+            path: Some(display_path),
+            changed: true,
+            replacements: 1,
+            start_line: Some(start_line),
+            end_line: Some(end_line),
+            size_bytes: Some(edited.len() as u64),
+            diff_preview: Some(diff_preview),
+            truncated,
+        })
+    }
+}
+
+pub fn create_source_edit_tool(workspace_root: PathBuf) -> SourceEditTool {
+    SourceEditTool { workspace_root }
+}
+
 const HARNESS_PREFIX: &str = ".gospel/";
 const HARNESS_CORPUS_PREFIX: &str = ".gospel/corpus/";
 const HARNESS_CONTENT_BYTES_CAP: usize = 1024 * 1024;
@@ -1435,6 +1673,202 @@ fn harness_failure(reason: &str, message: &str) -> WriteHarnessFileOutput {
         path: None,
         size_bytes: None,
     }
+}
+
+fn source_edit_failure(reason: &str, message: &str, path: Option<String>) -> SourceEditOutput {
+    SourceEditOutput {
+        success: false,
+        message: message.to_string(),
+        reason: Some(reason.to_string()),
+        path,
+        changed: false,
+        replacements: 0,
+        start_line: None,
+        end_line: None,
+        size_bytes: None,
+        diff_preview: None,
+        truncated: false,
+    }
+}
+
+fn source_edit_blocked_path_reason(path: &Path) -> Option<String> {
+    let rendered = display_rel_path(path);
+    if rendered == ".gospel" || rendered.starts_with(".gospel/") {
+        return Some(
+            "Files under .gospel/ are harness control data and cannot be edited by source_edit."
+                .to_string(),
+        );
+    }
+
+    if is_secret_like(path) {
+        return Some("Secret-like files are blocked from source edits.".to_string());
+    }
+
+    if has_hidden_directory_component(path) {
+        return Some("Hidden control directories are blocked from source edits.".to_string());
+    }
+
+    if has_ignored_directory_component(path) {
+        return Some("Generated or noisy directories are blocked from source edits.".to_string());
+    }
+
+    if is_lockfile(path) {
+        return Some("Lockfiles are blocked from source edits.".to_string());
+    }
+
+    if is_generated_file(path) {
+        return Some("Generated files are blocked from source edits.".to_string());
+    }
+
+    None
+}
+
+fn source_edit_line_number(text: &str, byte_index: usize) -> usize {
+    text[..byte_index.min(text.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
+}
+
+fn source_edit_diff_preview(
+    path: &str,
+    original: &str,
+    start_index: usize,
+    end_index: usize,
+    old_text: &str,
+    new_text: &str,
+) -> (String, bool) {
+    let before = &original[..start_index];
+    let after = &original[end_index..];
+    let start_line = source_edit_line_number(original, start_index);
+    let mut lines = vec![format!("@@ {}:{} @@", path, start_line)];
+    let mut line_truncated = false;
+
+    let mut push_line = |prefix: &str, line: &str| {
+        let truncated_line = truncate_line(line, DISPLAY_LINE_CHAR_CAP);
+        line_truncated |= truncated_line.truncated;
+        lines.push(format!("{}{}", prefix, truncated_line.text));
+    };
+
+    let before_lines: Vec<&str> = before.lines().collect();
+    let context_start = before_lines.len().saturating_sub(SOURCE_EDIT_CONTEXT_LINES);
+    for line in &before_lines[context_start..] {
+        push_line("  ", line);
+    }
+
+    for line in diff_text_lines(old_text) {
+        push_line("-", line);
+    }
+
+    for line in diff_text_lines(new_text) {
+        push_line("+", line);
+    }
+
+    for line in after.lines().take(SOURCE_EDIT_CONTEXT_LINES) {
+        push_line("  ", line);
+    }
+
+    let (preview, byte_truncated) =
+        truncate_text_bytes(&lines.join("\n"), SOURCE_EDIT_DIFF_PREVIEW_BYTES_CAP);
+    (preview, line_truncated || byte_truncated)
+}
+
+fn diff_text_lines(text: &str) -> Vec<&str> {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        vec![""]
+    } else {
+        lines
+    }
+}
+
+fn has_hidden_directory_component(path: &Path) -> bool {
+    let components: Vec<_> = path.components().collect();
+    components
+        .iter()
+        .take(components.len().saturating_sub(1))
+        .any(|component| match component {
+            Component::Normal(part) => part.to_string_lossy().starts_with('.'),
+            _ => false,
+        })
+}
+
+fn is_lockfile(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    matches!(
+        name.to_string_lossy().to_ascii_lowercase().as_str(),
+        "cargo.lock"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | "bun.lock"
+            | "bun.lockb"
+            | "deno.lock"
+            | "poetry.lock"
+            | "pipfile.lock"
+            | "gemfile.lock"
+            | "composer.lock"
+            | "go.sum"
+    )
+}
+
+fn is_generated_file(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    let lower = name.to_string_lossy().to_ascii_lowercase();
+    is_broad_ignored_file(path)
+        || lower.ends_with(".map")
+        || lower.contains(".generated.")
+        || lower.contains(".gen.")
+        || lower.ends_with("_generated.rs")
+        || lower.ends_with("_generated.go")
+        || lower.ends_with(".pb.go")
+        || lower.ends_with("_pb2.py")
+}
+
+fn write_atomic_replacement(
+    target: &Path,
+    content: &[u8],
+    permissions: fs::Permissions,
+) -> Result<(), String> {
+    let parent_dir = target
+        .parent()
+        .ok_or_else(|| "Write target has no parent directory.".to_string())?;
+    let file_name = target.file_name().unwrap_or_default();
+    let mut prefix = std::ffi::OsString::from(".");
+    prefix.push(file_name);
+    prefix.push(".tmp.");
+
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(&prefix)
+        .tempfile_in(parent_dir)
+        .map_err(|e| format!("Failed to create temp file for atomic edit: {}", e))?;
+    temp_file
+        .as_file()
+        .set_permissions(permissions)
+        .map_err(|e| format!("Failed to preserve file permissions: {}", e))?;
+    temp_file
+        .write_all(content)
+        .map_err(|e| format!("Failed to write edited content: {}", e))?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Failed to sync edited content: {}", e))?;
+
+    let persisted = temp_file
+        .persist(target)
+        .map_err(|e| format!("Failed to replace target file: {}", e.error))?;
+    drop(persisted);
+
+    if let Ok(dir_handle) = fs::File::open(parent_dir) {
+        let _ = dir_handle.sync_all();
+    }
+
+    Ok(())
 }
 
 pub(crate) fn truncate_text_bytes(text: &str, max_bytes: usize) -> (String, bool) {
@@ -2323,6 +2757,22 @@ mod tests {
         assert_eq!(truncated, "abcdefg\n\n[truncated]");
     }
 
+    #[test]
+    fn source_edit_diff_preview_reports_line_truncation() {
+        let old_text = "a".repeat(DISPLAY_LINE_CHAR_CAP + 1);
+        let (preview, did_truncate) = source_edit_diff_preview(
+            "src/main.rs",
+            &old_text,
+            0,
+            old_text.len(),
+            &old_text,
+            "short",
+        );
+
+        assert!(did_truncate);
+        assert!(preview.contains("..."));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn read_file_blocks_symlink_escape() {
@@ -2344,6 +2794,187 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.reason.as_deref(), Some("blocked"));
+    }
+
+    #[tokio::test]
+    async fn source_edit_applies_one_exact_replacement() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("src/main.rs");
+        write_file(&file_path, b"fn main() {\n    println!(\"old\");\n}\n");
+        let tool = create_source_edit_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(SourceEditArgs {
+                path: "src/main.rs".to_string(),
+                old_text: "println!(\"old\")".to_string(),
+                new_text: "println!(\"new\")".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert!(output.changed);
+        assert_eq!(output.replacements, 1);
+        assert_eq!(output.path.as_deref(), Some("src/main.rs"));
+        assert_eq!(
+            fs::read_to_string(&file_path).unwrap(),
+            "fn main() {\n    println!(\"new\");\n}\n"
+        );
+        let preview = output.diff_preview.unwrap();
+        assert!(preview.contains("-println!(\"old\")"));
+        assert!(preview.contains("+println!(\"new\")"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn source_edit_does_not_follow_preexisting_temp_symlink() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let file_path = dir.path().join("src/main.rs");
+        let outside_file = outside.path().join("outside.txt");
+        write_file(&file_path, b"old\n");
+        write_file(&outside_file, b"outside\n");
+
+        let parent = file_path.parent().unwrap();
+        for count in 0..64 {
+            let temp_name = format!(".main.rs.tmp.{}.{}", std::process::id(), count);
+            symlink(&outside_file, parent.join(temp_name)).unwrap();
+        }
+
+        let tool = create_source_edit_tool(dir.path().to_path_buf());
+        let output = tool
+            .call(SourceEditArgs {
+                path: "src/main.rs".to_string(),
+                old_text: "old".to_string(),
+                new_text: "new".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "new\n");
+        assert!(!fs::symlink_metadata(&file_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&outside_file).unwrap(), "outside\n");
+    }
+
+    #[tokio::test]
+    async fn source_edit_rejects_no_match_ambiguous_match_and_no_op() {
+        let dir = tempdir().unwrap();
+        write_file(&dir.path().join("src/lib.rs"), b"old\nold\n");
+        let tool = create_source_edit_tool(dir.path().to_path_buf());
+
+        let no_match = tool
+            .call(SourceEditArgs {
+                path: "src/lib.rs".to_string(),
+                old_text: "missing".to_string(),
+                new_text: "new".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(!no_match.success);
+        assert_eq!(no_match.reason.as_deref(), Some("no_match"));
+
+        let ambiguous = tool
+            .call(SourceEditArgs {
+                path: "src/lib.rs".to_string(),
+                old_text: "old".to_string(),
+                new_text: "new".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(!ambiguous.success);
+        assert_eq!(ambiguous.reason.as_deref(), Some("ambiguous_match"));
+
+        let no_op = tool
+            .call(SourceEditArgs {
+                path: "src/lib.rs".to_string(),
+                old_text: "old".to_string(),
+                new_text: "old".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(!no_op.success);
+        assert_eq!(no_op.reason.as_deref(), Some("no_op"));
+    }
+
+    #[tokio::test]
+    async fn source_edit_rejects_blocked_targets() {
+        let dir = tempdir().unwrap();
+        write_file(&dir.path().join(".gospel/PLAN.md"), b"plan\n");
+        write_file(&dir.path().join(".github/workflows/ci.yml"), b"name: ci\n");
+        write_file(&dir.path().join("target/out.rs"), b"old\n");
+        write_file(&dir.path().join("Cargo.lock"), b"old\n");
+        write_file(&dir.path().join("src/app.generated.ts"), b"old\n");
+        write_file(&dir.path().join(".env"), b"TOKEN=old\n");
+        let tool = create_source_edit_tool(dir.path().to_path_buf());
+
+        for path in [
+            ".gospel/PLAN.md",
+            ".github/workflows/ci.yml",
+            "target/out.rs",
+            "Cargo.lock",
+            "src/app.generated.ts",
+            ".env",
+        ] {
+            let output = tool
+                .call(SourceEditArgs {
+                    path: path.to_string(),
+                    old_text: "old".to_string(),
+                    new_text: "new".to_string(),
+                })
+                .await
+                .unwrap();
+            assert!(!output.success, "{path} should be blocked");
+            assert_eq!(output.reason.as_deref(), Some("blocked"));
+        }
+    }
+
+    #[tokio::test]
+    async fn source_edit_rejects_binary_invalid_utf8_and_oversized_files() {
+        let dir = tempdir().unwrap();
+        write_file(&dir.path().join("binary.dat"), b"old\0value");
+        write_file(&dir.path().join("invalid.txt"), &[0xff, 0xfe]);
+        write_file(
+            &dir.path().join("large.txt"),
+            &vec![b'a'; SOURCE_EDIT_FILE_BYTES_CAP as usize + 1],
+        );
+        let tool = create_source_edit_tool(dir.path().to_path_buf());
+
+        let binary = tool
+            .call(SourceEditArgs {
+                path: "binary.dat".to_string(),
+                old_text: "old".to_string(),
+                new_text: "new".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(!binary.success);
+        assert_eq!(binary.reason.as_deref(), Some("binary"));
+
+        let invalid = tool
+            .call(SourceEditArgs {
+                path: "invalid.txt".to_string(),
+                old_text: "old".to_string(),
+                new_text: "new".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(!invalid.success);
+        assert_eq!(invalid.reason.as_deref(), Some("invalid_utf8"));
+
+        let oversized = tool
+            .call(SourceEditArgs {
+                path: "large.txt".to_string(),
+                old_text: "a".to_string(),
+                new_text: "b".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(!oversized.success);
+        assert_eq!(oversized.reason.as_deref(), Some("oversized"));
     }
 
     #[tokio::test]

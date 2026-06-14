@@ -21,6 +21,7 @@ const TOOL_LABELS: Record<string, string> = {
   write_harness_file: "Update plan",
   run_security_review: "Security review",
   record_review_outcome: "Record review outcome",
+  source_edit: "Edit file",
   bash: "Run command",
   terminal: "Run command",
   apply_patch: "Edit files",
@@ -142,13 +143,24 @@ function textSection(
 
 function rawPayload(activity: ToolCallActivity) {
   const sections: string[] = [];
-  const argumentsText = formatValue(activity.arguments);
+  const argumentsText = formatValue(redactedArgumentsForDisplay(activity));
   const resultText = formatValue(activity.result);
 
   if (argumentsText) sections.push(`Arguments\n${argumentsText}`);
   if (resultText) sections.push(`Result\n${resultText}`);
 
   return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
+function redactedArgumentsForDisplay(activity: ToolCallActivity) {
+  if (activity.name !== "source_edit") return activity.arguments;
+  const args = asRecord(parseJsonValue(activity.arguments));
+  if (!args) return activity.arguments;
+  return {
+    ...args,
+    old_text: args.old_text == null ? args.old_text : "[REDACTED]",
+    new_text: args.new_text == null ? args.new_text : "[REDACTED]",
+  };
 }
 
 function parsedArguments(activity: ToolCallActivity) {
@@ -436,6 +448,36 @@ function writeHarnessFileCard(activity: ToolCallActivity): Partial<ActionCard> {
   };
 }
 
+function sourceEditCard(activity: ToolCallActivity): Partial<ActionCard> {
+  const args = parsedArguments(activity);
+  const result = resultRecord(activity);
+  const path = result?.path ?? args?.path;
+  const startLine = result?.start_line;
+  const endLine = result?.end_line;
+  const range = compactList([
+    startLine ? `from ${startLine}` : undefined,
+    endLine ? `to ${endLine}` : undefined,
+  ]);
+  const sections = [
+    fieldsSection("Edit", [
+      field("Path", path),
+      result ? field("Changed", result.changed) : undefined,
+      result ? field("Replacements", result.replacements) : undefined,
+      result ? field("Lines", range || undefined) : undefined,
+      result ? field("Size", byteSize(result.size_bytes)) : undefined,
+      result ? field("Truncated", result.truncated) : undefined,
+    ]),
+    ...failureSection(result),
+    textSection("Diff", result?.diff_preview, true),
+    ...waitingSection(activity),
+  ].filter(isRenderableSection);
+
+  return {
+    detail: compactList([path, range]),
+    sections,
+  };
+}
+
 function reviewModeLabel(mode: unknown) {
   const record = asRecord(mode);
   const type = displayValue(record?.type);
@@ -626,6 +668,7 @@ const TOOL_CARD_FORMATTERS: Record<string, (activity: ToolCallActivity) => Parti
   corpus_query: corpusQueryCard,
   corpus_neighbors: corpusNeighborsCard,
   write_harness_file: writeHarnessFileCard,
+  source_edit: sourceEditCard,
   run_security_review: runSecurityReviewCard,
   record_review_outcome: recordReviewOutcomeCard,
 };

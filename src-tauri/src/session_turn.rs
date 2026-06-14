@@ -239,6 +239,7 @@ pub async fn run_streaming_turn(
                 &response_for_verify,
                 &prompt_preparation.effective_prompt,
                 request.session_id.as_deref(),
+                stream_result.source_edit_succeeded,
             ) {
                 deps.verification.schedule_verification(job);
             }
@@ -559,7 +560,11 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
             arguments,
         } => UiEventPayload {
             name: "llm-tool-call",
-            payload: json!({ "id": id, "name": name, "arguments": arguments }),
+            payload: json!({
+                "id": id,
+                "name": name,
+                "arguments": observable_tool_arguments(name, arguments)
+            }),
         },
         SessionTurnEvent::ToolResult { id, name, result } => UiEventPayload {
             name: "llm-tool-result",
@@ -594,7 +599,9 @@ pub fn trace_event_for_session_turn_event(
             session_id: session_id.to_string(),
             role: role.to_string(),
             tool_name: name.clone(),
-            arguments_redacted: trace::redacted_json_string(arguments),
+            arguments_redacted: trace::redacted_json_string(&observable_tool_arguments(
+                name, arguments,
+            )),
             timestamp,
         }),
         SessionTurnEvent::ToolResult { name, result, .. } => Some(trace::TraceEvent::ToolResult {
@@ -638,6 +645,10 @@ pub fn response_requires_verification(response: &str) -> bool {
         || response.len() > 2000
 }
 
+fn turn_requires_verification(response: &str, source_edit_succeeded: bool) -> bool {
+    source_edit_succeeded || response_requires_verification(response)
+}
+
 pub fn verification_job_request(
     provider: &str,
     model: &str,
@@ -646,8 +657,9 @@ pub fn verification_job_request(
     response_to_verify: &str,
     user_prompt: &str,
     session_id: Option<&str>,
+    source_edit_succeeded: bool,
 ) -> Option<VerificationJobRequest> {
-    if !response_requires_verification(response_to_verify) {
+    if !turn_requires_verification(response_to_verify, source_edit_succeeded) {
         return None;
     }
 
@@ -660,6 +672,29 @@ pub fn verification_job_request(
         user_prompt: user_prompt.to_string(),
         session_id: session_id.map(str::to_string),
     })
+}
+
+fn observable_tool_arguments(name: &str, arguments: &serde_json::Value) -> serde_json::Value {
+    if name != "source_edit" {
+        return arguments.clone();
+    }
+
+    let mut redacted = arguments.clone();
+    if let serde_json::Value::Object(map) = &mut redacted {
+        if map.contains_key("old_text") {
+            map.insert(
+                "old_text".to_string(),
+                serde_json::Value::String("[REDACTED]".to_string()),
+            );
+        }
+        if map.contains_key("new_text") {
+            map.insert(
+                "new_text".to_string(),
+                serde_json::Value::String("[REDACTED]".to_string()),
+            );
+        }
+    }
+    redacted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1284,6 +1319,29 @@ mod tests {
             json!({ "id": "call-1", "name": "read_file", "arguments": { "path": "src/lib.rs" } })
         );
 
+        let edit_payload = ui_event_payload(&SessionTurnEvent::ToolCall {
+            id: "call-2".to_string(),
+            name: "source_edit".to_string(),
+            arguments: json!({
+                "path": "src/lib.rs",
+                "old_text": "secret old snippet",
+                "new_text": "secret new snippet"
+            }),
+        });
+        assert_eq!(edit_payload.name, "llm-tool-call");
+        assert_eq!(
+            edit_payload.payload,
+            json!({
+                "id": "call-2",
+                "name": "source_edit",
+                "arguments": {
+                    "path": "src/lib.rs",
+                    "old_text": "[REDACTED]",
+                    "new_text": "[REDACTED]"
+                }
+            })
+        );
+
         let result = ui_event_payload(&SessionTurnEvent::ToolResult {
             id: "call-1".to_string(),
             name: "read_file".to_string(),
@@ -1339,7 +1397,40 @@ mod tests {
             serde_json::from_str(value["arguments_redacted"].as_str().unwrap()).unwrap();
         assert_eq!(arguments["path"], "src/lib.rs");
         assert_eq!(arguments["api_key"], "[REDACTED]");
-        assert!(!value["arguments_redacted"].as_str().unwrap().contains("sk-test"));
+        assert!(!value["arguments_redacted"]
+            .as_str()
+            .unwrap()
+            .contains("sk-test"));
+
+        let edit_trace = trace_event_for_session_turn_event(
+            &SessionTurnEvent::ToolCall {
+                id: "call-2".to_string(),
+                name: "source_edit".to_string(),
+                arguments: json!({
+                    "path": "src/lib.rs",
+                    "old_text": "raw old",
+                    "new_text": "raw new"
+                }),
+            },
+            "session-1",
+            "main",
+            123,
+        )
+        .unwrap();
+        let value = serde_json::to_value(edit_trace).unwrap();
+        let arguments: serde_json::Value =
+            serde_json::from_str(value["arguments_redacted"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments["path"], "src/lib.rs");
+        assert_eq!(arguments["old_text"], "[REDACTED]");
+        assert_eq!(arguments["new_text"], "[REDACTED]");
+        assert!(!value["arguments_redacted"]
+            .as_str()
+            .unwrap()
+            .contains("raw old"));
+        assert!(!value["arguments_redacted"]
+            .as_str()
+            .unwrap()
+            .contains("raw new"));
 
         let trace = trace_event_for_session_turn_event(
             &SessionTurnEvent::ToolResult {
@@ -1375,6 +1466,7 @@ mod tests {
             "plain response",
             "prompt",
             Some("session-1"),
+            false,
         )
         .is_none());
 
@@ -1386,11 +1478,25 @@ mod tests {
             "```rust\nfn main() {}\n```",
             "prompt",
             Some("session-1"),
+            false,
         )
         .unwrap();
 
         assert_eq!(job.workspace, workspace);
         assert_eq!(job.session_id.as_deref(), Some("session-1"));
+
+        let source_edit_job = verification_job_request(
+            "openai",
+            "gpt-4",
+            "key",
+            Some(&workspace),
+            "done",
+            "prompt",
+            Some("session-1"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(source_edit_job.response_to_verify, "done");
     }
 
     #[test]
@@ -1498,6 +1604,7 @@ mod tests {
         let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
             full_response: "```rust\nfn main() {}\n```".to_string(),
             history: Some(history.clone()),
+            source_edit_succeeded: false,
         }));
 
         let result = run_streaming_turn(
@@ -1596,6 +1703,65 @@ mod tests {
         assert_eq!(verifications[0].api_key, "api-key");
         assert_eq!(verifications[0].session_id.as_deref(), Some("session-1"));
         assert!(verifications[0].workspace.corpus_available);
+    }
+
+    #[tokio::test]
+    async fn successful_source_edit_turn_schedules_verification_for_short_response() {
+        let history = vec![user_message("edit it"), assistant_message("Done.")];
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+            full_response: "Done.".to_string(),
+            history: Some(history),
+            source_edit_succeeded: true,
+        }));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            StreamingTurnRequest {
+                provider: "openai".to_string(),
+                prompt: "edit it".to_string(),
+                model: "gpt-test".to_string(),
+                session_id: Some("session-1".to_string()),
+                invoked_skill: None,
+            },
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let verifications = adapters.verifications.lock().unwrap();
+        assert_eq!(verifications.len(), 1);
+        assert_eq!(verifications[0].response_to_verify, "Done.");
+    }
+
+    #[tokio::test]
+    async fn unsuccessful_source_edit_attempt_does_not_schedule_short_response_verification() {
+        let history = vec![
+            user_message("edit it"),
+            assistant_message("Could not edit."),
+        ];
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+            full_response: "Could not edit.".to_string(),
+            history: Some(history),
+            source_edit_succeeded: false,
+        }));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            StreamingTurnRequest {
+                provider: "openai".to_string(),
+                prompt: "edit it".to_string(),
+                model: "gpt-test".to_string(),
+                session_id: Some("session-1".to_string()),
+                invoked_skill: None,
+            },
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        assert!(adapters.verifications.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

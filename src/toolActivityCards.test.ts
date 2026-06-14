@@ -2,6 +2,46 @@ import { describe, expect, it } from "vitest";
 import { toolActivitiesToActionCards } from "./toolActivityCards";
 
 describe("toolActivitiesToActionCards review tools", () => {
+  it("formats source_edit as an edit card with redacted raw arguments", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "tool-edit",
+        name: "source_edit",
+        arguments: {
+          path: "src/lib.rs",
+          old_text: "raw old snippet",
+          new_text: "raw new snippet",
+        },
+        result: JSON.stringify({
+          success: true,
+          message: "Edited src/lib.rs with one exact replacement.",
+          reason: null,
+          path: "src/lib.rs",
+          changed: true,
+          replacements: 1,
+          start_line: 10,
+          end_line: 11,
+          size_bytes: 1234,
+          diff_preview: "@@ src/lib.rs:10 @@\n-old\n+new",
+          truncated: false,
+        }),
+        status: "completed",
+      },
+    ]);
+
+    expect(cards[0]?.summary).toBe("Edit file");
+    expect(cards[0]?.type).toBe("diff");
+    expect(cards[0]?.rawPayload).toContain("[REDACTED]");
+    expect(cards[0]?.rawPayload).not.toContain("raw old snippet");
+    expect(cards[0]?.rawPayload).not.toContain("raw new snippet");
+    const diff = cards[0]?.sections?.find(
+      (section) => section.type === "text" && section.title === "Diff",
+    );
+    expect(diff).toMatchObject({
+      content: "@@ src/lib.rs:10 @@\n-old\n+new",
+    });
+  });
+
   it("formats run_security_review with indexed findings and SNR fields", () => {
     const cards = toolActivitiesToActionCards([
       {
