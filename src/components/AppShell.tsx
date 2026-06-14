@@ -94,9 +94,11 @@ export function AppShell() {
           provider={selectedModel?.provider}
           model={selectedModel?.model}
           workspacePath={activeWorkspace?.path}
+          canSendTurn={!session.isStreaming}
           onClose={() => setReviewOpen(false)}
           onError={showError}
           onSuccess={showSuccess}
+          onFixFinding={(prompt) => session.handleSend(prompt)}
         />
       </div>
       <SessionDrawer

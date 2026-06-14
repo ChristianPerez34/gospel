@@ -9,6 +9,11 @@ import type {
   ReviewResult,
   SignalTier,
 } from "../types";
+import {
+  buildExternalAgentFindingPrompt,
+  buildGospelFixFindingPrompt,
+  isActionableReviewFinding,
+} from "../reviewPrompts";
 
 type ReviewPanelMode = "local" | "pr" | "scan";
 
@@ -17,9 +22,11 @@ interface ReviewPanelProps {
   provider?: string;
   model?: string;
   workspacePath?: string;
+  canSendTurn?: boolean;
   onClose: () => void;
   onError?: (message: string) => void;
   onSuccess?: (message: string) => void;
+  onFixFinding?: (prompt: string) => Promise<void> | void;
 }
 
 const MODE_OPTIONS: Array<{ value: ReviewPanelMode; label: string }> = [
@@ -86,10 +93,6 @@ async function absoluteFilePath(workspacePath: string | undefined, file: string)
   return isInsideWorkspace(workspaceRoot, normalized) ? normalized : null;
 }
 
-function isActionable(tier: SignalTier) {
-  return tier === "tier_1" || tier === "tier_2";
-}
-
 function isHidden(comment: ReviewComment) {
   return (comment.signal_tier as string) === "hidden";
 }
@@ -153,9 +156,11 @@ export function ReviewPanel({
   provider,
   model,
   workspacePath,
+  canSendTurn = true,
   onClose,
   onError,
   onSuccess,
+  onFixFinding,
 }: ReviewPanelProps) {
   const [mode, setMode] = useState<ReviewPanelMode>("local");
   const [prNumber, setPrNumber] = useState("");
@@ -164,16 +169,18 @@ export function ReviewPanel({
   const [error, setError] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<Record<string, ReviewOutcome>>({});
 
-  const totalFindings = (result?.comments.length ?? 0) + (result?.suppressed_count ?? 0);
+  const visibleComments = useMemo(
+    () => result?.comments.filter((comment) => !isHidden(comment)) ?? [],
+    [result],
+  );
+  const totalFindings = visibleComments.length + (result?.suppressed_count ?? 0);
   const actionableCount = useMemo(
-    () => result?.comments.filter((comment) => isActionable(comment.signal_tier)).length ?? 0,
-    [result],
+    () => visibleComments.filter(isActionableReviewFinding).length,
+    [visibleComments],
   );
-  const shownCount = useMemo(
-    () => result?.comments.filter((comment) => !isHidden(comment)).length ?? 0,
-    [result],
-  );
+  const shownCount = visibleComments.length;
   const canRun = Boolean(provider && model && workspacePath && !loading);
+  const canFix = Boolean(provider && model && workspacePath && canSendTurn && !loading && onFixFinding);
 
   if (!open) return null;
 
@@ -248,6 +255,49 @@ export function ReviewPanel({
       await openPath(filePath);
     } catch (err) {
       const message = `Failed to open ${comment.file}: ${err}`;
+      setError(message);
+      onError?.(message);
+    }
+  };
+
+  const copyFindingPrompt = async (comment: ReviewComment, index: number) => {
+    if (!result) return;
+
+    const prompt = buildExternalAgentFindingPrompt({
+      comment,
+      review: result,
+      index: index + 1,
+      workspacePath,
+    });
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard is unavailable.");
+      }
+      await navigator.clipboard.writeText(prompt);
+      onSuccess?.("Finding prompt copied.");
+    } catch (err) {
+      const message = `Failed to copy finding prompt: ${err}`;
+      setError(message);
+      onError?.(message);
+    }
+  };
+
+  const fixFinding = async (comment: ReviewComment, index: number) => {
+    if (!result || !onFixFinding) return;
+
+    const prompt = buildGospelFixFindingPrompt({
+      comment,
+      review: result,
+      index: index + 1,
+      workspacePath,
+    });
+
+    try {
+      onClose();
+      await onFixFinding(prompt);
+    } catch (err) {
+      const message = `Failed to start fix turn: ${err}`;
       setError(message);
       onError?.(message);
     }
@@ -375,15 +425,15 @@ export function ReviewPanel({
           </div>
         )}
 
-        {result && !loading && result.comments.length === 0 && (
+        {result && !loading && visibleComments.length === 0 && (
           <div className="rounded-md border border-surface-overlay bg-surface-base p-4 text-body-sm text-text-secondary">
             No visible findings.
           </div>
         )}
 
-        {result && !loading && result.comments.length > 0 && (
+        {result && !loading && visibleComments.length > 0 && (
           <ol className="m-0 grid list-none gap-3 p-0">
-            {result.comments.map((comment, index) => {
+            {visibleComments.map((comment, index) => {
               const outcome = outcomes[comment.comment_id];
               return (
                 <li
@@ -406,7 +456,28 @@ export function ReviewPanel({
                           {comment.cwe_id}
                         </Badge>
                       )}
-                      <div className="ml-auto flex items-center gap-1">
+                      <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+                        {isActionableReviewFinding(comment) && (
+                          <button
+                            type="button"
+                            className="inline-flex h-7 items-center rounded-sm border border-surface-overlay px-2 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action disabled:cursor-not-allowed disabled:opacity-35"
+                            onClick={() => void fixFinding(comment, index)}
+                            disabled={!canFix}
+                            title="Fix issue"
+                            aria-label={`Fix issue ${index + 1}`}
+                          >
+                            Fix issue
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="inline-flex h-7 items-center rounded-sm border border-surface-overlay px-2 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action"
+                          onClick={() => void copyFindingPrompt(comment, index)}
+                          title="Copy to agent"
+                          aria-label={`Copy finding ${index + 1} to agent`}
+                        >
+                          Copy to agent
+                        </button>
                         <button
                           type="button"
                           className={`flex h-7 w-7 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
