@@ -294,8 +294,8 @@ export function ReviewPanel({
     });
 
     try {
-      onClose();
       await onFixFinding(prompt);
+      onClose();
     } catch (err) {
       const message = `Failed to start fix turn: ${err}`;
       setError(message);

@@ -1183,7 +1183,14 @@ impl Tool for SourceEditTool {
 
         let end_index = start_index + args.old_text.len();
         let start_line = source_edit_line_number(&original, start_index);
-        let end_line = source_edit_line_number(&original, end_index);
+        let end_line = source_edit_line_number(
+            &original,
+            if args.old_text.ends_with('\n') {
+                end_index.saturating_sub(1)
+            } else {
+                end_index
+            },
+        );
         let (diff_preview, truncated) = source_edit_diff_preview(
             &display_path,
             &original,
@@ -1195,14 +1202,6 @@ impl Tool for SourceEditTool {
 
         let mut edited = original.clone();
         edited.replace_range(start_index..end_index, &args.new_text);
-
-        if edited == original {
-            return Ok(source_edit_failure(
-                "no_op",
-                "Replacement would not change the file.",
-                Some(display_path),
-            ));
-        }
 
         write_atomic_replacement(
             &resolved.absolute_path,
