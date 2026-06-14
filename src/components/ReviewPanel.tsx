@@ -173,7 +173,7 @@ export function ReviewPanel({
     () => result?.comments.filter((comment) => !isHidden(comment)) ?? [],
     [result],
   );
-  const totalFindings = visibleComments.length + (result?.suppressed_count ?? 0);
+  const totalFindings = (result?.comments.length ?? 0) + (result?.suppressed_count ?? 0);
   const actionableCount = useMemo(
     () => visibleComments.filter(isActionableReviewFinding).length,
     [visibleComments],
