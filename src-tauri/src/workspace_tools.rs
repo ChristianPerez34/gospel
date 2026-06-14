@@ -1744,38 +1744,35 @@ fn source_edit_diff_preview(
     let after = &original[end_index..];
     let start_line = source_edit_line_number(original, start_index);
     let mut lines = vec![format!("@@ {}:{} @@", path, start_line)];
+    let mut line_truncated = false;
+
+    let mut push_line = |prefix: &str, line: &str| {
+        let truncated_line = truncate_line(line, DISPLAY_LINE_CHAR_CAP);
+        line_truncated |= truncated_line.truncated;
+        lines.push(format!("{}{}", prefix, truncated_line.text));
+    };
 
     let before_lines: Vec<&str> = before.lines().collect();
     let context_start = before_lines.len().saturating_sub(SOURCE_EDIT_CONTEXT_LINES);
     for line in &before_lines[context_start..] {
-        lines.push(format!(
-            "  {}",
-            truncate_line(line, DISPLAY_LINE_CHAR_CAP).text
-        ));
+        push_line("  ", line);
     }
 
     for line in diff_text_lines(old_text) {
-        lines.push(format!(
-            "-{}",
-            truncate_line(line, DISPLAY_LINE_CHAR_CAP).text
-        ));
+        push_line("-", line);
     }
 
     for line in diff_text_lines(new_text) {
-        lines.push(format!(
-            "+{}",
-            truncate_line(line, DISPLAY_LINE_CHAR_CAP).text
-        ));
+        push_line("+", line);
     }
 
     for line in after.lines().take(SOURCE_EDIT_CONTEXT_LINES) {
-        lines.push(format!(
-            "  {}",
-            truncate_line(line, DISPLAY_LINE_CHAR_CAP).text
-        ));
+        push_line("  ", line);
     }
 
-    truncate_text_bytes(&lines.join("\n"), SOURCE_EDIT_DIFF_PREVIEW_BYTES_CAP)
+    let (preview, byte_truncated) =
+        truncate_text_bytes(&lines.join("\n"), SOURCE_EDIT_DIFF_PREVIEW_BYTES_CAP);
+    (preview, line_truncated || byte_truncated)
 }
 
 fn diff_text_lines(text: &str) -> Vec<&str> {
@@ -1839,45 +1836,40 @@ fn write_atomic_replacement(
     content: &[u8],
     permissions: fs::Permissions,
 ) -> Result<(), String> {
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let count = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-
     let parent_dir = target
         .parent()
         .ok_or_else(|| "Write target has no parent directory.".to_string())?;
-    let file_name = target.file_name().unwrap_or_default().to_os_string();
-    let mut temp_name = std::ffi::OsString::from(".");
-    temp_name.push(&file_name);
-    temp_name.push(format!(".tmp.{}.{}", std::process::id(), count));
-    let temp_path = parent_dir.join(temp_name);
+    let file_name = target.file_name().unwrap_or_default();
+    let mut prefix = std::ffi::OsString::from(".");
+    prefix.push(file_name);
+    prefix.push(".tmp.");
 
-    let result = (|| -> Result<(), String> {
-        let mut file = fs::File::create(&temp_path)
-            .map_err(|e| format!("Failed to create temp file for atomic edit: {}", e))?;
-        fs::set_permissions(&temp_path, permissions)
-            .map_err(|e| format!("Failed to preserve file permissions: {}", e))?;
-        file.write_all(content)
-            .map_err(|e| format!("Failed to write edited content: {}", e))?;
-        file.sync_all()
-            .map_err(|e| format!("Failed to sync edited content: {}", e))?;
-        drop(file);
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(&prefix)
+        .tempfile_in(parent_dir)
+        .map_err(|e| format!("Failed to create temp file for atomic edit: {}", e))?;
+    temp_file
+        .as_file()
+        .set_permissions(permissions)
+        .map_err(|e| format!("Failed to preserve file permissions: {}", e))?;
+    temp_file
+        .write_all(content)
+        .map_err(|e| format!("Failed to write edited content: {}", e))?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Failed to sync edited content: {}", e))?;
 
-        fs::rename(&temp_path, target)
-            .map_err(|e| format!("Failed to replace target file: {}", e))?;
+    let persisted = temp_file
+        .persist(target)
+        .map_err(|e| format!("Failed to replace target file: {}", e.error))?;
+    drop(persisted);
 
-        if let Ok(dir_handle) = fs::File::open(parent_dir) {
-            let _ = dir_handle.sync_all();
-        }
-
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
+    if let Ok(dir_handle) = fs::File::open(parent_dir) {
+        let _ = dir_handle.sync_all();
     }
 
-    result
+    Ok(())
 }
 
 pub(crate) fn truncate_text_bytes(text: &str, max_bytes: usize) -> (String, bool) {
@@ -2766,6 +2758,22 @@ mod tests {
         assert_eq!(truncated, "abcdefg\n\n[truncated]");
     }
 
+    #[test]
+    fn source_edit_diff_preview_reports_line_truncation() {
+        let old_text = "a".repeat(DISPLAY_LINE_CHAR_CAP + 1);
+        let (preview, did_truncate) = source_edit_diff_preview(
+            "src/main.rs",
+            &old_text,
+            0,
+            old_text.len(),
+            &old_text,
+            "short",
+        );
+
+        assert!(did_truncate);
+        assert!(preview.contains("..."));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn read_file_blocks_symlink_escape() {
@@ -2816,6 +2824,41 @@ mod tests {
         let preview = output.diff_preview.unwrap();
         assert!(preview.contains("-println!(\"old\")"));
         assert!(preview.contains("+println!(\"new\")"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn source_edit_does_not_follow_preexisting_temp_symlink() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let file_path = dir.path().join("src/main.rs");
+        let outside_file = outside.path().join("outside.txt");
+        write_file(&file_path, b"old\n");
+        write_file(&outside_file, b"outside\n");
+
+        let parent = file_path.parent().unwrap();
+        for count in 0..64 {
+            let temp_name = format!(".main.rs.tmp.{}.{}", std::process::id(), count);
+            symlink(&outside_file, parent.join(temp_name)).unwrap();
+        }
+
+        let tool = create_source_edit_tool(dir.path().to_path_buf());
+        let output = tool
+            .call(SourceEditArgs {
+                path: "src/main.rs".to_string(),
+                old_text: "old".to_string(),
+                new_text: "new".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "new\n");
+        assert!(!fs::symlink_metadata(&file_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&outside_file).unwrap(), "outside\n");
     }
 
     #[tokio::test]
