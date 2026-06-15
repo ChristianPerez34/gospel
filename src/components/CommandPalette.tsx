@@ -222,7 +222,8 @@ export function CommandPalette({
 
   const runActive = () => {
     const result = filteredResults[activeIndex];
-    result?.action();
+    if (!result) return;
+    result.action();
   };
 
   let resultIndex = 0;

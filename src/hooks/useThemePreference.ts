@@ -20,8 +20,12 @@ function storedPreference(): ThemePreference {
     return "dark";
   }
 
-  const value = window.localStorage.getItem(STORAGE_KEY);
-  return isThemePreference(value) ? value : "dark";
+  try {
+    const value = window.localStorage.getItem(STORAGE_KEY);
+    return isThemePreference(value) ? value : "dark";
+  } catch {
+    return "dark";
+  }
 }
 
 export function useThemePreference() {
@@ -41,7 +45,11 @@ export function useThemePreference() {
 
   const setThemePreference = useCallback((next: ThemePreference) => {
     setThemePreferenceState(next);
-    window.localStorage.setItem(STORAGE_KEY, next);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, next);
+    } catch {
+      // Ignore localStorage write failures in restricted contexts.
+    }
   }, []);
 
   const resolvedTheme = useMemo<ResolvedTheme>(

@@ -8,13 +8,15 @@ const FOCUSABLE_SELECTOR = [
   "textarea:not([disabled])",
   "summary",
   "[tabindex]:not([tabindex='-1'])",
+  "[contenteditable]",
 ].join(",");
 
 function focusableElements(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((element) => {
     if (element.getAttribute("aria-hidden") === "true") return false;
     if (element.hasAttribute("disabled")) return false;
-    if (element.offsetParent === null && element !== document.activeElement) return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden") return false;
     return true;
   });
 }

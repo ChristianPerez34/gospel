@@ -14,7 +14,6 @@ import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { modelOptionId } from "../types";
-import type { ThemePreference } from "../types";
 import { noModelCopy } from "../modelAvailabilityCopy";
 
 type SettingsTab = "general" | "models";
@@ -27,12 +26,17 @@ export function AppShell() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [trappedSurface, setTrappedSurface] = useState<TrappedSurface>(null);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   const reviewToggleRef = useRef<HTMLButtonElement>(null);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
   const chatColumnRef = useRef<HTMLDivElement>(null);
   const { themePreference, resolvedTheme, setThemePreference } = useThemePreference();
+
+  const trappedSurface: TrappedSurface = sessionDrawerOpen
+    ? "sessions"
+    : reviewOpen
+      ? "review"
+      : null;
 
   const openSettings = useCallback((tab: SettingsTab = "models") => {
     setSettingsInitialTab(tab);
@@ -81,29 +85,12 @@ export function AppShell() {
   }, []);
 
   const toggleSessionDrawer = useCallback(() => {
-    setSessionDrawerOpen((open) => {
-      const next = !open;
-      if (next) setTrappedSurface("sessions");
-      return next;
-    });
+    setSessionDrawerOpen((open) => !open);
   }, []);
 
   const toggleReviewPanel = useCallback(() => {
-    setReviewOpen((open) => {
-      const next = !open;
-      if (next) setTrappedSurface("review");
-      return next;
-    });
+    setReviewOpen((open) => !open);
   }, []);
-
-  useEffect(() => {
-    if (trappedSurface === "sessions" && !sessionDrawerOpen) {
-      setTrappedSurface(reviewOpen ? "review" : null);
-    }
-    if (trappedSurface === "review" && !reviewOpen) {
-      setTrappedSurface(sessionDrawerOpen ? "sessions" : null);
-    }
-  }, [reviewOpen, sessionDrawerOpen, trappedSurface]);
 
   useEffect(() => {
     const target = chatColumnRef.current as (HTMLDivElement & { inert?: boolean }) | null;
@@ -132,13 +119,6 @@ export function AppShell() {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
-
-  const setTheme = useCallback(
-    (next: ThemePreference) => {
-      setThemePreference(next);
-    },
-    [setThemePreference],
-  );
 
   return (
     <div className="app-shell" data-theme={resolvedTheme} data-theme-preference={themePreference}>
@@ -257,7 +237,7 @@ export function AppShell() {
         isRefreshingModels={isRefreshingModels}
         initialTab={settingsInitialTab}
         themePreference={themePreference}
-        onThemePreferenceChange={setTheme}
+        onThemePreferenceChange={setThemePreference}
       />
       <CommandPalette
         open={commandPaletteOpen}

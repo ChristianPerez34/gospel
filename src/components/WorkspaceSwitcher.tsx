@@ -25,9 +25,10 @@ export function WorkspaceSwitcher({
 }: WorkspaceSwitcherProps) {
   const [search, setSearch] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
+  const open = true;
 
   useFocusTrap({
-    active: !trapPaused,
+    active: open && !trapPaused,
     containerRef: dialogRef,
     onEscape: onClose,
     restoreFocusOnDeactivate: !trapPaused,

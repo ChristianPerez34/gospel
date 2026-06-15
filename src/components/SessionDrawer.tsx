@@ -13,6 +13,10 @@ interface SessionDrawerProps {
   trapPaused?: boolean;
 }
 
+function setInert(element: HTMLElement, inert: boolean) {
+  (element as HTMLElement & { inert?: boolean }).inert = inert;
+}
+
 function groupByDate(sessions: Session[]): Record<string, Session[]> {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -66,9 +70,9 @@ export function SessionDrawer({
   });
 
   useEffect(() => {
-    const drawer = drawerRef.current as (HTMLElement & { inert?: boolean }) | null;
+    const drawer = drawerRef.current;
     if (!drawer) return;
-    drawer.inert = !open;
+    setInert(drawer, !open);
   }, [open]);
 
   const filtered: Record<string, Session[]> = {};

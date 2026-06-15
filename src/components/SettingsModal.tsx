@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
 import type { ThemePreference } from "../types";
@@ -35,6 +35,7 @@ export function SettingsModal({
   onThemePreferenceChange,
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+  const themeOptionRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -129,7 +130,7 @@ export function SettingsModal({
                   <p className="m-0 text-body-sm text-text-muted">Dark stays the default for focused coding sessions.</p>
                 </div>
                 <div className="grid grid-cols-3 overflow-hidden rounded-md border border-surface-overlay" role="radiogroup" aria-label="Theme preference">
-                  {THEME_OPTIONS.map((option) => {
+                  {THEME_OPTIONS.map((option, index) => {
                     const selected = option.value === themePreference;
                     return (
                       <button
@@ -137,12 +138,27 @@ export function SettingsModal({
                         type="button"
                         role="radio"
                         aria-checked={selected}
+                        tabIndex={selected ? 0 : -1}
+                        ref={(el) => {
+                          themeOptionRefs.current[index] = el;
+                        }}
                         className={`min-h-11 px-3 py-2 text-left transition-colors duration-150 ease-out-quart ${
                           selected
                             ? "bg-surface-overlay text-accent-action"
                             : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
                         }`}
                         onClick={() => onThemePreferenceChange(option.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                          event.preventDefault();
+                          const nextIndex =
+                            event.key === "ArrowLeft"
+                              ? (index - 1 + THEME_OPTIONS.length) % THEME_OPTIONS.length
+                              : (index + 1) % THEME_OPTIONS.length;
+                          const nextValue = THEME_OPTIONS[nextIndex]!.value;
+                          onThemePreferenceChange(nextValue);
+                          themeOptionRefs.current[nextIndex]?.focus();
+                        }}
                       >
                         <span className="block text-body-sm font-medium">{option.label}</span>
                         <span className="block font-mono text-caption text-text-muted">{option.detail}</span>
