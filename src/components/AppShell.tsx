@@ -29,6 +29,7 @@ export function AppShell() {
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   const reviewToggleRef = useRef<HTMLButtonElement>(null);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
+  const commandPaletteOpenRef = useRef(false);
   const chatColumnRef = useRef<HTMLDivElement>(null);
   const { themePreference, resolvedTheme, setThemePreference } = useThemePreference();
 
@@ -107,10 +108,15 @@ export function AppShell() {
   }, [resolvedTheme, themePreference]);
 
   useEffect(() => {
+    commandPaletteOpenRef.current = commandPaletteOpen;
+  }, [commandPaletteOpen]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
 
       event.preventDefault();
+      if (commandPaletteOpenRef.current) return;
       commandPaletteRestoreRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setCommandPaletteOpen(true);
