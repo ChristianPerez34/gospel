@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useRef, useState } from "react";
 import type { Workspace } from "../types";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 interface WorkspaceSwitcherProps {
   workspaces: Workspace[];
@@ -9,6 +10,7 @@ interface WorkspaceSwitcherProps {
   onRemove: (id: string) => void;
   onClose: () => void;
   loading?: boolean;
+  trapPaused?: boolean;
 }
 
 export function WorkspaceSwitcher({
@@ -19,51 +21,17 @@ export function WorkspaceSwitcher({
   onRemove,
   onClose,
   loading,
+  trapPaused = false,
 }: WorkspaceSwitcherProps) {
   const [search, setSearch] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      onClose();
-    }
-    if (e.key === "Tab" && dialogRef.current) {
-      const focusableElements = dialogRef.current.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      );
-
-      if (focusableElements.length === 0) {
-        return;
-      }
-
-      const firstElement = focusableElements[0];
-      const lastElement = focusableElements[focusableElements.length - 1];
-      const activeElement = document.activeElement;
-
-      if (!dialogRef.current.contains(activeElement)) {
-        e.preventDefault();
-        (e.shiftKey ? lastElement : firstElement).focus();
-        return;
-      }
-
-      if (e.shiftKey) {
-        if (activeElement === firstElement) {
-          e.preventDefault();
-          lastElement.focus();
-        }
-      } else {
-        if (activeElement === lastElement) {
-          e.preventDefault();
-          firstElement.focus();
-        }
-      }
-    }
-  }, [onClose]);
-
-  useEffect(() => {
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+  useFocusTrap({
+    active: !trapPaused,
+    containerRef: dialogRef,
+    onEscape: onClose,
+    restoreFocusOnDeactivate: !trapPaused,
+  });
 
   const filtered = workspaces.filter((w) =>
     w.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -78,7 +46,7 @@ export function WorkspaceSwitcher({
         aria-hidden="true"
       />
       <div
-                className="absolute top-[calc(var(--titlebar-height)_+_var(--topbar-height))] left-4 w-80 max-h-[400px] bg-surface-elevated border border-surface-overlay rounded-md flex flex-col z-[var(--z-dialog)] overflow-hidden"
+        className="workspace-switcher-dialog"
         role="dialog"
         aria-label="Switch workspace"
         aria-modal="true"
@@ -97,7 +65,7 @@ export function WorkspaceSwitcher({
             <path d="M9 9L12.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
           <input
-            className="flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
+            className="h-11 flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
             type="text"
             placeholder="Search workspaces..."
             value={search}
@@ -117,12 +85,14 @@ export function WorkspaceSwitcher({
             return (
               <div
                 key={ws.id}
-                className={`flex items-center w-full border-l-2 transition-colors duration-150 ease-out-quart group ${
-                  isActive ? "border-l-accent-action" : "border-l-transparent"
-                } hover:bg-surface-overlay`}
+                className={`workspace-row group ${isActive ? "is-active" : ""}`}
               >
+                <span
+                  className={`workspace-row-dot ${isActive ? "" : "opacity-0"}`}
+                  aria-hidden="true"
+                />
                 <button
-                  className="flex items-center gap-3 flex-1 py-3 px-4 text-left bg-transparent border-none cursor-pointer text-inherit font-inherit min-w-0"
+                  className="flex min-h-11 items-center gap-3 flex-1 py-3 px-4 text-left bg-transparent border-none cursor-pointer text-inherit font-inherit min-w-0"
                   onClick={() => {
                     onSelect(ws);
                     onClose();
@@ -137,7 +107,7 @@ export function WorkspaceSwitcher({
                   )}
                 </button>
                 <button
-                  className="flex items-center justify-center w-5 h-5 mr-2 border-none bg-transparent text-text-muted cursor-pointer rounded-sm text-sm leading-none shrink-0 opacity-0 transition-opacity duration-150 ease-out-quart group-hover:opacity-100 hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent-action focus-visible:outline-offset-2"
+                  className="hit-target flex items-center justify-center w-6 h-6 mr-2 border-none bg-transparent text-text-muted cursor-pointer rounded-sm text-sm leading-none shrink-0 opacity-0 transition-opacity duration-150 ease-out-quart group-hover:opacity-100 hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent-action focus-visible:outline-offset-2"
                   onClick={(e) => {
                     e.stopPropagation();
                     onRemove(ws.id);
@@ -152,7 +122,7 @@ export function WorkspaceSwitcher({
           })}
         </div>
         <button
-          className="flex items-center justify-center gap-2 w-full p-3 border-t border-surface-overlay text-body-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
+          className="flex min-h-11 items-center justify-center gap-2 w-full p-3 border-t border-surface-overlay text-body-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
           onClick={onAdd}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

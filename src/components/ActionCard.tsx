@@ -119,7 +119,7 @@ export function ActionCard({ card }: ActionCardProps) {
     >
       <button
         type="button"
-        className="grid min-h-[42px] w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 px-3 py-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay disabled:cursor-default"
+        className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 px-3 py-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay disabled:cursor-default"
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
         disabled={!hasBody}
@@ -170,7 +170,7 @@ export function ActionCard({ card }: ActionCardProps) {
             <section className="grid gap-2">
               <button
                 type="button"
-                className="justify-self-start rounded-sm border border-surface-overlay px-2 py-1 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
+                className="min-h-11 justify-self-start rounded-sm border border-surface-overlay px-3 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
                 onClick={() => setShowRaw((value) => !value)}
                 aria-expanded={showRaw}
               >

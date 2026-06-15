@@ -10,7 +10,7 @@ export function ContextPill({ name, onRemove }: ContextPillProps) {
         {name}
       </span>
       <button
-        className="flex items-center justify-center w-3.5 h-3.5 rounded-full text-text-muted opacity-0 transition-opacity transition-colors duration-150 ease-out-quart group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-surface-elevated hover:text-text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action"
+        className="hit-target flex items-center justify-center w-3.5 h-3.5 rounded-full text-text-muted opacity-0 transition-opacity transition-colors duration-150 ease-out-quart group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-surface-elevated hover:text-text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action"
         onClick={onRemove}
         aria-label={`Remove ${name}`}
       >

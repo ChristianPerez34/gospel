@@ -44,15 +44,15 @@ export function MessageBlock({ message, showActions = true }: MessageBlockProps)
       </div>
       {showActions && (
         <div className="flex gap-1 opacity-0 transition-opacity duration-150 ease-out-quart pl-1 group-hover:opacity-100 group-focus-within:opacity-100">
-          <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Copy message">
+          <button className="min-h-11 text-caption text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Copy message">
             Copy
           </button>
           {!isUser && (
             <>
-              <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Retry message">
+              <button className="min-h-11 text-caption text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Retry message">
                 Retry
               </button>
-              <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Fork conversation">
+              <button className="min-h-11 text-caption text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Fork conversation">
                 Fork
               </button>
             </>

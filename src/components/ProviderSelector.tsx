@@ -254,7 +254,7 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
               </div>
 
               <button
-                className={`relative w-9 h-5 border-none rounded-full cursor-pointer p-0 transition-colors duration-150 ease-out-quart shrink-0 ${
+                className={`hit-target relative w-9 h-5 border-none rounded-full cursor-pointer p-0 transition-colors duration-150 ease-out-quart shrink-0 ${
                   provider.visible ? "bg-accent-action" : "bg-surface-overlay"
                 }`}
                 onClick={() => handleToggle(provider.id)}
@@ -279,7 +279,7 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                       <>
                         <span className="text-caption text-status-success font-body font-medium">✓ Authenticated</span>
                         <button
-                          className="py-1.5 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
+                          className="min-h-11 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
                           onClick={() => handleOAuthLogout(provider)}
                           type="button"
                         >
@@ -290,7 +290,7 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                       <>
                         <span className="text-caption text-text-muted font-body">Sign in with your ChatGPT Plus/Pro account</span>
                         <button
-                          className="py-1.5 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
+                          className="min-h-11 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
                           onClick={() => handleOAuthLogin(provider)}
                           disabled={isOperationInProgress.current}
                           type="button"
@@ -318,7 +318,7 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                         aria-label={`${provider.name} API key`}
                       />
                       <button
-                        className="absolute right-1.5 border-none bg-transparent text-text-muted cursor-pointer p-0.5 rounded-sm flex items-center justify-center transition-colors duration-150 hover:text-text-primary"
+                        className="hit-target absolute right-1.5 border-none bg-transparent text-text-muted cursor-pointer p-0.5 rounded-sm flex items-center justify-center transition-colors duration-150 hover:text-text-primary"
                         onClick={() => setShowKeyFor((prev) => (prev === provider.id ? null : provider.id))}
                         aria-label={showKey ? "Hide API key" : "Show API key"}
                         type="button"
@@ -338,7 +338,7 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                       </button>
                     </div>
                     <button
-                      className="py-1.5 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
+                      className="min-h-11 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
                       onClick={() => handleSaveKey(provider)}
                       disabled={!provider.apiKey.trim()}
                       type="button"
@@ -351,14 +351,14 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                     <span className="text-caption text-status-success font-body font-medium">Key saved</span>
                     <div className="flex items-center gap-2">
                       <button
-                        className="py-1.5 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90"
+                        className="min-h-11 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90"
                         onClick={() => setEditingKeyFor(provider.id)}
                         type="button"
                       >
                         Replace
                       </button>
                       <button
-                        className="py-1.5 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
+                        className="min-h-11 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
                         onClick={() => handleRemoveKey(provider)}
                         disabled={isOperationInProgress.current}
                         type="button"

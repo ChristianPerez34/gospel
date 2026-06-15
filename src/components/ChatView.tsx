@@ -96,11 +96,12 @@ export function ChatView({
             ))}
             {msg.error && (
               <div
-                className="ml-7 border-l-2 border-l-status-error py-3 px-4 rounded-r-md bg-surface-elevated"
+                className="ml-7 mr-6 rounded-md border border-status-error bg-surface-elevated px-4 py-3"
                 role="alert"
               >
-                <div className="text-body-sm text-text-primary mb-2">
-                  {msg.error}
+                <div className="flex items-start gap-2 text-body-sm text-text-primary">
+                  <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-status-error" aria-hidden="true" />
+                  <span>{msg.error}</span>
                 </div>
                 <div className="flex gap-2">
                   {/* TODO: wire up handlers when retry/copy functionality is implemented */}
