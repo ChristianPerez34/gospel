@@ -126,14 +126,14 @@ mod model_lists {
         CODESTRAL_MAMBA,
     ];
 
-    pub const CHATGPT_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"];
+    pub const CHATGPT_MODELS: &[&str] =
+        &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
 
     pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-pro",
-        "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ];
 }
@@ -231,14 +231,14 @@ mod model_lists {
         "open-codestral-mamba",
     ];
 
-    pub const CHATGPT_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"];
+    pub const CHATGPT_MODELS: &[&str] =
+        &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
 
     pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-pro",
-        "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ];
 }
@@ -587,9 +587,6 @@ mod tests {
         assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4"));
         assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4-mini"));
         assert!(ModelRegistry::is_chatgpt_subscription_model(
-            "gpt-5.3-codex"
-        ));
-        assert!(ModelRegistry::is_chatgpt_subscription_model(
             "gpt-5.3-codex-spark"
         ));
     }
@@ -602,6 +599,9 @@ mod tests {
         assert!(!ModelRegistry::is_chatgpt_subscription_model(
             "gpt-5.1-codex"
         ));
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.3-codex"
+        ));
         assert!(!ModelRegistry::is_chatgpt_subscription_model("gpt-4o"));
         assert!(!ModelRegistry::is_chatgpt_subscription_model("chat-latest"));
         assert!(!ModelRegistry::is_chatgpt_subscription_model(
@@ -613,12 +613,13 @@ mod tests {
     fn test_chatgpt_hardcoded_fallback_omits_tier_specific_models() {
         let models = ModelRegistry::models_for_provider("chatgpt");
 
+        assert_eq!(models.first(), Some(&"gpt-5.5"));
         assert!(models.contains(&"gpt-5.5"));
         assert!(models.contains(&"gpt-5.4"));
         assert!(models.contains(&"gpt-5.4-mini"));
-        assert!(models.contains(&"gpt-5.3-codex"));
+        assert!(models.contains(&"gpt-5.3-codex-spark"));
+        assert!(!models.contains(&"gpt-5.3-codex"));
         assert!(!models.contains(&"gpt-5.4-pro"));
-        assert!(!models.contains(&"gpt-5.3-codex-spark"));
     }
 
     #[test]
