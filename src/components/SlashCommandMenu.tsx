@@ -56,7 +56,7 @@ export function SlashCommandMenu({
         </div>
         {onReload && (
           <button
-            className="mt-2 text-accent-action text-caption hover:underline"
+            className="mt-2 min-h-11 text-accent-action text-caption hover:underline"
             onClick={onReload}
             type="button"
           >
@@ -71,7 +71,7 @@ export function SlashCommandMenu({
     return (
       <div className="absolute bottom-full left-0 mb-1 w-[480px] max-w-full bg-surface-elevated border border-surface-overlay rounded-md shadow-lg z-[--z-palette]">
         <button
-          className="flex items-center justify-between w-full py-2 px-3 text-left hover:bg-surface-overlay transition-colors duration-150"
+          className="flex min-h-11 items-center justify-between w-full px-3 text-left hover:bg-surface-overlay transition-colors duration-150"
           onClick={() => onSelect(suggestion)}
           type="button"
         >
@@ -91,7 +91,7 @@ export function SlashCommandMenu({
       {filtered.map((skill) => (
         <button
           key={skill.name}
-          className="flex flex-col w-full py-2 px-3 text-left hover:bg-surface-overlay transition-colors duration-150"
+          className="flex min-h-11 flex-col justify-center w-full px-3 text-left hover:bg-surface-overlay transition-colors duration-150"
           onClick={() => onSelect(skill.name)}
           type="button"
         >

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type RefObject } from "react";
 import type { Workspace, AgentStatus } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
@@ -13,6 +13,8 @@ interface TopBarProps {
   onOpenSettings: () => void;
   sessionsOpen: boolean;
   reviewOpen?: boolean;
+  sessionToggleRef?: RefObject<HTMLButtonElement>;
+  reviewToggleRef?: RefObject<HTMLButtonElement>;
 }
 
 export function TopBar({
@@ -26,6 +28,8 @@ export function TopBar({
   onOpenSettings,
   sessionsOpen,
   reviewOpen = false,
+  sessionToggleRef,
+  reviewToggleRef,
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(sessionTitle);
@@ -54,12 +58,14 @@ export function TopBar({
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
 
   return (
-    <header className="h-[var(--topbar-height)] flex items-center justify-between px-4 bg-surface-base border-b border-surface-overlay shrink-0">
-      <div className="flex items-center gap-2 min-w-0">
+    <header className="app-topbar flex items-center justify-between px-4 bg-surface-base border-b border-surface-overlay shrink-0">
+      <div className="topbar-primary flex items-center gap-2 min-w-0">
         <button
-          className={`w-7 h-7 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${sessionToggleClass}`}
+          ref={sessionToggleRef}
+          className={`hit-target w-8 h-8 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${sessionToggleClass}`}
           onClick={onToggleSessions}
           aria-label="Toggle session history"
+          aria-pressed={sessionsOpen}
           title="Sessions"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -70,11 +76,12 @@ export function TopBar({
           </svg>
         </button>
         <button
-          className="flex min-w-0 items-center gap-1 py-1 px-2 rounded-sm transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
+          className="hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
           onClick={onWorkspaceSwitch}
           aria-label="Switch workspace"
+          title="Switch workspace"
         >
-          <span className="text-body-sm font-medium truncate max-w-[220px]">{workspace.name}</span>
+          <span className="topbar-workspace-text text-body-sm font-medium truncate max-w-[220px]">{workspace.name}</span>
           <svg
             className="shrink-0 opacity-50"
             width="14"
@@ -91,11 +98,11 @@ export function TopBar({
             />
           </svg>
         </button>
-        <span className="w-px h-4 bg-surface-overlay shrink-0" aria-hidden="true" />
+        <span className="topbar-divider w-px h-4 bg-surface-overlay shrink-0" aria-hidden="true" />
         {editing ? (
           <input
             ref={inputRef}
-            className="text-body-sm text-text-primary py-1 px-2 rounded-sm max-w-[300px] bg-surface-overlay"
+            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onBlur={handleSubmit}
@@ -110,7 +117,7 @@ export function TopBar({
           />
         ) : (
           <button
-            className="text-body-sm text-text-muted py-1 px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary"
+            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary"
             onClick={() => setEditing(true)}
             aria-label="Edit session title"
           >
@@ -118,13 +125,14 @@ export function TopBar({
           </button>
         )}
       </div>
-      <div className="flex items-center gap-3 shrink-0">
-        <span className="font-mono text-caption tracking-[0.02em] py-0.5 px-2 rounded-sm bg-surface-overlay text-text-muted whitespace-nowrap">
+      <div className="topbar-actions flex items-center gap-3 shrink-0">
+        <span className="topbar-model-badge font-mono text-caption tracking-[0.02em] py-0.5 px-2 rounded-sm bg-surface-overlay text-text-muted whitespace-nowrap">
           {model}
         </span>
         <StatusIndicator status={status} />
         <button
-          className={`w-7 h-7 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${reviewToggleClass}`}
+          ref={reviewToggleRef}
+          className={`hit-target w-8 h-8 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${reviewToggleClass}`}
           aria-label="Open security review"
           aria-pressed={reviewOpen}
           title="Security review"
@@ -144,8 +152,9 @@ export function TopBar({
           </svg>
         </button>
         <button
-          className="w-7 h-7 flex items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
+          className="hit-target w-8 h-8 flex items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
           aria-label="Settings"
+          title="Settings"
           onClick={onOpenSettings}
         >
           <svg

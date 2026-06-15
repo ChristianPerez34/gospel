@@ -189,7 +189,7 @@ export function InputBar({
       <div className="flex items-end gap-2 p-3 min-h-[--input-min-height]">
         <div className="relative shrink-0">
           <button
-            className="font-mono text-caption text-text-muted py-1 px-2 rounded-sm bg-surface-overlay transition-colors duration-150 ease-out-quart whitespace-nowrap hover:bg-surface-elevated hover:text-text-secondary"
+            className="hit-target min-h-11 font-mono text-caption text-text-muted px-2 rounded-sm bg-surface-overlay transition-colors duration-150 ease-out-quart whitespace-nowrap hover:bg-surface-elevated hover:text-text-secondary"
             onClick={() => setModelOpen(!modelOpen)}
             disabled={disabled && models.length > 0}
             aria-label="Select model"
@@ -203,7 +203,7 @@ export function InputBar({
                   <strong className="text-text-primary font-semibold">{unavailableMessage}</strong>
                   {unavailableDetail && <span>{unavailableDetail}</span>}
                   {onUnavailableAction && (
-                    <button className="self-start text-accent-action text-caption" type="button" onClick={onUnavailableAction}>
+                    <button className="min-h-11 self-start text-accent-action text-caption" type="button" onClick={onUnavailableAction}>
                       {unavailableActionLabel}
                     </button>
                   )}
@@ -211,7 +211,7 @@ export function InputBar({
               ) : models.map((m) => {
                 const isActive = m.id === selectedModel;
                 const isDisabled = m.configured === false;
-                const baseClass = "flex items-center justify-between w-full py-2 px-3 text-left transition-colors duration-150 ease-out-quart";
+                const baseClass = "flex min-h-11 items-center justify-between w-full px-3 text-left transition-colors duration-150 ease-out-quart";
                 const activeClass = isActive ? " bg-surface-overlay" : "";
                 const disabledClass = isDisabled ? " opacity-40 cursor-not-allowed hover:bg-transparent" : " hover:bg-surface-overlay";
                 return (
@@ -253,7 +253,7 @@ export function InputBar({
           aria-label="Message input"
         />
         <button
-          className="w-9 h-9 flex items-center justify-center rounded-sm bg-accent-action text-text-inverse text-body shrink-0 transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
+          className="hit-target w-9 h-9 flex items-center justify-center rounded-sm bg-accent-action text-text-inverse text-body shrink-0 transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
           disabled={sendDisabled || !value.trim()}
           onClick={() => {
             if (value.trim() && !sendDisabled) {

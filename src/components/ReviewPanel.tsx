@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { normalize, resolve } from "@tauri-apps/api/path";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -14,6 +14,7 @@ import {
   buildGospelFixFindingPrompt,
   isActionableReviewFinding,
 } from "../reviewPrompts";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 type ReviewPanelMode = "local" | "pr" | "scan";
 
@@ -27,6 +28,8 @@ interface ReviewPanelProps {
   onError?: (message: string) => void;
   onSuccess?: (message: string) => void;
   onFixFinding?: (prompt: string) => Promise<void> | void;
+  triggerRef?: RefObject<HTMLElement>;
+  trapPaused?: boolean;
 }
 
 const MODE_OPTIONS: Array<{ value: ReviewPanelMode; label: string }> = [
@@ -161,7 +164,10 @@ export function ReviewPanel({
   onError,
   onSuccess,
   onFixFinding,
+  triggerRef,
+  trapPaused = false,
 }: ReviewPanelProps) {
+  const panelRef = useRef<HTMLElement>(null);
   const [mode, setMode] = useState<ReviewPanelMode>("local");
   const [prNumber, setPrNumber] = useState("");
   const [result, setResult] = useState<ReviewResult | null>(null);
@@ -181,6 +187,14 @@ export function ReviewPanel({
   const shownCount = visibleComments.length;
   const canRun = Boolean(provider && model && workspacePath && !loading);
   const canFix = Boolean(provider && model && workspacePath && canSendTurn && !loading && onFixFinding);
+
+  useFocusTrap({
+    active: open && !trapPaused,
+    containerRef: panelRef,
+    onEscape: onClose,
+    restoreFocusRef: triggerRef,
+    shouldRestoreFocusOnDeactivate: !trapPaused,
+  });
 
   if (!open) return null;
 
@@ -304,7 +318,14 @@ export function ReviewPanel({
   };
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-[--z-panels] flex w-full max-w-[560px] flex-col border-l border-surface-overlay bg-surface-elevated animate-fade-slide-in">
+    <aside
+      className="review-panel"
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Security review"
+      tabIndex={-1}
+    >
       <header className="flex min-h-[52px] items-center justify-between border-b border-surface-overlay px-4">
         <div className="min-w-0">
           <h2 className="m-0 truncate text-heading-sm font-medium text-text-primary">
@@ -316,7 +337,7 @@ export function ReviewPanel({
         </div>
         <button
           type="button"
-          className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
+          className="hit-target flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
           onClick={onClose}
           aria-label="Close review panel"
           title="Close"
@@ -336,7 +357,7 @@ export function ReviewPanel({
                 <button
                   key={option.value}
                   type="button"
-                  className={`min-w-[64px] px-3 py-1.5 font-mono text-caption transition-colors duration-150 ease-out-quart ${
+                  className={`min-h-11 min-w-[64px] px-3 font-mono text-caption transition-colors duration-150 ease-out-quart ${
                     active
                       ? "bg-surface-overlay text-accent-action"
                       : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
@@ -351,7 +372,7 @@ export function ReviewPanel({
           </div>
           {mode === "pr" && (
             <input
-              className="h-8 w-24 rounded-sm border border-surface-overlay bg-surface-base px-2 font-mono text-body-sm text-text-primary placeholder:text-text-muted"
+              className="h-11 w-24 rounded-sm border border-surface-overlay bg-surface-base px-2 font-mono text-body-sm text-text-primary placeholder:text-text-muted"
               inputMode="numeric"
               value={prNumber}
               onChange={(event) => setPrNumber(event.target.value.replace(/[^\d]/g, ""))}
@@ -361,7 +382,7 @@ export function ReviewPanel({
           )}
           <button
             type="button"
-            className="ml-auto inline-flex h-8 items-center gap-2 rounded-sm bg-accent-action px-3 font-mono text-caption font-semibold text-text-inverse transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
+            className="ml-auto inline-flex min-h-11 items-center gap-2 rounded-sm bg-accent-action px-3 font-mono text-caption font-semibold text-text-inverse transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
             onClick={runReview}
             disabled={!canRun}
           >
@@ -460,7 +481,7 @@ export function ReviewPanel({
                         {isActionableReviewFinding(comment) && (
                           <button
                             type="button"
-                            className="inline-flex h-7 items-center rounded-sm border border-surface-overlay px-2 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action disabled:cursor-not-allowed disabled:opacity-35"
+                            className="inline-flex min-h-11 items-center rounded-sm border border-surface-overlay px-3 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action disabled:cursor-not-allowed disabled:opacity-35"
                             onClick={() => void fixFinding(comment, index)}
                             disabled={!canFix}
                             title="Fix issue"
@@ -471,7 +492,7 @@ export function ReviewPanel({
                         )}
                         <button
                           type="button"
-                          className="inline-flex h-7 items-center rounded-sm border border-surface-overlay px-2 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action"
+                          className="inline-flex min-h-11 items-center rounded-sm border border-surface-overlay px-3 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action"
                           onClick={() => void copyFindingPrompt(comment, index)}
                           title="Copy to agent"
                           aria-label={`Copy finding ${index + 1} to agent`}
@@ -480,7 +501,7 @@ export function ReviewPanel({
                         </button>
                         <button
                           type="button"
-                          className={`flex h-7 w-7 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
+                          className={`hit-target flex h-8 w-8 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
                             outcome === "accepted"
                               ? "border-status-success text-status-success"
                               : "border-surface-overlay text-text-muted hover:bg-surface-overlay hover:text-status-success"
@@ -493,7 +514,7 @@ export function ReviewPanel({
                         </button>
                         <button
                           type="button"
-                          className={`flex h-7 w-7 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
+                          className={`hit-target flex h-8 w-8 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
                             outcome === "rejected"
                               ? "border-status-error text-status-error"
                               : "border-surface-overlay text-text-muted hover:bg-surface-overlay hover:text-status-error"
@@ -509,7 +530,7 @@ export function ReviewPanel({
 
                     <button
                       type="button"
-                      className="justify-self-start truncate rounded-sm font-mono text-caption text-accent-action hover:underline"
+                      className="min-h-11 justify-self-start truncate rounded-sm font-mono text-caption text-accent-action hover:underline"
                       onClick={() => void openFile(comment)}
                       title={fileRange(comment)}
                     >
@@ -526,7 +547,7 @@ export function ReviewPanel({
                     </div>
 
                     <details className="group rounded-sm border border-surface-overlay">
-                      <summary className="cursor-pointer px-2 py-1.5 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">
+                      <summary className="min-h-11 cursor-pointer px-2 py-3 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">
                         Evidence and fix
                       </summary>
                       <div className="grid gap-2 border-t border-surface-overlay p-2">

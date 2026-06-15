@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { Session } from "../types";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 interface SessionDrawerProps {
   sessions: Session[];
@@ -8,6 +9,13 @@ interface SessionDrawerProps {
   onNewSession: () => void;
   onClose: () => void;
   open: boolean;
+  triggerRef?: RefObject<HTMLElement>;
+  trapPaused?: boolean;
+}
+
+function setInert(element: HTMLElement, inert: boolean) {
+  if (!(element instanceof HTMLElement)) return;
+  (element as HTMLElement & { inert?: boolean }).inert = inert;
 }
 
 function groupByDate(sessions: Session[]): Record<string, Session[]> {
@@ -47,9 +55,26 @@ export function SessionDrawer({
   onNewSession,
   onClose,
   open,
+  triggerRef,
+  trapPaused = false,
 }: SessionDrawerProps) {
   const [search, setSearch] = useState("");
+  const drawerRef = useRef<HTMLElement>(null);
   const groups = groupByDate(sessions);
+
+  useFocusTrap({
+    active: open && !trapPaused,
+    containerRef: drawerRef,
+    onEscape: onClose,
+    restoreFocusRef: triggerRef,
+    shouldRestoreFocusOnDeactivate: !trapPaused,
+  });
+
+  useEffect(() => {
+    const drawer = drawerRef.current;
+    if (!drawer) return;
+    setInert(drawer, !open);
+  }, [open]);
 
   const filtered: Record<string, Session[]> = {};
   for (const [label, items] of Object.entries(groups)) {
@@ -63,24 +88,22 @@ export function SessionDrawer({
     }
   }
 
-  const drawerClass = open
-    ? "translate-x-0"
-    : "-translate-x-full";
-
   return (
     <>
       <div
-        className="fixed inset-0 bg-scrim z-[calc(var(--z-drawers)_-_1)] transition-opacity duration-[250ms] ease-out-quart"
+        className="session-scrim"
         style={{ opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none" }}
         onClick={onClose}
         aria-hidden="true"
       />
       <aside
-        className={`fixed left-0 top-0 bottom-0 w-[var(--sidebar-width)] bg-surface-elevated border-r border-surface-overlay flex flex-col z-[var(--z-drawers)] transition-transform duration-[250ms] ease-out-quart ${drawerClass}`}
-        role="navigation"
+        className={`session-drawer ${open ? "is-open" : ""}`}
+        ref={drawerRef}
+        role="dialog"
         aria-label="Session history"
+        aria-modal={open ? "true" : undefined}
         aria-hidden={!open}
-        tabIndex={open ? undefined : -1}
+        tabIndex={-1}
       >
         <div className="flex items-center gap-2 p-3 border-b border-surface-overlay shrink-0">
           <svg
@@ -94,7 +117,7 @@ export function SessionDrawer({
             <path d="M9 9L12.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
           <input
-            className="flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
+            className="h-11 flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
             type="text"
             placeholder="Search sessions..."
             value={search}
@@ -110,26 +133,26 @@ export function SessionDrawer({
                 return (
                   <button
                     key={session.id}
-                    className={`flex flex-col gap-0.5 w-full py-2 px-3 text-left transition-colors duration-150 ease-out-quart border-l-2 ${
-                      isActive
-                        ? "border-l-accent-structure bg-surface-overlay"
-                        : "border-l-transparent hover:bg-surface-overlay"
-                    }`}
+                    className={`session-row ${isActive ? "is-active" : ""}`}
                     onClick={() => onSelect(session)}
+                    aria-current={isActive ? "true" : undefined}
                   >
-                    <div className="text-body-sm text-text-primary overflow-hidden text-ellipsis whitespace-nowrap">
-                      {session.title || "Untitled"}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-caption text-text-muted">
-                        {session.model}
-                      </span>
-                      <time className="font-mono text-caption text-text-muted">
-                        {session.timestamp.toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </time>
+                    <span className="session-row-dot" aria-hidden="true" />
+                    <div className="min-w-0">
+                      <div className="text-body-sm text-text-primary overflow-hidden text-ellipsis whitespace-nowrap">
+                        {session.title || "Untitled"}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-caption text-text-muted">
+                          {session.model}
+                        </span>
+                        <time className="font-mono text-caption text-text-muted">
+                          {session.timestamp.toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      </div>
                     </div>
                   </button>
                 );
@@ -138,7 +161,7 @@ export function SessionDrawer({
           ))}
         </div>
         <button
-          className="flex items-center justify-center gap-2 w-full p-3 border-t border-surface-overlay text-body-sm text-text-muted transition-colors duration-150 ease-out-quart shrink-0 hover:bg-surface-overlay hover:text-text-secondary"
+          className="flex min-h-11 items-center justify-center gap-2 w-full p-3 border-t border-surface-overlay text-body-sm text-text-muted transition-colors duration-150 ease-out-quart shrink-0 hover:bg-surface-overlay hover:text-text-secondary"
           onClick={onNewSession}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

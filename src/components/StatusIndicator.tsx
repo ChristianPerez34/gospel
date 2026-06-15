@@ -28,7 +28,7 @@ export function StatusIndicator({ status }: StatusIndicatorProps) {
         aria-hidden="true"
       />
       {status !== "idle" && status !== "connected" && (
-        <span className="text-caption text-text-muted tracking-[0.02em] whitespace-nowrap">
+        <span className="topbar-status-label text-caption text-text-muted tracking-[0.02em] whitespace-nowrap">
           {STATUS_LABELS[status]}
         </span>
       )}

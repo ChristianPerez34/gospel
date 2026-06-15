@@ -21,9 +21,9 @@ interface ToastProps {
 }
 
 const TYPE_STYLES = {
-  error: "border-l-[3px] border-l-status-error",
-  success: "border-l-[3px] border-l-status-success",
-  info: "border-l-[3px] border-l-accent-structure",
+  error: "border-status-error",
+  success: "border-status-success",
+  info: "border-accent-structure",
 };
 
 const ICON_STYLES = {
@@ -50,7 +50,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
 
   return (
     <div
-      className={`flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border border-surface-overlay rounded-md shadow-[0_8px_24px_rgba(0,0,0,0.3)] cursor-pointer pointer-events-auto max-w-[380px] animate-toast-in transition-opacity duration-200 hover:border-text-muted ${TYPE_STYLES[toast.type]}`}
+      className={`flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] cursor-pointer pointer-events-auto max-w-[380px] animate-toast-in transition-opacity duration-200 hover:border-text-muted ${TYPE_STYLES[toast.type]}`}
       onClick={handleDismiss}
       role="alert"
     >
@@ -79,7 +79,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
       <div className="flex gap-1.5 shrink-0">
         {toast.action && (
           <button
-            className="py-1 px-2 bg-surface-overlay text-text-secondary border-none rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:brightness-110"
+            className="hit-target min-h-11 px-2 bg-surface-overlay text-text-secondary border-none rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:brightness-110"
             type="button"
             onClick={(e) => { e.stopPropagation(); toast.action!.onClick(); }}
           >
@@ -88,7 +88,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         )}
         {toast.secondaryAction && (
           <button
-            className="py-1 px-2 bg-transparent text-text-secondary border border-surface-overlay rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:bg-surface-overlay"
+            className="hit-target min-h-11 px-2 bg-transparent text-text-secondary border border-surface-overlay rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:bg-surface-overlay"
             type="button"
             onClick={(e) => { e.stopPropagation(); toast.secondaryAction!.onClick(); }}
           >

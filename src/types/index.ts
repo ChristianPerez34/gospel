@@ -4,6 +4,10 @@ export type MessageRole = "user" | "agent";
 
 export type ActionCardType = "file" | "terminal" | "diff" | "search";
 
+export type ThemePreference = "dark" | "light" | "system";
+
+export type ResolvedTheme = "dark" | "light";
+
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 
 export type SignalTier = "tier_1" | "tier_2" | "noise" | "unclassified";
