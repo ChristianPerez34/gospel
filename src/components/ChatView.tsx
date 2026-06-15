@@ -105,8 +105,8 @@ export function ChatView({
                 </div>
                 <div className="flex gap-2">
                   {/* TODO: wire up handlers when retry/copy functionality is implemented */}
-                  {/* <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Retry</button>
-                  <button className="text-caption text-text-muted py-0.5 px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Copy error</button> */}
+                  {/* <button className="min-h-11 text-caption text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Retry</button>
+                  <button className="min-h-11 text-caption text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Copy error</button> */}
                 </div>
               </div>
             )}

@@ -3,6 +3,17 @@ import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
 import type { ThemePreference } from "../types";
 
+function themeIndex(value: ThemePreference) {
+  switch (value) {
+    case "dark":
+      return 0;
+    case "light":
+      return 1;
+    case "system":
+      return 2;
+  }
+}
+
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
@@ -36,6 +47,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const themeOptionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const activeThemeIndex = themeIndex(themePreference);
 
   useEffect(() => {
     if (!open) return;
@@ -153,8 +165,8 @@ export function SettingsModal({
                           event.preventDefault();
                           const nextIndex =
                             event.key === "ArrowLeft"
-                              ? (index - 1 + THEME_OPTIONS.length) % THEME_OPTIONS.length
-                              : (index + 1) % THEME_OPTIONS.length;
+                              ? (activeThemeIndex - 1 + THEME_OPTIONS.length) % THEME_OPTIONS.length
+                              : (activeThemeIndex + 1) % THEME_OPTIONS.length;
                           const nextValue = THEME_OPTIONS[nextIndex]!.value;
                           onThemePreferenceChange(nextValue);
                           themeOptionRefs.current[nextIndex]?.focus();

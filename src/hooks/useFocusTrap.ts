@@ -8,16 +8,20 @@ const FOCUSABLE_SELECTOR = [
   "textarea:not([disabled])",
   "summary",
   "[tabindex]:not([tabindex='-1'])",
-  "[contenteditable]",
+  "[contenteditable]:not([contenteditable='false'])",
 ].join(",");
+
+function isElementVisible(element: HTMLElement) {
+  const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  return true;
+}
 
 function focusableElements(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((element) => {
     if (element.getAttribute("aria-hidden") === "true") return false;
     if (element.hasAttribute("disabled")) return false;
-    const style = window.getComputedStyle(element);
-    if (style.display === "none" || style.visibility === "hidden") return false;
-    return true;
+    return isElementVisible(element);
   });
 }
 

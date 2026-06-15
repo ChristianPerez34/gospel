@@ -14,6 +14,7 @@ interface SessionDrawerProps {
 }
 
 function setInert(element: HTMLElement, inert: boolean) {
+  if (!(element instanceof HTMLElement)) return;
   (element as HTMLElement & { inert?: boolean }).inert = inert;
 }
 

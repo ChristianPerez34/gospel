@@ -28,6 +28,16 @@ function storedPreference(): ThemePreference {
   }
 }
 
+function persistPreference(value: ThemePreference) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(STORAGE_KEY, value);
+  } catch {
+    // Ignore localStorage write failures in restricted contexts.
+  }
+}
+
 export function useThemePreference() {
   const [themePreference, setThemePreferenceState] = useState<ThemePreference>(storedPreference);
   const [systemResolvedTheme, setSystemResolvedTheme] = useState<ResolvedTheme>(systemTheme);
@@ -45,11 +55,7 @@ export function useThemePreference() {
 
   const setThemePreference = useCallback((next: ThemePreference) => {
     setThemePreferenceState(next);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // Ignore localStorage write failures in restricted contexts.
-    }
+    persistPreference(next);
   }, []);
 
   const resolvedTheme = useMemo<ResolvedTheme>(
