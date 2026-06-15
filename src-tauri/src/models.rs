@@ -134,6 +134,7 @@ mod model_lists {
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-pro",
+        "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ];
 }
@@ -239,6 +240,7 @@ mod model_lists {
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-pro",
+        "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ];
 }
@@ -587,6 +589,9 @@ mod tests {
         assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4"));
         assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4-mini"));
         assert!(ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.3-codex"
+        ));
+        assert!(ModelRegistry::is_chatgpt_subscription_model(
             "gpt-5.3-codex-spark"
         ));
     }
@@ -598,9 +603,6 @@ mod tests {
         ));
         assert!(!ModelRegistry::is_chatgpt_subscription_model(
             "gpt-5.1-codex"
-        ));
-        assert!(!ModelRegistry::is_chatgpt_subscription_model(
-            "gpt-5.3-codex"
         ));
         assert!(!ModelRegistry::is_chatgpt_subscription_model("gpt-4o"));
         assert!(!ModelRegistry::is_chatgpt_subscription_model("chat-latest"));
