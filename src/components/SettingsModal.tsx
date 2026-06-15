@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
 import type { ThemePreference } from "../types";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 function themeIndex(value: ThemePreference) {
   switch (value) {
@@ -47,6 +48,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const themeOptionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const activeThemeIndex = themeIndex(themePreference);
 
   useEffect(() => {
@@ -54,22 +56,19 @@ export function SettingsModal({
     setActiveTab(initialTab);
   }, [initialTab, open]);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === "Escape" && open) {
-      onClose();
-    }
-  }, [open, onClose]);
-
-  useEffect(() => {
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+  useFocusTrap({
+    active: open,
+    containerRef: dialogRef,
+    onEscape: onClose,
+    shouldRestoreFocusOnDeactivate: true,
+  });
 
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 bg-scrim z-[var(--z-dialog)] flex items-center justify-center animate-fade-in" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="w-[520px] max-w-[90vw] max-h-[80vh] flex flex-col bg-surface-elevated border border-surface-overlay rounded-lg shadow-[var(--shadow-dialog)] animate-slide-up"
         onClick={(e) => e.stopPropagation()}
         role="dialog"

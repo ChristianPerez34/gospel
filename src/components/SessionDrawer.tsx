@@ -67,7 +67,7 @@ export function SessionDrawer({
     containerRef: drawerRef,
     onEscape: onClose,
     restoreFocusRef: triggerRef,
-    restoreFocusOnDeactivate: !trapPaused,
+    shouldRestoreFocusOnDeactivate: !trapPaused,
   });
 
   useEffect(() => {
@@ -103,7 +103,6 @@ export function SessionDrawer({
         aria-label="Session history"
         aria-modal={open ? "true" : undefined}
         aria-hidden={!open}
-        hidden={!open}
         tabIndex={-1}
       >
         <div className="flex items-center gap-2 p-3 border-b border-surface-overlay shrink-0">

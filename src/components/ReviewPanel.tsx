@@ -193,7 +193,7 @@ export function ReviewPanel({
     containerRef: panelRef,
     onEscape: onClose,
     restoreFocusRef: triggerRef,
-    restoreFocusOnDeactivate: !trapPaused,
+    shouldRestoreFocusOnDeactivate: !trapPaused,
   });
 
   if (!open) return null;

@@ -31,7 +31,7 @@ interface UseFocusTrapOptions {
   onEscape: () => void;
   restoreFocusRef?: RefObject<HTMLElement>;
   initialFocusRef?: RefObject<HTMLElement>;
-  restoreFocusOnDeactivate?: boolean;
+  shouldRestoreFocusOnDeactivate?: boolean;
 }
 
 export function useFocusTrap({
@@ -40,80 +40,90 @@ export function useFocusTrap({
   onEscape,
   restoreFocusRef,
   initialFocusRef,
-  restoreFocusOnDeactivate = true,
+  shouldRestoreFocusOnDeactivate = true,
 }: UseFocusTrapOptions) {
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-  const restoreOnDeactivateRef = useRef(restoreFocusOnDeactivate);
-  restoreOnDeactivateRef.current = restoreFocusOnDeactivate;
+  const prevActiveRef = useRef(active);
+  const shouldRestoreRef = useRef(shouldRestoreFocusOnDeactivate);
+  shouldRestoreRef.current = shouldRestoreFocusOnDeactivate;
 
   useEffect(() => {
-    if (!active) return;
+    if (active) {
+      prevActiveRef.current = true;
 
-    previouslyFocusedRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      previouslyFocusedRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
-    const focusInitialElement = () => {
-      const container = containerRef.current;
-      if (!container) return;
+      const focusInitialElement = () => {
+        const container = containerRef.current;
+        if (!container) return;
 
-      const target = initialFocusRef?.current ?? focusableElements(container)[0] ?? container;
-      target.focus();
-    };
+        const target = initialFocusRef?.current ?? focusableElements(container)[0] ?? container;
+        target.focus();
+      };
 
-    const frame = window.requestAnimationFrame(focusInitialElement);
+      const frame = window.requestAnimationFrame(focusInitialElement);
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const container = containerRef.current;
-      if (!container) return;
+      const handleKeyDown = (event: KeyboardEvent) => {
+        const container = containerRef.current;
+        if (!container) return;
 
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onEscape();
-        return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          onEscape();
+          return;
+        }
+
+        if (event.key !== "Tab") return;
+
+        const elements = focusableElements(container);
+        if (elements.length === 0) {
+          event.preventDefault();
+          container.focus();
+          return;
+        }
+
+        const first = elements[0]!;
+        const last = elements[elements.length - 1]!;
+        const activeElement = document.activeElement;
+
+        if (!container.contains(activeElement)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+          return;
+        }
+
+        if (event.shiftKey && activeElement === first) {
+          event.preventDefault();
+          last.focus();
+          return;
+        }
+
+        if (!event.shiftKey && activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      };
+
+      document.addEventListener("keydown", handleKeyDown, true);
+
+      return () => {
+        window.cancelAnimationFrame(frame);
+        document.removeEventListener("keydown", handleKeyDown, true);
+
+        if (!shouldRestoreRef.current) return;
+
+        const restoreTarget = restoreFocusRef?.current ?? previouslyFocusedRef.current;
+        restoreTarget?.focus();
+      };
+    } else if (prevActiveRef.current) {
+      prevActiveRef.current = false;
+
+      if (shouldRestoreRef.current) {
+        const restoreTarget = restoreFocusRef?.current ?? previouslyFocusedRef.current;
+        restoreTarget?.focus();
       }
-
-      if (event.key !== "Tab") return;
-
-      const elements = focusableElements(container);
-      if (elements.length === 0) {
-        event.preventDefault();
-        container.focus();
-        return;
-      }
-
-      const first = elements[0]!;
-      const last = elements[elements.length - 1]!;
-      const activeElement = document.activeElement;
-
-      if (!container.contains(activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-      }
-
-      if (event.shiftKey && activeElement === first) {
-        event.preventDefault();
-        last.focus();
-        return;
-      }
-
-      if (!event.shiftKey && activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown, true);
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.removeEventListener("keydown", handleKeyDown, true);
-
-      if (!restoreOnDeactivateRef.current) return;
-
-      const restoreTarget = restoreFocusRef?.current ?? previouslyFocusedRef.current;
-      restoreTarget?.focus();
-    };
+    }
   }, [active, containerRef, initialFocusRef, onEscape, restoreFocusRef]);
 }

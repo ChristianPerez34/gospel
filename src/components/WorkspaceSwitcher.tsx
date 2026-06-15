@@ -31,7 +31,7 @@ export function WorkspaceSwitcher({
     active: open && !trapPaused,
     containerRef: dialogRef,
     onEscape: onClose,
-    restoreFocusOnDeactivate: !trapPaused,
+    shouldRestoreFocusOnDeactivate: !trapPaused,
   });
 
   const filtered = workspaces.filter((w) =>
