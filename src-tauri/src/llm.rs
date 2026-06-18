@@ -11,7 +11,6 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -879,6 +878,11 @@ where
     let mut tool_calls = 0usize;
     let mut captured_history: Option<Vec<Message>> = None;
     let mut source_edit_succeeded = false;
+    let prompt_tokens = estimate_tokens(prompt)
+        + chat_history
+            .iter()
+            .map(estimate_message_tokens)
+            .sum::<usize>();
 
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
@@ -1125,17 +1129,14 @@ where
         }
         _ => return Err(LlmError::UnsupportedProvider(provider.to_string())),
     }
+    let response_tokens = estimate_tokens(&full_response);
 
     Ok(StreamCompletionResult {
         full_response,
         history: captured_history,
         source_edit_succeeded,
-        prompt_tokens: estimate_tokens(prompt)
-            + chat_history
-                .iter()
-                .map(estimate_message_tokens)
-                .sum::<usize>(),
-        response_tokens: estimate_tokens(&full_response),
+        prompt_tokens,
+        response_tokens,
         tool_calls,
     })
 }
@@ -1169,16 +1170,8 @@ fn estimate_message_tokens(message: &Message) -> usize {
                 .join(" "),
         ),
         Message::System { content } => estimate_tokens(
-            &content
-                .iter()
-                .filter_map(|item| match item {
-                    rig::completion::message::SystemContent::Text(text) => Some(text.text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
+            content,
         ),
-        _ => 0,
     }
 }
 
