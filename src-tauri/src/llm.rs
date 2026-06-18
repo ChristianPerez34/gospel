@@ -185,15 +185,15 @@ use crate::corpus::tools::{
     create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
     CORPUS_SYSTEM_PROMPT,
 };
+use crate::provider_client::provider_client;
 use crate::review::tools::{
     create_record_review_outcome_tool, create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
 };
 use crate::workspace_tools::{
-    create_context_search_tool, create_find_files_tool, create_list_directory_tool,
+    build_base_workspace_tools, create_context_search_tool, create_find_files_tool,
     create_read_file_tool, create_search_code_tool, create_source_edit_tool,
     create_write_harness_file_tool, truncate_text_bytes, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
-    workspace_root_inventory,
-    WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    workspace_root_inventory, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
 const AGENT_MAX_TURNS: usize = 20;
@@ -319,65 +319,13 @@ impl LlmService {
     ) -> Result<String, LlmError> {
         validate_api_key(provider, api_key)?;
 
-        let response = match provider {
-            "openai" => {
-                let client = openai::Client::new(api_key)
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-                let agent = client.agent(model).build();
-                agent
-                    .prompt(prompt)
-                    .await
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
-            }
-            "chatgpt" => {
-                let client = chatgpt::Client::builder()
-                    .oauth()
-                    .build()
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-                let agent = client.agent(model).build();
-                agent
-                    .prompt(prompt)
-                    .await
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
-            }
-            "anthropic" => {
-                let client = anthropic::Client::new(api_key)
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-                let agent = client.agent(model).build();
-                agent
-                    .prompt(prompt)
-                    .await
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
-            }
-            "gemini" => {
-                let client = gemini::Client::new(api_key)
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-                let agent = client.agent(model).build();
-                agent
-                    .prompt(prompt)
-                    .await
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
-            }
-            "groq" => {
-                let client = groq::Client::new(api_key)
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-                let agent = client.agent(model).build();
-                agent
-                    .prompt(prompt)
-                    .await
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
-            }
-            "mistral" => {
-                let client = mistral::Client::new(api_key)
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-                let agent = client.agent(model).build();
-                agent
-                    .prompt(prompt)
-                    .await
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
-            }
-            _ => return Err(LlmError::UnsupportedProvider(provider.to_string())),
-        };
+        let response = provider_client!(provider, api_key, LlmError::ProviderError, LlmError::UnsupportedProvider, |client| {
+            let agent = client.agent(model).build();
+            agent
+                .prompt(prompt)
+                .await
+                .map_err(|e| LlmError::ProviderError(e.to_string()))?
+        });
         Ok(response)
     }
 }
@@ -817,41 +765,9 @@ async fn run_exploration_agent(
         }};
     }
 
-    match provider {
-        "openai" => {
-            let client =
-                openai::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            Ok(exploration_from_client!(client, model))
-        }
-        "chatgpt" => {
-            let client = chatgpt::Client::builder()
-                .oauth()
-                .build()
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            Ok(exploration_from_client!(client, model))
-        }
-        "anthropic" => {
-            let client = anthropic::Client::new(api_key)
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            Ok(exploration_from_client!(client, model))
-        }
-        "gemini" => {
-            let client =
-                gemini::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            Ok(exploration_from_client!(client, model))
-        }
-        "groq" => {
-            let client =
-                groq::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            Ok(exploration_from_client!(client, model))
-        }
-        "mistral" => {
-            let client = mistral::Client::new(api_key)
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            Ok(exploration_from_client!(client, model))
-        }
-        _ => Err(LlmError::UnsupportedProvider(provider.to_string())),
-    }
+    provider_client!(provider, api_key, LlmError::ProviderError, LlmError::UnsupportedProvider, |client| {
+        Ok(exploration_from_client!(client, model))
+    })
 }
 
 pub async fn stream_completion<F>(
@@ -894,16 +810,7 @@ where
             };
             let agent = if let Some(workspace_context) = workspace.as_ref() {
                 let mut b = builder
-                    .tool(create_read_file_tool(
-                        workspace_context.workspace_path.clone(),
-                    ))
-                    .tool(create_search_code_tool(
-                        workspace_context.workspace_path.clone(),
-                    ))
-                    .tool(create_find_files_tool(
-                        workspace_context.workspace_path.clone(),
-                    ))
-                    .tool(create_list_directory_tool(
+                    .tools(build_base_workspace_tools(
                         workspace_context.workspace_path.clone(),
                     ))
                     .tool(create_source_edit_tool(
@@ -1094,41 +1001,9 @@ where
         }};
     }
 
-    match provider {
-        "openai" => {
-            let client =
-                openai::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            stream_from_client!(client, model);
-        }
-        "chatgpt" => {
-            let client = chatgpt::Client::builder()
-                .oauth()
-                .build()
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            stream_from_client!(client, model);
-        }
-        "anthropic" => {
-            let client = anthropic::Client::new(api_key)
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            stream_from_client!(client, model);
-        }
-        "gemini" => {
-            let client =
-                gemini::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            stream_from_client!(client, model);
-        }
-        "groq" => {
-            let client =
-                groq::Client::new(api_key).map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            stream_from_client!(client, model);
-        }
-        "mistral" => {
-            let client = mistral::Client::new(api_key)
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-            stream_from_client!(client, model);
-        }
-        _ => return Err(LlmError::UnsupportedProvider(provider.to_string())),
-    }
+    provider_client!(provider, api_key, LlmError::ProviderError, LlmError::UnsupportedProvider, |client| {
+        stream_from_client!(client, model);
+    });
     let response_tokens = estimate_tokens(&full_response);
 
     Ok(StreamCompletionResult {
@@ -1309,7 +1184,7 @@ mod tests {
             task: "Trace startup flow".to_string(),
             context: Some("Focus on Tauri setup".to_string()),
             expected_output: Some("Highlight risky assumptions".to_string()),
-        });
+        }, "");
 
         assert!(prompt.contains("Task:"));
         assert!(prompt.contains("Focus on Tauri setup"));

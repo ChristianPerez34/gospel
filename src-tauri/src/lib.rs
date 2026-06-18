@@ -7,6 +7,7 @@ pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+mod provider_client;
 mod review;
 pub mod session_store;
 mod session_turn;

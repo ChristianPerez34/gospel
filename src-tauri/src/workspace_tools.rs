@@ -1067,6 +1067,15 @@ pub fn create_list_directory_tool(workspace_root: PathBuf) -> ListDirectoryTool 
     ListDirectoryTool { workspace_root }
 }
 
+pub fn build_base_workspace_tools(workspace_path: PathBuf) -> Vec<Box<dyn rig::tool::ToolDyn>> {
+    vec![
+        Box::new(create_read_file_tool(workspace_path.clone())),
+        Box::new(create_search_code_tool(workspace_path.clone())),
+        Box::new(create_find_files_tool(workspace_path.clone())),
+        Box::new(create_list_directory_tool(workspace_path)),
+    ]
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SourceEditArgs {
     path: String,
@@ -2682,6 +2691,17 @@ mod tests {
     fn truncate_snippet_is_utf8_safe() {
         assert_eq!(truncate_snippet("aé🙂bc", 3), "aé🙂...");
         assert_eq!(truncate_snippet("short", 10), "short");
+    }
+
+    #[test]
+    fn base_workspace_tools_returns_four_tools() {
+        let tools = build_base_workspace_tools(PathBuf::from("/tmp/test-workspace"));
+        assert_eq!(tools.len(), 4);
+        let names: Vec<String> = tools.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"read_file".to_string()));
+        assert!(names.contains(&"search_code".to_string()));
+        assert!(names.contains(&"find_files".to_string()));
+        assert!(names.contains(&"list_directory".to_string()));
     }
 
     #[tokio::test]
