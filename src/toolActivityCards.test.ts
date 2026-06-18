@@ -142,4 +142,67 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(cards[0]?.summary).toBe("Record review outcome");
     expect(cards[0]?.detail).toBe("rejected, rc_1");
   });
+
+  it("formats delegate_exploration with parsed structured sections", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "tool-3",
+        name: "delegate_exploration",
+        arguments: {
+          task: "Investigate startup flow",
+          context: "Focus on auth boundary.",
+        },
+        result: JSON.stringify({
+          success: true,
+          message: "Exploration complete.",
+          reason: null,
+          truncated: false,
+          report: "Report body",
+          summary: "Found one risky bootstrap path.",
+          key_files: ["src/main.rs", "src/auth.rs"],
+          findings: ["Potential unauthenticated route", "Cookie not rotated"],
+          constraints: ["No blocking for now."],
+          suggested_next_reads: ["Run security review", "Verify token claims"],
+          tools_used: ["read_file", "search_code", "list_directory"],
+        }),
+        status: "completed",
+      },
+    ]);
+
+    expect(cards[0]?.summary).toBe("Delegate exploration");
+    expect(cards[0]?.detail).toBe("Found one risky bootstrap path, Investigate startup flow");
+
+    const keyFilesSection = cards[0]?.sections?.find(
+      (section) => section.type === "rows" && section.title === "Key files",
+    );
+    expect(keyFilesSection?.rows?.map((row) => row.primary)).toEqual([
+      "src/main.rs",
+      "src/auth.rs",
+    ]);
+
+    const findingsSection = cards[0]?.sections?.find(
+      (section) => section.type === "rows" && section.title === "Findings",
+    );
+    expect(findingsSection?.rows?.map((row) => row.primary)).toEqual([
+      "Potential unauthenticated route",
+      "Cookie not rotated",
+    ]);
+
+    const nextReadsSection = cards[0]?.sections?.find(
+      (section) => section.type === "rows" && section.title === "Suggested next reads",
+    );
+    expect(nextReadsSection?.rows?.map((row) => row.primary)).toEqual([
+      "Run security review",
+      "Verify token claims",
+    ]);
+
+    const toolSection = cards[0]?.sections?.find(
+      (section) => section.type === "rows" && section.title === "Tools used",
+    );
+    expect(toolSection?.rows?.map((row) => row.primary)).toEqual([
+      "read_file",
+      "search_code",
+      "list_directory",
+    ]);
+  });
 });

@@ -50,6 +50,9 @@ pub enum TraceEvent {
         session_id: String,
         role: String,
         response_length: usize,
+        prompt_tokens: usize,
+        response_tokens: usize,
+        tool_calls: usize,
         timestamp: u64,
     },
     Error {

@@ -11,6 +11,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -192,6 +193,7 @@ use crate::workspace_tools::{
     create_context_search_tool, create_find_files_tool, create_list_directory_tool,
     create_read_file_tool, create_search_code_tool, create_source_edit_tool,
     create_write_harness_file_tool, truncate_text_bytes, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
+    workspace_root_inventory,
     WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
@@ -386,6 +388,9 @@ pub struct StreamCompletionResult {
     pub full_response: String,
     pub history: Option<Vec<Message>>,
     pub source_edit_succeeded: bool,
+    pub prompt_tokens: usize,
+    pub response_tokens: usize,
+    pub tool_calls: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,6 +405,11 @@ struct DelegateExplorationOutput {
     success: bool,
     truncated: bool,
     report: String,
+    summary: Option<String>,
+    key_files: Vec<String>,
+    findings: Vec<String>,
+    constraints: Vec<String>,
+    suggested_next_reads: Vec<String>,
     tools_used: Vec<String>,
     message: String,
     reason: Option<String>,
@@ -471,13 +481,12 @@ impl Tool for DelegateExplorationTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let prompt = build_exploration_prompt(&args);
         match run_exploration_agent(
             &self.provider,
             &self.model,
             &self.api_key,
             &self.workspace,
-            &prompt,
+            &args,
         )
         .await
         {
@@ -486,6 +495,11 @@ impl Tool for DelegateExplorationTool {
                 success: false,
                 truncated: false,
                 report: String::new(),
+                summary: None,
+                key_files: vec![],
+                findings: vec![],
+                constraints: vec![],
+                suggested_next_reads: vec![],
                 tools_used: vec![],
                 message: error.to_string(),
                 reason: Some(match error {
@@ -579,8 +593,130 @@ fn build_system_preamble(
     }
 }
 
-fn build_exploration_prompt(args: &DelegateExplorationArgs) -> String {
+#[derive(Debug, Default, Clone)]
+struct ParsedDelegateSections {
+    summary: Option<String>,
+    key_files: Vec<String>,
+    findings: Vec<String>,
+    constraints: Vec<String>,
+    suggested_next_reads: Vec<String>,
+    tools_used: Vec<String>,
+}
+
+fn parse_delegation_sections(text: &str) -> ParsedDelegateSections {
+    let mut section = "other".to_string();
+    let mut sections: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    sections.insert("summary".to_string(), Vec::new());
+    sections.insert("key_files".to_string(), Vec::new());
+    sections.insert("findings".to_string(), Vec::new());
+    sections.insert("constraints".to_string(), Vec::new());
+    sections.insert("suggested_next_reads".to_string(), Vec::new());
+    sections.insert("tools_used".to_string(), Vec::new());
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("## ") {
+            let heading = lower.trim_start_matches("## ").trim();
+            match heading {
+                "summary" => section = "summary".to_string(),
+                "key files" => section = "key_files".to_string(),
+                "findings" => section = "findings".to_string(),
+                "constraints" => section = "constraints".to_string(),
+                "suggested next reads" => section = "suggested_next_reads".to_string(),
+                "tools used" => section = "tools_used".to_string(),
+                _ => section = "other".to_string(),
+            }
+            continue;
+        }
+
+        if let Some(lines) = sections.get_mut(&section) {
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
+    }
+
+    let summary = sections
+        .remove("summary")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let key_files = parse_structured_lines(sections.remove("key_files").unwrap_or_default());
+    let findings = parse_structured_lines(sections.remove("findings").unwrap_or_default());
+    let constraints = parse_structured_lines(sections.remove("constraints").unwrap_or_default());
+    let suggested_next_reads =
+        parse_structured_lines(sections.remove("suggested_next_reads").unwrap_or_default());
+    let tools_used = parse_structured_lines(sections.remove("tools_used").unwrap_or_default());
+
+    ParsedDelegateSections {
+        summary: if summary.is_empty() {
+            None
+        } else {
+            Some(summary.join("\n").trim().to_string())
+        },
+        key_files,
+        findings,
+        constraints,
+        suggested_next_reads,
+        tools_used,
+    }
+}
+
+fn parse_structured_lines(lines: Vec<String>) -> Vec<String> {
+    let mut parsed = Vec::new();
+    for line in lines {
+        let trimmed = line.trim();
+        let value = strip_list_bullet(trimmed);
+        if !value.is_empty() {
+            parsed.push(value.to_string());
+            continue;
+        }
+        parsed.push(trimmed.to_string());
+    }
+    parsed
+        .into_iter()
+        .map(|value| value.trim_matches('"').to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn strip_list_bullet(line: &str) -> &str {
+    if let Some(value) = line.strip_prefix("- ") {
+        value
+    } else if let Some(value) = line.strip_prefix("* ") {
+        value
+    } else if let Some(value) = line.strip_prefix("+ ") {
+        value
+    } else if let Some(dot_position) = line.find(". ") {
+        if line[..dot_position]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        {
+            line[dot_position + 2..].trim()
+        } else {
+            line
+        }
+    } else if let Some(paren_position) = line.find(") ") {
+        if line[..paren_position]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        {
+            line[paren_position + 2..].trim()
+        } else {
+            line
+        }
+    } else {
+        line
+    }
+}
+
+fn build_exploration_prompt(args: &DelegateExplorationArgs, workspace_context: &str) -> String {
     let mut sections = vec![format!("Task:\n{}", args.task.trim())];
+    if !workspace_context.trim().is_empty() {
+        sections.push(format!("Workspace root snapshot:\n{}", workspace_context));
+    }
     if let Some(context) = args
         .context
         .as_deref()
@@ -605,17 +741,21 @@ async fn run_exploration_agent(
     model: &str,
     api_key: &str,
     workspace: &WorkspaceToolContext,
-    prompt: &str,
+    args: &DelegateExplorationArgs,
 ) -> Result<DelegateExplorationOutput, LlmError> {
     let hook = ExplorationHook {
         tools: Arc::new(Mutex::new(Vec::new())),
     };
     let tool_names = hook.tools.clone();
+    let workspace_snapshot = workspace_root_inventory(&workspace.workspace_path, 40)
+        .map(|inventory| format!("{}", inventory))
+        .unwrap_or_else(|_| String::new());
     let agent_preamble = format!(
         "{}\n\n{}",
         build_system_preamble(Some(workspace), false, None, None, false).unwrap_or_default(),
         EXPLORATION_AGENT_PROMPT.trim()
     );
+    let prompt = build_exploration_prompt(&args, &workspace_snapshot);
 
     // Exploration agent uses tighter loop thresholds
     let _loop_detector = Arc::new(Mutex::new(LoopDetector::new(AgentRole::Exploration)));
@@ -628,8 +768,7 @@ async fn run_exploration_agent(
                 .default_max_turns(AGENT_MAX_TURNS)
                 .tool(create_read_file_tool(workspace.workspace_path.clone()))
                 .tool(create_search_code_tool(workspace.workspace_path.clone()))
-                .tool(create_find_files_tool(workspace.workspace_path.clone()))
-                .tool(create_list_directory_tool(workspace.workspace_path.clone()));
+                .tool(create_find_files_tool(workspace.workspace_path.clone()));
 
             if workspace.corpus_available {
                 builder = builder
@@ -649,20 +788,30 @@ async fn run_exploration_agent(
             let response = timeout(EXPLORATION_TIMEOUT, future)
                 .await
                 .map_err(|_| {
-                    LlmError::ProviderError(
+                    LlmError::ControlledStop(
                         "Exploration Agent timed out after 90 seconds".to_string(),
                     )
                 })?
                 .map_err(|e| LlmError::ProviderError(e.to_string()))?;
 
             let tools_used = tool_names.lock().unwrap().clone();
+            let sections = parse_delegation_sections(&response.output);
             let (report, truncated) =
                 truncate_text_bytes(&response.output, EXPLORATION_REPORT_BYTES_CAP);
             DelegateExplorationOutput {
                 success: true,
                 truncated,
                 report,
-                tools_used,
+                summary: sections.summary,
+                key_files: sections.key_files,
+                findings: sections.findings,
+                constraints: sections.constraints,
+                suggested_next_reads: sections.suggested_next_reads,
+                tools_used: if sections.tools_used.is_empty() {
+                    tools_used
+                } else {
+                    sections.tools_used
+                },
                 message: "Exploration completed.".to_string(),
                 reason: None,
             }
@@ -711,6 +860,9 @@ pub async fn stream_completion<F>(
     prompt: &str,
     model: &str,
     api_key: &str,
+    delegate_provider: &str,
+    delegate_model: &str,
+    delegate_api_key: &str,
     workspace: Option<WorkspaceToolContext>,
     chat_history: Vec<Message>,
     matched_skills_section: Option<String>,
@@ -724,6 +876,7 @@ where
     validate_api_key(provider, api_key)?;
 
     let mut full_response = String::new();
+    let mut tool_calls = 0usize;
     let mut captured_history: Option<Vec<Message>> = None;
     let mut source_edit_succeeded = false;
 
@@ -783,9 +936,9 @@ where
 
                 b = b.tool(DelegateExplorationTool {
                     workspace: workspace_context.clone(),
-                    provider: provider.to_string(),
-                    model: model.to_string(),
-                    api_key: api_key.to_string(),
+                    provider: delegate_provider.to_string(),
+                    model: delegate_model.to_string(),
+                    api_key: delegate_api_key.to_string(),
                 });
                 if let Some(st) = skill_script_tool {
                     b = b.tool(st);
@@ -853,6 +1006,7 @@ where
                                 name: tool_call.function.name.clone(),
                                 arguments: tool_call.function.arguments.clone(),
                             });
+                            tool_calls += 1;
                         }
                         MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
                             tool_result,
@@ -976,7 +1130,56 @@ where
         full_response,
         history: captured_history,
         source_edit_succeeded,
+        prompt_tokens: estimate_tokens(prompt)
+            + chat_history
+                .iter()
+                .map(estimate_message_tokens)
+                .sum::<usize>(),
+        response_tokens: estimate_tokens(&full_response),
+        tool_calls,
     })
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+fn estimate_message_tokens(message: &Message) -> usize {
+    match message {
+        Message::User { content } => estimate_tokens(
+            &content
+                .iter()
+                .filter_map(|item| match item {
+                    rig::completion::message::UserContent::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        Message::Assistant { content, .. } => estimate_tokens(
+            &content
+                .iter()
+                .filter_map(|item| match item {
+                    rig::completion::message::AssistantContent::Text(text) => {
+                        Some(text.text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        Message::System { content } => estimate_tokens(
+            &content
+                .iter()
+                .filter_map(|item| match item {
+                    rig::completion::message::SystemContent::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        _ => 0,
+    }
 }
 
 fn source_edit_result_changed(result_summary: &str) -> bool {
@@ -1021,6 +1224,9 @@ mod tests {
         let error = stream_completion(
             "openai",
             "hello",
+            "gpt-4o-mini",
+            "",
+            "openai",
             "gpt-4o-mini",
             "",
             None,

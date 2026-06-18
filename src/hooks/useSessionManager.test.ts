@@ -375,7 +375,9 @@ describe("useSessionManager", () => {
       expect(result.current.status).toBe("thinking");
 
       act(() => {
-        triggerEvent<string>("llm-done", "the assistant's final reply");
+        triggerEvent("llm-done", {
+          response: "the assistant's final reply",
+        });
       });
 
       expect(result.current.status).toBe("connected");
@@ -438,7 +440,12 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
-        triggerEvent<string>("llm-done", "hello back");
+        triggerEvent("llm-done", {
+          response: "hello back",
+          prompt_tokens: 42,
+          response_tokens: 7,
+          tool_calls: 2,
+        });
       });
 
       const agentMessages = result.current.messages.filter((m) => m.role === "agent");
@@ -464,12 +471,41 @@ describe("useSessionManager", () => {
       expect(created.messages.map((m: Message) => m.role)).toEqual(["user"]);
 
       act(() => {
-        triggerEvent<string>("llm-done", "hello back");
+        triggerEvent("llm-done", {
+          response: "hello back",
+        });
       });
 
       const refreshed = result.current.sessions[0]!;
       expect(refreshed.messages.map((m: Message) => m.role)).toEqual(["user", "agent"]);
       expect(refreshed.messages[1]!.content).toBe("hello back");
+    });
+
+    it("accepts llm-done object payload while preserving action content", async () => {
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent("llm-done", {
+          response: "metadata-aware reply",
+          prompt_tokens: 12,
+          response_tokens: 3,
+          tool_calls: 1,
+        });
+      });
+
+      const agentMessages = result.current.messages.filter((m) => m.role === "agent");
+      expect(agentMessages).toHaveLength(1);
+      expect(agentMessages[0]!.content).toBe("metadata-aware reply");
+      expect(result.current.status).toBe("connected");
     });
   });
 });
