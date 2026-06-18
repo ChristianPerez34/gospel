@@ -54,7 +54,7 @@ export function WorkspaceSwitcher({
         ref={dialogRef}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2 p-3 border-b border-surface-overlay">
+        <div className="flex items-center gap-2 p-3 border-b border-surface-overlay bg-surface-elevated">
           <svg
             className="text-text-muted shrink-0"
             width="14"
@@ -74,7 +74,7 @@ export function WorkspaceSwitcher({
             autoFocus
           />
         </div>
-        <div className="overflow-y-auto flex-1">
+        <div className="overflow-y-auto flex-1 bg-surface-elevated">
           {loading && workspaces.length === 0 && (
             <div className="p-4 text-center text-text-muted text-body-sm">Loading workspaces...</div>
           )}
@@ -99,7 +99,7 @@ export function WorkspaceSwitcher({
                     onClose();
                   }}
                 >
-                  <div className="text-body font-medium text-text-primary min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{ws.name}</div>
+                  <div className="text-body-sm font-medium text-text-primary min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{ws.name}</div>
                   <div className="font-mono text-caption text-text-muted min-w-0 overflow-hidden text-ellipsis whitespace-nowrap flex-1">{ws.path}</div>
                   {ws.sessionCount > 0 && (
                     <span className="font-mono text-caption text-text-muted bg-surface-overlay px-1 rounded-sm shrink-0">

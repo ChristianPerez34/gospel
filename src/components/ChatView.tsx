@@ -55,19 +55,17 @@ export function ChatView({
   };
 
   if (isEmpty) {
-    return (
-      <div
-        className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center"
-        role="main"
-      >
-        <div className="flex flex-col items-center gap-3 animate-fade-slide-in">
-          <p className="font-mono text-body-sm text-text-muted">{workspacePath}</p>
-          <p className="text-body text-text-secondary">
-            Type a prompt to start a session
-          </p>
-        </div>
+  return (
+    <div
+      className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center"
+      role="main"
+    >
+      <div className="flex flex-col items-center gap-2 animate-fade-slide-in">
+        <p className="text-heading text-text-primary font-medium">New session ready</p>
+        <p className="font-mono text-mono text-text-muted">{workspacePath}</p>
       </div>
-    );
+    </div>
+  );
   }
 
   return (
@@ -77,8 +75,8 @@ export function ChatView({
       aria-live="polite"
     >
       {liveStatus && (
-        <div className="sticky top-0 z-10 px-4 pt-2 shrink-0">
-          <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-surface-overlay bg-surface-base py-1 px-2 text-caption text-text-muted animate-fade-slide-in-fast">
+        <div className="sticky top-0 z-10 px-8 pt-3 shrink-0">
+          <div className="inline-flex max-w-full items-center gap-2 rounded-lg border border-surface-overlay bg-surface-elevated py-1.5 px-2.5 text-caption text-text-secondary animate-fade-slide-in-fast">
             <span
               className={`h-1.5 w-1.5 rounded-full shrink-0 ${hasToolActivities ? "bg-accent-action animate-pulse" : "bg-text-muted"}`}
               aria-hidden="true"
@@ -87,33 +85,33 @@ export function ChatView({
           </div>
         </div>
       )}
-      <div className="flex-1 flex flex-col gap-6 py-6 px-4 max-w-full">
+      <div className="flex-1 flex flex-col gap-5 py-5 px-8 max-w-full">
         {messages.map((msg) => (
-          <div key={msg.id} className="flex flex-col gap-2 animate-fade-slide-in-fast">
+          <div key={msg.id} className="flex flex-col gap-1.5 animate-fade-slide-in-fast">
             {msg.content && <MessageBlock message={msg} />}
             {msg.actionCards?.map((card) => (
               <ActionCard key={card.id} card={card} />
             ))}
             {msg.error && (
               <div
-                className="ml-7 mr-6 rounded-md border border-status-error bg-surface-elevated px-4 py-3"
+                className="ml-16 rounded-lg border border-status-error bg-surface-elevated px-3 py-3"
                 role="alert"
               >
                 <div className="flex items-start gap-2 text-body-sm text-text-primary">
-                  <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-status-error" aria-hidden="true" />
+                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-status-error" aria-hidden="true" />
                   <span>{msg.error}</span>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-3 pl-4">
                   {/* TODO: wire up handlers when retry/copy functionality is implemented */}
-                  {/* <button className="min-h-11 text-caption text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Retry</button>
-                  <button className="min-h-11 text-caption text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary">Copy error</button> */}
+                  {/* <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary">Retry</button>
+                  <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary">Copy error</button> */}
                 </div>
               </div>
             )}
           </div>
         ))}
         {showLiveTurn && (
-          <div className="flex flex-col gap-2 animate-fade-slide-in-fast">
+          <div className="flex flex-col gap-1.5 animate-fade-slide-in-fast">
             {liveActionCards.map((card) => (
               <ActionCard key={card.id} card={card} />
             ))}

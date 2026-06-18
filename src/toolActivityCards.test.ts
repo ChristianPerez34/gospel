@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { toolActivitiesToActionCards } from "./toolActivityCards";
+import type { ActionCardSection } from "./types";
+
+type RowsSection = Extract<ActionCardSection, { type: "rows" }>;
+
+const isRowsSection = (section: ActionCardSection): section is RowsSection =>
+  section.type === "rows";
 
 describe("toolActivitiesToActionCards review tools", () => {
   it("formats source_edit as an edit card with redacted raw arguments", () => {
@@ -172,32 +178,32 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(cards[0]?.summary).toBe("Delegate exploration");
     expect(cards[0]?.detail).toBe("Found one risky bootstrap path, Investigate startup flow");
 
-    const keyFilesSection = cards[0]?.sections?.find(
-      (section) => section.type === "rows" && section.title === "Key files",
+    const keyFilesSection = cards[0]?.sections?.find((section): section is RowsSection =>
+      isRowsSection(section) && section.title === "Key files",
     );
     expect(keyFilesSection?.rows?.map((row) => row.primary)).toEqual([
       "src/main.rs",
       "src/auth.rs",
     ]);
 
-    const findingsSection = cards[0]?.sections?.find(
-      (section) => section.type === "rows" && section.title === "Findings",
+    const findingsSection = cards[0]?.sections?.find((section): section is RowsSection =>
+      isRowsSection(section) && section.title === "Findings",
     );
     expect(findingsSection?.rows?.map((row) => row.primary)).toEqual([
       "Potential unauthenticated route",
       "Cookie not rotated",
     ]);
 
-    const nextReadsSection = cards[0]?.sections?.find(
-      (section) => section.type === "rows" && section.title === "Suggested next reads",
+    const nextReadsSection = cards[0]?.sections?.find((section): section is RowsSection =>
+      isRowsSection(section) && section.title === "Suggested next reads",
     );
     expect(nextReadsSection?.rows?.map((row) => row.primary)).toEqual([
       "Run security review",
       "Verify token claims",
     ]);
 
-    const toolSection = cards[0]?.sections?.find(
-      (section) => section.type === "rows" && section.title === "Tools used",
+    const toolSection = cards[0]?.sections?.find((section): section is RowsSection =>
+      isRowsSection(section) && section.title === "Tools used",
     );
     expect(toolSection?.rows?.map((row) => row.primary)).toEqual([
       "read_file",

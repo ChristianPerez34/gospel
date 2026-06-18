@@ -884,6 +884,20 @@ pub struct ListDirectoryOutput {
     visited_entries: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceRootInventoryItem {
+    pub path: String,
+    pub kind: String,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceRootInventory {
+    pub entries: Vec<WorkspaceRootInventoryItem>,
+    pub visited_entries: usize,
+    pub truncated: bool,
+}
+
 impl Tool for ListDirectoryTool {
     const NAME: &'static str = "list_directory";
 
@@ -978,6 +992,62 @@ impl Tool for ListDirectoryTool {
             truncated: state.truncated,
             visited_entries: state.visited_entries,
         })
+    }
+}
+
+pub fn workspace_root_inventory(
+    workspace_root: &Path,
+    max_entries: usize,
+) -> Result<WorkspaceRootInventory, WorkspaceToolError> {
+    let access = WorkspaceAccess::new(workspace_root)?;
+    let entries = read_sorted_directory_entries(workspace_root)?;
+    let mut visited_entries = 0usize;
+    let mut truncated = false;
+    let mut snapshot_entries = Vec::new();
+
+    for entry in entries.into_iter() {
+        visited_entries += 1;
+        if visited_entries > VISITED_ENTRY_CAP {
+            truncated = true;
+            break;
+        }
+
+        let relative_path = entry.relative_path(&access);
+        if entry.is_symlink {
+            continue;
+        }
+        if blocked_path_reason(&relative_path, entry.path_kind(), true).is_some() {
+            continue;
+        }
+
+        snapshot_entries.push(WorkspaceRootInventoryItem {
+            path: display_rel_path(&relative_path),
+            kind: entry.kind_name(),
+            size_bytes: if entry.is_file() { Some(entry.size_bytes) } else { None },
+        });
+
+        if snapshot_entries.len() >= max_entries.max(1) {
+            truncated = true;
+            break;
+        }
+    }
+
+    Ok(WorkspaceRootInventory {
+        entries: snapshot_entries,
+        visited_entries,
+        truncated,
+    })
+}
+
+impl std::fmt::Display for WorkspaceRootInventory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for entry in &self.entries {
+            writeln!(f, "{} ({})", entry.path, entry.kind)?;
+        }
+        if self.truncated {
+            writeln!(f, "... (truncated)")?;
+        }
+        Ok(())
     }
 }
 
