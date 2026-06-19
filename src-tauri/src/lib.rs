@@ -1491,16 +1491,16 @@ fn get_session(
 fn list_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
-    let workspace_id = match &app_config.store {
+    let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
             .ok()
             .flatten()
-            .map(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
+            .and_then(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
         None => None,
-    }
-    .flatten();
+    });
 
     match &session_store.store {
         Some(store) => {

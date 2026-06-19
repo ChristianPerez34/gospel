@@ -31,6 +31,7 @@ interface CommandPaletteProps {
   onToggleReview: () => void;
   onSelectModel: (modelId: string) => void;
   restoreFocusRef?: RefObject<HTMLElement>;
+  workspaceNames?: Record<string, string>;
 }
 
 function includesQuery(result: PaletteResult, query: string) {
@@ -64,6 +65,7 @@ export function CommandPalette({
   onToggleReview,
   onSelectModel,
   restoreFocusRef,
+  workspaceNames,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -76,20 +78,34 @@ export function CommandPalette({
       onClose();
     };
 
-    const sessionResults = sessions.slice(0, query ? sessions.length : 5).map((session) => ({
-      id: `session-${session.id}`,
-      group: "Sessions" as const,
-      icon: session.id === activeSessionId ? "A" : "S",
-      label: session.title || "Untitled session",
-      detail: `${session.model} · ${session.timestamp.toLocaleString([], {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })}`,
-      keywords: `session conversation ${session.model}`,
-      action: closeAfter(() => onSelectSession(session)),
-    }));
+    const sessionResults = sessions.slice(0, query ? sessions.length : 5).map((session) => {
+      const workspaceName = session.workspaceId
+        ? workspaceNames?.[session.workspaceId] || workspace?.name
+        : workspace?.name;
+      const detail = workspaceName
+        ? `${session.model} · ${workspaceName} · ${session.timestamp.toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}`
+        : `${session.model} · ${session.timestamp.toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}`;
+
+      return {
+        id: `session-${session.id}`,
+        group: "Sessions" as const,
+        icon: session.id === activeSessionId ? "A" : "S",
+        label: session.title || "Untitled session",
+        detail,
+        keywords: `session conversation ${session.model} ${workspaceName ? workspaceName.toLowerCase() : ""}`,
+        action: closeAfter(() => onSelectSession(session)),
+      };
+    });
 
     const workspaceResults: PaletteResult[] = workspace
       ? [
@@ -192,6 +208,7 @@ export function CommandPalette({
     selectedModelId,
     sessions,
     workspace,
+    workspaceNames,
   ]);
 
   const filteredResults = useMemo(

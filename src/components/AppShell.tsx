@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TopBar } from "./TopBar";
 import { ChatView } from "./ChatView";
@@ -13,11 +13,21 @@ import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useThemePreference } from "../hooks/useThemePreference";
-import { modelOptionId } from "../types";
+import { modelOptionId, type Session } from "../types";
 import { noModelCopy } from "../modelAvailabilityCopy";
 
 type SettingsTab = "general" | "models";
 type TrappedSurface = "sessions" | "review" | null;
+
+interface BackendSessionRecord {
+  id: string;
+  title: string;
+  provider: string;
+  model: string;
+  status: string;
+  workspace_id: string | null;
+  updated_at: string;
+}
 
 export function AppShell() {
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
@@ -64,10 +74,79 @@ export function AppShell() {
     models,
     selectedModel,
     activeWorkspaceId: activeWorkspace?.id,
+    onSwitchWorkspace: switchWorkspace,
     onError: showError,
     onSuccess: showSuccess,
     onOpenSettings: openSettings,
   });
+
+  const [allWorkspaceSessions, setAllWorkspaceSessions] = useState<Session[]>([]);
+
+  const workspaceNames = useMemo<Record<string, string>>(() => {
+    const names: Record<string, string> = {};
+    for (const item of workspaces) {
+      names[item.id] = item.name;
+    }
+    return names;
+  }, [workspaces]);
+
+  const mapBackendSessions = useCallback((backendSessions: BackendSessionRecord[]) => {
+    return backendSessions.map((session) => ({
+      id: session.id,
+      title: session.title,
+      provider: session.provider,
+      model: session.model,
+      timestamp: new Date(session.updated_at),
+      messages: [],
+      status: (session.status === "active" ? "idle" : "error") as Session["status"],
+      workspaceId: session.workspace_id ?? undefined,
+    }));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadWorkspaceSessions = async () => {
+      const ids = workspaces.map((item) => item.id);
+      if (ids.length === 0) {
+        if (!cancelled) {
+          setAllWorkspaceSessions([]);
+        }
+        return;
+      }
+
+      const workspaceSessions = await Promise.all(
+        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspace_id: id })),
+      );
+
+      if (cancelled) return;
+
+      const flattened = workspaceSessions.flatMap((backendSessions) => mapBackendSessions(backendSessions));
+      setAllWorkspaceSessions(flattened);
+    };
+
+    void loadWorkspaceSessions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mapBackendSessions, workspaces]);
+
+  const allSessions = useMemo(() => {
+    const byId = new Map<string, Session>();
+
+    for (const item of allWorkspaceSessions) {
+      byId.set(item.id, item);
+    }
+
+    for (const item of session.sessions) {
+      byId.set(item.id, item);
+    }
+
+    return Array.from(byId.values()).sort(
+      (left, right) => right.timestamp.getTime() - left.timestamp.getTime(),
+    );
+  }, [allWorkspaceSessions, session.sessions]);
 
   const activeSession = session.sessions.find((s) => s.id === session.activeSessionId);
   const sessionTitle = activeSession?.title || "New session";
@@ -190,24 +269,26 @@ export function AppShell() {
           />
         </div>
       </div>
-      <SessionDrawer
-        sessions={session.sessions}
-        activeSessionId={session.activeSessionId ?? undefined}
-        onSelect={(s) => {
-          if (session.isStreaming) return;
-          session.handleSessionSelect(s);
-          closeSessionDrawer();
-        }}
-        onNewSession={() => {
-          if (session.isStreaming) return;
-          session.handleNewSession();
-          closeSessionDrawer();
-        }}
-        onClose={closeSessionDrawer}
-        open={sessionDrawerOpen}
-        triggerRef={sessionToggleRef}
-        trapPaused={modalSurfaceOpen || trappedSurface !== "sessions"}
-      />
+        <SessionDrawer
+          sessions={allSessions}
+          activeSessionId={session.activeSessionId ?? undefined}
+          workspaceNames={workspaceNames}
+          activeWorkspaceId={activeWorkspace?.id}
+          onSelect={(s) => {
+            if (session.isStreaming) return;
+            void session.handleSessionSelect(s);
+            closeSessionDrawer();
+          }}
+          onNewSession={() => {
+            if (session.isStreaming) return;
+            session.handleNewSession();
+            closeSessionDrawer();
+          }}
+          onClose={closeSessionDrawer}
+          open={sessionDrawerOpen}
+          triggerRef={sessionToggleRef}
+          trapPaused={modalSurfaceOpen || trappedSurface !== "sessions"}
+        />
       {workspaceSwitcherOpen && (
         <WorkspaceSwitcher
           workspaces={workspaces}
@@ -247,15 +328,16 @@ export function AppShell() {
       />
       <CommandPalette
         open={commandPaletteOpen}
-        sessions={session.sessions}
+        sessions={allSessions}
         activeSessionId={session.activeSessionId}
         workspace={activeWorkspace}
         models={models}
         selectedModelId={selectedModelId}
+        workspaceNames={workspaceNames}
         onClose={() => setCommandPaletteOpen(false)}
         onSelectSession={(s) => {
           if (session.isStreaming) return;
-          session.handleSessionSelect(s);
+          void session.handleSessionSelect(s);
         }}
         onNewSession={() => {
           if (session.isStreaming) return;

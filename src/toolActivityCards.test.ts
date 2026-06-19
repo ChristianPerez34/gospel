@@ -176,7 +176,7 @@ describe("toolActivitiesToActionCards review tools", () => {
     ]);
 
     expect(cards[0]?.summary).toBe("Delegate exploration");
-    expect(cards[0]?.detail).toBe("Found one risky bootstrap path, Investigate startup flow");
+    expect(cards[0]?.detail).toBe("Found one risky bootstrap path., Investigate startup flow");
 
     const keyFilesSection = cards[0]?.sections?.find((section): section is RowsSection =>
       isRowsSection(section) && section.title === "Key files",
