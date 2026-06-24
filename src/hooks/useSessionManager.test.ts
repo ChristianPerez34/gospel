@@ -202,6 +202,42 @@ describe("useSessionManager", () => {
         "earlier prompt",
         "earlier reply",
       ]);
+      expect(result.current.finalizedToolActivities).toEqual([]);
+    });
+
+    it("handleSessionSelect clears UI-only finalized tool activity from the previous session", async () => {
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+      act(() => {
+        triggerEvent<{ id: string; name: string; arguments?: unknown }>(
+          "llm-tool-call",
+          { id: "tool-1", name: "read_file" },
+        );
+      });
+      act(() => {
+        triggerEvent<string>("llm-done", "done");
+      });
+
+      expect(result.current.finalizedToolActivities).toHaveLength(1);
+
+      await act(async () => {
+        await result.current.handleSessionSelect(
+          makeSession({
+            id: "s-other",
+            title: "Other",
+          }),
+        );
+      });
+
+      expect(result.current.finalizedToolActivities).toEqual([]);
     });
 
     it("handleNewSession resets messages to empty and activeSessionId to null", async () => {
@@ -444,6 +480,146 @@ describe("useSessionManager", () => {
       const agentMessages = result.current.messages.filter((m) => m.role === "agent");
       expect(agentMessages).toHaveLength(1);
       expect(agentMessages[0]!.content).toBe("hello back");
+    });
+
+    it("creates a stable currentTurn from the first streamed token", async () => {
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+
+      act(() => {
+        triggerEvent<string>("llm-token", "hello");
+      });
+
+      const turnId = result.current.currentTurn?.id;
+      expect(turnId).toMatch(/^turn-/);
+      expect(result.current.currentTurn?.content).toBe("hello");
+
+      act(() => {
+        triggerEvent<string>("llm-token", " back");
+      });
+
+      expect(result.current.currentTurn?.id).toBe(turnId);
+      expect(result.current.currentTurn?.content).toBe("hello back");
+    });
+
+    it("groups live tool activity inside currentTurn and finalizes as a text-only message with UI-only tool history", async () => {
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent<{ id: string; name: string; arguments?: unknown }>(
+          "llm-tool-call",
+          { id: "tool-1", name: "read_file", arguments: { path: "src/lib.rs" } },
+        );
+      });
+
+      const turnId = result.current.currentTurn?.id;
+      expect(result.current.currentTurn?.toolActivities).toMatchObject([
+        {
+          id: "tool-1",
+          name: "read_file",
+          status: "calling",
+        },
+      ]);
+
+      act(() => {
+        triggerEvent<{ id: string; name: string; result: string }>(
+          "llm-tool-result",
+          { id: "tool-1", name: "read_file", result: "file contents" },
+        );
+      });
+
+      expect(result.current.currentTurn?.id).toBe(turnId);
+      expect(result.current.currentTurn?.toolActivities[0]).toMatchObject({
+        status: "completed",
+        result: "file contents",
+      });
+
+      act(() => {
+        triggerEvent<string>("llm-done", "hello back");
+      });
+
+      const agentMessages = result.current.messages.filter((m) => m.role === "agent");
+      expect(result.current.currentTurn).toBeNull();
+      expect(agentMessages).toHaveLength(1);
+      expect(agentMessages[0]).toMatchObject({
+        id: turnId,
+        content: "hello back",
+      });
+      expect(agentMessages[0]).not.toHaveProperty("actionCards");
+      expect(result.current.finalizedToolActivities).toMatchObject([
+        {
+          messageId: turnId,
+          activities: [
+            {
+              id: "tool-1",
+              name: "read_file",
+              status: "completed",
+              result: "file contents",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("clears the live turn on errors while keeping tool activity UI-only", async () => {
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent<{ id: string; name: string; arguments?: unknown }>(
+          "llm-tool-call",
+          { id: "tool-1", name: "read_file", arguments: { path: "src/lib.rs" } },
+        );
+      });
+
+      const turnId = result.current.currentTurn?.id;
+
+      act(() => {
+        triggerEvent<{ code: string; message: string }>("llm-error", {
+          code: "BOOM",
+          message: "boom",
+        });
+      });
+
+      const agentMessages = result.current.messages.filter((m) => m.role === "agent");
+      expect(result.current.status).toBe("error");
+      expect(result.current.currentTurn).toBeNull();
+      expect(agentMessages[0]).toMatchObject({
+        id: turnId,
+        content: "",
+        error: "boom",
+      });
+      expect(agentMessages[0]).not.toHaveProperty("actionCards");
+      expect(result.current.finalizedToolActivities[0]).toMatchObject({
+        messageId: turnId,
+      });
     });
   });
 

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentStatus, Message, ModelOption, Session, ToolCallActivity } from "../types";
+import type {
+  AgentStatus,
+  CurrentTurn,
+  FinalizedToolActivity,
+  Message,
+  ModelOption,
+  Session,
+} from "../types";
 import type { SelectedModel } from "./useModelAvailability";
 import { useChatStream } from "./useChatStream";
 
@@ -31,8 +38,8 @@ export interface UseSessionManagerResult {
   activeSessionId: string | null;
   messages: Message[];
   status: AgentStatus;
-  streamingContent: string;
-  toolActivities: ToolCallActivity[];
+  currentTurn: CurrentTurn | null;
+  finalizedToolActivities: FinalizedToolActivity[];
   isStreaming: boolean;
   isThinking: boolean;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
@@ -51,6 +58,7 @@ export function useSessionManager({
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [finalizedToolActivities, setFinalizedToolActivities] = useState<FinalizedToolActivity[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const statusRef = useRef(status);
   statusRef.current = status;
@@ -86,6 +94,7 @@ export function useSessionManager({
       latestSelectedSessionRef.current = null;
       setActiveSessionId(null);
       setMessages([]);
+      setFinalizedToolActivities([]);
       // Reload sessions for the new workspace
       invoke<Array<{ id: string; title: string; provider: string; model: string; status: string; updated_at: string }>>("list_sessions")
         .then((backendSessions) => {
@@ -108,12 +117,17 @@ export function useSessionManager({
   }, [activeWorkspaceId, status]);
 
   const {
-    streamingContent,
-    toolActivities,
+    currentTurn,
     startStream,
     resetStream,
   } = useChatStream({
     onMessages: setMessages,
+    onFinalizeToolActivities: (toolActivity) => {
+      setFinalizedToolActivities((prev) => [
+        ...prev.filter((item) => item.messageId !== toolActivity.messageId),
+        toolActivity,
+      ]);
+    },
     onStatusChange: setStatus,
     onErrorToast: onError,
     onSuccessToast: onSuccess,
@@ -121,7 +135,7 @@ export function useSessionManager({
   });
 
   const isStreaming = status === "thinking" || status === "acting";
-  const isThinking = isStreaming && streamingContent === "";
+  const isThinking = status === "thinking" && !currentTurn;
 
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
@@ -254,6 +268,7 @@ export function useSessionManager({
 
           setActiveSessionId(session.id);
           setMessages(loadedMessages);
+          setFinalizedToolActivities([]);
           setSessions((prev) =>
             prev.map((s) =>
               s.id === session.id ? { ...s, messages: loadedMessages } : s,
@@ -269,6 +284,7 @@ export function useSessionManager({
       if (latestSelectedSessionRef.current !== selectionId) return;
       setActiveSessionId(session.id);
       setMessages(session.messages);
+      setFinalizedToolActivities([]);
     },
     [],
   );
@@ -277,6 +293,7 @@ export function useSessionManager({
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
+    setFinalizedToolActivities([]);
     resetStream();
   }, [resetStream]);
 
@@ -285,8 +302,8 @@ export function useSessionManager({
     activeSessionId,
     messages,
     status,
-    streamingContent,
-    toolActivities,
+    currentTurn,
+    finalizedToolActivities,
     isStreaming,
     isThinking,
     handleSend,

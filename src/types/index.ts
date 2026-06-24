@@ -67,6 +67,17 @@ export interface ToolCallActivity {
   status: "calling" | "completed";
 }
 
+export interface CurrentTurn {
+  id: string;
+  content: string;
+  toolActivities: ToolCallActivity[];
+}
+
+export interface FinalizedToolActivity {
+  messageId: string;
+  activities: ToolCallActivity[];
+}
+
 export interface User {
   name: string;
   avatar?: string;
@@ -77,7 +88,6 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: Date;
-  actionCards?: ActionCard[];
   error?: string;
 }
 

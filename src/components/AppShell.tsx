@@ -156,8 +156,8 @@ export function AppShell() {
               messages={session.messages}
               workspacePath={activeWorkspace?.path ?? ""}
               isThinking={session.isThinking}
-              currentAction={session.streamingContent ? { type: "streaming" as const, content: session.streamingContent } : undefined}
-              toolActivities={session.toolActivities}
+              currentTurn={session.currentTurn}
+              finalizedToolActivities={session.finalizedToolActivities}
             />
             <InputBar
               models={models}

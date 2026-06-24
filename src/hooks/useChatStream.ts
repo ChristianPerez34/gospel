@@ -1,8 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { toolActivitiesToActionCards } from "../toolActivityCards";
-import type { Message, AgentStatus, ToolCallActivity } from "../types";
+import type {
+  AgentStatus,
+  CurrentTurn,
+  FinalizedToolActivity,
+  Message,
+} from "../types";
 
 interface CorpusAutoBuildComplete {
   success: boolean;
@@ -11,6 +15,7 @@ interface CorpusAutoBuildComplete {
 
 interface UseChatStreamOptions {
   onMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
+  onFinalizeToolActivities?: (toolActivity: FinalizedToolActivity) => void;
   onStatusChange?: (status: AgentStatus) => void;
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
@@ -27,11 +32,36 @@ interface StartStreamOptions {
 }
 
 export function useChatStream(options: UseChatStreamOptions = {}) {
-  const [streamingContent, setStreamingContent] = useState("");
-  const [toolActivities, setToolActivities] = useState<ToolCallActivity[]>([]);
-  const toolActivitiesRef = useRef<ToolCallActivity[]>([]);
+  const [currentTurn, setCurrentTurn] = useState<CurrentTurn | null>(null);
+  const currentTurnRef = useRef<CurrentTurn | null>(null);
+  const turnSequenceRef = useRef(0);
   const optionsRef = useRef(options);
   optionsRef.current = options;
+
+  const createTurn = useCallback((): CurrentTurn => {
+    turnSequenceRef.current += 1;
+    return {
+      id: `turn-${Date.now()}-${turnSequenceRef.current}`,
+      content: "",
+      toolActivities: [],
+    };
+  }, []);
+
+  const updateCurrentTurn = useCallback(
+    (updater: (turn: CurrentTurn) => CurrentTurn) => {
+      const existing = currentTurnRef.current ?? createTurn();
+      const next = updater(existing);
+      currentTurnRef.current = next;
+      setCurrentTurn(next);
+      return next;
+    },
+    [createTurn],
+  );
+
+  const clearCurrentTurn = useCallback(() => {
+    currentTurnRef.current = null;
+    setCurrentTurn(null);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,66 +74,66 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       try {
         await Promise.all([
           track(listen<string>("llm-token", (event) => {
-            setStreamingContent((prev) => prev + event.payload);
+            updateCurrentTurn((turn) => ({
+              ...turn,
+              content: turn.content + event.payload,
+            }));
           })),
           track(listen<string>("llm-done", (event) => {
-            const content = event.payload;
-            const cards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
-              (card) => ({ ...card, expanded: false, status: "completed" as const }),
-            );
+            const finalTurn = currentTurnRef.current;
+            const content = event.payload || finalTurn?.content || "";
+            const messageId = finalTurn?.id ?? createTurn().id;
+            const activities = finalTurn?.toolActivities ?? [];
 
-            if (content) {
+            if (content || activities.length > 0) {
               optionsRef.current.onMessages?.((prev) => [
                 ...prev,
                 {
-                  id: `m-${Date.now()}`,
+                  id: messageId,
                   role: "agent",
-                  content,
+                  content: content || "Completed.",
                   timestamp: new Date(),
-                  actionCards: cards.length > 0 ? cards : undefined,
-                },
-              ]);
-            } else if (cards.length > 0) {
-              optionsRef.current.onMessages?.((prev) => [
-                ...prev,
-                {
-                  id: `m-${Date.now()}`,
-                  role: "agent",
-                  content: "Completed.",
-                  timestamp: new Date(),
-                  actionCards: cards,
                 },
               ]);
             }
 
-            setStreamingContent("");
-            toolActivitiesRef.current = [];
-            setToolActivities([]);
+            if (activities.length > 0) {
+              optionsRef.current.onFinalizeToolActivities?.({
+                messageId,
+                activities,
+              });
+            }
+
+            clearCurrentTurn();
             optionsRef.current.onStatusChange?.("connected");
           })),
           track(listen<{ code: string; message: string }>("llm-error", (event) => {
             const err = event.payload;
-            const cards = toolActivitiesToActionCards(toolActivitiesRef.current).map(
-              (card) => ({ ...card, expanded: false, status: "completed" as const }),
-            );
+            const finalTurn = currentTurnRef.current;
+            const messageId = finalTurn?.id ?? createTurn().id;
+            const activities = finalTurn?.toolActivities ?? [];
 
-            if (err?.message || cards.length > 0) {
+            if (err?.message || finalTurn?.content || activities.length > 0) {
               optionsRef.current.onMessages?.((prev) => [
                 ...prev,
                 {
-                  id: `m-${Date.now()}`,
+                  id: messageId,
                   role: "agent",
-                  content: "",
+                  content: finalTurn?.content ?? "",
                   timestamp: new Date(),
-                  actionCards: cards.length > 0 ? cards : undefined,
                   error: err?.message || "Completion failed.",
                 },
               ]);
             }
 
-            setStreamingContent("");
-            toolActivitiesRef.current = [];
-            setToolActivities([]);
+            if (activities.length > 0) {
+              optionsRef.current.onFinalizeToolActivities?.({
+                messageId,
+                activities,
+              });
+            }
+
+            clearCurrentTurn();
             optionsRef.current.onStatusChange?.("error");
 
             if (err?.code === "API_KEY_MISSING") {
@@ -119,42 +149,44 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             }
           })),
           track(listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
-            setToolActivities((prev) => {
-              const next = [
-                ...prev,
+            updateCurrentTurn((turn) => ({
+              ...turn,
+              toolActivities: [
+                ...turn.toolActivities,
                 {
                   id: event.payload.id,
                   name: event.payload.name,
                   arguments: event.payload.arguments,
                   status: "calling" as const,
                 },
-              ];
-              toolActivitiesRef.current = next;
-              return next;
-            });
+              ],
+            }));
             optionsRef.current.onStatusChange?.("acting");
           })),
           track(listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
-            setToolActivities((prev) => {
-              const idx = prev.findIndex((a) => a.id === event.payload.id);
+            updateCurrentTurn((turn) => {
+              const idx = turn.toolActivities.findIndex((a) => a.id === event.payload.id);
               if (idx >= 0) {
-                const updated = [...prev];
+                const updated = [...turn.toolActivities];
                 updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
-                toolActivitiesRef.current = updated;
-                return updated;
+                return {
+                  ...turn,
+                  toolActivities: updated,
+                };
               }
 
-              const next = [
-                ...prev,
-                {
-                  id: event.payload.id,
-                  name: event.payload.name,
-                  result: event.payload.result,
-                  status: "completed" as const,
-                },
-              ];
-              toolActivitiesRef.current = next;
-              return next;
+              return {
+                ...turn,
+                toolActivities: [
+                  ...turn.toolActivities,
+                  {
+                    id: event.payload.id,
+                    name: event.payload.name,
+                    result: event.payload.result,
+                    status: "completed" as const,
+                  },
+                ],
+              };
             });
             optionsRef.current.onStatusChange?.("acting");
           })),
@@ -198,14 +230,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   }, []);
 
   const resetStream = useCallback(() => {
-    setStreamingContent("");
-    toolActivitiesRef.current = [];
-    setToolActivities([]);
-  }, []);
+    clearCurrentTurn();
+  }, [clearCurrentTurn]);
 
   return {
-    streamingContent,
-    toolActivities,
+    currentTurn,
     startStream,
     resetStream,
   };
