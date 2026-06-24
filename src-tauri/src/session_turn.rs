@@ -25,6 +25,9 @@ pub struct StreamingTurnRequest {
     pub model: String,
     pub session_id: Option<String>,
     pub invoked_skill: Option<InvokedSkillRequest>,
+    pub delegate_provider: String,
+    pub delegate_model: String,
+    pub delegate_api_key: String,
 }
 
 pub type SessionTurnFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -98,6 +101,9 @@ pub struct SessionTurnStreamRequest<'a> {
     pub prompt: &'a str,
     pub model: &'a str,
     pub api_key: &'a str,
+    pub delegate_provider: &'a str,
+    pub delegate_model: &'a str,
+    pub delegate_api_key: &'a str,
     pub workspace: Option<WorkspaceToolContext>,
     pub chat_history: Vec<Message>,
     pub matched_skills_section: Option<String>,
@@ -115,9 +121,23 @@ pub trait SessionTurnLlm: Send + Sync {
 
 pub trait SessionTurnEvents: Send + Sync {
     fn emit_stream_event(&self, session_id: &str, role: &str, event: &SessionTurnEvent);
-    fn trace_done(&self, session_id: &str, role: &str, response_length: usize);
+    fn trace_done(
+        &self,
+        session_id: &str,
+        role: &str,
+        response_length: usize,
+        prompt_tokens: usize,
+        response_tokens: usize,
+        tool_calls: usize,
+    );
     fn trace_error(&self, session_id: &str, role: &str, error: &LlmError);
-    fn emit_done(&self, response: &str);
+    fn emit_done(
+        &self,
+        response: &str,
+        prompt_tokens: usize,
+        response_tokens: usize,
+        tool_calls: usize,
+    );
     fn emit_error(&self, error: &LlmError);
 }
 
@@ -190,6 +210,9 @@ pub async fn run_streaming_turn(
                 prompt: &prompt_preparation.effective_prompt,
                 model: &request.model,
                 api_key: &api_key,
+                delegate_provider: &request.delegate_provider,
+                delegate_model: &request.delegate_model,
+                delegate_api_key: &request.delegate_api_key,
                 workspace: workspace_context,
                 chat_history,
                 matched_skills_section: prompt_preparation.matched_skills_section.clone(),
@@ -208,6 +231,9 @@ pub async fn run_streaming_turn(
                 request.session_id.as_deref().unwrap_or(""),
                 "main",
                 stream_result.full_response.len(),
+                stream_result.prompt_tokens,
+                stream_result.response_tokens,
+                stream_result.tool_calls,
             );
             if let (Some(sid), Some(persistence)) = (
                 &request.session_id,
@@ -229,7 +255,12 @@ pub async fn run_streaming_turn(
             }
 
             let response_for_verify = stream_result.full_response.clone();
-            deps.events.emit_done(&response_for_verify);
+            deps.events.emit_done(
+                &response_for_verify,
+                stream_result.prompt_tokens,
+                stream_result.response_tokens,
+                stream_result.tool_calls,
+            );
 
             if let Some(job) = verification_job_request(
                 &request.provider,
@@ -899,6 +930,9 @@ mod tests {
         prompt: String,
         model: String,
         api_key: String,
+        delegate_provider: String,
+        delegate_model: String,
+        delegate_api_key: String,
         workspace: Option<WorkspaceToolContext>,
         chat_history: Vec<Message>,
         matched_skills_section: Option<String>,
@@ -923,7 +957,7 @@ mod tests {
         stream_result: Mutex<Option<Result<StreamCompletionResult, LlmError>>>,
         stream_requests: Mutex<Vec<CapturedStreamRequest>>,
         stream_events: Mutex<Vec<(String, String, SessionTurnEvent)>>,
-        done_traces: Mutex<Vec<(String, String, usize)>>,
+        done_traces: Mutex<Vec<(String, String, usize, usize, usize, usize)>>,
         error_traces: Mutex<Vec<(String, String, String)>>,
         done_responses: Mutex<Vec<String>>,
         emitted_errors: Mutex<Vec<String>>,
@@ -1078,6 +1112,9 @@ mod tests {
                     prompt: request.prompt.to_string(),
                     model: request.model.to_string(),
                     api_key: request.api_key.to_string(),
+                    delegate_provider: request.delegate_provider.to_string(),
+                    delegate_model: request.delegate_model.to_string(),
+                    delegate_api_key: request.delegate_api_key.to_string(),
                     workspace: request.workspace.clone(),
                     chat_history: request.chat_history.clone(),
                     matched_skills_section: request.matched_skills_section.clone(),
@@ -1105,11 +1142,22 @@ mod tests {
             ));
         }
 
-        fn trace_done(&self, session_id: &str, role: &str, response_length: usize) {
+        fn trace_done(
+            &self,
+            session_id: &str,
+            role: &str,
+            response_length: usize,
+            prompt_tokens: usize,
+            response_tokens: usize,
+            tool_calls: usize,
+        ) {
             self.done_traces.lock().unwrap().push((
                 session_id.to_string(),
                 role.to_string(),
                 response_length,
+                prompt_tokens,
+                response_tokens,
+                tool_calls,
             ));
         }
 
@@ -1121,7 +1169,13 @@ mod tests {
             ));
         }
 
-        fn emit_done(&self, response: &str) {
+        fn emit_done(
+            &self,
+            response: &str,
+            _prompt_tokens: usize,
+            _response_tokens: usize,
+            _tool_calls: usize,
+        ) {
             self.done_responses
                 .lock()
                 .unwrap()
@@ -1605,6 +1659,9 @@ mod tests {
             full_response: "```rust\nfn main() {}\n```".to_string(),
             history: Some(history.clone()),
             source_edit_succeeded: false,
+            prompt_tokens: 18,
+            response_tokens: 6,
+            tool_calls: 1,
         }));
 
         let result = run_streaming_turn(
@@ -1615,6 +1672,9 @@ mod tests {
                 model: "gpt-test".to_string(),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                delegate_provider: "openai".to_string(),
+                delegate_model: "gpt-4o-mini".to_string(),
+                delegate_api_key: "api-key".to_string(),
             },
         )
         .await;
@@ -1634,6 +1694,9 @@ mod tests {
         assert_eq!(stream_request.prompt, "write code");
         assert_eq!(stream_request.model, "gpt-test");
         assert_eq!(stream_request.api_key, "api-key");
+        assert_eq!(stream_request.delegate_provider, "openai");
+        assert_eq!(stream_request.delegate_model, "gpt-4o-mini");
+        assert_eq!(stream_request.delegate_api_key, "api-key");
         assert_eq!(stream_request.chat_history, Vec::<Message>::new());
         assert!(stream_request.matched_skills_section.is_none());
         assert!(stream_request.invoked_skill_section.is_none());
@@ -1661,6 +1724,9 @@ mod tests {
                 "session-1".to_string(),
                 "main".to_string(),
                 "```rust\nfn main() {}\n```".len(),
+                18,
+                6,
+                1,
             )]
         );
         assert_eq!(
@@ -1712,6 +1778,9 @@ mod tests {
             full_response: "Done.".to_string(),
             history: Some(history),
             source_edit_succeeded: true,
+            prompt_tokens: 4,
+            response_tokens: 1,
+            tool_calls: 0,
         }));
 
         let result = run_streaming_turn(
@@ -1722,6 +1791,9 @@ mod tests {
                 model: "gpt-test".to_string(),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                delegate_provider: "openai".to_string(),
+                delegate_model: "gpt-4o-mini".to_string(),
+                delegate_api_key: "api-key".to_string(),
             },
         )
         .await;
@@ -1744,6 +1816,9 @@ mod tests {
             full_response: "Could not edit.".to_string(),
             history: Some(history),
             source_edit_succeeded: false,
+            prompt_tokens: 3,
+            response_tokens: 3,
+            tool_calls: 0,
         }));
 
         let result = run_streaming_turn(
@@ -1754,6 +1829,9 @@ mod tests {
                 model: "gpt-test".to_string(),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                delegate_provider: "openai".to_string(),
+                delegate_model: "gpt-4o-mini".to_string(),
+                delegate_api_key: "api-key".to_string(),
             },
         )
         .await;
@@ -1782,6 +1860,9 @@ mod tests {
                 model: "gpt-test".to_string(),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                delegate_provider: "openai".to_string(),
+                delegate_model: "gpt-4o-mini".to_string(),
+                delegate_api_key: "api-key".to_string(),
             },
         )
         .await

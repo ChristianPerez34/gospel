@@ -9,10 +9,8 @@ pub mod tools;
 pub mod validator;
 
 use crate::llm::WorkspaceToolContext;
-use crate::workspace_tools::{
-    create_find_files_tool, create_list_directory_tool, create_read_file_tool,
-    create_search_code_tool,
-};
+use crate::provider_client::provider_client;
+use crate::workspace_tools::build_base_workspace_tools;
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
@@ -1209,23 +1207,14 @@ pub(crate) async fn run_workspace_agent(
 
     macro_rules! run_from_client {
         ($client:expr, $model:expr) => {{
-            let agent = $client
+            let agent_builder = $client
                 .agent($model)
                 .preamble(config.preamble)
                 .default_max_turns(config.max_turns)
-                .tool(create_read_file_tool(
+                .tools(build_base_workspace_tools(
                     config.workspace.workspace_path.clone(),
-                ))
-                .tool(create_search_code_tool(
-                    config.workspace.workspace_path.clone(),
-                ))
-                .tool(create_find_files_tool(
-                    config.workspace.workspace_path.clone(),
-                ))
-                .tool(create_list_directory_tool(
-                    config.workspace.workspace_path.clone(),
-                ))
-                .build();
+                ));
+            let agent = agent_builder.build();
             let future = agent.prompt(config.prompt).max_turns(config.max_turns);
             timeout(config.timeout, future)
                 .await
@@ -1234,44 +1223,9 @@ pub(crate) async fn run_workspace_agent(
         }};
     }
 
-    match config.provider {
-        "openai" => {
-            let client = openai::Client::new(config.api_key)
-                .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, config.model)
-        }
-        "chatgpt" => {
-            let client = chatgpt::Client::builder()
-                .oauth()
-                .build()
-                .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, config.model)
-        }
-        "anthropic" => {
-            let client = anthropic::Client::new(config.api_key)
-                .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, config.model)
-        }
-        "gemini" => {
-            let client = gemini::Client::new(config.api_key)
-                .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, config.model)
-        }
-        "groq" => {
-            let client = groq::Client::new(config.api_key)
-                .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, config.model)
-        }
-        "mistral" => {
-            let client = mistral::Client::new(config.api_key)
-                .map_err(|e| ReviewAgentError::Provider(e.to_string()))?;
-            run_from_client!(client, config.model)
-        }
-        _ => Err(ReviewAgentError::Provider(format!(
-            "unsupported provider: {}",
-            config.provider
-        ))),
-    }
+    provider_client!(config.provider, config.api_key, ReviewAgentError::Provider, ReviewAgentError::Provider, |client| {
+        run_from_client!(client, config.model)
+    })
 }
 
 #[cfg(test)]

@@ -58,7 +58,7 @@ export function TopBar({
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
 
   return (
-    <header className="app-topbar flex items-center justify-between px-4 bg-surface-base border-b border-surface-overlay shrink-0">
+    <header className="app-topbar flex items-center justify-between px-4 bg-surface-base shrink-0">
       <div className="topbar-primary flex items-center gap-2 min-w-0">
         <button
           ref={sessionToggleRef}

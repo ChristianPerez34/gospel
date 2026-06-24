@@ -7,6 +7,7 @@ pub mod corpus;
 pub mod keychain;
 mod llm;
 mod models;
+mod provider_client;
 mod review;
 pub mod session_store;
 mod session_turn;
@@ -46,7 +47,7 @@ use corpus::commands::{
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
 use llm::{LlmError, LlmService};
-use models::ModelInfo;
+use models::{ModelInfo, ModelRegistry};
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
 use serde::Serialize;
@@ -791,6 +792,9 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.prompt,
                 request.model,
                 request.api_key,
+                request.delegate_provider,
+                request.delegate_model,
+                request.delegate_api_key,
                 request.workspace,
                 request.chat_history,
                 request.matched_skills_section,
@@ -823,11 +827,22 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
         let _ = self.app.emit(ui_event.name, ui_event.payload);
     }
 
-    fn trace_done(&self, session_id: &str, role: &str, response_length: usize) {
+    fn trace_done(
+        &self,
+        session_id: &str,
+        role: &str,
+        response_length: usize,
+        prompt_tokens: usize,
+        response_tokens: usize,
+        tool_calls: usize,
+    ) {
         self.trace_state.write_event(&trace::TraceEvent::Done {
             session_id: session_id.to_string(),
             role: role.to_string(),
             response_length,
+            prompt_tokens,
+            response_tokens,
+            tool_calls,
             timestamp: trace::current_timestamp(),
         });
     }
@@ -842,8 +857,20 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
         });
     }
 
-    fn emit_done(&self, response: &str) {
-        let _ = self.app.emit("llm-done", response.to_string());
+    fn emit_done(
+        &self,
+        response: &str,
+        prompt_tokens: usize,
+        response_tokens: usize,
+        tool_calls: usize,
+    ) {
+        let payload = serde_json::json!({
+            "response": response,
+            "prompt_tokens": prompt_tokens,
+            "response_tokens": response_tokens,
+            "tool_calls": tool_calls,
+        });
+        let _ = self.app.emit("llm-done", payload);
     }
 
     fn emit_error(&self, error: &LlmError) {
@@ -912,6 +939,12 @@ async fn complete_streaming(
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
 ) -> Result<(), llm::LlmErrorDto> {
+    let (delegate_provider, delegate_model, delegate_api_key) = resolve_delegate_completion_config(
+        app_config.inner(),
+        &provider,
+        &model,
+    );
+
     let adapters = TauriSessionTurnAdapters {
         app: &app,
         app_config: app_config.inner(),
@@ -936,11 +969,55 @@ async fn complete_streaming(
             provider,
             prompt,
             model,
+            delegate_provider,
+            delegate_model,
+            delegate_api_key,
             session_id,
             invoked_skill,
         },
     )
     .await
+}
+
+fn resolve_delegate_completion_config(
+    app_config: &AppConfigState,
+    provider: &str,
+    model: &str,
+) -> (String, String, String) {
+    let fallback_provider = provider.to_string();
+    let fallback_model = model.to_string();
+
+    let stored_provider = app_config
+        .store
+        .as_ref()
+        .and_then(|store| store.get_config_value("delegate_provider").ok().flatten());
+    let configured_provider = stored_provider.filter(|configured| {
+        ModelRegistry::all_providers()
+            .iter()
+            .any(|supported| *supported == configured.as_str())
+    });
+    let delegate_provider = configured_provider.unwrap_or(fallback_provider);
+
+    let stored_model = app_config
+        .store
+        .as_ref()
+        .and_then(|store| store.get_config_value("delegate_model").ok().flatten());
+    let supported_models = ModelRegistry::models_for_provider(&delegate_provider);
+    let delegate_model = stored_model
+        .filter(|configured| {
+            supported_models
+                .iter()
+                .any(|supported| *supported == configured.as_str())
+        })
+        .unwrap_or(fallback_model);
+
+    let delegate_api_key = if delegate_provider == "chatgpt" {
+        String::new()
+    } else {
+        keychain::retrieve(&delegate_provider).unwrap_or_default()
+    };
+
+    (delegate_provider, delegate_model, delegate_api_key)
 }
 
 #[tauri::command]
@@ -1414,16 +1491,16 @@ fn get_session(
 fn list_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
-    let workspace_id = match &app_config.store {
+    let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
             .ok()
             .flatten()
-            .map(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
+            .and_then(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
         None => None,
-    }
-    .flatten();
+    });
 
     match &session_store.store {
         Some(store) => {

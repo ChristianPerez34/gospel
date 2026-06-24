@@ -22,6 +22,13 @@ const TYPE_ACCENT: Record<string, string> = {
   search: "text-accent-signal",
 };
 
+const TYPE_BORDER: Record<string, string> = {
+  file: "border-l-accent-action",
+  terminal: "border-l-accent-data",
+  diff: "border-l-accent-structure",
+  search: "border-l-accent-signal",
+};
+
 function renderSection(section: ActionCardSection) {
   if (section.type === "fields") {
     return (
@@ -108,30 +115,31 @@ export function ActionCard({ card }: ActionCardProps) {
   const [showRaw, setShowRaw] = useState(false);
 
   const accentClass = TYPE_ACCENT[card.type] || TYPE_ACCENT.file;
+  const borderClass = TYPE_BORDER[card.type] || TYPE_BORDER.file;
   const chevronClass = expanded ? "rotate-180" : "";
   const isRunning = card.status === "calling";
   const hasBody = (card.sections?.length ?? 0) > 0 || card.rawPayload;
 
   return (
     <section
-      className="ml-7 mr-6 overflow-hidden rounded-md border border-surface-overlay bg-surface-elevated animate-fade-slide-in"
+      className={`ml-16 overflow-hidden rounded-lg border border-surface-overlay border-l-2 ${borderClass} bg-surface-elevated animate-fade-slide-in`}
       aria-label={card.summary}
     >
       <button
         type="button"
-        className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 px-3 py-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay disabled:cursor-default"
+        className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-3 py-2.5 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay disabled:cursor-default"
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
         disabled={!hasBody}
       >
         <span
-          className={`flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-sm bg-surface-overlay font-mono text-caption font-semibold ${accentClass}`}
+          className={`flex h-5 w-5 shrink-0 items-center justify-center font-mono text-caption font-semibold ${accentClass}`}
           aria-hidden="true"
         >
           {TYPE_ICONS[card.type] || TYPE_ICONS.file}
         </span>
         <span className="min-w-0">
-          <span className="block truncate font-body text-body-sm font-medium text-text-primary">
+          <span className="block truncate font-mono text-body-sm font-medium text-text-secondary">
             {card.summary}
           </span>
           {card.detail && (
@@ -170,7 +178,7 @@ export function ActionCard({ card }: ActionCardProps) {
             <section className="grid gap-2">
               <button
                 type="button"
-                className="min-h-11 justify-self-start rounded-sm border border-surface-overlay px-3 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
+                className="justify-self-start rounded-sm px-1 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:text-text-secondary"
                 onClick={() => setShowRaw((value) => !value)}
                 aria-expanded={showRaw}
               >

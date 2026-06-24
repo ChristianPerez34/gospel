@@ -31,6 +31,7 @@ interface CommandPaletteProps {
   onToggleReview: () => void;
   onSelectModel: (modelId: string) => void;
   restoreFocusRef?: RefObject<HTMLElement>;
+  workspaceNames?: Record<string, string>;
 }
 
 function includesQuery(result: PaletteResult, query: string) {
@@ -64,6 +65,7 @@ export function CommandPalette({
   onToggleReview,
   onSelectModel,
   restoreFocusRef,
+  workspaceNames,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -76,20 +78,34 @@ export function CommandPalette({
       onClose();
     };
 
-    const sessionResults = sessions.slice(0, query ? sessions.length : 5).map((session) => ({
-      id: `session-${session.id}`,
-      group: "Sessions" as const,
-      icon: session.id === activeSessionId ? "A" : "S",
-      label: session.title || "Untitled session",
-      detail: `${session.model} · ${session.timestamp.toLocaleString([], {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })}`,
-      keywords: `session conversation ${session.model}`,
-      action: closeAfter(() => onSelectSession(session)),
-    }));
+    const sessionResults = sessions.slice(0, query ? sessions.length : 5).map((session) => {
+      const workspaceName = session.workspaceId
+        ? workspaceNames?.[session.workspaceId] || workspace?.name
+        : workspace?.name;
+      const detail = workspaceName
+        ? `${session.model} · ${workspaceName} · ${session.timestamp.toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}`
+        : `${session.model} · ${session.timestamp.toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}`;
+
+      return {
+        id: `session-${session.id}`,
+        group: "Sessions" as const,
+        icon: session.id === activeSessionId ? "A" : "S",
+        label: session.title || "Untitled session",
+        detail,
+        keywords: `session conversation ${session.model} ${workspaceName ? workspaceName.toLowerCase() : ""}`,
+        action: closeAfter(() => onSelectSession(session)),
+      };
+    });
 
     const workspaceResults: PaletteResult[] = workspace
       ? [
@@ -192,6 +208,7 @@ export function CommandPalette({
     selectedModelId,
     sessions,
     workspace,
+    workspaceNames,
   ]);
 
   const filteredResults = useMemo(
@@ -255,10 +272,10 @@ export function CommandPalette({
           }
         }}
       >
-        <div className="border-b border-surface-overlay p-3">
+        <div className="border-b border-surface-overlay p-3 bg-surface-elevated">
           <input
             ref={inputRef}
-            className="h-11 w-full rounded-sm bg-surface-base px-3 font-body text-body text-text-primary outline-none placeholder:text-text-muted"
+            className="h-11 w-full rounded-lg bg-surface-base px-3 font-body text-body text-text-primary outline-none placeholder:text-text-muted border border-surface-overlay"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search sessions, settings, models, commands"
@@ -266,7 +283,7 @@ export function CommandPalette({
           />
         </div>
 
-        <div className="command-palette-list">
+        <div className="command-palette-list bg-surface-elevated">
           {groupedResults.length === 0 && (
             <div className="px-3 py-6 text-center text-body-sm text-text-muted">
               No matching commands.
@@ -291,7 +308,7 @@ export function CommandPalette({
                       onMouseEnter={() => setActiveIndex(index)}
                       aria-current={isActive ? "true" : undefined}
                     >
-                      <span className="command-palette-icon" aria-hidden="true">
+                      <span className="command-palette-icon rounded-lg bg-surface-base" aria-hidden="true">
                         {result.icon}
                       </span>
                       <span className="min-w-0">
@@ -305,7 +322,7 @@ export function CommandPalette({
                         )}
                       </span>
                       {result.shortcut && (
-                        <span className="rounded-sm bg-surface-base px-1.5 py-0.5 font-mono text-caption text-text-muted">
+                        <span className="rounded-lg bg-surface-base px-1.5 py-0.5 font-mono text-caption text-text-muted">
                           {result.shortcut}
                         </span>
                       )}

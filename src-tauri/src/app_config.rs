@@ -238,6 +238,31 @@ impl AppConfigStore {
         Ok(())
     }
 
+    pub fn get_config_value(&self, key: &str) -> Result<Option<String>, AppConfigError> {
+        let conn = self.conn.lock().unwrap();
+        let value = conn
+            .query_row(
+                "SELECT value FROM app_config WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    pub fn set_config_value(&self, key: &str, value: &str) -> Result<(), AppConfigError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO app_config (key, value, updated_at)
+             VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     pub fn get_workspace_path(&self) -> Result<Option<String>, AppConfigError> {
         let active = self.get_active_workspace()?;
         Ok(active.map(|ws| ws.path))
@@ -269,5 +294,27 @@ mod tests {
             validate_provider("openrouter"),
             Err(AppConfigError::UnsupportedProvider(_))
         ));
+    }
+
+    #[test]
+    fn can_get_and_set_generic_config_values() {
+        let store = AppConfigStore::new().unwrap();
+        store
+            .set_config_value("delegate_provider", "openai")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_config_value("delegate_provider")
+                .unwrap()
+                .as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            store
+                .get_config_value("does_not_exist")
+                .unwrap()
+                .as_deref(),
+            None
+        );
     }
 }

@@ -7,9 +7,9 @@ use crate::corpus::tools::{
     CORPUS_SYSTEM_PROMPT,
 };
 use crate::llm::WorkspaceToolContext;
+use crate::provider_client::provider_client;
 use crate::workspace_tools::{
-    create_context_search_tool, create_find_files_tool, create_list_directory_tool,
-    create_read_file_tool, create_search_code_tool, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    build_base_workspace_tools, create_context_search_tool, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
@@ -114,10 +114,7 @@ async fn run_verification_agent(
                 .agent($model)
                 .preamble(&preamble)
                 .default_max_turns(VERIFICATION_MAX_TURNS)
-                .tool(create_read_file_tool(workspace.workspace_path.clone()))
-                .tool(create_search_code_tool(workspace.workspace_path.clone()))
-                .tool(create_find_files_tool(workspace.workspace_path.clone()))
-                .tool(create_list_directory_tool(workspace.workspace_path.clone()));
+                .tools(build_base_workspace_tools(workspace.workspace_path.clone()));
 
             if workspace.corpus_available {
                 builder = builder
@@ -137,36 +134,9 @@ async fn run_verification_agent(
         }};
     }
 
-    match provider {
-        "openai" => {
-            let client = openai::Client::new(api_key).map_err(|error| error.to_string())?;
-            verify_from_client!(client, model)
-        }
-        "chatgpt" => {
-            let client = chatgpt::Client::builder()
-                .oauth()
-                .build()
-                .map_err(|error| error.to_string())?;
-            verify_from_client!(client, model)
-        }
-        "anthropic" => {
-            let client = anthropic::Client::new(api_key).map_err(|error| error.to_string())?;
-            verify_from_client!(client, model)
-        }
-        "gemini" => {
-            let client = gemini::Client::new(api_key).map_err(|error| error.to_string())?;
-            verify_from_client!(client, model)
-        }
-        "groq" => {
-            let client = groq::Client::new(api_key).map_err(|error| error.to_string())?;
-            verify_from_client!(client, model)
-        }
-        "mistral" => {
-            let client = mistral::Client::new(api_key).map_err(|error| error.to_string())?;
-            verify_from_client!(client, model)
-        }
-        _ => Err(format!("unsupported provider: {}", provider)),
-    }
+    provider_client!(provider, api_key, |e: String| e, |s: String| format!("unsupported provider: {}", s), |client| {
+        verify_from_client!(client, model)
+    })
 }
 
 fn build_verification_preamble(workspace: &WorkspaceToolContext) -> String {
