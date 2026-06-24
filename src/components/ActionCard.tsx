@@ -6,6 +6,11 @@ import type {
 
 interface ActionCardProps {
   card: ActionCardType;
+  className?: string;
+}
+
+function classNames(...classes: (string | false | null | undefined)[]) {
+  return classes.filter(Boolean).join(" ");
 }
 
 const TYPE_ICONS: Record<string, string> = {
@@ -110,7 +115,7 @@ function renderSection(section: ActionCardSection) {
   );
 }
 
-export function ActionCard({ card }: ActionCardProps) {
+export function ActionCard({ card, className }: ActionCardProps) {
   const [expanded, setExpanded] = useState(card.expanded ?? false);
   const [showRaw, setShowRaw] = useState(false);
 
@@ -122,12 +127,15 @@ export function ActionCard({ card }: ActionCardProps) {
 
   return (
     <section
-      className={`ml-16 overflow-hidden rounded-lg border border-surface-overlay border-l-2 ${borderClass} bg-surface-elevated animate-fade-slide-in`}
+      className={classNames(
+        `overflow-hidden rounded-lg border border-surface-overlay border-l-2 ${borderClass} bg-surface-elevated animate-fade-slide-in motion-reduce:animate-none`,
+        className ?? "ml-16",
+      )}
       aria-label={card.summary}
     >
       <button
         type="button"
-        className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-3 py-2.5 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay disabled:cursor-default"
+        className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-3 py-2.5 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay disabled:cursor-default motion-reduce:transition-none"
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
         disabled={!hasBody}
@@ -155,7 +163,7 @@ export function ActionCard({ card }: ActionCardProps) {
         )}
         {hasBody && (
           <svg
-            className={`shrink-0 text-text-muted transition-transform duration-150 ease-out-quart ${chevronClass}`}
+            className={`shrink-0 text-text-muted transition-transform duration-150 ease-out-quart motion-reduce:transition-none ${chevronClass}`}
             width="12"
             height="12"
             viewBox="0 0 12 12"
@@ -172,7 +180,7 @@ export function ActionCard({ card }: ActionCardProps) {
         )}
       </button>
       {expanded && hasBody && (
-        <div className="grid max-h-[520px] gap-3 overflow-y-auto border-t border-surface-overlay p-3 animate-fade-slide-in-fast">
+        <div className="grid max-h-[520px] gap-3 overflow-y-auto border-t border-surface-overlay p-3 animate-fade-slide-in-fast motion-reduce:animate-none">
           {card.sections?.map(renderSection)}
           {card.rawPayload && (
             <section className="grid gap-2">

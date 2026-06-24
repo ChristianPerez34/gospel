@@ -164,9 +164,15 @@ export function TopBar({
             fill="none"
             stroke="currentColor"
             strokeWidth="1.2"
+            strokeLinecap="round"
+            aria-hidden="true"
           >
-            <circle cx="8" cy="8" r="2.5" />
-            <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" strokeLinecap="round" />
+            <line x1="2" y1="4.5" x2="14" y2="4.5" />
+            <line x1="2" y1="8" x2="14" y2="8" />
+            <line x1="2" y1="11.5" x2="14" y2="11.5" />
+            <circle cx="9" cy="4.5" r="1.7" fill="currentColor" stroke="none" />
+            <circle cx="5" cy="8" r="1.7" fill="currentColor" stroke="none" />
+            <circle cx="11" cy="11.5" r="1.7" fill="currentColor" stroke="none" />
           </svg>
         </button>
       </div>

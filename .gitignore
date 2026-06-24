@@ -12,6 +12,7 @@ dist
 dist-ssr
 .superpowers/
 *.local
+pnpm-workspace.yaml
 
 # Harness corpus data (workspace-local, regenerated automatically)
 # .gospel/PLAN.md and other harness artifacts are version-controlled.

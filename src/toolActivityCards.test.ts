@@ -8,6 +8,27 @@ const isRowsSection = (section: ActionCardSection): section is RowsSection =>
   section.type === "rows";
 
 describe("toolActivitiesToActionCards review tools", () => {
+  it("marks calling and completed tool activity cards collapsed by default", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "tool-calling",
+        name: "read_file",
+        arguments: { path: "src/lib.rs" },
+        status: "calling",
+      },
+      {
+        id: "tool-completed",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        result: JSON.stringify({ path: "src/main.rs", content: "fn main() {}" }),
+        status: "completed",
+      },
+    ]);
+
+    expect(cards.map((card) => card.expanded)).toEqual([false, false]);
+    expect(cards.map((card) => card.status)).toEqual(["calling", "completed"]);
+  });
+
   it("formats source_edit as an edit card with redacted raw arguments", () => {
     const cards = toolActivitiesToActionCards([
       {

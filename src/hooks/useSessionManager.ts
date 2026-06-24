@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentStatus, Message, ModelOption, Session, ToolCallActivity } from "../types";
+import type {
+  AgentStatus,
+  CurrentTurn,
+  FinalizedToolActivity,
+  Message,
+  ModelOption,
+  Session,
+} from "../types";
 import type { SelectedModel } from "./useModelAvailability";
 import { useChatStream } from "./useChatStream";
 
@@ -32,8 +39,8 @@ export interface UseSessionManagerResult {
   activeSessionId: string | null;
   messages: Message[];
   status: AgentStatus;
-  streamingContent: string;
-  toolActivities: ToolCallActivity[];
+  currentTurn: CurrentTurn | null;
+  finalizedToolActivities: FinalizedToolActivity[];
   isStreaming: boolean;
   isThinking: boolean;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
@@ -53,6 +60,7 @@ export function useSessionManager({
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [finalizedToolActivities, setFinalizedToolActivities] = useState<FinalizedToolActivity[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const statusRef = useRef(status);
   statusRef.current = status;
@@ -104,6 +112,7 @@ export function useSessionManager({
       latestSelectedSessionRef.current = null;
       setActiveSessionId(null);
       setMessages([]);
+      setFinalizedToolActivities([]);
     }
 
     prevWorkspaceRef.current = activeWorkspaceId;
@@ -115,12 +124,17 @@ export function useSessionManager({
   }, [activeWorkspaceId, status, loadSessions]);
 
   const {
-    streamingContent,
-    toolActivities,
+    currentTurn,
     startStream,
     resetStream,
   } = useChatStream({
     onMessages: setMessages,
+    onFinalizeToolActivities: (toolActivity) => {
+      setFinalizedToolActivities((prev) => [
+        ...prev.filter((item) => item.messageId !== toolActivity.messageId),
+        toolActivity,
+      ]);
+    },
     onStatusChange: setStatus,
     onErrorToast: onError,
     onSuccessToast: onSuccess,
@@ -128,7 +142,7 @@ export function useSessionManager({
   });
 
   const isStreaming = status === "thinking" || status === "acting";
-  const isThinking = isStreaming && streamingContent === "";
+  const isThinking = status === "thinking";
 
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
@@ -270,7 +284,7 @@ export function useSessionManager({
             const detail = await invoke<{
               id: string;
               display_transcript: string;
-            }>("get_session", { sessionId: session.id });
+            }>("get_session", { sessionId: selectedSession.id });
 
             if (latestSelectedSessionRef.current !== selectionId) return;
 
@@ -287,6 +301,7 @@ export function useSessionManager({
 
             setActiveSessionId(selectedSession.id);
             setMessages(loadedMessages);
+            setFinalizedToolActivities([]);
             setSessions((prev) =>
               prev.map((s) =>
                 s.id === selectedSession.id ? { ...s, messages: loadedMessages } : s,
@@ -302,6 +317,7 @@ export function useSessionManager({
         if (latestSelectedSessionRef.current !== selectionId) return;
         setActiveSessionId(selectedSession.id);
         setMessages(selectedSession.messages);
+        setFinalizedToolActivities([]);
       } catch (e) {
         if (latestSelectedSessionRef.current !== selectionId) return;
         onError?.(`Unable to open session: ${e}`);
@@ -314,6 +330,7 @@ export function useSessionManager({
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
+    setFinalizedToolActivities([]);
     resetStream();
   }, [resetStream]);
 
@@ -322,8 +339,8 @@ export function useSessionManager({
     activeSessionId,
     messages,
     status,
-    streamingContent,
-    toolActivities,
+    currentTurn,
+    finalizedToolActivities,
     isStreaming,
     isThinking,
     handleSend,

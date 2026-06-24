@@ -690,7 +690,7 @@ export function toolActivitiesToActionCards(
       type: actionCardTypeForTool(activity.name),
       summary: formatToolActivityLabel(activity),
       rawPayload: rawPayload(activity),
-      expanded: activity.status === "calling",
+      expanded: false,
       status: activity.status,
       ...formatted,
     };
