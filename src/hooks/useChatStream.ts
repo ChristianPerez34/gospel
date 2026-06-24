@@ -47,15 +47,19 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  const createTurn = useCallback((): CurrentTurn => {
+  const generateTurnId = useCallback(() => {
     turnSequenceRef.current += 1;
+    return `turn-${Date.now()}-${turnSequenceRef.current}`;
+  }, []);
+
+  const createTurn = useCallback((): CurrentTurn => {
     return {
-      id: `turn-${Date.now()}-${turnSequenceRef.current}`,
+      id: generateTurnId(),
       content: "",
       toolActivities: [],
       createdAt: new Date(),
     };
-  }, []);
+  }, [generateTurnId]);
 
   const updateCurrentTurn = useCallback(
     (updater: (turn: CurrentTurn) => CurrentTurn) => {
@@ -97,7 +101,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 ? payload
                 : payload?.response ?? "";
             const content = payloadContent || finalTurn?.content || "";
-            const messageId = finalTurn?.id ?? createTurn().id;
+            const messageId = finalTurn?.id ?? generateTurnId();
             const activities = finalTurn?.toolActivities ?? [];
 
             if (content || activities.length > 0) {
@@ -125,7 +129,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           track(listen<{ code: string; message: string }>("llm-error", (event) => {
             const err = event.payload;
             const finalTurn = currentTurnRef.current;
-            const messageId = finalTurn?.id ?? createTurn().id;
+            const messageId = finalTurn?.id ?? generateTurnId();
             const activities = finalTurn?.toolActivities ?? [];
 
             if (err?.message || finalTurn?.content || activities.length > 0) {
