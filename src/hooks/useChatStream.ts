@@ -44,6 +44,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       id: `turn-${Date.now()}-${turnSequenceRef.current}`,
       content: "",
       toolActivities: [],
+      createdAt: new Date(),
     };
   }, []);
 
@@ -174,7 +175,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   toolActivities: updated,
                 };
               }
-
+              console.warn(
+                `[useChatStream] Received llm-tool-result for id "${event.payload.id}" with no matching llm-tool-call; appending as completed.`,
+                { name: event.payload.name },
+              );
               return {
                 ...turn,
                 toolActivities: [

@@ -580,6 +580,42 @@ describe("useSessionManager", () => {
       ]);
     });
 
+    it("warns and appends a completed activity when an llm-tool-result arrives with no matching call", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent<{ id: string; name: string; result: string }>("llm-tool-result", {
+          id: "tool-orphan",
+          name: "read_file",
+          result: "orphan contents",
+        });
+      });
+
+      expect(result.current.currentTurn?.toolActivities).toMatchObject([
+        {
+          id: "tool-orphan",
+          name: "read_file",
+          status: "completed",
+          result: "orphan contents",
+        },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("llm-tool-result"),
+        expect.objectContaining({ name: "read_file" }),
+      );
+      warnSpy.mockRestore();
+    });
+
     it("clears the live turn on errors while keeping tool activity UI-only", async () => {
       const { result } = renderHook(() =>
         useSessionManager({

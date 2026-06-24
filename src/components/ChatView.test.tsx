@@ -40,6 +40,7 @@ describe("ChatView current turn rendering", () => {
       currentTurn: {
         id: "turn-1",
         content: "",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
         toolActivities: [
           {
             id: "tool-search",
@@ -66,7 +67,7 @@ describe("ChatView current turn rendering", () => {
     expect(screen.getByText("Read file...")).not.toBeNull();
     expect(screen.queryByText("Waiting for tool result...")).toBeNull();
 
-    const readRow = screen.getByRole("button", { name: "Read file Running" });
+    const readRow = screen.getByRole("button", { name: /read file.*running/i });
     expect(readRow.getAttribute("aria-expanded")).toBe("false");
 
     fireEvent.click(readRow);
@@ -152,6 +153,7 @@ describe("ChatView current turn rendering", () => {
       currentTurn: {
         id: "turn-stable",
         content: "Live text",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
         toolActivities: [],
       },
     });
@@ -183,6 +185,7 @@ describe("ChatView current turn rendering", () => {
       currentTurn: {
         id: "turn-motion",
         content: "",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
         toolActivities: [
           {
             id: "tool-read",
@@ -194,6 +197,36 @@ describe("ChatView current turn rendering", () => {
     });
 
     expect(screen.getByTestId("agent-turn-turn-motion").className).toContain("motion-reduce:animate-none");
-    expect(screen.getByRole("button", { name: "Read file Running" }).className).toContain("motion-reduce:transition-none");
+    expect(screen.getByRole("button", { name: /read file.*running/i }).className).toContain("motion-reduce:transition-none");
+  });
+
+  it("renders a thinking placeholder during the latency gap before the first stream event", () => {
+    render(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={null}
+        finalizedToolActivities={[]}
+      />,
+    );
+
+    expect(screen.getByText("Thinking...")).not.toBeNull();
+    expect(screen.getByTestId("agent-turn-thinking-placeholder")).not.toBeNull();
+  });
+
+  it("does not render a thinking placeholder when not thinking", () => {
+    render(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        currentTurn={null}
+        finalizedToolActivities={[]}
+      />,
+    );
+
+    expect(screen.queryByText("Thinking...")).toBeNull();
+    expect(screen.queryByTestId("agent-turn-thinking-placeholder")).toBeNull();
   });
 });

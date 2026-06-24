@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type {
   CurrentTurn,
   FinalizedToolActivity,
@@ -59,7 +59,7 @@ function LiveToolActivityList({
   }, [activities]);
   const liveStatus = summarizeLiveToolActivity(activities, isThinking);
 
-  if (activities.length === 0) return null;
+  if (activities.length === 0 && !liveStatus) return null;
 
   return (
     <div
@@ -95,7 +95,7 @@ function LiveToolActivityList({
                   });
                 }}
                 aria-expanded={expanded}
-                aria-label={`${card.summary} ${toolStatus(activity)}`}
+                aria-label={`${card.summary}${card.detail ? `: ${card.detail}` : ""} ${toolStatus(activity)}`}
               >
                 <span
                   className={`h-2 w-2 rounded-full ${
@@ -178,18 +178,22 @@ function AgentTurnBlock({
 }: AgentTurnBlockProps) {
   const turnId = currentTurn?.id ?? message?.id ?? "agent-turn";
   const hasLiveContent = Boolean(currentTurn && (currentTurn.content || currentTurn.toolActivities.length > 0));
+  const fallbackTimestampRef = useRef<Date | null>(null);
+  if (!fallbackTimestampRef.current) {
+    fallbackTimestampRef.current = new Date();
+  }
   const liveMessage: Message = currentTurn
     ? {
         id: currentTurn.id,
         role: "agent",
         content: currentTurn.content || (isThinking ? "Thinking..." : "Working..."),
-        timestamp: new Date(),
+        timestamp: currentTurn.createdAt,
       }
     : {
         id: turnId,
         role: "agent",
         content: isThinking ? "Thinking..." : "Working...",
-        timestamp: new Date(),
+        timestamp: fallbackTimestampRef.current,
       };
 
   return (
@@ -224,17 +228,23 @@ export function ChatView({
   currentTurn,
   finalizedToolActivities = [],
 }: ChatViewProps) {
-  const isEmpty = messages.length === 0 && !currentTurn;
+  const isEmpty = messages.length === 0 && !currentTurn && !isThinking;
   const visibleTurns = useMemo(() => {
     const turns: Array<
       | { type: "message"; message: Message }
       | { type: "currentTurn"; currentTurn: CurrentTurn }
+      | { type: "thinking" }
     > = messages.map((message) => ({ type: "message", message }));
     if (currentTurn) {
       turns.push({ type: "currentTurn", currentTurn });
+    } else if (isThinking) {
+      const lastMessage = messages[messages.length - 1];
+      if (!lastMessage || lastMessage.role !== "agent") {
+        turns.push({ type: "thinking" });
+      }
     }
     return turns;
-  }, [messages, currentTurn]);
+  }, [messages, currentTurn, isThinking]);
   const finalizedByMessageId = useMemo(() => {
     return new Map(
       finalizedToolActivities.map((item) => [item.messageId, item.activities]),
@@ -270,6 +280,21 @@ export function ChatView({
               <AgentTurnBlock
                 key={turn.currentTurn.id}
                 currentTurn={turn.currentTurn}
+                isThinking={isThinking}
+              />
+            );
+          }
+
+          if (turn.type === "thinking") {
+            return (
+              <AgentTurnBlock
+                key="thinking-placeholder"
+                message={{
+                  id: "thinking-placeholder",
+                  role: "agent",
+                  content: "",
+                  timestamp: new Date(0),
+                }}
                 isThinking={isThinking}
               />
             );

@@ -71,6 +71,7 @@ export interface CurrentTurn {
   id: string;
   content: string;
   toolActivities: ToolCallActivity[];
+  createdAt: Date;
 }
 
 export interface FinalizedToolActivity {
