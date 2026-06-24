@@ -135,7 +135,7 @@ export function useSessionManager({
   });
 
   const isStreaming = status === "thinking" || status === "acting";
-  const isThinking = status === "thinking" && !currentTurn;
+  const isThinking = status === "thinking";
 
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;

@@ -9,6 +9,10 @@ interface ActionCardProps {
   className?: string;
 }
 
+function classNames(...classes: (string | false | null | undefined)[]) {
+  return classes.filter(Boolean).join(" ");
+}
+
 const TYPE_ICONS: Record<string, string> = {
   file: "F",
   terminal: ">",
@@ -104,7 +108,7 @@ function renderSection(section: ActionCardSection) {
   );
 }
 
-export function ActionCard({ card, className = "ml-7 mr-6" }: ActionCardProps) {
+export function ActionCard({ card, className }: ActionCardProps) {
   const [expanded, setExpanded] = useState(card.expanded ?? false);
   const [showRaw, setShowRaw] = useState(false);
 
@@ -115,7 +119,10 @@ export function ActionCard({ card, className = "ml-7 mr-6" }: ActionCardProps) {
 
   return (
     <section
-      className={`${className} overflow-hidden rounded-md border border-surface-overlay bg-surface-elevated animate-fade-slide-in motion-reduce:animate-none`}
+      className={classNames(
+        "overflow-hidden rounded-md border border-surface-overlay bg-surface-elevated animate-fade-slide-in motion-reduce:animate-none",
+        className ?? "ml-7 mr-6",
+      )}
       aria-label={card.summary}
     >
       <button

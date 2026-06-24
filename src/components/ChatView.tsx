@@ -53,7 +53,10 @@ function LiveToolActivityList({
   isThinking: boolean;
 }) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
-  const cards = useMemo(() => toolActivitiesToActionCards(activities), [activities]);
+  const cardsById = useMemo(() => {
+    const cards = toolActivitiesToActionCards(activities);
+    return new Map(cards.map((card) => [card.id, card]));
+  }, [activities]);
   const liveStatus = summarizeLiveToolActivity(activities, isThinking);
 
   if (activities.length === 0) return null;
@@ -70,8 +73,8 @@ function LiveToolActivityList({
         </div>
       )}
       <ol className="m-0 flex list-none flex-col gap-2 p-0">
-        {activities.map((activity, index) => {
-          const card = cards[index];
+        {activities.map((activity) => {
+          const card = cardsById.get(activity.id);
           if (!card) return null;
           const expanded = expandedIds.has(activity.id);
 
@@ -174,14 +177,20 @@ function AgentTurnBlock({
   isThinking,
 }: AgentTurnBlockProps) {
   const turnId = currentTurn?.id ?? message?.id ?? "agent-turn";
-  const liveMessage: Message | null = currentTurn?.content
+  const hasLiveContent = Boolean(currentTurn && (currentTurn.content || currentTurn.toolActivities.length > 0));
+  const liveMessage: Message = currentTurn
     ? {
         id: currentTurn.id,
         role: "agent",
-        content: currentTurn.content,
+        content: currentTurn.content || (isThinking ? "Thinking..." : "Working..."),
         timestamp: new Date(),
       }
-    : null;
+    : {
+        id: turnId,
+        role: "agent",
+        content: isThinking ? "Thinking..." : "Working...",
+        timestamp: new Date(),
+      };
 
   return (
     <div
@@ -194,13 +203,14 @@ function AgentTurnBlock({
             activities={currentTurn.toolActivities}
             isThinking={isThinking}
           />
-          {liveMessage && <MessageBlock message={liveMessage} showActions={false} />}
+          <MessageBlock message={liveMessage} showActions={false} />
         </>
       ) : (
         <>
           {message?.content && <MessageBlock message={message} />}
           {message?.error && <ErrorBlock message={message.error} />}
           <FinalizedToolActivityDisclosure activities={finalizedActivities} />
+          {!hasLiveContent && isThinking && <MessageBlock message={liveMessage} showActions={false} />}
         </>
       )}
     </div>
