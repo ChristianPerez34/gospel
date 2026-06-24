@@ -169,7 +169,7 @@ export function InputBar({
   }, []);
 
   return (
-    <div className="bg-surface-elevated border-t border-surface-overlay flex flex-col shrink-0 z-[--z-sticky-input]">
+    <div className="bg-surface-elevated border-t border-surface-overlay flex flex-col gap-2 shrink-0 z-[--z-sticky-input] p-3">
       <div className="relative">
         <SlashCommandMenu
           skills={skills}
@@ -180,16 +180,16 @@ export function InputBar({
         />
       </div>
       {unknownSkill && (
-        <div className="px-3 pt-2 text-status-error text-caption">
+        <div className="px-3 text-status-error text-caption">
           Unknown skill:{" "}
           <span className="font-mono">/{unknownSkill}</span>. Press Esc to
           send anyway.
         </div>
       )}
-      <div className="flex items-end gap-2 p-3 min-h-[--input-min-height]">
+      <div className="flex items-end gap-3 min-h-[--input-min-height]">
         <div className="relative shrink-0">
           <button
-            className="hit-target min-h-11 font-mono text-caption text-text-muted px-2 rounded-sm bg-surface-overlay transition-colors duration-150 ease-out-quart whitespace-nowrap hover:bg-surface-elevated hover:text-text-secondary"
+            className="hit-target min-h-11 font-mono text-caption text-text-secondary px-2 rounded bg-surface-overlay transition-colors duration-150 ease-out-quart whitespace-nowrap hover:bg-surface-base hover:text-text-primary border border-surface-overlay"
             onClick={() => setModelOpen(!modelOpen)}
             disabled={disabled && models.length > 0}
             aria-label="Select model"
@@ -197,13 +197,13 @@ export function InputBar({
             {currentModel?.name || unavailableMessage}
           </button>
           {modelOpen && (
-            <div className="absolute bottom-full left-0 w-60 max-h-[200px] overflow-y-auto bg-surface-elevated border border-surface-overlay rounded-md mb-1 z-[--z-dropdowns]" role="listbox">
+            <div className="absolute bottom-full left-0 w-60 max-h-[200px] overflow-y-auto bg-surface-elevated border border-surface-overlay rounded-lg mb-1 z-[--z-dropdowns]" role="listbox">
               {models.length === 0 ? (
                 <div className="flex flex-col gap-1 p-3 text-text-muted text-body-sm">
-                  <strong className="text-text-primary font-semibold">{unavailableMessage}</strong>
+                  <strong className="text-text-primary font-medium">{unavailableMessage}</strong>
                   {unavailableDetail && <span>{unavailableDetail}</span>}
                   {onUnavailableAction && (
-                    <button className="min-h-11 self-start text-accent-action text-caption" type="button" onClick={onUnavailableAction}>
+                    <button className="hit-target self-start text-accent-action text-caption" type="button" onClick={onUnavailableAction}>
                       {unavailableActionLabel}
                     </button>
                   )}
@@ -232,7 +232,7 @@ export function InputBar({
                     <span className="font-mono text-caption text-text-muted flex items-center gap-1">
                       {m.provider}
                       {m.configured === false && (
-                        <span className="text-[10px] text-status-error uppercase tracking-[0.03em]">Not configured</span>
+                        <span className="text-caption text-status-error uppercase tracking-[0.03em]">Not configured</span>
                       )}
                     </span>
                   </button>
@@ -243,7 +243,7 @@ export function InputBar({
         </div>
         <textarea
           ref={textareaRef}
-          className="flex-1 min-h-[28px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary py-1 overflow-y-auto placeholder:text-text-muted disabled:opacity-50 bg-transparent"
+          className="flex-1 min-h-[64px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary rounded-lg overflow-y-auto placeholder:text-text-muted disabled:opacity-50 bg-surface-overlay py-2.5 px-3"
           placeholder={noModels ? unavailableMessage : "Type a prompt or /skill-name (Shift+Enter for new line)"}
           value={value}
           onChange={handleInput}
@@ -253,7 +253,7 @@ export function InputBar({
           aria-label="Message input"
         />
         <button
-          className="hit-target w-9 h-9 flex items-center justify-center rounded-sm bg-accent-action text-text-inverse text-body shrink-0 transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
+          className="hit-target w-9 h-9 flex items-center justify-center rounded-lg bg-accent-action text-text-inverse text-body shrink-0 transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
           disabled={sendDisabled || !value.trim()}
           onClick={() => {
             if (value.trim() && !sendDisabled) {

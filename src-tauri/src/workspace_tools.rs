@@ -884,6 +884,20 @@ pub struct ListDirectoryOutput {
     visited_entries: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceRootInventoryItem {
+    pub path: String,
+    pub kind: String,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceRootInventory {
+    pub entries: Vec<WorkspaceRootInventoryItem>,
+    pub visited_entries: usize,
+    pub truncated: bool,
+}
+
 impl Tool for ListDirectoryTool {
     const NAME: &'static str = "list_directory";
 
@@ -981,6 +995,62 @@ impl Tool for ListDirectoryTool {
     }
 }
 
+pub fn workspace_root_inventory(
+    workspace_root: &Path,
+    max_entries: usize,
+) -> Result<WorkspaceRootInventory, WorkspaceToolError> {
+    let access = WorkspaceAccess::new(workspace_root)?;
+    let entries = read_sorted_directory_entries(workspace_root)?;
+    let mut visited_entries = 0usize;
+    let mut truncated = false;
+    let mut snapshot_entries = Vec::new();
+
+    for entry in entries.into_iter() {
+        visited_entries += 1;
+        if visited_entries > VISITED_ENTRY_CAP {
+            truncated = true;
+            break;
+        }
+
+        let relative_path = entry.relative_path(&access);
+        if entry.is_symlink {
+            continue;
+        }
+        if blocked_path_reason(&relative_path, entry.path_kind(), true).is_some() {
+            continue;
+        }
+
+        snapshot_entries.push(WorkspaceRootInventoryItem {
+            path: display_rel_path(&relative_path),
+            kind: entry.kind_name(),
+            size_bytes: if entry.is_file() { Some(entry.size_bytes) } else { None },
+        });
+
+        if snapshot_entries.len() >= max_entries.max(1) {
+            truncated = true;
+            break;
+        }
+    }
+
+    Ok(WorkspaceRootInventory {
+        entries: snapshot_entries,
+        visited_entries,
+        truncated,
+    })
+}
+
+impl std::fmt::Display for WorkspaceRootInventory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for entry in &self.entries {
+            writeln!(f, "{} ({})", entry.path, entry.kind)?;
+        }
+        if self.truncated {
+            writeln!(f, "... (truncated)")?;
+        }
+        Ok(())
+    }
+}
+
 pub fn create_read_file_tool(workspace_root: PathBuf) -> ReadFileTool {
     ReadFileTool { workspace_root }
 }
@@ -995,6 +1065,15 @@ pub fn create_find_files_tool(workspace_root: PathBuf) -> FindFilesTool {
 
 pub fn create_list_directory_tool(workspace_root: PathBuf) -> ListDirectoryTool {
     ListDirectoryTool { workspace_root }
+}
+
+pub fn build_base_workspace_tools(workspace_path: PathBuf) -> Vec<Box<dyn rig::tool::ToolDyn>> {
+    vec![
+        Box::new(create_read_file_tool(workspace_path.clone())),
+        Box::new(create_search_code_tool(workspace_path.clone())),
+        Box::new(create_find_files_tool(workspace_path.clone())),
+        Box::new(create_list_directory_tool(workspace_path)),
+    ]
 }
 
 #[derive(Debug, Deserialize)]
@@ -2612,6 +2691,17 @@ mod tests {
     fn truncate_snippet_is_utf8_safe() {
         assert_eq!(truncate_snippet("aé🙂bc", 3), "aé🙂...");
         assert_eq!(truncate_snippet("short", 10), "short");
+    }
+
+    #[test]
+    fn base_workspace_tools_returns_four_tools() {
+        let tools = build_base_workspace_tools(PathBuf::from("/tmp/test-workspace"));
+        assert_eq!(tools.len(), 4);
+        let names: Vec<String> = tools.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"read_file".to_string()));
+        assert!(names.contains(&"search_code".to_string()));
+        assert!(names.contains(&"find_files".to_string()));
+        assert!(names.contains(&"list_directory".to_string()));
     }
 
     #[tokio::test]

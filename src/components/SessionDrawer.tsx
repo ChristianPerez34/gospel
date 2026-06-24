@@ -5,12 +5,14 @@ import { useFocusTrap } from "../hooks/useFocusTrap";
 interface SessionDrawerProps {
   sessions: Session[];
   activeSessionId?: string;
+  activeWorkspaceId?: string;
   onSelect: (session: Session) => void;
   onNewSession: () => void;
   onClose: () => void;
   open: boolean;
   triggerRef?: RefObject<HTMLElement>;
   trapPaused?: boolean;
+  workspaceNames?: Record<string, string>;
 }
 
 function setInert(element: HTMLElement, inert: boolean) {
@@ -51,16 +53,27 @@ function groupByDate(sessions: Session[]): Record<string, Session[]> {
 export function SessionDrawer({
   sessions,
   activeSessionId,
+  activeWorkspaceId,
   onSelect,
   onNewSession,
   onClose,
   open,
   triggerRef,
   trapPaused = false,
+  workspaceNames,
 }: SessionDrawerProps) {
   const [search, setSearch] = useState("");
   const drawerRef = useRef<HTMLElement>(null);
   const groups = groupByDate(sessions);
+  const hasCrossWorkspaceSessions = new Set(
+    sessions.map((session) => session.workspaceId).filter(Boolean),
+  ).size > 1;
+
+  const getWorkspaceLabel = (session: Session) => {
+    if (!session.workspaceId) return null;
+    if (session.workspaceId === activeWorkspaceId) return null;
+    return workspaceNames?.[session.workspaceId] || session.workspaceId;
+  };
 
   useFocusTrap({
     active: open && !trapPaused,
@@ -142,13 +155,18 @@ export function SessionDrawer({
                       <div className="text-body-sm text-text-primary overflow-hidden text-ellipsis whitespace-nowrap">
                         {session.title || "Untitled"}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-caption text-text-muted">
-                          {session.model}
-                        </span>
-                        <time className="font-mono text-caption text-text-muted">
-                          {session.timestamp.toLocaleTimeString([], {
-                            hour: "2-digit",
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-caption text-text-muted">
+                            {session.model}
+                          </span>
+                          {hasCrossWorkspaceSessions && workspaceNames && getWorkspaceLabel(session) && (
+                            <span className="max-w-40 truncate rounded-full border border-surface-overlay px-2 py-0.5 text-caption text-text-muted">
+                              {getWorkspaceLabel(session)}
+                            </span>
+                          )}
+                          <time className="font-mono text-caption text-text-muted">
+                            {session.timestamp.toLocaleTimeString([], {
+                              hour: "2-digit",
                             minute: "2-digit",
                           })}
                         </time>

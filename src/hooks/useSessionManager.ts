@@ -28,6 +28,7 @@ export interface UseSessionManagerParams {
   models: ModelOption[];
   selectedModel: SelectedModel | null;
   activeWorkspaceId?: string;
+  onSwitchWorkspace?: (workspaceId: string) => Promise<boolean>;
   onError?: (message: string, action?: SessionManagerErrorAction) => void;
   onSuccess?: (message: string) => void;
   onOpenSettings?: () => void;
@@ -43,7 +44,7 @@ export interface UseSessionManagerResult {
   isStreaming: boolean;
   isThinking: boolean;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
-  handleSessionSelect: (session: Session) => void;
+  handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
 }
 
@@ -51,6 +52,7 @@ export function useSessionManager({
   models,
   selectedModel,
   activeWorkspaceId,
+  onSwitchWorkspace,
   onError,
   onSuccess,
   onOpenSettings,
@@ -63,58 +65,63 @@ export function useSessionManager({
   const statusRef = useRef(status);
   statusRef.current = status;
   const latestSelectedSessionRef = useRef<string | null>(null);
+  const hasLoadedSessionsRef = useRef(false);
 
-  // Load persisted sessions from backend on mount
-  useEffect(() => {
-    invoke<Array<{ id: string; title: string; provider: string; model: string; status: string; updated_at: string }>>("list_sessions")
-      .then((backendSessions) => {
-        const loaded: Session[] = backendSessions.map((s) => ({
-          id: s.id,
-          title: s.title,
-          provider: s.provider,
-          model: s.model,
-          timestamp: new Date(s.updated_at),
-          messages: [],
-          status: s.status === "active" ? "idle" : "error",
-          backendCreated: true,
-        }));
-        setSessions(loaded);
-      })
-      .catch((e) => {
-        console.warn("Failed to load sessions from backend:", e);
-      });
+  interface BackendSessionRecord {
+    id: string;
+    title: string;
+    provider: string;
+    model: string;
+    status: string;
+    workspace_id: string | null;
+    updated_at: string;
+  }
+
+  const mapBackendSessions = useCallback((backendSessions: BackendSessionRecord[]) => {
+    return backendSessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      provider: s.provider,
+      model: s.model,
+      timestamp: new Date(s.updated_at),
+      messages: [],
+      status: (s.status === "active" ? "idle" : "error") as Session["status"],
+      backendCreated: true,
+      workspaceId: s.workspace_id ?? undefined,
+    }));
   }, []);
 
-  // Clear active session on workspace change
+  const loadSessions = useCallback(
+    async (workspaceId?: string) => {
+      const args = workspaceId ? { workspace_id: workspaceId } : {};
+      const backendSessions = await invoke<BackendSessionRecord[]>("list_sessions", args);
+      const loadedSessions = mapBackendSessions(backendSessions);
+      setSessions(loadedSessions);
+      return loadedSessions;
+    },
+    [mapBackendSessions],
+  );
+
   const prevWorkspaceRef = useRef(activeWorkspaceId);
+  // Load persisted sessions from backend on mount and when workspace changes.
   useEffect(() => {
-    if (prevWorkspaceRef.current !== activeWorkspaceId) {
-      if (statusRef.current === "thinking" || statusRef.current === "acting") return;
-      prevWorkspaceRef.current = activeWorkspaceId;
+    if (statusRef.current === "thinking" || statusRef.current === "acting") return;
+
+    const workspaceChanged = prevWorkspaceRef.current !== activeWorkspaceId;
+    if (hasLoadedSessionsRef.current && workspaceChanged) {
       latestSelectedSessionRef.current = null;
       setActiveSessionId(null);
       setMessages([]);
       setFinalizedToolActivities([]);
-      // Reload sessions for the new workspace
-      invoke<Array<{ id: string; title: string; provider: string; model: string; status: string; updated_at: string }>>("list_sessions")
-        .then((backendSessions) => {
-          const loaded: Session[] = backendSessions.map((s) => ({
-            id: s.id,
-            title: s.title,
-            provider: s.provider,
-            model: s.model,
-            timestamp: new Date(s.updated_at),
-            messages: [],
-            status: s.status === "active" ? "idle" : "error",
-            backendCreated: true,
-          }));
-          setSessions(loaded);
-        })
-        .catch((e) => {
-          console.warn("Failed to reload sessions after workspace change:", e);
-        });
     }
-  }, [activeWorkspaceId, status]);
+
+    prevWorkspaceRef.current = activeWorkspaceId;
+    hasLoadedSessionsRef.current = true;
+
+    loadSessions(activeWorkspaceId).catch((e) => {
+      console.warn("Failed to load sessions from backend:", e);
+    });
+  }, [activeWorkspaceId, status, loadSessions]);
 
   const {
     currentTurn,
@@ -245,48 +252,78 @@ export function useSessionManager({
       const selectionId = session.id;
       latestSelectedSessionRef.current = selectionId;
 
-      // If session was backend-created and has no local messages, load from backend
-      if (session.backendCreated && session.messages.length === 0) {
-        try {
-          const detail = await invoke<{
-            id: string;
-            display_transcript: string;
-          }>("get_session", { sessionId: session.id });
+      try {
+        let selectedSession = session;
 
-          if (latestSelectedSessionRef.current !== selectionId) return;
+        if (
+          onSwitchWorkspace &&
+          selectedSession.workspaceId &&
+          activeWorkspaceId &&
+          selectedSession.workspaceId !== activeWorkspaceId
+        ) {
+          const switched = await onSwitchWorkspace(selectedSession.workspaceId);
+          if (!switched) {
+            onError?.("Unable to switch workspace for this session.");
+            return;
+          }
 
-          const transcript = JSON.parse(detail.display_transcript) as Array<{
-            role: string;
-            content: string;
-          }>;
-          const loadedMessages: Message[] = transcript.map((msg, i) => ({
-            id: `m-${session.id}-${i}-${msg.role}`,
-            role: msg.role === "user" ? ("user" as const) : ("agent" as const),
-            content: msg.content,
-            timestamp: new Date(session.timestamp),
-          }));
+          const reloadedSessions = await loadSessions(selectedSession.workspaceId);
+          const matched = reloadedSessions.find((s) => s.id === session.id);
+          if (!matched) {
+            if (latestSelectedSessionRef.current !== selectionId) return;
+            onError?.("Selected session was not found in the target workspace.");
+            return;
+          }
 
-          setActiveSessionId(session.id);
-          setMessages(loadedMessages);
-          setFinalizedToolActivities([]);
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === session.id ? { ...s, messages: loadedMessages } : s,
-            ),
-          );
-          return;
-        } catch (e) {
-          if (latestSelectedSessionRef.current !== selectionId) return;
-          console.warn("Failed to load session detail from backend:", e);
+          selectedSession = matched;
         }
-      }
 
-      if (latestSelectedSessionRef.current !== selectionId) return;
-      setActiveSessionId(session.id);
-      setMessages(session.messages);
-      setFinalizedToolActivities([]);
+        // If session was backend-created and has no local messages, load from backend
+        if (selectedSession.backendCreated && selectedSession.messages.length === 0) {
+          try {
+            const detail = await invoke<{
+              id: string;
+              display_transcript: string;
+            }>("get_session", { sessionId: selectedSession.id });
+
+            if (latestSelectedSessionRef.current !== selectionId) return;
+
+            const transcript = JSON.parse(detail.display_transcript) as Array<{
+              role: string;
+              content: string;
+            }>;
+            const loadedMessages: Message[] = transcript.map((msg, i) => ({
+              id: `m-${selectedSession.id}-${i}-${msg.role}`,
+              role: msg.role === "user" ? ("user" as const) : ("agent" as const),
+              content: msg.content,
+              timestamp: new Date(selectedSession.timestamp),
+            }));
+
+            setActiveSessionId(selectedSession.id);
+            setMessages(loadedMessages);
+            setFinalizedToolActivities([]);
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.id === selectedSession.id ? { ...s, messages: loadedMessages } : s,
+              ),
+            );
+            return;
+          } catch (e) {
+            if (latestSelectedSessionRef.current !== selectionId) return;
+            console.warn("Failed to load session detail from backend:", e);
+          }
+        }
+
+        if (latestSelectedSessionRef.current !== selectionId) return;
+        setActiveSessionId(selectedSession.id);
+        setMessages(selectedSession.messages);
+        setFinalizedToolActivities([]);
+      } catch (e) {
+        if (latestSelectedSessionRef.current !== selectionId) return;
+        onError?.(`Unable to open session: ${e}`);
+      }
     },
-    [],
+    [activeWorkspaceId, loadSessions, onError, onSwitchWorkspace],
   );
 
   const handleNewSession = useCallback(() => {

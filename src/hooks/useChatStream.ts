@@ -23,6 +23,15 @@ interface UseChatStreamOptions {
   onRetry?: () => void;
 }
 
+interface LlmDonePayloadObject {
+  response: string;
+  prompt_tokens?: number;
+  response_tokens?: number;
+  tool_calls?: number;
+}
+
+type LlmDonePayload = string | LlmDonePayloadObject;
+
 interface StartStreamOptions {
   provider: string;
   prompt: string;
@@ -80,9 +89,14 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               content: turn.content + event.payload,
             }));
           })),
-          track(listen<string>("llm-done", (event) => {
+          track(listen<LlmDonePayload>("llm-done", (event) => {
+            const payload = event.payload;
             const finalTurn = currentTurnRef.current;
-            const content = event.payload || finalTurn?.content || "";
+            const payloadContent =
+              typeof payload === "string"
+                ? payload
+                : payload?.response ?? "";
+            const content = payloadContent || finalTurn?.content || "";
             const messageId = finalTurn?.id ?? createTurn().id;
             const activities = finalTurn?.toolActivities ?? [];
 

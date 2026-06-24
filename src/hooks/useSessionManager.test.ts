@@ -161,6 +161,109 @@ describe("useSessionManager", () => {
       expect(result.current.messages).toEqual(target.messages);
     });
 
+    it("switches workspace before loading a backend session from another workspace", async () => {
+      const onSwitchWorkspace = vi.fn().mockResolvedValue(true);
+      const onError = vi.fn();
+
+      vi.mocked(invoke).mockImplementation(async (...callArgs: Parameters<typeof invoke>) => {
+        const [cmd, rawParams] = callArgs;
+        const params = rawParams as { workspace_id?: string } | undefined;
+
+        if (cmd === "list_sessions") {
+          if (params?.workspace_id === "ws-other") {
+            return [
+              {
+                id: "s-target",
+                title: "Target in ws-other",
+                provider: "openai",
+                model: "gpt-4o",
+                status: "active",
+                workspace_id: "ws-other",
+                updated_at: "2024-01-02T00:00:00.000Z",
+              },
+            ];
+          }
+          return [];
+        }
+
+        if (cmd === "get_session") {
+          return {
+            id: "s-target",
+            display_transcript: JSON.stringify([
+              { role: "user", content: "older in other workspace" },
+              { role: "agent", content: "reply" },
+            ]),
+          };
+        }
+
+        return undefined;
+      });
+
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+          activeWorkspaceId: "ws-active",
+          onSwitchWorkspace,
+          onError,
+        }),
+      );
+
+      const target = makeSession({
+        id: "s-target",
+        title: "Target session",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+
+      await act(async () => {
+        await result.current.handleSessionSelect(target);
+      });
+
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
+      expect(invoke).toHaveBeenCalledWith("list_sessions", { workspace_id: "ws-other" });
+      expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-target" });
+      expect(result.current.activeSessionId).toBe("s-target");
+      expect(result.current.messages.map((m) => m.content)).toEqual([
+        "older in other workspace",
+        "reply",
+      ]);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("reports an error when workspace switch fails", async () => {
+      const onSwitchWorkspace = vi.fn().mockResolvedValue(false);
+      const onError = vi.fn();
+
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+          activeWorkspaceId: "ws-active",
+          onSwitchWorkspace,
+          onError,
+        }),
+      );
+
+      const target = makeSession({
+        id: "s-other",
+        title: "Blocked",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+
+      await act(async () => {
+        await result.current.handleSessionSelect(target);
+      });
+
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
+      expect(onError).toHaveBeenCalledWith("Unable to switch workspace for this session.");
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.messages).toEqual([]);
+    });
+
     it("handleSessionSelect hydrates a backend-created session via get_session so the next turn continues prior history", async () => {
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
         if (cmd === "list_sessions") return [];
@@ -411,7 +514,9 @@ describe("useSessionManager", () => {
       expect(result.current.status).toBe("thinking");
 
       act(() => {
-        triggerEvent<string>("llm-done", "the assistant's final reply");
+        triggerEvent("llm-done", {
+          response: "the assistant's final reply",
+        });
       });
 
       expect(result.current.status).toBe("connected");
@@ -474,7 +579,12 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
-        triggerEvent<string>("llm-done", "hello back");
+        triggerEvent("llm-done", {
+          response: "hello back",
+          prompt_tokens: 42,
+          response_tokens: 7,
+          tool_calls: 2,
+        });
       });
 
       const agentMessages = result.current.messages.filter((m) => m.role === "agent");
@@ -676,12 +786,41 @@ describe("useSessionManager", () => {
       expect(created.messages.map((m: Message) => m.role)).toEqual(["user"]);
 
       act(() => {
-        triggerEvent<string>("llm-done", "hello back");
+        triggerEvent("llm-done", {
+          response: "hello back",
+        });
       });
 
       const refreshed = result.current.sessions[0]!;
       expect(refreshed.messages.map((m: Message) => m.role)).toEqual(["user", "agent"]);
       expect(refreshed.messages[1]!.content).toBe("hello back");
+    });
+
+    it("accepts llm-done object payload while preserving action content", async () => {
+      const { result } = renderHook(() =>
+        useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+        }),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent("llm-done", {
+          response: "metadata-aware reply",
+          prompt_tokens: 12,
+          response_tokens: 3,
+          tool_calls: 1,
+        });
+      });
+
+      const agentMessages = result.current.messages.filter((m) => m.role === "agent");
+      expect(agentMessages).toHaveLength(1);
+      expect(agentMessages[0]!.content).toBe("metadata-aware reply");
+      expect(result.current.status).toBe("connected");
     });
   });
 });

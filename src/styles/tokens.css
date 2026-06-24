@@ -1,31 +1,31 @@
 :root {
-  --gospel-surface-base: oklch(0.13 0.005 260);
-  --gospel-surface-elevated: oklch(0.18 0.006 260);
-  --gospel-surface-overlay: oklch(0.22 0.007 260);
-  --gospel-scrim: oklch(0.10 0 260 / 0.60);
+  --gospel-surface-base: #131318;
+  --gospel-surface-elevated: #1e1e24;
+  --gospel-surface-overlay: #28282f;
+  --gospel-scrim: rgba(0, 0, 0, 0.6);
 
-  --gospel-text-primary: oklch(0.93 0.005 260);
-  --gospel-text-secondary: oklch(0.70 0.008 260);
-  --gospel-text-muted: oklch(0.50 0.008 260);
-  --gospel-text-inverse: oklch(0.15 0.005 260);
+  --gospel-text-primary: #ececf0;
+  --gospel-text-secondary: #a0a0ab;
+  --gospel-text-muted: #6b6b76;
+  --gospel-text-inverse: #1a1a1f;
 
-  --gospel-accent-action: oklch(0.75 0.18 175);
-  --gospel-accent-structure: oklch(0.72 0.14 280);
-  --gospel-accent-signal: oklch(0.78 0.16 75);
-  --gospel-accent-data: oklch(0.70 0.13 30);
+  --gospel-accent-action: #4fe0c0;
+  --gospel-accent-structure: #a78bfa;
+  --gospel-accent-signal: #f0b040;
+  --gospel-accent-data: #e8705a;
 
-  --gospel-status-error: oklch(0.65 0.20 25);
-  --gospel-status-warning: oklch(0.75 0.15 85);
-  --gospel-status-success: oklch(0.72 0.19 155);
+  --gospel-status-error: #e5484d;
+  --gospel-status-warning: #f0b429;
+  --gospel-status-success: #46c98a;
 
-  --gospel-agent-cyan: oklch(0.75 0.12 195);
-  --gospel-agent-violet: oklch(0.65 0.18 300);
-  --gospel-agent-amber: oklch(0.72 0.15 80);
-  --gospel-agent-rose: oklch(0.65 0.18 10);
+  --gospel-agent-cyan: #3dc9d6;
+  --gospel-agent-violet: #9771da;
+  --gospel-agent-amber: #d49e3e;
+  --gospel-agent-rose: #db4d68;
 
-  --gospel-font-display: "Matter", "Inter", system-ui, -apple-system, sans-serif;
+  --gospel-font-display: "Inter", system-ui, -apple-system, sans-serif;
   --gospel-font-body: "Inter", system-ui, -apple-system, sans-serif;
-  --gospel-font-mono: "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
+  --gospel-font-mono: "Geist Mono", "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
 
   --gospel-font-size-display: 36px;
   --gospel-font-size-heading-lg: 24px;
@@ -148,21 +148,21 @@
   --context-panel-width: var(--gospel-context-panel-width);
 
   --code-block-background: var(--surface-overlay);
-  --shadow-dialog: 0 16px 48px oklch(0.10 0 260 / 0.40);
-  --shadow-floating: 0 8px 24px oklch(0.10 0 260 / 0.30);
+  --shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.4);
+  --shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
 [data-theme="light"] {
-  --gospel-surface-base: oklch(0.98 0.003 260);
-  --gospel-surface-elevated: oklch(1.00 0.002 260);
-  --gospel-surface-overlay: oklch(0.95 0.004 260);
-  --gospel-scrim: oklch(0.10 0 260 / 0.35);
+  --gospel-surface-base: #fafafa;
+  --gospel-surface-elevated: #ffffff;
+  --gospel-surface-overlay: #f2f2f2;
+  --gospel-scrim: rgba(0, 0, 0, 0.35);
 
-  --gospel-text-primary: oklch(0.18 0.010 260);
-  --gospel-text-secondary: oklch(0.35 0.010 260);
-  --gospel-text-muted: oklch(0.55 0.008 260);
+  --gospel-text-primary: #1a1a1f;
+  --gospel-text-secondary: #4a4a52;
+  --gospel-text-muted: #8a8a94;
 
-  --code-block-background: oklch(0.97 0.003 260);
-  --shadow-dialog: 0 16px 48px oklch(0.55 0.008 260 / 0.22);
-  --shadow-floating: 0 8px 24px oklch(0.55 0.008 260 / 0.18);
+  --code-block-background: var(--surface-overlay);
+  --shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.12);
+  --shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.08);
 }

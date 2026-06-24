@@ -319,16 +319,55 @@ function delegateExplorationCard(activity: ToolCallActivity): Partial<ActionCard
   const args = parsedArguments(activity);
   const result = resultRecord(activity);
   const toolsUsed = asArray(result?.tools_used).map(displayValue).filter(Boolean) as string[];
+  const keyFiles = asArray(result?.key_files).map(displayValue).filter(Boolean) as string[];
+  const findings = asArray(result?.findings).map(displayValue).filter(Boolean) as string[];
+  const constraints = asArray(result?.constraints).map(displayValue).filter(Boolean) as string[];
+  const nextReads = asArray(result?.suggested_next_reads).map(displayValue).filter(Boolean) as string[];
+
   const sections = [
     fieldsSection("Investigation", [
       result ? field("Success", result.success) : undefined,
+      result ? field("Summary lines", result.summary ? 1 : 0) : undefined,
+      result ? field("Key files", keyFiles.length || undefined) : undefined,
+      result ? field("Findings", findings.length || undefined) : undefined,
+      result ? field("Constraints", constraints.length || undefined) : undefined,
+      result ? field("Next reads", nextReads.length || undefined) : undefined,
       result ? field("Tools", toolsUsed.length || undefined) : undefined,
       result ? field("Truncated", result.truncated) : undefined,
       result ? field("Reason", result.reason) : undefined,
     ]),
     textSection("Task", args?.task),
+    textSection("Summary", result?.summary),
     textSection("Message", result?.message),
-    textSection("Report", result?.report, false),
+    textSection("Report", result?.report, true),
+    result
+      ? rowsSection(
+          "Key files",
+          keyFiles.map((file) => ({ primary: file })),
+          "No key files returned."
+        )
+      : undefined,
+    result
+      ? rowsSection(
+          "Findings",
+          findings.map((finding) => ({ primary: finding })),
+          "No findings returned."
+        )
+      : undefined,
+    result
+      ? rowsSection(
+          "Constraints",
+          constraints.map((constraint) => ({ primary: constraint })),
+          "No constraints returned."
+        )
+      : undefined,
+    result
+      ? rowsSection(
+          "Suggested next reads",
+          nextReads.map((item) => ({ primary: item })),
+          "No recommended next reads."
+        )
+      : undefined,
     result
       ? rowsSection(
           "Tools used",
@@ -340,7 +379,7 @@ function delegateExplorationCard(activity: ToolCallActivity): Partial<ActionCard
   ].filter(isRenderableSection);
 
   return {
-    detail: displayValue(args?.task),
+    detail: compactList([result?.summary, args?.task]),
     sections,
   };
 }
