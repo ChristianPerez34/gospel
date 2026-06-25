@@ -196,7 +196,7 @@ use crate::workspace_tools::{
     workspace_root_inventory, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
-const AGENT_MAX_TURNS: usize = 20;
+const AGENT_MAX_TURNS: usize = 50;
 const EXPLORATION_TIMEOUT: Duration = Duration::from_secs(90);
 const EXPLORATION_REPORT_BYTES_CAP: usize = 32 * 1024;
 const DELEGATION_SYSTEM_PROMPT: &str = r#"
