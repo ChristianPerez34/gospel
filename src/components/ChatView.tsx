@@ -177,7 +177,6 @@ function AgentTurnBlock({
   isThinking,
 }: AgentTurnBlockProps) {
   const turnId = currentTurn?.id ?? message?.id ?? "agent-turn";
-  const hasLiveContent = Boolean(currentTurn && (currentTurn.content || currentTurn.toolActivities.length > 0));
   const fallbackTimestampRef = useRef<Date | null>(null);
   if (!fallbackTimestampRef.current) {
     fallbackTimestampRef.current = new Date();
@@ -214,7 +213,7 @@ function AgentTurnBlock({
           {message?.content && <MessageBlock message={message} />}
           {message?.error && <ErrorBlock message={message.error} />}
           <FinalizedToolActivityDisclosure activities={finalizedActivities} />
-          {!hasLiveContent && isThinking && <MessageBlock message={liveMessage} showActions={false} />}
+          {!message?.content && isThinking && <MessageBlock message={liveMessage} showActions={false} />}
         </>
       )}
     </div>

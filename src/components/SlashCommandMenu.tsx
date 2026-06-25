@@ -24,7 +24,7 @@ export function SlashCommandMenu({
     );
 
     if (matched.length > 0 || lower.length === 0) {
-      return { filtered: matched.slice(0, 5), suggestion: null as string | null };
+      return { filtered: matched, suggestion: null as string | null };
     }
 
     let bestName = "";
