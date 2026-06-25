@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { Button } from "@/components/ui/button";
 
 export interface ToastData {
   id: string;
@@ -78,22 +79,22 @@ export function Toast({ toast, onDismiss }: ToastProps) {
       <span className="flex-1 text-[13px] text-text-secondary leading-snug">{toast.message}</span>
       <div className="flex gap-1.5 shrink-0">
         {toast.action && (
-          <button
-            className="hit-target min-h-11 px-2 bg-surface-overlay text-text-secondary border-none rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:brightness-110"
-            type="button"
+          <Button
+            variant="secondary"
+            size="xs"
             onClick={(e) => { e.stopPropagation(); toast.action!.onClick(); }}
           >
             {toast.action.label}
-          </button>
+          </Button>
         )}
         {toast.secondaryAction && (
-          <button
-            className="hit-target min-h-11 px-2 bg-transparent text-text-secondary border border-surface-overlay rounded-sm text-[11px] font-medium cursor-pointer whitespace-nowrap transition-colors duration-150 hover:text-text-primary hover:bg-surface-overlay"
-            type="button"
+          <Button
+            variant="outline"
+            size="xs"
             onClick={(e) => { e.stopPropagation(); toast.secondaryAction!.onClick(); }}
           >
             {toast.secondaryAction.label}
-          </button>
+          </Button>
         )}
       </div>
     </div>

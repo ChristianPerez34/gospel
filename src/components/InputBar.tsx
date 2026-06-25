@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { Button } from "@/components/ui/button";
 import type { ModelOption } from "../types";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { useSkills } from "../hooks/useSkills";
@@ -188,14 +189,16 @@ export function InputBar({
       )}
       <div className="flex items-end gap-3 min-h-[--input-min-height]">
         <div className="relative shrink-0">
-          <button
-            className="hit-target min-h-11 font-mono text-caption text-text-secondary px-2 rounded bg-surface-overlay transition-colors duration-150 ease-out-quart whitespace-nowrap hover:bg-surface-base hover:text-text-primary border border-surface-overlay"
+          <Button
+            variant="outline"
+            size="sm"
+            className="font-mono"
             onClick={() => setModelOpen(!modelOpen)}
             disabled={disabled && models.length > 0}
             aria-label="Select model"
           >
             {currentModel?.name || unavailableMessage}
-          </button>
+          </Button>
           {modelOpen && (
             <div className="absolute bottom-full left-0 w-60 max-h-[200px] overflow-y-auto bg-surface-elevated border border-surface-overlay rounded-lg mb-1 z-[--z-dropdowns]" role="listbox">
               {models.length === 0 ? (
@@ -252,8 +255,10 @@ export function InputBar({
           rows={1}
           aria-label="Message input"
         />
-        <button
-          className="hit-target w-9 h-9 flex items-center justify-center rounded-lg bg-accent-action text-text-inverse text-body shrink-0 transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
+        <Button
+          variant="default"
+          size="icon"
+          className="bg-accent-action text-text-inverse hover:opacity-90 disabled:opacity-30"
           disabled={sendDisabled || !value.trim()}
           onClick={() => {
             if (value.trim() && !sendDisabled) {
@@ -271,7 +276,7 @@ export function InputBar({
               strokeLinejoin="round"
             />
           </svg>
-        </button>
+        </Button>
       </div>
     </div>
   );

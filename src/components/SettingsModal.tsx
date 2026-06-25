@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
 import type { ThemePreference } from "../types";
@@ -77,16 +78,16 @@ export function SettingsModal({
         >
           <div className="flex items-center justify-between px-5 py-4 border-b border-surface-overlay shrink-0">
             <h2 className="font-sans text-base font-semibold text-text-primary m-0" id="settings-modal-title">Settings</h2>
-            <button
-              className="hit-target text-text-muted w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-150 hover:text-text-primary hover:bg-surface-overlay"
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={onClose}
               aria-label="Close settings"
-              type="button"
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
               </svg>
-            </button>
+            </Button>
           </div>
 
           <div className="flex gap-0 px-5 border-b border-surface-overlay shrink-0">
@@ -119,14 +120,14 @@ export function SettingsModal({
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="font-sans text-body-sm font-semibold text-text-secondary uppercase tracking-[0.04em] m-0">Credentialed Providers</h3>
-                  <button
-                    className="min-h-11 px-3 border border-surface-overlay rounded-lg text-accent-action text-caption font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                    type="button"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => void onRefreshAvailability(true)}
                     disabled={isRefreshingModels}
                   >
                     {isRefreshingModels ? "Refreshing..." : "Refresh models"}
-                  </button>
+                  </Button>
                 </div>
                 <p className="m-0 text-body-sm text-text-muted">
                   Provider rows are loaded from backend availability. Add credentials to make models selectable.

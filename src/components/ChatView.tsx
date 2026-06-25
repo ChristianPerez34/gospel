@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
+import { Button } from "@/components/ui/button";
 import type {
   ActionCardType,
   CurrentTurn,
@@ -227,15 +228,15 @@ function AgentHeader({ timestamp }: { timestamp: Date }) {
 function AgentActions() {
   return (
     <div className="ml-16 flex gap-3 opacity-0 transition-opacity duration-150 ease-out-quart pl-1 group-hover:opacity-100 group-focus-within:opacity-100">
-      <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Copy message">
+      <Button variant="ghost" size="xs" aria-label="Copy message">
         Copy
-      </button>
-      <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Retry message">
+      </Button>
+      <Button variant="ghost" size="xs" aria-label="Retry message">
         Retry
-      </button>
-      <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Fork conversation">
+      </Button>
+      <Button variant="ghost" size="xs" aria-label="Fork conversation">
         Fork
-      </button>
+      </Button>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import type {
   ActionCard as ActionCardType,
   ActionCardSection,
@@ -184,14 +185,14 @@ export function ActionCard({ card, className }: ActionCardProps) {
           {card.sections?.map(renderSection)}
           {card.rawPayload && (
             <section className="grid gap-2">
-              <button
-                type="button"
-                className="justify-self-start rounded-sm px-1 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:text-text-secondary"
+              <Button
+                variant="ghost"
+                size="xs"
                 onClick={() => setShowRaw((value) => !value)}
                 aria-expanded={showRaw}
               >
                 {showRaw ? "Hide raw JSON" : "Show raw JSON"}
-              </button>
+              </Button>
               {showRaw && (
                 <pre className="m-0 max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 font-mono text-mono text-text-primary">
                   {card.rawPayload}

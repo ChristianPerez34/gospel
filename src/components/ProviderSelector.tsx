@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
 
 export type ProviderId = "openai" | "chatgpt" | "anthropic" | "gemini" | "groq" | "mistral";
 
@@ -278,25 +279,25 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                     {provider.isAuthenticated ? (
                       <>
                         <span className="text-caption text-status-success font-body font-medium">✓ Authenticated</span>
-                        <button
-                          className="min-h-11 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           onClick={() => handleOAuthLogout(provider)}
-                          type="button"
                         >
                           Sign Out
-                        </button>
+                        </Button>
                       </>
                     ) : (
                       <>
                         <span className="text-caption text-text-muted font-body">Sign in with your ChatGPT Plus/Pro account</span>
-                        <button
-                          className="min-h-11 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
+                        <Button
+                          variant="default"
+                          size="sm"
                           onClick={() => handleOAuthLogin(provider)}
                           disabled={isOperationInProgress.current}
-                          type="button"
                         >
                           {isOperationInProgress.current ? "Connecting..." : "Sign in with OpenAI"}
-                        </button>
+                        </Button>
                       </>
                     )}
                     {oauthChallenge && (
@@ -337,34 +338,34 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                         )}
                       </button>
                     </div>
-                    <button
-                      className="min-h-11 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
+                    <Button
+                      variant="default"
+                      size="sm"
                       onClick={() => handleSaveKey(provider)}
                       disabled={!provider.apiKey.trim()}
-                      type="button"
                     >
                       Save
-                    </button>
+                    </Button>
                   </div>
                 ) : (
                   <div className="flex items-center justify-between gap-2 py-1">
                     <span className="text-caption text-status-success font-body font-medium">Key saved</span>
                     <div className="flex items-center gap-2">
-                      <button
-                        className="min-h-11 px-3 bg-accent-action text-text-inverse border-none rounded-sm font-body text-caption font-medium cursor-pointer transition-opacity duration-150 ease-out-quart whitespace-nowrap hover:opacity-90"
+                      <Button
+                        variant="default"
+                        size="sm"
                         onClick={() => setEditingKeyFor(provider.id)}
-                        type="button"
                       >
                         Replace
-                      </button>
-                      <button
-                        className="min-h-11 px-3 bg-surface-overlay text-text-secondary border border-transparent rounded-sm font-body text-caption font-medium cursor-pointer transition-all duration-150 ease-out-quart whitespace-nowrap hover:text-text-primary hover:border-text-muted disabled:opacity-35 disabled:cursor-not-allowed"
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         onClick={() => handleRemoveKey(provider)}
                         disabled={isOperationInProgress.current}
-                        type="button"
                       >
                         Remove
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}

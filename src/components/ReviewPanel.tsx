@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type ReactNode, type RefObject } from "react
 import { invoke } from "@tauri-apps/api/core";
 import { normalize, resolve } from "@tauri-apps/api/path";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { Button } from "@/components/ui/button";
 import type {
   ReviewComment,
   ReviewOutcome,
@@ -335,9 +336,9 @@ export function ReviewPanel({
             {result?.run_id ?? workspacePath ?? "No workspace"}
           </p>
         </div>
-        <button
-          type="button"
-          className="hit-target flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={onClose}
           aria-label="Close review panel"
           title="Close"
@@ -345,7 +346,7 @@ export function ReviewPanel({
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
           </svg>
-        </button>
+        </Button>
       </header>
 
       <div className="grid gap-3 border-b border-surface-overlay px-4 py-3">
@@ -380,9 +381,10 @@ export function ReviewPanel({
               aria-label="Pull request number"
             />
           )}
-          <button
-            type="button"
-            className="ml-auto inline-flex min-h-11 items-center gap-2 rounded-sm bg-accent-action px-3 font-mono text-caption font-semibold text-text-inverse transition-opacity duration-150 ease-out-quart hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
+          <Button
+            variant="default"
+            size="sm"
+            className="ml-auto font-mono font-semibold"
             onClick={runReview}
             disabled={!canRun}
           >
@@ -391,7 +393,7 @@ export function ReviewPanel({
               <path d="m5.7 8.2 1.4 1.4 3.2-3.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             {loading ? "Running" : "Run"}
-          </button>
+          </Button>
         </div>
 
         {result && (
@@ -479,52 +481,46 @@ export function ReviewPanel({
                       )}
                       <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
                         {isActionableReviewFinding(comment) && (
-                          <button
-                            type="button"
-                            className="inline-flex min-h-11 items-center rounded-sm border border-surface-overlay px-3 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action disabled:cursor-not-allowed disabled:opacity-35"
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => void fixFinding(comment, index)}
                             disabled={!canFix}
                             title="Fix issue"
                             aria-label={`Fix issue ${index + 1}`}
                           >
                             Fix issue
-                          </button>
+                          </Button>
                         )}
-                        <button
-                          type="button"
-                          className="inline-flex min-h-11 items-center rounded-sm border border-surface-overlay px-3 font-mono text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-accent-action"
+                        <Button
+                          variant="outline"
+                          size="sm"
                           onClick={() => void copyFindingPrompt(comment, index)}
                           title="Copy to agent"
                           aria-label={`Copy finding ${index + 1} to agent`}
                         >
                           Copy to agent
-                        </button>
-                        <button
-                          type="button"
-                          className={`hit-target flex h-8 w-8 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
-                            outcome === "accepted"
-                              ? "border-status-success text-status-success"
-                              : "border-surface-overlay text-text-muted hover:bg-surface-overlay hover:text-status-success"
-                          }`}
+                        </Button>
+                        <Button
+                          variant={outcome === "accepted" ? "default" : "outline"}
+                          size="icon"
+                          className={outcome === "accepted" ? "border-status-success text-status-success" : ""}
                           title="Accept finding"
                           aria-label={`Accept finding ${index + 1}`}
                           onClick={() => void recordOutcome(comment, "accepted")}
                         >
                           <ThumbUpIcon />
-                        </button>
-                        <button
-                          type="button"
-                          className={`hit-target flex h-8 w-8 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
-                            outcome === "rejected"
-                              ? "border-status-error text-status-error"
-                              : "border-surface-overlay text-text-muted hover:bg-surface-overlay hover:text-status-error"
-                          }`}
+                        </Button>
+                        <Button
+                          variant={outcome === "rejected" ? "default" : "outline"}
+                          size="icon"
+                          className={outcome === "rejected" ? "border-status-error text-status-error" : ""}
                           title="Reject finding"
                           aria-label={`Reject finding ${index + 1}`}
                           onClick={() => void recordOutcome(comment, "rejected")}
                         >
                           <ThumbDownIcon />
-                        </button>
+                        </Button>
                       </div>
                     </div>
 
