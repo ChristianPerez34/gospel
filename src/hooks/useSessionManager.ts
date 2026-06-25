@@ -3,10 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentStatus,
   CurrentTurn,
-  FinalizedToolActivity,
   Message,
   ModelOption,
   Session,
+  TurnBlock,
 } from "../types";
 import type { SelectedModel } from "./useModelAvailability";
 import { useChatStream } from "./useChatStream";
@@ -40,7 +40,6 @@ export interface UseSessionManagerResult {
   messages: Message[];
   status: AgentStatus;
   currentTurn: CurrentTurn | null;
-  finalizedToolActivities: FinalizedToolActivity[];
   isStreaming: boolean;
   isThinking: boolean;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
@@ -60,7 +59,6 @@ export function useSessionManager({
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [finalizedToolActivities, setFinalizedToolActivities] = useState<FinalizedToolActivity[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const statusRef = useRef(status);
   statusRef.current = status;
@@ -112,7 +110,6 @@ export function useSessionManager({
       latestSelectedSessionRef.current = null;
       setActiveSessionId(null);
       setMessages([]);
-      setFinalizedToolActivities([]);
     }
 
     prevWorkspaceRef.current = activeWorkspaceId;
@@ -129,12 +126,6 @@ export function useSessionManager({
     resetStream,
   } = useChatStream({
     onMessages: setMessages,
-    onFinalizeToolActivities: (toolActivity) => {
-      setFinalizedToolActivities((prev) => [
-        ...prev.filter((item) => item.messageId !== toolActivity.messageId),
-        toolActivity,
-      ]);
-    },
     onStatusChange: setStatus,
     onErrorToast: onError,
     onSuccessToast: onSuccess,
@@ -291,17 +282,29 @@ export function useSessionManager({
             const transcript = JSON.parse(detail.display_transcript) as Array<{
               role: string;
               content: string;
+              blocks?: TurnBlock[];
             }>;
-            const loadedMessages: Message[] = transcript.map((msg, i) => ({
-              id: `m-${selectedSession.id}-${i}-${msg.role}`,
-              role: msg.role === "user" ? ("user" as const) : ("agent" as const),
-              content: msg.content,
-              timestamp: new Date(selectedSession.timestamp),
-            }));
+            const loadedMessages: Message[] = transcript.map((msg, i) => {
+              const role = msg.role === "user" ? ("user" as const) : ("agent" as const);
+              // Legacy assistant entries without `blocks` synthesize a single
+              // text block from `content` so the renderer has a uniform model.
+              const blocks: TurnBlock[] | undefined =
+                msg.blocks && msg.blocks.length > 0
+                  ? msg.blocks
+                  : role === "agent"
+                    ? [{ kind: "text", id: `text-0`, text: msg.content }]
+                    : undefined;
+              return {
+                id: `m-${selectedSession.id}-${i}-${msg.role}`,
+                role,
+                content: msg.content,
+                timestamp: new Date(selectedSession.timestamp),
+                blocks,
+              };
+            });
 
             setActiveSessionId(selectedSession.id);
             setMessages(loadedMessages);
-            setFinalizedToolActivities([]);
             setSessions((prev) =>
               prev.map((s) =>
                 s.id === selectedSession.id ? { ...s, messages: loadedMessages } : s,
@@ -317,7 +320,6 @@ export function useSessionManager({
         if (latestSelectedSessionRef.current !== selectionId) return;
         setActiveSessionId(selectedSession.id);
         setMessages(selectedSession.messages);
-        setFinalizedToolActivities([]);
       } catch (e) {
         if (latestSelectedSessionRef.current !== selectionId) return;
         onError?.(`Unable to open session: ${e}`);
@@ -330,7 +332,6 @@ export function useSessionManager({
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
-    setFinalizedToolActivities([]);
     resetStream();
   }, [resetStream]);
 
@@ -340,7 +341,6 @@ export function useSessionManager({
     messages,
     status,
     currentTurn,
-    finalizedToolActivities,
     isStreaming,
     isThinking,
     handleSend,

@@ -1,9 +1,12 @@
 import { useMemo, useRef, useState } from "react";
+import { Streamdown } from "streamdown";
+import { code } from "@streamdown/code";
 import type {
+  ActionCardType,
   CurrentTurn,
-  FinalizedToolActivity,
   Message,
   ToolCallActivity,
+  TurnBlock,
 } from "../types";
 import {
   summarizeLiveToolActivity,
@@ -17,18 +20,40 @@ interface ChatViewProps {
   workspacePath: string;
   isThinking: boolean;
   currentTurn?: CurrentTurn | null;
-  finalizedToolActivities?: FinalizedToolActivity[];
 }
 
 interface AgentTurnBlockProps {
   message?: Message;
   currentTurn?: CurrentTurn;
-  finalizedActivities?: ToolCallActivity[];
   isThinking: boolean;
 }
 
-function toolStatus(activity: ToolCallActivity) {
-  return activity.status === "calling" ? "Running" : "Done";
+type TextTurnBlock = Extract<TurnBlock, { kind: "text" }>;
+type ToolTurnBlock = Extract<TurnBlock, { kind: "tool" }>;
+
+const TOOL_TYPE_ICONS: Record<ActionCardType, string> = {
+  file: "F",
+  terminal: ">",
+  diff: "+/-",
+  search: "S",
+};
+
+function classNames(...classes: (string | false | null | undefined)[]) {
+  return classes.filter(Boolean).join(" ");
+}
+
+function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
+  return {
+    id: block.id,
+    name: block.name,
+    arguments: block.arguments,
+    result: block.result,
+    status: block.status,
+  };
+}
+
+function toolStatus(block: ToolTurnBlock) {
+  return block.status === "calling" ? "Running" : "Done";
 }
 
 function ErrorBlock({ message }: { message: string }) {
@@ -45,177 +70,220 @@ function ErrorBlock({ message }: { message: string }) {
   );
 }
 
-function LiveToolActivityList({
-  activities,
-  isThinking,
+function RunningPill({
+  toolBlocks,
 }: {
-  activities: ToolCallActivity[];
-  isThinking: boolean;
+  toolBlocks: ToolTurnBlock[];
 }) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
-  const cardsById = useMemo(() => {
-    const cards = toolActivitiesToActionCards(activities);
-    return new Map(cards.map((card) => [card.id, card]));
-  }, [activities]);
-  const liveStatus = summarizeLiveToolActivity(activities, isThinking);
+  const activities = useMemo(
+    () => toolBlocks.map(toolBlockToActivity),
+    [toolBlocks],
+  );
+  const hasRunningTool = activities.some((activity) => activity.status === "calling");
+  const liveStatus = hasRunningTool ? summarizeLiveToolActivity(activities, false) : null;
 
-  if (activities.length === 0 && !liveStatus) return null;
+  if (!liveStatus) return null;
+
+  return (
+    <div className="sticky top-2 z-10 inline-flex max-w-full self-start rounded-full border border-surface-overlay bg-surface-base px-2 py-1 text-caption text-text-muted animate-fade-slide-in-fast motion-reduce:animate-none">
+      <span className="mr-2 mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full bg-accent-action animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+      <span className="truncate font-mono">{liveStatus}</span>
+    </div>
+  );
+}
+
+function ToolRow({
+  block,
+  defaultExpanded = false,
+}: {
+  block: ToolTurnBlock;
+  defaultExpanded?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const activity = useMemo(() => toolBlockToActivity(block), [block]);
+  const card = useMemo(
+    () => toolActivitiesToActionCards([activity])[0],
+    [activity],
+  );
+
+  if (!card) return null;
+
+  const isRunning = block.status === "calling";
+  const icon = TOOL_TYPE_ICONS[card.type] ?? TOOL_TYPE_ICONS.file;
+  const chevronClass = expanded ? "rotate-180" : "";
+
+  return (
+    <li className="grid gap-2" key={block.id}>
+      <button
+        type="button"
+        className="grid min-h-11 w-full max-w-[720px] grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-surface-overlay bg-surface-elevated px-3 py-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action motion-reduce:transition-none"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        aria-label={`${card.summary}${card.detail ? `: ${card.detail}` : ""} ${toolStatus(block)}`}
+      >
+        <span
+          className={classNames(
+            "h-2 w-2 rounded-full",
+            isRunning
+              ? "bg-accent-action animate-pulse motion-reduce:animate-none"
+              : "bg-text-muted",
+          )}
+          aria-hidden="true"
+        />
+        <span
+          className="flex h-5 min-w-5 shrink-0 items-center justify-center font-mono text-caption font-semibold text-text-muted"
+          aria-hidden="true"
+        >
+          {icon}
+        </span>
+        <span
+          className="min-w-0 truncate font-body font-medium text-text-primary"
+          data-testid="tool-row-label"
+          title={card.summary}
+        >
+          {card.summary}
+        </span>
+        {isRunning && (
+          <span className="shrink-0 font-mono text-caption text-accent-action">
+            Running
+          </span>
+        )}
+        <svg
+          className={`shrink-0 text-text-muted transition-transform duration-150 ease-out-quart motion-reduce:transition-none ${chevronClass}`}
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M4 4.5L6 6.5L8 4.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {expanded && (
+        <ActionCard
+          card={{ ...card, expanded: true }}
+          className="w-full max-w-[960px]"
+        />
+      )}
+    </li>
+  );
+}
+
+function ToolTimeline({ blocks }: { blocks: ToolTurnBlock[] }) {
+  if (blocks.length === 0) return null;
 
   return (
     <div
-      className="ml-16 flex w-[calc(100%-3.25rem)] max-w-[720px] flex-col gap-2"
-      data-testid="live-tool-activity-list"
+      className="ml-16 flex w-[calc(100%-3.25rem)] max-w-[960px] flex-col gap-2"
+      data-testid="inline-tool-activity-list"
     >
-      {liveStatus && (
-        <div className="sticky top-2 z-10 inline-flex max-w-full self-start rounded-full border border-surface-overlay bg-surface-base px-2 py-1 text-caption text-text-muted animate-fade-slide-in-fast motion-reduce:animate-none">
-          <span className="mr-2 mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full bg-accent-action animate-pulse motion-reduce:animate-none" aria-hidden="true" />
-          <span className="truncate font-mono">{liveStatus}</span>
-        </div>
-      )}
       <ol className="m-0 flex list-none flex-col gap-2 p-0">
-        {activities.map((activity) => {
-          const card = cardsById.get(activity.id);
-          if (!card) return null;
-          const expanded = expandedIds.has(activity.id);
-
-          return (
-            <li className="grid gap-2" key={activity.id}>
-              <button
-                type="button"
-                className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-surface-overlay bg-surface-elevated px-3 py-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action motion-reduce:transition-none"
-                onClick={() => {
-                  setExpandedIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(activity.id)) {
-                      next.delete(activity.id);
-                    } else {
-                      next.add(activity.id);
-                    }
-                    return next;
-                  });
-                }}
-                aria-expanded={expanded}
-                aria-label={`${card.summary}${card.detail ? `: ${card.detail}` : ""} ${toolStatus(activity)}`}
-              >
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    activity.status === "calling" ? "bg-accent-action" : "bg-text-muted"
-                  }`}
-                  aria-hidden="true"
-                />
-                <span
-                  className="min-w-0 truncate font-body font-medium text-text-primary"
-                  data-testid="live-tool-row-label"
-                  title={card.summary}
-                >
-                  {card.summary}
-                </span>
-                <span className="font-mono text-caption text-text-muted">
-                  {toolStatus(activity)}
-                </span>
-              </button>
-              {expanded && (
-                <ActionCard
-                  card={{ ...card, expanded: true }}
-                  className="w-full max-w-[960px]"
-                />
-              )}
-            </li>
-          );
-        })}
+        {blocks.map((block) => (
+          <ToolRow block={block} key={block.id} />
+        ))}
       </ol>
     </div>
   );
 }
 
-function FinalizedToolActivityDisclosure({
-  activities,
-}: {
-  activities: ToolCallActivity[];
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const cards = useMemo(() => toolActivitiesToActionCards(activities), [activities]);
-
-  if (activities.length === 0) return null;
+function AgentTextBlock({ block }: { block: TextTurnBlock }) {
+  if (!block.text) return null;
 
   return (
-    <div
-      className="ml-16 flex w-[calc(100%-3.25rem)] max-w-[720px] flex-col gap-2"
-      data-testid="finalized-tool-activity"
-    >
-      <button
-        type="button"
-        className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-surface-overlay bg-surface-base px-3 py-2 text-left transition-colors duration-150 ease-out-quart hover:bg-surface-overlay focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action motion-reduce:transition-none"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <span className="truncate font-body text-body-sm font-medium text-text-secondary">
-          Tool activity ({activities.length})
-        </span>
-        <span className="font-mono text-caption text-text-muted">
-          {expanded ? "Hide" : "Show"}
-        </span>
-      </button>
-      {expanded && (
-        <div
-          className="grid w-full max-w-[960px] gap-2 animate-fade-slide-in-fast motion-reduce:animate-none"
-          data-testid="finalized-tool-activity-cards"
-        >
-          {cards.map((card) => (
-            <ActionCard key={card.id} card={card} className="w-full" />
-          ))}
-        </div>
-      )}
+    <div className="ml-16 w-[calc(100%-3.25rem)] max-w-[680px] rounded-lg border border-surface-overlay bg-surface-base px-3 py-3 text-body leading-relaxed text-text-primary break-words prose">
+      <Streamdown animated plugins={{ code }}>
+        {block.text}
+      </Streamdown>
     </div>
   );
 }
 
-function AgentTurnBlock({
-  message,
-  currentTurn,
-  finalizedActivities = [],
-  isThinking,
-}: AgentTurnBlockProps) {
+function AgentHeader({ timestamp }: { timestamp: Date }) {
+  const timeStr = timestamp.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return (
+    <div className="flex items-center gap-2">
+      <div
+        className="w-[22px] h-[22px] rounded-full flex items-center justify-center font-body text-caption font-semibold shrink-0 bg-accent-action text-text-inverse"
+        aria-hidden="true"
+      >
+        G
+      </div>
+      <span className="text-body-sm font-medium text-text-secondary">Gospel</span>
+      <time className="font-mono text-caption text-text-muted tracking-[0.02em]">{timeStr}</time>
+    </div>
+  );
+}
+
+function AgentActions() {
+  return (
+    <div className="ml-16 flex gap-3 opacity-0 transition-opacity duration-150 ease-out-quart pl-1 group-hover:opacity-100 group-focus-within:opacity-100">
+      <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Copy message">
+        Copy
+      </button>
+      <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Retry message">
+        Retry
+      </button>
+      <button className="text-caption text-text-muted px-1 rounded-sm transition-colors duration-150 ease-out-quart hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action" aria-label="Fork conversation">
+        Fork
+      </button>
+    </div>
+  );
+}
+
+function AgentTurnBlock({ message, currentTurn, isThinking }: AgentTurnBlockProps) {
   const turnId = currentTurn?.id ?? message?.id ?? "agent-turn";
   const fallbackTimestampRef = useRef<Date | null>(null);
   if (!fallbackTimestampRef.current) {
     fallbackTimestampRef.current = new Date();
   }
-  const liveMessage: Message = currentTurn
-    ? {
-        id: currentTurn.id,
-        role: "agent",
-        content: currentTurn.content || (isThinking ? "Thinking..." : "Working..."),
-        timestamp: currentTurn.createdAt,
-      }
-    : {
-        id: turnId,
-        role: "agent",
-        content: isThinking ? "Thinking..." : "Working...",
-        timestamp: fallbackTimestampRef.current,
-      };
+  const timestamp =
+    currentTurn?.createdAt ?? message?.timestamp ?? fallbackTimestampRef.current;
+  const blocks =
+    currentTurn?.blocks ??
+    message?.blocks ??
+    (message?.content
+      ? [{ kind: "text" as const, id: `${turnId}-legacy-text`, text: message.content }]
+      : []);
+  const visibleBlocks =
+    blocks.length > 0 || !isThinking
+      ? blocks
+      : [{ kind: "text" as const, id: `${turnId}-thinking`, text: "Thinking..." }];
+  const isLive = Boolean(currentTurn);
+  const toolBlocks = visibleBlocks.filter(
+    (block): block is ToolTurnBlock => block.kind === "tool",
+  );
+  const showActions = Boolean(message && !currentTurn);
 
   return (
     <div
-      className="flex flex-col gap-2 animate-fade-slide-in-fast motion-reduce:animate-none"
+      className="group flex flex-col gap-2 animate-fade-slide-in-fast motion-reduce:animate-none"
       data-testid={`agent-turn-${turnId}`}
     >
-      {currentTurn ? (
-        <>
-          <LiveToolActivityList
-            activities={currentTurn.toolActivities}
-            isThinking={isThinking}
-          />
-          <MessageBlock message={liveMessage} showActions={false} />
-        </>
-      ) : (
-        <>
-          {message?.content && <MessageBlock message={message} />}
-          {message?.error && <ErrorBlock message={message.error} />}
-          <FinalizedToolActivityDisclosure activities={finalizedActivities} />
-          {!message?.content && isThinking && <MessageBlock message={liveMessage} showActions={false} />}
-        </>
+      <AgentHeader timestamp={timestamp} />
+      {isLive && toolBlocks.some((block) => block.status === "calling") && (
+        <div className="ml-16 flex w-[calc(100%-3.25rem)] max-w-[960px] flex-col">
+          <RunningPill toolBlocks={toolBlocks} />
+        </div>
       )}
+      {visibleBlocks.map((block) =>
+        block.kind === "text" ? (
+          <AgentTextBlock block={block} key={block.id} />
+        ) : (
+          <ToolTimeline blocks={[block]} key={block.id} />
+        ),
+      )}
+      {message?.error && <ErrorBlock message={message.error} />}
+      {showActions && <AgentActions />}
     </div>
   );
 }
@@ -225,7 +293,6 @@ export function ChatView({
   workspacePath,
   isThinking,
   currentTurn,
-  finalizedToolActivities = [],
 }: ChatViewProps) {
   const isEmpty = messages.length === 0 && !currentTurn && !isThinking;
   const visibleTurns = useMemo(() => {
@@ -244,11 +311,6 @@ export function ChatView({
     }
     return turns;
   }, [messages, currentTurn, isThinking]);
-  const finalizedByMessageId = useMemo(() => {
-    return new Map(
-      finalizedToolActivities.map((item) => [item.messageId, item.activities]),
-    );
-  }, [finalizedToolActivities]);
 
   if (isEmpty) {
     return (
@@ -302,7 +364,6 @@ export function ChatView({
             <AgentTurnBlock
               key={msg.id}
               message={msg}
-              finalizedActivities={finalizedByMessageId.get(msg.id) ?? []}
               isThinking={isThinking}
             />
           ) : (

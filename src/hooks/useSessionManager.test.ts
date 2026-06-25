@@ -191,7 +191,21 @@ describe("useSessionManager", () => {
             id: "s-target",
             display_transcript: JSON.stringify([
               { role: "user", content: "older in other workspace" },
-              { role: "agent", content: "reply" },
+              {
+                role: "agent",
+                content: "reply",
+                blocks: [
+                  { kind: "text", id: "text-0", text: "reply" },
+                  {
+                    kind: "tool",
+                    id: "tool-1",
+                    name: "read_file",
+                    arguments: { path: "src/lib.rs" },
+                    result: "file contents",
+                    status: "completed",
+                  },
+                ],
+              },
             ]),
           };
         }
@@ -228,6 +242,15 @@ describe("useSessionManager", () => {
       expect(result.current.messages.map((m) => m.content)).toEqual([
         "older in other workspace",
         "reply",
+      ]);
+      expect(result.current.messages[1]?.blocks).toMatchObject([
+        { kind: "text", text: "reply" },
+        {
+          kind: "tool",
+          id: "tool-1",
+          name: "read_file",
+          status: "completed",
+        },
       ]);
       expect(onError).not.toHaveBeenCalled();
     });
@@ -305,10 +328,12 @@ describe("useSessionManager", () => {
         "earlier prompt",
         "earlier reply",
       ]);
-      expect(result.current.finalizedToolActivities).toEqual([]);
+      expect(result.current.messages[1]?.blocks).toEqual([
+        { kind: "text", id: "text-0", text: "earlier reply" },
+      ]);
     });
 
-    it("handleSessionSelect clears UI-only finalized tool activity from the previous session", async () => {
+    it("handleSessionSelect replaces streamed block history from the previous session", async () => {
       const { result } = renderHook(() =>
         useSessionManager({
           models: SAMPLE_MODELS,
@@ -329,18 +354,23 @@ describe("useSessionManager", () => {
         triggerEvent<string>("llm-done", "done");
       });
 
-      expect(result.current.finalizedToolActivities).toHaveLength(1);
+      expect(result.current.messages.find((m) => m.role === "agent")?.blocks).toMatchObject([
+        {
+          kind: "tool",
+          id: "tool-1",
+          name: "read_file",
+        },
+      ]);
 
+      const otherSession = makeSession({
+        id: "s-other",
+        title: "Other",
+      });
       await act(async () => {
-        await result.current.handleSessionSelect(
-          makeSession({
-            id: "s-other",
-            title: "Other",
-          }),
-        );
+        await result.current.handleSessionSelect(otherSession);
       });
 
-      expect(result.current.finalizedToolActivities).toEqual([]);
+      expect(result.current.messages).toEqual(otherSession.messages);
     });
 
     it("handleNewSession resets messages to empty and activeSessionId to null", async () => {
@@ -612,17 +642,21 @@ describe("useSessionManager", () => {
 
       const turnId = result.current.currentTurn?.id;
       expect(turnId).toMatch(/^turn-/);
-      expect(result.current.currentTurn?.content).toBe("hello");
+      expect(result.current.currentTurn?.blocks).toEqual([
+        { kind: "text", id: "text-0", text: "hello" },
+      ]);
 
       act(() => {
         triggerEvent<string>("llm-token", " back");
       });
 
       expect(result.current.currentTurn?.id).toBe(turnId);
-      expect(result.current.currentTurn?.content).toBe("hello back");
+      expect(result.current.currentTurn?.blocks).toEqual([
+        { kind: "text", id: "text-0", text: "hello back" },
+      ]);
     });
 
-    it("groups live tool activity inside currentTurn and finalizes as a text-only message with UI-only tool history", async () => {
+    it("groups live text and tool blocks inside currentTurn and finalizes them into the assistant message", async () => {
       const { result } = renderHook(() =>
         useSessionManager({
           models: SAMPLE_MODELS,
@@ -635,6 +669,10 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
+        triggerEvent<string>("llm-token", "Before ");
+      });
+
+      act(() => {
         triggerEvent<{ id: string; name: string; arguments?: unknown }>(
           "llm-tool-call",
           { id: "tool-1", name: "read_file", arguments: { path: "src/lib.rs" } },
@@ -642,8 +680,10 @@ describe("useSessionManager", () => {
       });
 
       const turnId = result.current.currentTurn?.id;
-      expect(result.current.currentTurn?.toolActivities).toMatchObject([
+      expect(result.current.currentTurn?.blocks).toMatchObject([
+        { kind: "text", text: "Before " },
         {
+          kind: "tool",
           id: "tool-1",
           name: "read_file",
           status: "calling",
@@ -658,13 +698,18 @@ describe("useSessionManager", () => {
       });
 
       expect(result.current.currentTurn?.id).toBe(turnId);
-      expect(result.current.currentTurn?.toolActivities[0]).toMatchObject({
+      expect(result.current.currentTurn?.blocks[1]).toMatchObject({
+        kind: "tool",
         status: "completed",
         result: "file contents",
       });
 
       act(() => {
-        triggerEvent<string>("llm-done", "hello back");
+        triggerEvent<string>("llm-token", "After.");
+      });
+
+      act(() => {
+        triggerEvent<string>("llm-done", "Before After.");
       });
 
       const agentMessages = result.current.messages.filter((m) => m.role === "agent");
@@ -672,25 +717,23 @@ describe("useSessionManager", () => {
       expect(agentMessages).toHaveLength(1);
       expect(agentMessages[0]).toMatchObject({
         id: turnId,
-        content: "hello back",
+        content: "Before After.",
       });
       expect(agentMessages[0]).not.toHaveProperty("actionCards");
-      expect(result.current.finalizedToolActivities).toMatchObject([
+      expect(agentMessages[0]?.blocks).toMatchObject([
+        { kind: "text", text: "Before " },
         {
-          messageId: turnId,
-          activities: [
-            {
-              id: "tool-1",
-              name: "read_file",
-              status: "completed",
-              result: "file contents",
-            },
-          ],
+          kind: "tool",
+          id: "tool-1",
+          name: "read_file",
+          status: "completed",
+          result: "file contents",
         },
+        { kind: "text", text: "After." },
       ]);
     });
 
-    it("warns and appends a completed activity when an llm-tool-result arrives with no matching call", async () => {
+    it("warns and appends a completed tool block when an llm-tool-result arrives with no matching call", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const { result } = renderHook(() =>
         useSessionManager({
@@ -711,8 +754,9 @@ describe("useSessionManager", () => {
         });
       });
 
-      expect(result.current.currentTurn?.toolActivities).toMatchObject([
+      expect(result.current.currentTurn?.blocks).toMatchObject([
         {
+          kind: "tool",
           id: "tool-orphan",
           name: "read_file",
           status: "completed",
@@ -726,7 +770,7 @@ describe("useSessionManager", () => {
       warnSpy.mockRestore();
     });
 
-    it("clears the live turn on errors while keeping tool activity UI-only", async () => {
+    it("clears the live turn on errors while preserving tool blocks on the error message", async () => {
       const { result } = renderHook(() =>
         useSessionManager({
           models: SAMPLE_MODELS,
@@ -763,9 +807,14 @@ describe("useSessionManager", () => {
         error: "boom",
       });
       expect(agentMessages[0]).not.toHaveProperty("actionCards");
-      expect(result.current.finalizedToolActivities[0]).toMatchObject({
-        messageId: turnId,
-      });
+      expect(agentMessages[0]?.blocks).toMatchObject([
+        {
+          kind: "tool",
+          id: "tool-1",
+          name: "read_file",
+          status: "calling",
+        },
+      ]);
     });
   });
 

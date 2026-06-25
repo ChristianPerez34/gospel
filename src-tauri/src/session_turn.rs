@@ -463,6 +463,7 @@ pub fn failure_turn_persistence(
     transcript.push(json!({
         "role": "assistant",
         "content": message,
+        "blocks": [],
         "error": !is_controlled_stop,
         "controlled_stop": is_controlled_stop,
     }));
@@ -474,46 +475,137 @@ pub fn failure_turn_persistence(
 }
 
 pub fn build_display_transcript(messages: &[Message]) -> Vec<serde_json::Value> {
-    messages
-        .iter()
-        .filter_map(|message| match message {
+    // First pass: build assistant entries with ordered `blocks` (text + tool calls)
+    // and collect tool-result text keyed by tool-call id. Tool results in rig's
+    // history live on a following `Message::User { content: ToolResult }` entry,
+    // so a second pass stitches each result onto its matching `tool` block. Any
+    // unmatched tool result is emitted as its own block so nothing is lost.
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut pending_tool_results: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for message in messages {
+        match message {
             Message::User { content } => {
-                let text_parts: Vec<String> = content
-                    .iter()
-                    .filter_map(|content| match content {
-                        UserContent::Text(text) => Some(text.text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if text_parts.is_empty() {
-                    None
-                } else {
-                    Some(json!({
+                let mut text_parts: Vec<String> = Vec::new();
+                for item in content.iter() {
+                    match item {
+                        UserContent::Text(text) => text_parts.push(text.text.clone()),
+                        UserContent::ToolResult(tool_result) => {
+                            let result_text: String = tool_result
+                                .content
+                                .iter()
+                                .map(|part| match part {
+                                    rig::completion::message::ToolResultContent::Text(t) => {
+                                        t.text.clone()
+                                    }
+                                    _ => String::new(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join("");
+                            pending_tool_results.insert(tool_result.id.clone(), result_text);
+                        }
+                        _ => {}
+                    }
+                }
+                if !text_parts.is_empty() {
+                    entries.push(json!({
                         "role": "user",
                         "content": text_parts.join(""),
-                    }))
+                    }));
                 }
             }
             Message::Assistant { content, .. } => {
-                let text_parts: Vec<String> = content
-                    .iter()
-                    .filter_map(|content| match content {
-                        AssistantContent::Text(text) => Some(text.text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if text_parts.is_empty() {
-                    None
-                } else {
-                    Some(json!({
-                        "role": "assistant",
-                        "content": text_parts.join(""),
-                    }))
+                let mut blocks: Vec<serde_json::Value> = Vec::new();
+                let mut text_parts: Vec<String> = Vec::new();
+                for item in content.iter() {
+                    match item {
+                        AssistantContent::Text(text) => {
+                            text_parts.push(text.text.clone());
+                            blocks.push(json!({
+                                "kind": "text",
+                                "id": format!("text-{}", blocks.len()),
+                                "text": text.text.clone(),
+                            }));
+                        }
+                        AssistantContent::ToolCall(tool_call) => {
+                            blocks.push(json!({
+                                "kind": "tool",
+                                "id": tool_call.id.clone(),
+                                "name": tool_call.function.name.clone(),
+                                "arguments": observable_tool_arguments(
+                                    &tool_call.function.name,
+                                    &tool_call.function.arguments,
+                                ),
+                                "result": null,
+                                "status": "completed",
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                if blocks.is_empty() && !text_parts.is_empty() {
+                    // Defensive: shouldn't happen given the loop above, but keep
+                    // a sane fallback.
+                    blocks.push(json!({
+                        "kind": "text",
+                        "id": "text-0",
+                        "text": text_parts.join(""),
+                    }));
+                }
+                if blocks.is_empty() {
+                    continue;
+                }
+                entries.push(json!({
+                    "role": "assistant",
+                    "content": text_parts.join(""),
+                    "blocks": blocks,
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    // Second pass: attach each collected tool result to its matching `tool`
+    // block by id. Unmatched results are appended as their own assistant-level
+    // tool block so no tool output is silently dropped.
+    if !pending_tool_results.is_empty() {
+        for entry in entries.iter_mut() {
+            if entry.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+                continue;
+            }
+            if let Some(blocks) = entry.get_mut("blocks").and_then(|b| b.as_array_mut()) {
+                for block in blocks.iter_mut() {
+                    if block.get("kind").and_then(|k| k.as_str()) != Some("tool") {
+                        continue;
+                    }
+                    if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
+                        if let Some(result) = pending_tool_results.remove(id) {
+                            block["result"] = serde_json::Value::String(result);
+                        }
+                    }
                 }
             }
-            _ => None,
-        })
-        .collect()
+        }
+        for (id, result) in pending_tool_results.drain() {
+            entries.push(json!({
+                "role": "assistant",
+                "content": "",
+                "blocks": [
+                    {
+                        "kind": "tool",
+                        "id": id,
+                        "name": "",
+                        "arguments": null,
+                        "result": result,
+                        "status": "completed",
+                    }
+                ],
+            }));
+        }
+    }
+
+    entries
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -868,7 +960,9 @@ pub fn resolve_active_workspace_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::completion::message::{AssistantContent, Text, UserContent};
+    use rig::completion::message::{
+        AssistantContent, Text, ToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent,
+    };
     use rig::one_or_many::OneOrMany;
     use std::{future, sync::Mutex};
 
@@ -915,6 +1009,63 @@ mod tests {
                 text: text.to_string(),
             })),
         }
+    }
+
+    /// Build an assistant message with interleaved text + tool-call content parts
+    /// in the given order. Each `(name, id)` tuple becomes a tool call.
+    fn assistant_message_with_blocks(parts: &[AssistantPart]) -> Message {
+        let mut content: Vec<AssistantContent> = Vec::new();
+        for part in parts {
+            match part {
+                AssistantPart::Text(t) => {
+                    content.push(AssistantContent::Text(Text {
+                        text: t.to_string(),
+                    }));
+                }
+                AssistantPart::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    content.push(AssistantContent::ToolCall(ToolCall {
+                        id: id.to_string(),
+                        call_id: None,
+                        function: ToolFunction {
+                            name: name.to_string(),
+                            arguments: arguments.clone(),
+                        },
+                        signature: None,
+                        additional_params: None,
+                    }));
+                }
+            }
+        }
+        Message::Assistant {
+            id: None,
+            content: OneOrMany::many(content).expect("at least one content part"),
+        }
+    }
+
+    /// Build a user message carrying a tool result for the given tool-call id.
+    fn tool_result_message(id: &str, text: &str) -> Message {
+        Message::User {
+            content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                id: id.to_string(),
+                call_id: None,
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: text.to_string(),
+                })),
+            })),
+        }
+    }
+
+    enum AssistantPart<'a> {
+        Text(&'a str),
+        ToolCall {
+            id: &'a str,
+            name: &'a str,
+            arguments: serde_json::Value,
+        },
     }
 
     #[derive(Debug)]
@@ -1302,7 +1453,13 @@ mod tests {
             display,
             json!([
                 { "role": "user", "content": "hello" },
-                { "role": "assistant", "content": "hi" }
+                {
+                    "role": "assistant",
+                    "content": "hi",
+                    "blocks": [
+                        { "kind": "text", "id": "text-0", "text": "hi" }
+                    ]
+                }
             ])
         );
         let restored: Vec<Message> =
@@ -1352,6 +1509,81 @@ mod tests {
             decision.model_history.as_deref(),
             Some(r#"[{"provider":"history"}]"#)
         );
+    }
+
+    #[test]
+    fn build_display_transcript_emits_ordered_blocks_with_attached_tool_results() {
+        let history = vec![
+            user_message("please read foo"),
+            assistant_message_with_blocks(&[
+                AssistantPart::Text("Let me check."),
+                AssistantPart::ToolCall {
+                    id: "call-1",
+                    name: "read_file",
+                    arguments: json!({ "path": "src/lib.rs" }),
+                },
+                AssistantPart::Text("Now I'll edit it."),
+                AssistantPart::ToolCall {
+                    id: "call-2",
+                    name: "source_edit",
+                    arguments: json!({ "path": "src/lib.rs", "old_text": "x", "new_text": "y" }),
+                },
+            ]),
+            tool_result_message("call-1", "file contents here"),
+            tool_result_message("call-2", "edited"),
+        ];
+
+        let display = build_display_transcript(&history);
+
+        assert_eq!(display.len(), 2);
+        assert_eq!(display[0]["role"], "user");
+        assert_eq!(display[0]["content"], "please read foo");
+
+        let assistant = &display[1];
+        assert_eq!(assistant["role"], "assistant");
+        // content keeps joined text for back-compat.
+        assert_eq!(assistant["content"], "Let me check.Now I'll edit it.");
+
+        let blocks = assistant["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 4);
+
+        // text / tool / text / tool in native order
+        assert_eq!(blocks[0]["kind"], "text");
+        assert_eq!(blocks[0]["text"], "Let me check.");
+        assert_eq!(blocks[1]["kind"], "tool");
+        assert_eq!(blocks[1]["id"], "call-1");
+        assert_eq!(blocks[1]["name"], "read_file");
+        assert_eq!(blocks[1]["result"], "file contents here");
+        assert_eq!(blocks[1]["status"], "completed");
+        assert_eq!(blocks[2]["kind"], "text");
+        assert_eq!(blocks[2]["text"], "Now I'll edit it.");
+        assert_eq!(blocks[3]["kind"], "tool");
+        assert_eq!(blocks[3]["id"], "call-2");
+        assert_eq!(blocks[3]["name"], "source_edit");
+        // source_edit arguments must be redacted.
+        assert_eq!(blocks[3]["arguments"]["old_text"], "[REDACTED]");
+        assert_eq!(blocks[3]["arguments"]["new_text"], "[REDACTED]");
+        assert_eq!(blocks[3]["result"], "edited");
+    }
+
+    #[test]
+    fn build_display_transcript_emits_unmatched_tool_result_as_own_block() {
+        let history = vec![
+            user_message("hi"),
+            assistant_message_with_blocks(&[AssistantPart::Text("hello")]),
+            // tool result with no matching assistant tool call in the prior turn
+            tool_result_message("orphan-1", "orphan output"),
+        ];
+
+        let display = build_display_transcript(&history);
+        // user, assistant(text), assistant(tool orphan)
+        assert_eq!(display.len(), 3);
+        assert_eq!(display[2]["role"], "assistant");
+        let blocks = display[2]["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["kind"], "tool");
+        assert_eq!(blocks[0]["id"], "orphan-1");
+        assert_eq!(blocks[0]["result"], "orphan output");
     }
 
     #[test]
@@ -1749,7 +1981,13 @@ mod tests {
             display,
             json!([
                 { "role": "user", "content": "write code" },
-                { "role": "assistant", "content": "```rust\nfn main() {}\n```" },
+                {
+                    "role": "assistant",
+                    "content": "```rust\nfn main() {}\n```",
+                    "blocks": [
+                        { "kind": "text", "id": "text-0", "text": "```rust\nfn main() {}\n```" }
+                    ]
+                },
             ])
         );
         let model_history: Vec<Message> =

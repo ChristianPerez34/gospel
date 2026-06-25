@@ -67,16 +67,21 @@ export interface ToolCallActivity {
   status: "calling" | "completed";
 }
 
+export type TurnBlock =
+  | { kind: "text"; id: string; text: string }
+  | {
+      kind: "tool";
+      id: string;
+      name: string;
+      arguments?: unknown;
+      result?: string;
+      status: "calling" | "completed";
+    };
+
 export interface CurrentTurn {
   id: string;
-  content: string;
-  toolActivities: ToolCallActivity[];
+  blocks: TurnBlock[];
   createdAt: Date;
-}
-
-export interface FinalizedToolActivity {
-  messageId: string;
-  activities: ToolCallActivity[];
 }
 
 export interface User {
@@ -90,6 +95,7 @@ export interface Message {
   content: string;
   timestamp: Date;
   error?: string;
+  blocks?: TurnBlock[];
 }
 
 export interface ActionCard {

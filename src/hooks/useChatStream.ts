@@ -4,8 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AgentStatus,
   CurrentTurn,
-  FinalizedToolActivity,
   Message,
+  TurnBlock,
 } from "../types";
 
 interface CorpusAutoBuildComplete {
@@ -15,7 +15,6 @@ interface CorpusAutoBuildComplete {
 
 interface UseChatStreamOptions {
   onMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
-  onFinalizeToolActivities?: (toolActivity: FinalizedToolActivity) => void;
   onStatusChange?: (status: AgentStatus) => void;
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
@@ -55,11 +54,17 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   const createTurn = useCallback((): CurrentTurn => {
     return {
       id: generateTurnId(),
-      content: "",
-      toolActivities: [],
+      blocks: [],
       createdAt: new Date(),
     };
   }, [generateTurnId]);
+
+  /** Join all `text` blocks into a single string (back-compat for `content`). */
+  const joinTextBlocks = (blocks: TurnBlock[]): string =>
+    blocks
+      .filter((b): b is { kind: "text"; id: string; text: string } => b.kind === "text")
+      .map((b) => b.text)
+      .join("");
 
   const updateCurrentTurn = useCallback(
     (updater: (turn: CurrentTurn) => CurrentTurn) => {
@@ -88,10 +93,23 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       try {
         await Promise.all([
           track(listen<string>("llm-token", (event) => {
-            updateCurrentTurn((turn) => ({
-              ...turn,
-              content: turn.content + event.payload,
-            }));
+            updateCurrentTurn((turn) => {
+              const blocks = [...turn.blocks];
+              const last = blocks[blocks.length - 1];
+              if (last && last.kind === "text") {
+                blocks[blocks.length - 1] = {
+                  ...last,
+                  text: last.text + event.payload,
+                };
+              } else {
+                blocks.push({
+                  kind: "text",
+                  id: `text-${blocks.length}`,
+                  text: event.payload,
+                });
+              }
+              return { ...turn, blocks };
+            });
           })),
           track(listen<LlmDonePayload>("llm-done", (event) => {
             const payload = event.payload;
@@ -100,11 +118,14 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               typeof payload === "string"
                 ? payload
                 : payload?.response ?? "";
-            const content = payloadContent || finalTurn?.content || "";
+            const blocks = finalTurn?.blocks ?? [];
+            const derivedContent = joinTextBlocks(blocks);
+            // Prefer the backend's authoritative response text when present;
+            // otherwise fall back to streamed text blocks.
+            const content = payloadContent || derivedContent || "";
             const messageId = finalTurn?.id ?? generateTurnId();
-            const activities = finalTurn?.toolActivities ?? [];
 
-            if (content || activities.length > 0) {
+            if (content || blocks.length > 0) {
               optionsRef.current.onMessages?.((prev) => [
                 ...prev,
                 {
@@ -112,15 +133,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   role: "agent",
                   content: content || "Completed.",
                   timestamp: new Date(),
+                  blocks: blocks.length > 0 ? blocks : undefined,
                 },
               ]);
-            }
-
-            if (activities.length > 0) {
-              optionsRef.current.onFinalizeToolActivities?.({
-                messageId,
-                activities,
-              });
             }
 
             clearCurrentTurn();
@@ -130,26 +145,21 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             const err = event.payload;
             const finalTurn = currentTurnRef.current;
             const messageId = finalTurn?.id ?? generateTurnId();
-            const activities = finalTurn?.toolActivities ?? [];
+            const blocks = finalTurn?.blocks ?? [];
+            const derivedContent = joinTextBlocks(blocks);
 
-            if (err?.message || finalTurn?.content || activities.length > 0) {
+            if (err?.message || derivedContent || blocks.length > 0) {
               optionsRef.current.onMessages?.((prev) => [
                 ...prev,
                 {
                   id: messageId,
                   role: "agent",
-                  content: finalTurn?.content ?? "",
+                  content: derivedContent || "",
                   timestamp: new Date(),
                   error: err?.message || "Completion failed.",
+                  blocks: blocks.length > 0 ? blocks : undefined,
                 },
               ]);
-            }
-
-            if (activities.length > 0) {
-              optionsRef.current.onFinalizeToolActivities?.({
-                messageId,
-                activities,
-              });
             }
 
             clearCurrentTurn();
@@ -170,9 +180,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           track(listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
             updateCurrentTurn((turn) => ({
               ...turn,
-              toolActivities: [
-                ...turn.toolActivities,
+              blocks: [
+                ...turn.blocks,
                 {
+                  kind: "tool",
                   id: event.payload.id,
                   name: event.payload.name,
                   arguments: event.payload.arguments,
@@ -184,14 +195,21 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           })),
           track(listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
             updateCurrentTurn((turn) => {
-              const idx = turn.toolActivities.findIndex((a) => a.id === event.payload.id);
+              const idx = turn.blocks.findIndex(
+                (b): b is TurnBlock & { kind: "tool" } =>
+                  b.kind === "tool" && b.id === event.payload.id,
+              );
               if (idx >= 0) {
-                const updated = [...turn.toolActivities];
-                updated[idx] = { ...updated[idx], result: event.payload.result, status: "completed" };
-                return {
-                  ...turn,
-                  toolActivities: updated,
-                };
+                const blocks = [...turn.blocks];
+                const existing = blocks[idx];
+                if (existing.kind === "tool") {
+                  blocks[idx] = {
+                    ...existing,
+                    result: event.payload.result,
+                    status: "completed",
+                  };
+                }
+                return { ...turn, blocks };
               }
               console.warn(
                 `[useChatStream] Received llm-tool-result for id "${event.payload.id}" with no matching llm-tool-call; appending as completed.`,
@@ -199,9 +217,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               );
               return {
                 ...turn,
-                toolActivities: [
-                  ...turn.toolActivities,
+                blocks: [
+                  ...turn.blocks,
                   {
+                    kind: "tool",
                     id: event.payload.id,
                     name: event.payload.name,
                     result: event.payload.result,

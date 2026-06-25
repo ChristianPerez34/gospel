@@ -236,7 +236,6 @@ export function AppShell() {
               workspacePath={activeWorkspace?.path ?? ""}
               isThinking={session.isThinking}
               currentTurn={session.currentTurn}
-              finalizedToolActivities={session.finalizedToolActivities}
             />
             <InputBar
               models={models}
