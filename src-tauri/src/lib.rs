@@ -992,11 +992,8 @@ async fn complete_streaming(
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
 ) -> Result<(), llm::LlmErrorDto> {
-    let (delegate_provider, delegate_model, delegate_api_key) = resolve_delegate_completion_config(
-        app_config.inner(),
-        &provider,
-        &model,
-    );
+    let (delegate_provider, delegate_model, delegate_api_key) =
+        resolve_delegate_completion_config(app_config.inner(), &provider, &model);
 
     let adapters = TauriSessionTurnAdapters {
         app: &app,
@@ -1911,6 +1908,7 @@ async fn remember_rejected_review_comment(
     validate_active_workspace_path(workspace_path)?;
     let mut store = review::anti_pattern::AntiPatternStore::load(workspace_path)?;
     store.add_rejection(
+        comment.focus,
         &comment.file,
         comment.line_start,
         comment.line_end,
@@ -1953,6 +1951,8 @@ mod review_rejection_tests {
             line_end: 12,
             severity: review::Severity::High,
             category: "injection".to_string(),
+            focus: review::ReviewFocus::Security,
+            focus_subcategory: None,
             cwe_id: Some("CWE-78".to_string()),
             cwe_name: Some("OS Command Injection".to_string()),
             title: title.to_string(),
@@ -1993,8 +1993,15 @@ mod review_rejection_tests {
             .unwrap();
 
         let store = review::anti_pattern::AntiPatternStore::load(dir.path()).unwrap();
-        assert!(store.is_rejected(&first.file, first.line_start, first.line_end, &first.title));
         assert!(store.is_rejected(
+            first.focus,
+            &first.file,
+            first.line_start,
+            first.line_end,
+            &first.title
+        ));
+        assert!(store.is_rejected(
+            second.focus,
             &second.file,
             second.line_start,
             second.line_end,

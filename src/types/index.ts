@@ -14,6 +14,13 @@ export type SignalTier = "tier_1" | "tier_2" | "noise" | "unclassified";
 
 export type ReviewOutcome = "accepted" | "rejected";
 
+export type ReviewFocus =
+  | "Security"
+  | "BugHunt"
+  | "Architecture"
+  | "Performance"
+  | "Style";
+
 export type ReviewMode =
   | { type: "local" }
   | { type: "pull_request"; pr_number: number }
@@ -26,6 +33,8 @@ export interface ReviewComment {
   line_end: number;
   severity: Severity;
   category: string;
+  focus: ReviewFocus;
+  focus_subcategory?: string | null;
   cwe_id?: string | null;
   cwe_name?: string | null;
   title: string;
@@ -39,6 +48,7 @@ export interface ReviewComment {
 
 export interface ReviewResult {
   run_id: string;
+  focus: ReviewFocus;
   comments: ReviewComment[];
   summary: string;
   validated: boolean;

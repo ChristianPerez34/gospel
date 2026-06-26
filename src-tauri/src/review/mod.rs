@@ -15,6 +15,7 @@ use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -39,6 +40,8 @@ pub struct ReviewConfig {
     pub provider: String,
     pub model: String,
     pub mode: String,
+    #[serde(default)]
+    pub focus: ReviewFocus,
     #[serde(default, alias = "prNumber")]
     pub pr_number: Option<u64>,
 }
@@ -70,6 +73,39 @@ pub enum ReviewMode {
     FullScan,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "PascalCase")]
+pub enum ReviewFocus {
+    #[serde(alias = "security", alias = "SECURITY")]
+    Security,
+    #[serde(alias = "bug_hunt", alias = "bughunt", alias = "Bug Hunt")]
+    BugHunt,
+    #[serde(alias = "architecture", alias = "ARCHITECTURE")]
+    Architecture,
+    #[serde(alias = "performance", alias = "PERFORMANCE")]
+    Performance,
+    #[serde(alias = "style", alias = "STYLE")]
+    Style,
+}
+
+impl Default for ReviewFocus {
+    fn default() -> Self {
+        Self::Security
+    }
+}
+
+impl fmt::Display for ReviewFocus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Security => "Security",
+            Self::BugHunt => "BugHunt",
+            Self::Architecture => "Architecture",
+            Self::Performance => "Performance",
+            Self::Style => "Style",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum Severity {
@@ -94,6 +130,10 @@ pub struct ReviewComment {
     pub line_end: usize,
     pub severity: Severity,
     pub category: String,
+    #[serde(default)]
+    pub focus: ReviewFocus,
+    #[serde(default)]
+    pub focus_subcategory: Option<String>,
     pub cwe_id: Option<String>,
     pub cwe_name: Option<String>,
     pub title: String,
@@ -109,6 +149,7 @@ pub struct ReviewComment {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReviewResult {
     pub run_id: String,
+    pub focus: ReviewFocus,
     pub comments: Vec<ReviewComment>,
     pub summary: String,
     pub validated: bool,
@@ -179,6 +220,12 @@ pub async fn run_review(
     api_key: String,
 ) -> Result<ReviewResult, String> {
     let mode = config.review_mode()?;
+    if config.focus != ReviewFocus::Security {
+        return Err(format!(
+            "{} review focus is not implemented yet. Phase 1 only wires the shared review schema.",
+            config.focus
+        ));
+    }
     let workspace = WorkspaceToolContext {
         workspace_path,
         corpus_available: false,
@@ -192,6 +239,7 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
+                config.focus,
                 ReviewMode::Local,
                 "You are reviewing local staged and unstaged changes for security vulnerabilities."
                     .to_string(),
@@ -210,6 +258,7 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
+                config.focus,
                 ReviewMode::PullRequest { pr_number },
                 context,
                 pr.diff,
@@ -217,7 +266,14 @@ pub async fn run_review(
             .await
         }
         ReviewMode::FullScan => {
-            run_full_scan_review(&config.provider, &config.model, &api_key, &workspace).await
+            run_full_scan_review(
+                &config.provider,
+                &config.model,
+                &api_key,
+                &workspace,
+                config.focus,
+            )
+            .await
         }
     }?;
 
@@ -243,6 +299,7 @@ fn finalize_review_result(
     let run_id = Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now();
     for comment in &mut result.comments {
+        comment.focus = result.focus;
         signal::normalize_review_comment(comment, &review_config.signal_rules);
     }
 
@@ -273,6 +330,7 @@ fn finalize_review_result(
         run_id.clone(),
         timestamp,
         result.mode.clone(),
+        result.focus,
         provider.to_string(),
         model.to_string(),
         &original_comments,
@@ -288,6 +346,7 @@ fn finalize_review_result(
     let run_record = outcome::ReviewRunRecord {
         run_id,
         timestamp,
+        focus: result.focus,
         mode: result.mode.clone(),
         comments: original_comments,
     };
@@ -347,6 +406,7 @@ fn filter_rejected_comments(
         .into_iter()
         .filter(|comment| {
             if store.is_rejected(
+                comment.focus,
                 &comment.file,
                 comment.line_start,
                 comment.line_end,
@@ -388,6 +448,7 @@ async fn run_full_scan_review(
     model: &str,
     api_key: &str,
     workspace: &WorkspaceToolContext,
+    focus: ReviewFocus,
 ) -> Result<ReviewResult, String> {
     let mut warnings = Vec::new();
     let files = get_full_scan_files(&workspace.workspace_path).await?;
@@ -398,6 +459,7 @@ async fn run_full_scan_review(
             true,
             warnings,
             0,
+            focus,
             ReviewMode::FullScan,
         ));
     }
@@ -468,6 +530,7 @@ async fn run_full_scan_review(
         validated,
         warnings,
         files_scanned,
+        focus,
         ReviewMode::FullScan,
     ))
 }
@@ -477,6 +540,7 @@ async fn run_diff_review(
     model: &str,
     api_key: &str,
     workspace: &WorkspaceToolContext,
+    focus: ReviewFocus,
     mode: ReviewMode,
     review_context: String,
     diff: String,
@@ -488,6 +552,7 @@ async fn run_diff_review(
             true,
             Vec::new(),
             0,
+            focus,
             mode,
         ));
     }
@@ -507,6 +572,7 @@ async fn run_diff_review(
             true,
             warnings,
             0,
+            focus,
             mode,
         ));
     }
@@ -585,6 +651,7 @@ async fn run_diff_review(
         validated,
         warnings,
         files_scanned,
+        focus,
         mode,
     ))
 }
@@ -697,10 +764,12 @@ fn review_result(
     validated: bool,
     warnings: Vec<String>,
     files_scanned: usize,
+    focus: ReviewFocus,
     mode: ReviewMode,
 ) -> ReviewResult {
     ReviewResult {
         run_id: String::new(),
+        focus,
         comments,
         summary,
         validated,
@@ -1377,6 +1446,7 @@ Binary files a/icon.png and b/icon.png differ
         let comment = sample_review_comment();
         let mut store = anti_pattern::AntiPatternStore::default();
         store.add_rejection(
+            ReviewFocus::Security,
             &comment.file,
             comment.line_start,
             comment.line_end,
@@ -1404,6 +1474,8 @@ Binary files a/icon.png and b/icon.png differ
         assert_eq!(parsed.comments.len(), 1);
         assert_eq!(parsed.comments[0].file, "src/main.rs");
         assert_eq!(parsed.comments[0].severity, Severity::High);
+        assert_eq!(parsed.comments[0].focus, ReviewFocus::Security);
+        assert_eq!(parsed.comments[0].focus_subcategory, None);
     }
 
     #[test]
@@ -1422,6 +1494,7 @@ Binary files a/icon.png and b/icon.png differ
             true,
             Vec::new(),
             3,
+            ReviewFocus::Security,
             ReviewMode::Local,
         );
 
@@ -1442,6 +1515,7 @@ Binary files a/icon.png and b/icon.png differ
             true,
             Vec::new(),
             0,
+            ReviewFocus::Security,
             ReviewMode::FullScan,
         );
 
@@ -1465,6 +1539,7 @@ Binary files a/icon.png and b/icon.png differ
             true,
             Vec::new(),
             2,
+            ReviewFocus::Security,
             ReviewMode::Local,
         );
 

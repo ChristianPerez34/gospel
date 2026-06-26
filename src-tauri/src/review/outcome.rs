@@ -1,5 +1,5 @@
 use super::anti_pattern::AntiPatternStore;
-use super::{ReviewComment, ReviewMode};
+use super::{ReviewComment, ReviewFocus, ReviewMode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub struct ReviewRunRecord {
     pub run_id: String,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub focus: ReviewFocus,
     pub mode: ReviewMode,
     pub comments: Vec<ReviewComment>,
 }
@@ -27,6 +29,8 @@ pub struct ReviewOutcomeRecord {
     pub comment_id: String,
     pub outcome: ReviewOutcome,
     pub recorded_at: DateTime<Utc>,
+    #[serde(default)]
+    pub focus: ReviewFocus,
     pub file: String,
     pub line_start: usize,
     pub line_end: usize,
@@ -135,6 +139,7 @@ fn record_acceptance(
             comment_id: comment.comment_id.clone(),
             outcome: ReviewOutcome::Accepted,
             recorded_at,
+            focus: comment.focus,
             file: comment.file.clone(),
             line_start: comment.line_start,
             line_end: comment.line_end,
@@ -156,6 +161,7 @@ fn clear_prior_rejection(workspace_path: &Path, comment: &ReviewComment) -> Resu
 
     let mut store = AntiPatternStore::load(workspace_path)?;
     if !store.remove_rejection(
+        comment.focus,
         &comment.file,
         comment.line_start,
         comment.line_end,
@@ -173,6 +179,7 @@ fn record_rejection(
 ) -> Result<(), String> {
     let mut store = AntiPatternStore::load(workspace_path)?;
     store.add_rejection_at(
+        comment.focus,
         &comment.file,
         comment.line_start,
         comment.line_end,
@@ -294,6 +301,8 @@ mod tests {
             line_end: 12,
             severity: Severity::High,
             category: "injection".to_string(),
+            focus: ReviewFocus::Security,
+            focus_subcategory: None,
             cwe_id: Some("CWE-78".to_string()),
             cwe_name: Some("OS Command Injection".to_string()),
             title: "Unsanitized command".to_string(),
@@ -313,6 +322,7 @@ mod tests {
         let run = ReviewRunRecord {
             run_id: "run-1".to_string(),
             timestamp: Utc::now(),
+            focus: ReviewFocus::Security,
             mode: ReviewMode::Local,
             comments: vec![comment()],
         };
@@ -334,6 +344,7 @@ mod tests {
         let run = ReviewRunRecord {
             run_id: "run-1".to_string(),
             timestamp: Utc::now(),
+            focus: ReviewFocus::Security,
             mode: ReviewMode::Local,
             comments: vec![comment()],
         };
@@ -351,18 +362,54 @@ mod tests {
         let run = ReviewRunRecord {
             run_id: "run-1".to_string(),
             timestamp: Utc::now(),
+            focus: ReviewFocus::Security,
             mode: ReviewMode::Local,
             comments: vec![comment()],
         };
         save_review_run(dir.path(), &run).unwrap();
 
         record_review_outcome(dir.path(), "run-1", "rc_abc", ReviewOutcome::Rejected).unwrap();
+        let mut other_focus_rejection = AntiPatternStore::load(dir.path()).unwrap();
+        other_focus_rejection.add_rejection(
+            ReviewFocus::Architecture,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command",
+        );
+        other_focus_rejection.save(dir.path()).unwrap();
         let rejected_before = AntiPatternStore::load(dir.path()).unwrap();
-        assert!(rejected_before.is_rejected("src/main.rs", 10, 12, "Unsanitized command"));
+        assert!(rejected_before.is_rejected(
+            ReviewFocus::Security,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command"
+        ));
+        assert!(rejected_before.is_rejected(
+            ReviewFocus::Architecture,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command"
+        ));
 
         record_review_outcome(dir.path(), "run-1", "rc_abc", ReviewOutcome::Accepted).unwrap();
 
         let rejected_after = AntiPatternStore::load(dir.path()).unwrap();
-        assert!(!rejected_after.is_rejected("src/main.rs", 10, 12, "Unsanitized command"));
+        assert!(!rejected_after.is_rejected(
+            ReviewFocus::Security,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command"
+        ));
+        assert!(rejected_after.is_rejected(
+            ReviewFocus::Architecture,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command"
+        ));
     }
 }

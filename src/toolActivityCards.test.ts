@@ -69,17 +69,18 @@ describe("toolActivitiesToActionCards review tools", () => {
     });
   });
 
-  it("formats run_security_review with indexed findings and SNR fields", () => {
+  it("formats run_review with indexed findings, focus, and SNR fields", () => {
     const cards = toolActivitiesToActionCards([
       {
         id: "tool-1",
-        name: "run_security_review",
-        arguments: { mode: "local" },
+        name: "run_review",
+        arguments: { mode: "local", focus: "Security" },
         result: JSON.stringify({
           success: true,
           message: "Found 2 potential issues.",
           review: {
             run_id: "run-1",
+            focus: "Security",
             comments: [
               {
                 comment_id: "rc_1",
@@ -88,6 +89,8 @@ describe("toolActivitiesToActionCards review tools", () => {
                 line_end: 10,
                 severity: "High",
                 category: "injection",
+                focus: "Security",
+                focus_subcategory: null,
                 cwe_id: "CWE-78",
                 cwe_name: "OS Command Injection",
                 title: "Unsanitized command",
@@ -116,6 +119,8 @@ describe("toolActivitiesToActionCards review tools", () => {
               line_start: 10,
               severity: "High",
               category: "injection",
+              focus: "Security",
+              focus_subcategory: null,
               title: "Unsanitized command",
               signal_tier: "tier_1",
             },
@@ -125,12 +130,13 @@ describe("toolActivitiesToActionCards review tools", () => {
       },
     ]);
 
-    expect(cards[0]?.summary).toBe("Security review");
+    expect(cards[0]?.summary).toBe("Code review");
     const reviewFields = cards[0]?.sections?.find(
       (section) => section.type === "fields" && section.title === "Review",
     );
     expect(reviewFields).toMatchObject({
       fields: expect.arrayContaining([
+        { label: "Focus", value: "Security" },
         { label: "Run", value: "run-1" },
         { label: "Suppressed", value: "1" },
         { label: "SNR", value: "50%" },
@@ -168,6 +174,38 @@ describe("toolActivitiesToActionCards review tools", () => {
 
     expect(cards[0]?.summary).toBe("Record review outcome");
     expect(cards[0]?.detail).toBe("rejected, rc_1");
+  });
+
+  it("formats the deprecated run_security_review alias with the review renderer", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "tool-alias",
+        name: "run_security_review",
+        arguments: { mode: "local" },
+        result: JSON.stringify({
+          success: true,
+          message: "No security findings detected.",
+          review: {
+            run_id: "run-alias",
+            focus: "Security",
+            comments: [],
+            summary: "No security findings detected.",
+            validated: true,
+            warnings: [],
+            files_scanned: 1,
+            mode: { type: "local" },
+            suppressed_count: 0,
+            snr_percent: 100,
+            user_visible: true,
+          },
+          findings: [],
+        }),
+        status: "completed",
+      },
+    ]);
+
+    expect(cards[0]?.summary).toBe("Security review");
+    expect(cards[0]?.detail).toBe("Security, local, run-alias");
   });
 
   it("formats delegate_exploration with parsed structured sections", () => {

@@ -13,6 +13,8 @@ const comment: ReviewComment = {
   line_end: 12,
   severity: "High",
   category: "injection",
+  focus: "Security",
+  focus_subcategory: null,
   cwe_id: "CWE-78",
   cwe_name: "OS Command Injection",
   title: "Unsanitized command",
@@ -26,6 +28,7 @@ const comment: ReviewComment = {
 
 const review: ReviewResult = {
   run_id: "run-1",
+  focus: "Security",
   comments: [comment],
   summary: "Found one issue.",
   validated: true,
@@ -55,6 +58,7 @@ describe("review prompt builders", () => {
     expect(prompt).toContain("Suggested fix:");
     expect(prompt).toContain("Verification plan:");
     expect(prompt).not.toContain("run_security_review");
+    expect(prompt).toContain("Focus: Security");
     expect(prompt).not.toContain("record_review_outcome");
     expect(prompt).not.toContain("SNR");
     expect(prompt).not.toContain("suppression");
@@ -73,7 +77,7 @@ describe("review prompt builders", () => {
     expect(prompt.startsWith("Start with file: src/main.rs")).toBe(true);
     expect(prompt).toContain("Review metadata:");
     expect(prompt).toContain("Do not call `record_review_outcome`");
-    expect(prompt).toContain("rerun `run_security_review` in `local` mode");
+    expect(prompt).toContain("rerun `run_review` with focus `Security` in `local` mode");
   });
 
   it("does not suggest automatic security review reruns for full scans", () => {
@@ -83,6 +87,7 @@ describe("review prompt builders", () => {
       index: 1,
     });
 
+    expect(prompt).not.toContain("run_review");
     expect(prompt).not.toContain("run_security_review");
   });
 

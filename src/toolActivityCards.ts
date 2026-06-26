@@ -19,6 +19,7 @@ const TOOL_LABELS: Record<string, string> = {
   corpus_query: "Corpus query",
   corpus_neighbors: "Corpus neighbors",
   write_harness_file: "Update plan",
+  run_review: "Code review",
   run_security_review: "Security review",
   record_review_outcome: "Record review outcome",
   source_edit: "Edit file",
@@ -532,7 +533,7 @@ function severityBadge(comment: Partial<ReviewComment>) {
   return compactList([comment.severity, comment.signal_tier, comment.category]);
 }
 
-function runSecurityReviewCard(activity: ToolCallActivity): Partial<ActionCard> {
+function runReviewCard(activity: ToolCallActivity): Partial<ActionCard> {
   const args = parsedArguments(activity);
   const result = resultRecord(activity);
   const review = asRecord(result?.review) as ReviewResult | undefined;
@@ -567,6 +568,7 @@ function runSecurityReviewCard(activity: ToolCallActivity): Partial<ActionCard> 
     : rows.length || undefined;
   const sections = [
     fieldsSection("Review", [
+      field("Focus", review?.focus ?? args?.focus),
       field("Mode", reviewModeLabel(review?.mode) ?? args?.mode),
       field("Run", review?.run_id),
       field("Findings", totalFindings),
@@ -583,7 +585,7 @@ function runSecurityReviewCard(activity: ToolCallActivity): Partial<ActionCard> 
   ].filter(isRenderableSection);
 
   return {
-    detail: compactList([args?.mode, review?.run_id]),
+    detail: compactList([review?.focus ?? args?.focus, args?.mode, review?.run_id]),
     sections,
   };
 }
@@ -708,6 +710,7 @@ const TOOL_CARD_FORMATTERS: Record<string, (activity: ToolCallActivity) => Parti
   corpus_neighbors: corpusNeighborsCard,
   write_harness_file: writeHarnessFileCard,
   source_edit: sourceEditCard,
-  run_security_review: runSecurityReviewCard,
+  run_review: runReviewCard,
+  run_security_review: runReviewCard,
   record_review_outcome: recordReviewOutcomeCard,
 };
