@@ -261,7 +261,7 @@ impl SessionStore {
         let mut stmt = conn.prepare(
             "SELECT workspace_id, COUNT(*)
              FROM sessions
-             WHERE workspace_id IS NOT NULL AND status != 'draft'
+             WHERE workspace_id IS NOT NULL AND workspace_id != '' AND status != 'draft'
              GROUP BY workspace_id",
         )?;
         let rows = stmt.query_map(params![], |row| {
@@ -491,11 +491,15 @@ mod tests {
         let unscoped = store
             .create_session("Unscoped", "openai", "gpt-4", None)
             .unwrap();
+        let empty_ws = store
+            .create_session("EmptyWs", "openai", "gpt-4", Some(""))
+            .unwrap();
 
         store.update_status(&active.id, "active").unwrap();
         store.update_status(&error.id, "error").unwrap();
         store.update_status(&other.id, "active").unwrap();
         store.update_status(&unscoped.id, "active").unwrap();
+        store.update_status(&empty_ws.id, "active").unwrap();
 
         let counts = store.workspace_session_counts().unwrap();
 
