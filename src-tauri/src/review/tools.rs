@@ -177,8 +177,8 @@ fn review_tool_parameters(include_focus: bool) -> serde_json::Value {
             "focus".to_string(),
             json!({
                 "type": "string",
-                "enum": ["Security", "BugHunt", "Architecture", "Performance", "Style"],
-                "description": "Review focus for this single invocation. Defaults to Security."
+                "enum": ["Security"],
+                "description": "Review focus for this single invocation. Phase 1 accepts only Security."
             }),
         );
     }
@@ -199,6 +199,19 @@ async fn run_review_tool(
     pr_number: Option<u64>,
     focus: ReviewFocus,
 ) -> Result<RunReviewOutput, WorkspaceToolError> {
+    if focus != ReviewFocus::Security {
+        return Ok(RunReviewOutput {
+            success: false,
+            message: format!(
+                "{} review focus is not available yet. Use Security for now.",
+                focus
+            ),
+            reason: Some("focus_not_available".to_string()),
+            review: None,
+            findings: Vec::new(),
+        });
+    }
+
     let config = ReviewConfig {
         provider,
         model,
@@ -420,6 +433,33 @@ mod tests {
         let alias_parameters = alias.definition(String::new()).await.parameters;
 
         assert!(canonical_parameters.to_string().contains("focus"));
+        assert_eq!(
+            canonical_parameters["properties"]["focus"]["enum"],
+            json!(["Security"])
+        );
         assert!(!alias_parameters.to_string().contains("focus"));
+    }
+
+    #[tokio::test]
+    async fn run_review_tool_rejects_non_security_focus_before_dispatch() {
+        let output = run_review_tool(
+            PathBuf::from("/workspace"),
+            "openai".to_string(),
+            "gpt-test".to_string(),
+            "sk-secret-value".to_string(),
+            "local".to_string(),
+            None,
+            ReviewFocus::BugHunt,
+        )
+        .await
+        .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("focus_not_available"));
+        assert!(output
+            .message
+            .contains("BugHunt review focus is not available"));
+        assert!(output.review.is_none());
+        assert!(output.findings.is_empty());
     }
 }

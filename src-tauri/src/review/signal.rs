@@ -194,7 +194,7 @@ pub fn classify_comment(comment: &ReviewComment, rules: &SignalRules) -> SignalT
                 .unwrap_or(false)
     };
     let category_in = |base: &[String], focused: fn(&FocusSignalRules) -> &[String]| {
-        category_matches(&category, focus_subcategory.as_deref(), base)
+        category_matches(&category, None, base)
             || focus_rules
                 .map(|rules| {
                     category_matches(&category, focus_subcategory.as_deref(), focused(rules))
@@ -501,6 +501,23 @@ mod tests {
 
         finding.focus = ReviewFocus::Security;
         assert_eq!(classify_comment(&finding, &rules), SignalTier::Unclassified);
+    }
+
+    #[test]
+    fn focus_subcategory_does_not_match_global_categories() {
+        let mut finding = comment(
+            Severity::Medium,
+            None,
+            "correctness",
+            SignalTier::Unclassified,
+        );
+        finding.focus = ReviewFocus::BugHunt;
+        finding.focus_subcategory = Some("authorization".to_string());
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Unclassified
+        );
     }
 
     #[test]

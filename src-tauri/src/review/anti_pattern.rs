@@ -109,11 +109,13 @@ impl AntiPatternStore {
         title: &str,
     ) -> bool {
         let hash = rejection_hash(focus, file, line_start, line_end, title);
-        self.rejected_hashes.contains(&hash)
-            || self
-                .rejected_findings
-                .iter()
-                .any(|record| record.hash == hash)
+        if self.contains_rejection_hash(&hash) {
+            return true;
+        }
+
+        focus == ReviewFocus::Security
+            && self
+                .contains_rejection_hash(&legacy_rejection_hash(file, line_start, line_end, title))
     }
 
     pub fn remove_rejection(
@@ -125,10 +127,16 @@ impl AntiPatternStore {
         title: &str,
     ) -> bool {
         let hash = rejection_hash(focus, file, line_start, line_end, title);
-        self.rejected_hashes.remove(&hash);
+        let mut removed = self.rejected_hashes.remove(&hash);
+        let legacy_hash = (focus == ReviewFocus::Security)
+            .then(|| legacy_rejection_hash(file, line_start, line_end, title));
+        if let Some(hash) = &legacy_hash {
+            removed |= self.rejected_hashes.remove(hash);
+        }
         let before = self.rejected_findings.len();
-        self.rejected_findings.retain(|record| record.hash != hash);
-        before != self.rejected_findings.len()
+        self.rejected_findings
+            .retain(|record| record.hash != hash && legacy_hash.as_ref() != Some(&record.hash));
+        removed || before != self.rejected_findings.len()
     }
 
     fn normalize_loaded(&mut self) {
@@ -152,6 +160,14 @@ impl AntiPatternStore {
             }
         }
     }
+
+    fn contains_rejection_hash(&self, hash: &str) -> bool {
+        self.rejected_hashes.contains(hash)
+            || self
+                .rejected_findings
+                .iter()
+                .any(|record| record.hash == hash)
+    }
 }
 
 /// Computes a deterministic hash from `(focus, file, line_start, line_end, title)`.
@@ -171,6 +187,16 @@ fn rejection_hash(
     let mut hasher = Sha256::new();
     hasher.update(b"gospel-review-rejection-v2");
     update_length_prefixed(&mut hasher, &focus.to_string());
+    update_length_prefixed(&mut hasher, &normalize_file_anchor(file));
+    hasher.update((line_start as u64).to_le_bytes());
+    hasher.update((line_end as u64).to_le_bytes());
+    update_length_prefixed(&mut hasher, title);
+    hex_digest(hasher.finalize().as_slice())
+}
+
+fn legacy_rejection_hash(file: &str, line_start: usize, line_end: usize, title: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"gospel-review-rejection-v1");
     update_length_prefixed(&mut hasher, &normalize_file_anchor(file));
     hasher.update((line_start as u64).to_le_bytes());
     hasher.update((line_end as u64).to_le_bytes());
@@ -289,6 +315,39 @@ mod tests {
             ),
             "0c38b235d7f5d136a2558a7e8c02fb83cc92c235adeff231729637560d471003"
         );
+    }
+
+    #[test]
+    fn legacy_security_rejection_hashes_still_match_security_findings() {
+        let mut store = AntiPatternStore::default();
+        let legacy_hash = legacy_rejection_hash("src/main.rs", 10, 12, "Unsanitized command");
+        store.rejected_hashes.insert(legacy_hash.clone());
+        store.normalize_loaded();
+
+        assert!(store.is_rejected(
+            ReviewFocus::Security,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command"
+        ));
+        assert!(!store.is_rejected(
+            ReviewFocus::BugHunt,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command"
+        ));
+
+        assert!(store.remove_rejection(
+            ReviewFocus::Security,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command"
+        ));
+        assert!(!store.rejected_hashes.contains(&legacy_hash));
+        assert!(store.rejected_findings.is_empty());
     }
 
     #[test]

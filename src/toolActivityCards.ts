@@ -537,6 +537,10 @@ function runReviewCard(activity: ToolCallActivity): Partial<ActionCard> {
   const args = parsedArguments(activity);
   const result = resultRecord(activity);
   const review = asRecord(result?.review) as ReviewResult | undefined;
+  const focus =
+    review?.focus ??
+    args?.focus ??
+    (activity.name === "run_security_review" ? "Security" : undefined);
   const findings = asArray(result?.findings);
   const comments = review?.comments ?? [];
   const rows = findings.length > 0
@@ -568,7 +572,7 @@ function runReviewCard(activity: ToolCallActivity): Partial<ActionCard> {
     : rows.length || undefined;
   const sections = [
     fieldsSection("Review", [
-      field("Focus", review?.focus ?? args?.focus),
+      field("Focus", focus),
       field("Mode", reviewModeLabel(review?.mode) ?? args?.mode),
       field("Run", review?.run_id),
       field("Findings", totalFindings),
@@ -585,7 +589,7 @@ function runReviewCard(activity: ToolCallActivity): Partial<ActionCard> {
   ].filter(isRenderableSection);
 
   return {
-    detail: compactList([review?.focus ?? args?.focus, args?.mode, review?.run_id]),
+    detail: compactList([focus, args?.mode, review?.run_id]),
     sections,
   };
 }

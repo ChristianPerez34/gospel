@@ -133,6 +133,11 @@ fn record_acceptance(
         .find(|record| record.run_id == run_id && record.comment_id == comment.comment_id)
     {
         existing.recorded_at = recorded_at;
+        existing.focus = comment.focus;
+        existing.file = comment.file.clone();
+        existing.line_start = comment.line_start;
+        existing.line_end = comment.line_end;
+        existing.title = comment.title.clone();
     } else {
         store.accepted_findings.push(ReviewOutcomeRecord {
             run_id: run_id.to_string(),
@@ -336,6 +341,52 @@ mod tests {
             fs::read_to_string(dir.path().join(".gospel/accepted_findings.json")).unwrap();
         assert!(accepted.contains("rc_abc"));
         assert!(accepted.contains("recorded_at"));
+    }
+
+    #[test]
+    fn refreshed_acceptance_updates_focus_and_anchor_fields() {
+        let dir = tempdir().unwrap();
+        let mut updated_comment = comment();
+        updated_comment.focus = ReviewFocus::BugHunt;
+        updated_comment.file = "src/lib.rs".to_string();
+        updated_comment.line_start = 20;
+        updated_comment.line_end = 22;
+        updated_comment.title = "Incorrect state transition".to_string();
+        let run = ReviewRunRecord {
+            run_id: "run-1".to_string(),
+            timestamp: Utc::now(),
+            focus: ReviewFocus::BugHunt,
+            mode: ReviewMode::Local,
+            comments: vec![updated_comment],
+        };
+        save_review_run(dir.path(), &run).unwrap();
+        save_accepted_findings(
+            dir.path(),
+            &AcceptedFindingsStore {
+                accepted_findings: vec![ReviewOutcomeRecord {
+                    run_id: "run-1".to_string(),
+                    comment_id: "rc_abc".to_string(),
+                    outcome: ReviewOutcome::Accepted,
+                    recorded_at: Utc::now(),
+                    focus: ReviewFocus::Security,
+                    file: "src/main.rs".to_string(),
+                    line_start: 10,
+                    line_end: 12,
+                    title: "Unsanitized command".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+
+        record_review_outcome(dir.path(), "run-1", "rc_abc", ReviewOutcome::Accepted).unwrap();
+
+        let accepted = load_accepted_findings(dir.path()).unwrap();
+        let record = &accepted.accepted_findings[0];
+        assert_eq!(record.focus, ReviewFocus::BugHunt);
+        assert_eq!(record.file, "src/lib.rs");
+        assert_eq!(record.line_start, 20);
+        assert_eq!(record.line_end, 22);
+        assert_eq!(record.title, "Incorrect state transition");
     }
 
     #[test]

@@ -208,6 +208,26 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(cards[0]?.detail).toBe("Security, local, run-alias");
   });
 
+  it("keeps Security focus on pending run_security_review alias cards", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "tool-alias-pending",
+        name: "run_security_review",
+        arguments: { mode: "local" },
+        status: "calling",
+      },
+    ]);
+
+    expect(cards[0]?.summary).toBe("Security review");
+    expect(cards[0]?.detail).toBe("Security, local");
+    const reviewFields = cards[0]?.sections?.find(
+      (section) => section.type === "fields" && section.title === "Review",
+    );
+    expect(reviewFields).toMatchObject({
+      fields: expect.arrayContaining([{ label: "Focus", value: "Security" }]),
+    });
+  });
+
   it("formats delegate_exploration with parsed structured sections", () => {
     const cards = toolActivitiesToActionCards([
       {

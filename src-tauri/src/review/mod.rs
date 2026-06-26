@@ -483,7 +483,8 @@ async fn run_full_scan_review(
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
-                let parsed = parse_agent_review_output(&output, "Detector");
+                let mut parsed = parse_agent_review_output(&output, "Detector");
+                stamp_parsed_comments_focus(&mut parsed, focus);
                 warnings.extend(parsed.warnings);
                 candidates.extend(filter_rejected_comments(
                     parsed.comments,
@@ -519,6 +520,7 @@ async fn run_full_scan_review(
         workspace,
         &candidates,
         &anti_pattern_store,
+        focus,
     )
     .await?;
     warnings.extend(validator_warnings);
@@ -604,7 +606,8 @@ async fn run_diff_review(
         let prompt = detector::build_diff_prompt(&review_context, chunk);
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
-                let parsed = parse_agent_review_output(&output, "Detector");
+                let mut parsed = parse_agent_review_output(&output, "Detector");
+                stamp_parsed_comments_focus(&mut parsed, focus);
                 warnings.extend(parsed.warnings);
                 candidates.extend(filter_rejected_comments(
                     parsed.comments,
@@ -640,6 +643,7 @@ async fn run_diff_review(
         workspace,
         &candidates,
         &anti_pattern_store,
+        focus,
     )
     .await?;
     warnings.extend(validator_warnings);
@@ -663,6 +667,7 @@ async fn validate_candidates(
     workspace: &WorkspaceToolContext,
     candidates: &[ReviewComment],
     anti_pattern_store: &anti_pattern::AntiPatternStore,
+    focus: ReviewFocus,
 ) -> Result<(Vec<ReviewComment>, bool, Option<String>, Vec<String>), String> {
     if candidates.is_empty() {
         return Ok((
@@ -677,7 +682,8 @@ async fn validate_candidates(
         .map_err(|e| format!("Failed to build validator prompt: {}", e))?;
     match validator::run_validator(provider, model, api_key, workspace, &prompt).await {
         Ok(output) => {
-            let parsed = parse_agent_review_output(&output, "Validator");
+            let mut parsed = parse_agent_review_output(&output, "Validator");
+            stamp_parsed_comments_focus(&mut parsed, focus);
             Ok(review_validator_parse_result(
                 parsed,
                 candidates,
@@ -696,6 +702,12 @@ async fn validate_candidates(
             None,
             vec![format!("Validator agent failed: {}", error)],
         )),
+    }
+}
+
+fn stamp_parsed_comments_focus(parsed: &mut AgentParseResult, focus: ReviewFocus) {
+    for comment in &mut parsed.comments {
+        comment.focus = focus;
     }
 }
 
@@ -1465,6 +1477,27 @@ Binary files a/icon.png and b/icon.png differ
         assert!(validated);
         assert!(summary.is_none());
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn parsed_comments_are_stamped_before_rejection_filtering() {
+        let raw = sample_comment().to_string();
+        let mut parsed = parse_agent_review_output(&raw, "Detector");
+        let comment = parsed.comments[0].clone();
+        let mut store = anti_pattern::AntiPatternStore::default();
+        store.add_rejection(
+            ReviewFocus::Security,
+            &comment.file,
+            comment.line_start,
+            comment.line_end,
+            &comment.title,
+        );
+
+        stamp_parsed_comments_focus(&mut parsed, ReviewFocus::BugHunt);
+        let comments = filter_rejected_comments(parsed.comments, &store);
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].focus, ReviewFocus::BugHunt);
     }
 
     #[test]
