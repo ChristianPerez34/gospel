@@ -21,6 +21,7 @@ pub enum AppConfigError {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
     pub name: String,
@@ -38,33 +39,42 @@ pub struct AppConfigState {
     pub init_warning: Option<String>,
 }
 
+const APP_CONFIG_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS provider_settings (
+    provider_id TEXT PRIMARY KEY NOT NULL,
+    visible INTEGER NOT NULL CHECK (visible IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE,
+    session_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS app_config (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);";
+
 impl AppConfigStore {
     pub fn new() -> Result<Self, AppConfigError> {
         let dir = app_data_dir();
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("app-config.sqlite3"))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS provider_settings (
-                provider_id TEXT PRIMARY KEY NOT NULL,
-                visible INTEGER NOT NULL CHECK (visible IN (0, 1)),
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS workspaces (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                path TEXT NOT NULL UNIQUE,
-                session_count INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS app_config (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );",
-        )?;
+        Self::from_connection(conn)
+    }
+
+    fn from_connection(conn: Connection) -> Result<Self, AppConfigError> {
+        conn.execute_batch(APP_CONFIG_SCHEMA)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_memory_for_test() -> Result<Self, AppConfigError> {
+        Self::from_connection(Connection::open_in_memory()?)
     }
 
     pub fn provider_visibility(&self, provider: &str) -> Result<bool, AppConfigError> {
@@ -298,7 +308,7 @@ mod tests {
 
     #[test]
     fn can_get_and_set_generic_config_values() {
-        let store = AppConfigStore::new().unwrap();
+        let store = AppConfigStore::in_memory_for_test().unwrap();
         store
             .set_config_value("delegate_provider", "openai")
             .unwrap();
@@ -310,11 +320,25 @@ mod tests {
             Some("openai")
         );
         assert_eq!(
-            store
-                .get_config_value("does_not_exist")
-                .unwrap()
-                .as_deref(),
+            store.get_config_value("does_not_exist").unwrap().as_deref(),
             None
         );
+    }
+
+    #[test]
+    fn workspace_serializes_with_frontend_field_names() {
+        let workspace = Workspace {
+            id: "ws1".to_string(),
+            name: "gospel".to_string(),
+            path: "/tmp/gospel".to_string(),
+            session_count: 3,
+            created_at: "2026-06-26 12:00:00".to_string(),
+        };
+
+        let value = serde_json::to_value(workspace).unwrap();
+
+        assert_eq!(value["sessionCount"], 3);
+        assert_eq!(value["createdAt"], "2026-06-26 12:00:00");
+        assert!(value.get("session_count").is_none());
     }
 }

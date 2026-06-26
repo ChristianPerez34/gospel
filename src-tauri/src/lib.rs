@@ -1195,15 +1195,48 @@ async fn pick_workspace_directory(app: tauri::AppHandle) -> Result<Option<String
     }
 }
 
-#[tauri::command]
-fn list_workspaces(app_config: tauri::State<'_, AppConfigState>) -> Result<Vec<Workspace>, String> {
+fn hydrate_workspace_session_counts(
+    workspaces: &mut [Workspace],
+    session_store: &SessionStoreState,
+) -> Result<(), String> {
+    let Some(store) = &session_store.store else {
+        for workspace in workspaces {
+            workspace.session_count = 0;
+        }
+        return Ok(());
+    };
+    let counts = store
+        .workspace_session_counts()
+        .map_err(|e| e.to_string())?;
+    for workspace in workspaces {
+        workspace.session_count = *counts.get(&workspace.id).unwrap_or(&0);
+    }
+    Ok(())
+}
+
+fn list_workspaces_response(
+    app_config: &AppConfigState,
+    session_store: &SessionStoreState,
+) -> Result<Vec<Workspace>, String> {
     match &app_config.store {
-        Some(store) => store.list_workspaces().map_err(|e| e.to_string()),
+        Some(store) => {
+            let mut workspaces = store.list_workspaces().map_err(|e| e.to_string())?;
+            hydrate_workspace_session_counts(&mut workspaces, session_store)?;
+            Ok(workspaces)
+        }
         None => Err(app_config
             .init_warning
             .clone()
             .unwrap_or_else(|| "App config store is unavailable".to_string())),
     }
+}
+
+#[tauri::command]
+fn list_workspaces(
+    app_config: tauri::State<'_, AppConfigState>,
+    session_store: tauri::State<'_, SessionStoreState>,
+) -> Result<Vec<Workspace>, String> {
+    list_workspaces_response(app_config.inner(), session_store.inner())
 }
 
 #[tauri::command]
@@ -1416,17 +1449,31 @@ fn set_active_workspace(
     }
 }
 
-#[tauri::command]
-fn get_active_workspace(
-    app_config: tauri::State<'_, AppConfigState>,
+fn get_active_workspace_response(
+    app_config: &AppConfigState,
+    session_store: &SessionStoreState,
 ) -> Result<Option<Workspace>, String> {
     match &app_config.store {
-        Some(store) => store.get_active_workspace().map_err(|e| e.to_string()),
+        Some(store) => {
+            let mut workspace = store.get_active_workspace().map_err(|e| e.to_string())?;
+            if let Some(workspace) = workspace.as_mut() {
+                hydrate_workspace_session_counts(std::slice::from_mut(workspace), session_store)?;
+            }
+            Ok(workspace)
+        }
         None => Err(app_config
             .init_warning
             .clone()
             .unwrap_or_else(|| "App config store is unavailable".to_string())),
     }
+}
+
+#[tauri::command]
+fn get_active_workspace(
+    app_config: tauri::State<'_, AppConfigState>,
+    session_store: tauri::State<'_, SessionStoreState>,
+) -> Result<Option<Workspace>, String> {
+    get_active_workspace_response(app_config.inner(), session_store.inner())
 }
 
 #[tauri::command]
@@ -2007,5 +2054,98 @@ mod review_rejection_tests {
             second.line_end,
             &second.title
         ));
+    }
+}
+
+#[cfg(test)]
+mod workspace_response_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn list_and_active_workspace_responses_use_derived_session_counts() {
+        let root = tempdir().unwrap();
+        let first_path = root.path().join("first");
+        let second_path = root.path().join("second");
+        std::fs::create_dir_all(&first_path).unwrap();
+        std::fs::create_dir_all(&second_path).unwrap();
+
+        let app_store = crate::app_config::AppConfigStore::in_memory_for_test().unwrap();
+        let first_workspace = app_store
+            .add_workspace(first_path.to_str().unwrap())
+            .unwrap();
+        let second_workspace = app_store
+            .add_workspace(second_path.to_str().unwrap())
+            .unwrap();
+        app_store
+            .set_active_workspace(&first_workspace.id)
+            .expect("active workspace can be set");
+
+        let session_store = SessionStore::in_memory_for_test().unwrap();
+        let active = session_store
+            .create_session("Active", "openai", "gpt-4", Some(&first_workspace.id))
+            .unwrap();
+        let errored = session_store
+            .create_session("Errored", "openai", "gpt-4", Some(&first_workspace.id))
+            .unwrap();
+        let draft = session_store
+            .create_session("Draft", "openai", "gpt-4", Some(&first_workspace.id))
+            .unwrap();
+        let unscoped = session_store
+            .create_session("Unscoped", "openai", "gpt-4", None)
+            .unwrap();
+
+        session_store.update_status(&active.id, "active").unwrap();
+        session_store.update_status(&errored.id, "error").unwrap();
+        session_store.update_status(&unscoped.id, "active").unwrap();
+
+        let app_state = AppConfigState {
+            store: Some(app_store),
+            init_warning: None,
+        };
+        let session_state = SessionStoreState {
+            store: Some(session_store),
+            init_warning: None,
+        };
+
+        let workspaces = list_workspaces_response(&app_state, &session_state).unwrap();
+        let first = workspaces
+            .iter()
+            .find(|workspace| workspace.id == first_workspace.id)
+            .unwrap();
+        let second = workspaces
+            .iter()
+            .find(|workspace| workspace.id == second_workspace.id)
+            .unwrap();
+
+        assert_eq!(first.session_count, 2);
+        assert_eq!(second.session_count, 0);
+
+        let active_workspace = get_active_workspace_response(&app_state, &session_state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(active_workspace.id, first_workspace.id);
+        assert_eq!(active_workspace.session_count, 2);
+        assert_eq!(
+            session_state
+                .store
+                .as_ref()
+                .unwrap()
+                .get_session(&draft.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "draft"
+        );
+
+        let missing_session_state = SessionStoreState {
+            store: None,
+            init_warning: None,
+        };
+        let fallback_workspaces =
+            list_workspaces_response(&app_state, &missing_session_state).unwrap();
+        assert!(fallback_workspaces
+            .iter()
+            .all(|workspace| workspace.session_count == 0));
     }
 }
