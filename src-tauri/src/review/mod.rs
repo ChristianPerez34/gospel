@@ -1501,6 +1501,29 @@ Binary files a/icon.png and b/icon.png differ
     }
 
     #[test]
+    fn parsed_comments_default_focus_is_stamped_before_rejection_filtering() {
+        let raw = format!(
+            "{{\"summary\":\"one\",\"comments\":[{}],\"warnings\":[]}}",
+            sample_comment()
+        );
+        let mut store = anti_pattern::AntiPatternStore::default();
+        store.add_rejection(
+            ReviewFocus::Security,
+            "src/main.rs",
+            10,
+            12,
+            "Unsanitized command",
+        );
+
+        let parsed = parse_agent_review_output(&raw, "Detector");
+        assert_eq!(parsed.comments.len(), 1);
+        assert_eq!(parsed.comments[0].focus, ReviewFocus::Security);
+        let comments = filter_rejected_comments(parsed.comments, &store);
+
+        assert!(comments.is_empty(), "Security-stamped comment should be filtered by Security rejection");
+    }
+
+    #[test]
     fn parses_single_review_comment_object() {
         let parsed = parse_agent_review_output(&sample_comment().to_string(), "Detector");
 
