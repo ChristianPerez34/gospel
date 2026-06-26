@@ -56,12 +56,16 @@ use skills::SkillSummary;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use tauri::{Emitter, Manager};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 use trace::TraceState;
+use workspace_tools::{
+    ExternalPathApproval, ExternalPathApprovalFuture, ExternalPathApprovalRequest, PathKind,
+};
 
 static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 static REJECTION_STORE_LOCK: Lazy<tokio::sync::Mutex<()>> =
@@ -77,6 +81,49 @@ impl SkillCache {
         Self {
             loader: skills::SkillLoader::new(),
         }
+    }
+}
+
+#[derive(Clone)]
+struct TauriExternalPathApproval {
+    app: tauri::AppHandle,
+}
+
+impl ExternalPathApproval for TauriExternalPathApproval {
+    fn request_approval<'a>(
+        &'a self,
+        request: ExternalPathApprovalRequest,
+    ) -> ExternalPathApprovalFuture<'a> {
+        let app = self.app.clone();
+
+        Box::pin(async move {
+            let kind_label = match request.kind {
+                PathKind::File => "file",
+                PathKind::Directory => "directory",
+                PathKind::Symlink | PathKind::Other => "path",
+            };
+            let message = format!(
+                "The agent wants to use `{}` on this external {} outside the active workspace:\n\n{}\n\nAllow this one-time access?",
+                request.tool_name, kind_label, request.path
+            );
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+
+            app.dialog()
+                .message(message)
+                .title("Allow external file access?")
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Allow".to_string(),
+                    "Deny".to_string(),
+                ))
+                .show(move |approved| {
+                    let _ = sender.send(approved);
+                });
+
+            matches!(
+                tokio::time::timeout(Duration::from_secs(60), receiver).await,
+                Ok(Ok(true))
+            )
+        })
     }
 }
 
@@ -787,6 +834,11 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
     ) -> session_turn::SessionTurnFuture<'b, Result<llm::StreamCompletionResult, LlmError>> {
         let mut on_event = on_event;
         Box::pin(async move {
+            let external_path_approval: Arc<dyn ExternalPathApproval> =
+                Arc::new(TauriExternalPathApproval {
+                    app: self.app.clone(),
+                });
+
             llm::stream_completion(
                 request.provider,
                 request.prompt,
@@ -796,6 +848,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.delegate_model,
                 request.delegate_api_key,
                 request.workspace,
+                Some(external_path_approval),
                 request.chat_history,
                 request.matched_skills_section,
                 request.invoked_skill_section,

@@ -190,10 +190,11 @@ use crate::review::tools::{
     create_record_review_outcome_tool, create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
 };
 use crate::workspace_tools::{
-    build_base_workspace_tools, create_context_search_tool, create_find_files_tool,
-    create_read_file_tool, create_search_code_tool, create_source_edit_tool,
-    create_write_harness_file_tool, truncate_text_bytes, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
-    workspace_root_inventory, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    build_base_workspace_tools_with_external_approval, create_context_search_tool,
+    create_find_files_tool, create_read_file_tool, create_search_code_tool,
+    create_source_edit_tool, create_write_harness_file_tool, truncate_text_bytes,
+    workspace_root_inventory, ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
+    WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
 const AGENT_MAX_TURNS: usize = 50;
@@ -779,6 +780,7 @@ pub async fn stream_completion<F>(
     delegate_model: &str,
     delegate_api_key: &str,
     workspace: Option<WorkspaceToolContext>,
+    external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
     chat_history: Vec<Message>,
     matched_skills_section: Option<String>,
     invoked_skill_section: Option<String>,
@@ -810,8 +812,9 @@ where
             };
             let agent = if let Some(workspace_context) = workspace.as_ref() {
                 let mut b = builder
-                    .tools(build_base_workspace_tools(
+                    .tools(build_base_workspace_tools_with_external_approval(
                         workspace_context.workspace_path.clone(),
+                        external_path_approval.clone(),
                     ))
                     .tool(create_source_edit_tool(
                         workspace_context.workspace_path.clone(),
@@ -1097,6 +1100,7 @@ mod tests {
             "openai",
             "gpt-4o-mini",
             "",
+            None,
             None,
             vec![],
             None,

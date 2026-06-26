@@ -7,8 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
 use std::fs;
+use std::future::Future;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
 use thiserror::Error;
 
 pub const WORKSPACE_TOOLS_SYSTEM_PROMPT: &str = r#"
@@ -159,7 +162,7 @@ enum AccessFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PathKind {
+pub(crate) enum PathKind {
     File,
     Directory,
     Symlink,
@@ -180,6 +183,32 @@ struct ResolvedPath {
 struct WorkspaceAccess {
     root: PathBuf,
     canonical_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalPathApprovalRequest {
+    pub tool_name: &'static str,
+    pub path: String,
+    pub kind: PathKind,
+}
+
+pub(crate) type ExternalPathApprovalFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+
+pub(crate) trait ExternalPathApproval: Send + Sync {
+    fn request_approval<'a>(
+        &'a self,
+        request: ExternalPathApprovalRequest,
+    ) -> ExternalPathApprovalFuture<'a>;
+}
+
+#[derive(Debug, Clone)]
+struct ExternalResolvedPath {
+    absolute_path: PathBuf,
+    display_path: String,
+    exists: bool,
+    is_dir: bool,
+    is_file: bool,
+    is_symlink: bool,
 }
 
 impl WorkspaceAccess {
@@ -283,6 +312,95 @@ impl WorkspaceAccess {
     }
 }
 
+fn requested_path(input: Option<&str>, access: &WorkspaceAccess) -> PathBuf {
+    let trimmed = input.map(str::trim).filter(|value| !value.is_empty());
+    trimmed
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                access.root.join(path)
+            }
+        })
+        .unwrap_or_else(|| access.root.clone())
+}
+
+fn resolve_external_path(
+    input: Option<&str>,
+    access: &WorkspaceAccess,
+) -> Result<Option<ExternalResolvedPath>, AccessFailure> {
+    let normalized = normalize_path(&requested_path(input, access));
+    let display_path = normalized.display().to_string();
+
+    if normalized.exists() {
+        let symlink_metadata = fs::symlink_metadata(&normalized)
+            .map_err(|e| AccessFailure::Io(format!("Failed to inspect path: {}", e)))?;
+        let metadata = fs::metadata(&normalized)
+            .map_err(|e| AccessFailure::Io(format!("Failed to inspect path: {}", e)))?;
+        let canonical = fs::canonicalize(&normalized)
+            .map_err(|e| AccessFailure::Io(format!("Failed to resolve path: {}", e)))?;
+
+        if normalized.starts_with(&access.root) {
+            return Ok(None);
+        }
+
+        if canonical.starts_with(&access.canonical_root) {
+            return Ok(None);
+        }
+
+        return Ok(Some(ExternalResolvedPath {
+            absolute_path: canonical,
+            display_path,
+            exists: true,
+            is_dir: metadata.is_dir(),
+            is_file: metadata.is_file(),
+            is_symlink: symlink_metadata.file_type().is_symlink(),
+        }));
+    }
+
+    let mut ancestor = normalized.as_path();
+    while !ancestor.exists() {
+        ancestor = ancestor.parent().ok_or_else(|| {
+            AccessFailure::NotFound("Path does not exist in the active workspace.".to_string())
+        })?;
+    }
+
+    let canonical_ancestor = fs::canonicalize(ancestor)
+        .map_err(|e| AccessFailure::Io(format!("Failed to resolve path ancestor: {}", e)))?;
+    if canonical_ancestor.starts_with(&access.canonical_root) {
+        return Ok(None);
+    }
+
+    Ok(Some(ExternalResolvedPath {
+        absolute_path: normalized,
+        display_path,
+        exists: false,
+        is_dir: false,
+        is_file: false,
+        is_symlink: false,
+    }))
+}
+
+async fn request_external_path_approval(
+    approval: Option<&Arc<dyn ExternalPathApproval>>,
+    tool_name: &'static str,
+    path: &str,
+    kind: PathKind,
+) -> bool {
+    let Some(approval) = approval else {
+        return false;
+    };
+
+    approval
+        .request_approval(ExternalPathApprovalRequest {
+            tool_name,
+            path: path.to_string(),
+            kind,
+        })
+        .await
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ReadFileArgs {
     path: String,
@@ -290,9 +408,23 @@ pub struct ReadFileArgs {
     end_line: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ReadFileTool {
     workspace_root: PathBuf,
+    #[serde(skip)]
+    external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
+}
+
+impl std::fmt::Debug for ReadFileTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadFileTool")
+            .field("workspace_root", &self.workspace_root)
+            .field(
+                "external_path_approval",
+                &self.external_path_approval.as_ref().map(|_| "<configured>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -301,12 +433,52 @@ pub struct ReadFileOutput {
     message: String,
     reason: Option<String>,
     path: Option<String>,
+    needs_approval: Option<bool>,
     size_bytes: Option<u64>,
     start_line: Option<usize>,
     end_line: Option<usize>,
     total_lines: Option<usize>,
     truncated: bool,
     content: Option<String>,
+}
+
+struct ReadFileTarget {
+    absolute_path: PathBuf,
+    safety_path: PathBuf,
+    display_path: String,
+    exists: bool,
+    is_file: bool,
+    is_symlink: bool,
+    external: bool,
+}
+
+impl From<ResolvedPath> for ReadFileTarget {
+    fn from(resolved: ResolvedPath) -> Self {
+        let display_path = display_rel_path(&resolved.relative_path);
+        Self {
+            absolute_path: resolved.absolute_path,
+            safety_path: resolved.relative_path,
+            display_path,
+            exists: resolved.exists,
+            is_file: resolved.is_file,
+            is_symlink: resolved.is_symlink,
+            external: false,
+        }
+    }
+}
+
+impl From<ExternalResolvedPath> for ReadFileTarget {
+    fn from(resolved: ExternalResolvedPath) -> Self {
+        Self {
+            absolute_path: resolved.absolute_path.clone(),
+            safety_path: resolved.absolute_path,
+            display_path: resolved.display_path,
+            exists: resolved.exists,
+            is_file: resolved.is_file,
+            is_symlink: resolved.is_symlink,
+            external: true,
+        }
+    }
 }
 
 impl Tool for ReadFileTool {
@@ -319,13 +491,13 @@ impl Tool for ReadFileTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Read a safe text file from the active workspace. Returns line-numbered content with caps and truncation metadata.".to_string(),
+            description: "Read a safe text file from the active workspace. External paths require one-time user approval before reading. Returns line-numbered content with caps and truncation metadata.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative or absolute file path inside the active workspace."
+                        "description": "Workspace-relative path, absolute path inside the workspace, or an external absolute path that will request user approval."
                     },
                     "start_line": {
                         "type": "integer",
@@ -343,34 +515,53 @@ impl Tool for ReadFileTool {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
-        let resolved = match access.resolve_path(Some(&args.path)) {
-            Ok(resolved) => resolved,
+        let target: ReadFileTarget = match resolve_external_path(Some(&args.path), &access) {
+            Ok(Some(external)) => {
+                if !request_external_path_approval(
+                    self.external_path_approval.as_ref(),
+                    Self::NAME,
+                    &external.display_path,
+                    PathKind::File,
+                )
+                .await
+                {
+                    return Ok(read_approval_required(&external.display_path));
+                }
+                external.into()
+            }
+            Ok(None) => match access.resolve_path(Some(&args.path)) {
+                Ok(resolved) => resolved.into(),
+                Err(error) => return Ok(read_failure(error)),
+            },
             Err(error) => return Ok(read_failure(error)),
         };
 
-        if !resolved.exists {
-            return Ok(read_failure(AccessFailure::NotFound(
-                "File does not exist in the active workspace.".to_string(),
-            )));
+        if !target.exists {
+            let message = if target.external {
+                "File does not exist.".to_string()
+            } else {
+                "File does not exist in the active workspace.".to_string()
+            };
+            return Ok(read_failure(AccessFailure::NotFound(message)));
         }
 
-        if !resolved.is_file {
+        if !target.is_file {
             return Ok(read_failure(AccessFailure::Blocked(
                 "Path points to a directory, not a file.".to_string(),
             )));
         }
 
-        if resolved.is_symlink {
+        if target.is_symlink {
             return Ok(read_failure(AccessFailure::Blocked(
                 "Symlinked files cannot be read from chat.".to_string(),
             )));
         }
 
-        if let Some(reason) = blocked_path_reason(&resolved.relative_path, PathKind::File, false) {
+        if let Some(reason) = blocked_path_reason(&target.safety_path, PathKind::File, false) {
             return Ok(read_failure(AccessFailure::Blocked(reason)));
         }
 
-        let metadata = fs::metadata(&resolved.absolute_path)
+        let metadata = fs::metadata(&target.absolute_path)
             .map_err(|e| WorkspaceToolError::Internal(format!("Failed to read metadata: {}", e)))?;
         if metadata.len() > READ_FILE_BYTES_CAP {
             let mut output = read_failure(AccessFailure::Blocked(format!(
@@ -381,7 +572,7 @@ impl Tool for ReadFileTool {
             return Ok(output);
         }
 
-        let bytes = fs::read(&resolved.absolute_path)
+        let bytes = fs::read(&target.absolute_path)
             .map_err(|e| WorkspaceToolError::Internal(format!("Failed to read file: {}", e)))?;
         if is_binary(&bytes) {
             let mut output = read_failure(AccessFailure::Blocked(
@@ -413,12 +604,10 @@ impl Tool for ReadFileTool {
 
             return Ok(ReadFileOutput {
                 success: true,
-                message: format!(
-                    "Read empty file {}.",
-                    display_rel_path(&resolved.relative_path)
-                ),
+                message: format!("Read empty file {}.", target.display_path),
                 reason: None,
-                path: Some(display_rel_path(&resolved.relative_path)),
+                path: Some(target.display_path),
+                needs_approval: None,
                 size_bytes: Some(metadata.len()),
                 start_line: Some(0),
                 end_line: Some(0),
@@ -491,10 +680,11 @@ impl Tool for ReadFileTool {
                 } else {
                     effective_end - start_line + 1
                 },
-                display_rel_path(&resolved.relative_path)
+                target.display_path
             ),
             reason: None,
-            path: Some(display_rel_path(&resolved.relative_path)),
+            path: Some(target.display_path),
+            needs_approval: None,
             size_bytes: Some(metadata.len()),
             start_line: Some(start_line),
             end_line: Some(effective_end),
@@ -861,9 +1051,23 @@ pub struct ListDirectoryArgs {
     max_entries: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ListDirectoryTool {
     workspace_root: PathBuf,
+    #[serde(skip)]
+    external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
+}
+
+impl std::fmt::Debug for ListDirectoryTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListDirectoryTool")
+            .field("workspace_root", &self.workspace_root)
+            .field(
+                "external_path_approval",
+                &self.external_path_approval.as_ref().map(|_| "<configured>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -879,9 +1083,49 @@ pub struct ListDirectoryOutput {
     success: bool,
     message: String,
     reason: Option<String>,
+    needs_approval: Option<bool>,
     entries: Vec<DirectoryEntryOutput>,
     truncated: bool,
     visited_entries: usize,
+}
+
+struct ListDirectoryTarget {
+    absolute_path: PathBuf,
+    safety_path: PathBuf,
+    display_path: String,
+    exists: bool,
+    is_dir: bool,
+    is_symlink: bool,
+    external: bool,
+}
+
+impl From<ResolvedPath> for ListDirectoryTarget {
+    fn from(resolved: ResolvedPath) -> Self {
+        let display_path = display_rel_path(&resolved.relative_path);
+        Self {
+            absolute_path: resolved.absolute_path,
+            safety_path: resolved.relative_path,
+            display_path,
+            exists: resolved.exists,
+            is_dir: resolved.is_dir,
+            is_symlink: resolved.is_symlink,
+            external: false,
+        }
+    }
+}
+
+impl From<ExternalResolvedPath> for ListDirectoryTarget {
+    fn from(resolved: ExternalResolvedPath) -> Self {
+        Self {
+            absolute_path: resolved.absolute_path.clone(),
+            safety_path: resolved.absolute_path,
+            display_path: resolved.display_path,
+            exists: resolved.exists,
+            is_dir: resolved.is_dir,
+            is_symlink: resolved.is_symlink,
+            external: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -908,13 +1152,13 @@ impl Tool for ListDirectoryTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "List safe files and directories from the active workspace. Returns deterministic directory-first ordering and does not recurse into symlinked directories.".to_string(),
+            description: "List safe files and directories from the active workspace. External directory paths require one-time user approval before listing. Returns deterministic directory-first ordering and does not recurse into symlinked directories.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Optional workspace-relative or absolute directory scope."
+                        "description": "Optional workspace-relative path, absolute path inside the workspace, or external absolute directory path that will request user approval."
                     },
                     "depth": {
                         "type": "integer",
@@ -932,8 +1176,28 @@ impl Tool for ListDirectoryTool {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
-        let scope = match access.resolve_path(args.path.as_deref()) {
-            Ok(scope) => scope,
+        let scope: ListDirectoryTarget = match resolve_external_path(args.path.as_deref(), &access)
+        {
+            Ok(Some(external)) => {
+                if !request_external_path_approval(
+                    self.external_path_approval.as_ref(),
+                    Self::NAME,
+                    &external.display_path,
+                    PathKind::Directory,
+                )
+                .await
+                {
+                    return Ok(list_approval_required(&external.display_path));
+                }
+                external.into()
+            }
+            Ok(None) => match access.resolve_path(args.path.as_deref()) {
+                Ok(scope) => scope.into(),
+                Err(error) => {
+                    let reason = access_failure_reason(&error).to_string();
+                    return Ok(list_failure(error, &reason));
+                }
+            },
             Err(error) => {
                 let reason = access_failure_reason(&error).to_string();
                 return Ok(list_failure(error, &reason));
@@ -941,12 +1205,12 @@ impl Tool for ListDirectoryTool {
         };
 
         if !scope.exists {
-            return Ok(list_failure(
-                AccessFailure::NotFound(
-                    "Directory scope does not exist in the active workspace.".to_string(),
-                ),
-                "not_found",
-            ));
+            let message = if scope.external {
+                "Directory scope does not exist.".to_string()
+            } else {
+                "Directory scope does not exist in the active workspace.".to_string()
+            };
+            return Ok(list_failure(AccessFailure::NotFound(message), "not_found"));
         }
 
         if !scope.is_dir {
@@ -956,7 +1220,7 @@ impl Tool for ListDirectoryTool {
             ));
         }
 
-        if let Some(reason) = blocked_path_reason(&scope.relative_path, PathKind::Directory, true) {
+        if let Some(reason) = blocked_path_reason(&scope.safety_path, PathKind::Directory, true) {
             return Ok(list_failure(AccessFailure::Blocked(reason), "blocked"));
         }
         if scope.is_symlink {
@@ -982,12 +1246,21 @@ impl Tool for ListDirectoryTool {
             max_entries,
         };
 
-        walk_list_directory(&access, &scope.absolute_path, max_depth, &mut state)?;
+        if scope.external {
+            walk_external_list_directory(&scope.absolute_path, max_depth, &mut state)?;
+        } else {
+            walk_list_directory(&access, &scope.absolute_path, max_depth, &mut state)?;
+        }
 
         Ok(ListDirectoryOutput {
             success: true,
-            message: format!("Listed {} entries.", state.entries.len()),
+            message: format!(
+                "Listed {} entries from {}.",
+                state.entries.len(),
+                scope.display_path
+            ),
             reason: None,
+            needs_approval: None,
             entries: state.entries,
             truncated: state.truncated,
             visited_entries: state.visited_entries,
@@ -1023,7 +1296,11 @@ pub fn workspace_root_inventory(
         snapshot_entries.push(WorkspaceRootInventoryItem {
             path: display_rel_path(&relative_path),
             kind: entry.kind_name(),
-            size_bytes: if entry.is_file() { Some(entry.size_bytes) } else { None },
+            size_bytes: if entry.is_file() {
+                Some(entry.size_bytes)
+            } else {
+                None
+            },
         });
 
         if snapshot_entries.len() >= max_entries.max(1) {
@@ -1052,7 +1329,20 @@ impl std::fmt::Display for WorkspaceRootInventory {
 }
 
 pub fn create_read_file_tool(workspace_root: PathBuf) -> ReadFileTool {
-    ReadFileTool { workspace_root }
+    ReadFileTool {
+        workspace_root,
+        external_path_approval: None,
+    }
+}
+
+pub(crate) fn create_read_file_tool_with_external_approval(
+    workspace_root: PathBuf,
+    external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
+) -> ReadFileTool {
+    ReadFileTool {
+        workspace_root,
+        external_path_approval,
+    }
 }
 
 pub fn create_search_code_tool(workspace_root: PathBuf) -> SearchCodeTool {
@@ -1064,15 +1354,50 @@ pub fn create_find_files_tool(workspace_root: PathBuf) -> FindFilesTool {
 }
 
 pub fn create_list_directory_tool(workspace_root: PathBuf) -> ListDirectoryTool {
-    ListDirectoryTool { workspace_root }
+    ListDirectoryTool {
+        workspace_root,
+        external_path_approval: None,
+    }
+}
+
+pub(crate) fn create_list_directory_tool_with_external_approval(
+    workspace_root: PathBuf,
+    external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
+) -> ListDirectoryTool {
+    ListDirectoryTool {
+        workspace_root,
+        external_path_approval,
+    }
 }
 
 pub fn build_base_workspace_tools(workspace_path: PathBuf) -> Vec<Box<dyn rig::tool::ToolDyn>> {
+    build_base_workspace_tools_with_external_approval(workspace_path, None)
+}
+
+pub(crate) fn build_base_workspace_tools_with_external_approval(
+    workspace_path: PathBuf,
+    external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
+) -> Vec<Box<dyn rig::tool::ToolDyn>> {
+    let read_file_tool: Box<dyn rig::tool::ToolDyn> = match external_path_approval.clone() {
+        Some(approval) => Box::new(create_read_file_tool_with_external_approval(
+            workspace_path.clone(),
+            Some(approval),
+        )),
+        None => Box::new(create_read_file_tool(workspace_path.clone())),
+    };
+    let list_directory_tool: Box<dyn rig::tool::ToolDyn> = match external_path_approval {
+        Some(approval) => Box::new(create_list_directory_tool_with_external_approval(
+            workspace_path.clone(),
+            Some(approval),
+        )),
+        None => Box::new(create_list_directory_tool(workspace_path.clone())),
+    };
+
     vec![
-        Box::new(create_read_file_tool(workspace_path.clone())),
+        read_file_tool,
         Box::new(create_search_code_tool(workspace_path.clone())),
         Box::new(create_find_files_tool(workspace_path.clone())),
-        Box::new(create_list_directory_tool(workspace_path)),
+        list_directory_tool,
     ]
 }
 
@@ -2168,6 +2493,7 @@ fn read_failure(error: AccessFailure) -> ReadFileOutput {
         message,
         reason: Some(reason.to_string()),
         path: None,
+        needs_approval: None,
         size_bytes: None,
         start_line: None,
         end_line: None,
@@ -2183,6 +2509,23 @@ fn read_invalid_range(message: &str) -> ReadFileOutput {
         message: message.to_string(),
         reason: Some("invalid_range".to_string()),
         path: None,
+        needs_approval: None,
+        size_bytes: None,
+        start_line: None,
+        end_line: None,
+        total_lines: None,
+        truncated: false,
+        content: None,
+    }
+}
+
+fn read_approval_required(path: &str) -> ReadFileOutput {
+    ReadFileOutput {
+        success: false,
+        message: "External file access was denied or timed out.".to_string(),
+        reason: Some("approval_denied".to_string()),
+        path: Some(path.to_string()),
+        needs_approval: Some(true),
         size_bytes: None,
         start_line: None,
         end_line: None,
@@ -2246,6 +2589,22 @@ fn list_failure(error: AccessFailure, reason: &str) -> ListDirectoryOutput {
         success: false,
         message,
         reason: Some(reason.to_string()),
+        needs_approval: None,
+        entries: vec![],
+        truncated: false,
+        visited_entries: 0,
+    }
+}
+
+fn list_approval_required(path: &str) -> ListDirectoryOutput {
+    ListDirectoryOutput {
+        success: false,
+        message: format!(
+            "External directory access was denied or timed out for {}.",
+            path
+        ),
+        reason: Some("approval_denied".to_string()),
+        needs_approval: Some(true),
         entries: vec![],
         truncated: false,
         visited_entries: 0,
@@ -2554,6 +2913,57 @@ fn walk_list_directory(
     Ok(())
 }
 
+fn walk_external_list_directory(
+    directory: &Path,
+    depth: usize,
+    state: &mut ListState,
+) -> Result<(), WorkspaceToolError> {
+    if depth == 0 || state.truncated {
+        return Ok(());
+    }
+
+    for entry in read_sorted_directory_entries(directory)? {
+        if state.truncated {
+            return Ok(());
+        }
+
+        state.visited_entries += 1;
+        if state.visited_entries > VISITED_ENTRY_CAP {
+            state.truncated = true;
+            return Ok(());
+        }
+
+        let kind = entry.path_kind();
+        if entry.is_symlink {
+            continue;
+        }
+        if let Some(_reason) = blocked_path_reason(&entry.absolute_path, kind, true) {
+            continue;
+        }
+
+        state.entries.push(DirectoryEntryOutput {
+            path: entry.absolute_path.display().to_string(),
+            name: entry.name.clone(),
+            kind: entry.kind_name(),
+            size_bytes: if entry.is_file() {
+                Some(entry.size_bytes)
+            } else {
+                None
+            },
+        });
+        if state.entries.len() >= state.max_entries {
+            state.truncated = true;
+            return Ok(());
+        }
+
+        if entry.is_directory() && !entry.is_symlink {
+            walk_external_list_directory(&entry.absolute_path, depth - 1, state)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn match_relative_to_scope(path: &Path, scope_base: &Path, file_scope: bool) -> PathBuf {
     if file_scope {
         path.file_name().map(PathBuf::from).unwrap_or_default()
@@ -2675,7 +3085,11 @@ mod tests {
     use super::*;
     use rig::tool::Tool;
     use std::fs;
-    use tempfile::tempdir;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        Arc,
+    };
+    use tempfile::{tempdir, Builder as TempDirBuilder, TempDir};
 
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -2685,6 +3099,37 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
+    }
+
+    fn external_tempdir() -> TempDir {
+        TempDirBuilder::new()
+            .prefix("gospel-external-")
+            .tempdir()
+            .unwrap()
+    }
+
+    #[derive(Clone)]
+    struct StaticApproval {
+        approved: bool,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ExternalPathApproval for StaticApproval {
+        fn request_approval<'a>(
+            &'a self,
+            _request: ExternalPathApprovalRequest,
+        ) -> ExternalPathApprovalFuture<'a> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Box::pin(std::future::ready(self.approved))
+        }
+    }
+
+    fn approval(approved: bool) -> (Arc<AtomicUsize>, Arc<dyn ExternalPathApproval>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            calls.clone(),
+            Arc::new(StaticApproval { approved, calls }) as Arc<dyn ExternalPathApproval>,
+        )
     }
 
     #[test]
@@ -2732,6 +3177,76 @@ mod tests {
             .unwrap();
         assert!(absolute.success);
         assert_eq!(absolute.path.as_deref(), Some("src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn read_file_requires_approval_for_external_paths() {
+        let workspace = tempdir().unwrap();
+        let external = external_tempdir();
+        let external_file = external.path().join("notes.txt");
+        write_file(&external_file, b"outside\n");
+
+        let tool = create_read_file_tool(workspace.path().to_path_buf());
+        let denied = tool
+            .call(ReadFileArgs {
+                path: external_file.display().to_string(),
+                start_line: None,
+                end_line: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(!denied.success);
+        assert_eq!(denied.reason.as_deref(), Some("approval_denied"));
+        assert_eq!(denied.needs_approval, Some(true));
+        assert_eq!(
+            denied.path.as_deref(),
+            Some(external_file.to_str().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_reads_approved_external_text_but_keeps_secret_blocking() {
+        let workspace = tempdir().unwrap();
+        let external = external_tempdir();
+        let external_file = external.path().join("notes.txt");
+        let secret_file = external.path().join(".env");
+        write_file(&external_file, b"outside\n");
+        write_file(&secret_file, b"TOKEN=abc\n");
+        let (calls, approval) = approval(true);
+        let tool = create_read_file_tool_with_external_approval(
+            workspace.path().to_path_buf(),
+            Some(approval),
+        );
+
+        let approved = tool
+            .call(ReadFileArgs {
+                path: external_file.display().to_string(),
+                start_line: None,
+                end_line: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(approved.success);
+        assert_eq!(
+            approved.path.as_deref(),
+            Some(external_file.to_str().unwrap())
+        );
+        assert_eq!(approved.content.as_deref(), Some("1: outside"));
+
+        let secret = tool
+            .call(ReadFileArgs {
+                path: secret_file.display().to_string(),
+                start_line: None,
+                end_line: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(!secret.success);
+        assert_eq!(secret.reason.as_deref(), Some("blocked"));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -3211,6 +3726,42 @@ mod tests {
             .entries
             .iter()
             .all(|entry| entry.path != "alias/src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn list_directory_lists_approved_external_directory_with_absolute_paths() {
+        let workspace = tempdir().unwrap();
+        let external = external_tempdir();
+        write_file(&external.path().join("visible.txt"), b"ok");
+        write_file(&external.path().join(".env"), b"TOKEN=abc");
+        write_file(&external.path().join("nested/item.txt"), b"ok");
+        let (calls, approval) = approval(true);
+        let tool = create_list_directory_tool_with_external_approval(
+            workspace.path().to_path_buf(),
+            Some(approval),
+        );
+
+        let output = tool
+            .call(ListDirectoryArgs {
+                path: Some(external.path().display().to_string()),
+                depth: Some(2),
+                max_entries: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        let external_root = fs::canonicalize(external.path()).unwrap();
+        let paths = output
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&external_root.join("visible.txt").to_str().unwrap()));
+        assert!(paths.contains(&external_root.join("nested").to_str().unwrap()));
+        assert!(paths.contains(&external_root.join("nested/item.txt").to_str().unwrap()));
+        assert!(!paths.contains(&external_root.join(".env").to_str().unwrap()));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[tokio::test]
