@@ -112,11 +112,15 @@
 
 .prose pre {
   background-color: var(--code-block-background);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 22%);
   border-radius: var(--radius-md);
   padding: var(--space-3);
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: var(--font-size-mono);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 0 0 1px rgba(0, 0, 0, 0.34);
 }
 
 .prose code {
@@ -126,8 +130,10 @@
 
 .prose :not(pre) > code {
   background-color: var(--code-block-background);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 82%, var(--text-muted) 18%);
   border-radius: var(--radius-sm);
   padding: 1px 4px;
+  color: color-mix(in srgb, var(--accent-action) 72%, var(--text-primary) 28%);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -159,7 +165,11 @@ body {
   font-size: var(--font-size-body);
   line-height: 1.5;
   color: var(--text-primary);
-  background-color: var(--surface-base);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0) 180px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 80px),
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 80px),
+    var(--surface-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -198,8 +208,8 @@ a:hover {
 }
 
 ::selection {
-  background: var(--accent-action);
-  color: var(--text-inverse);
+  background: color-mix(in srgb, var(--accent-action) 62%, transparent);
+  color: var(--text-primary);
 }
 
 button,
@@ -228,7 +238,11 @@ summary,
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: var(--surface-base);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.024), transparent 120px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 96px),
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 96px),
+    var(--surface-base);
   color: var(--text-primary);
 }
 
@@ -238,6 +252,7 @@ summary,
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  border-top: 1px solid rgba(255, 255, 255, 0.025);
 }
 
 .app-workspace {
@@ -255,10 +270,20 @@ summary,
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 96px),
+    color-mix(in srgb, var(--surface-base) 92%, var(--surface-elevated) 8%);
 }
 
 .app-topbar {
   height: var(--topbar-height);
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-overlay) 70%, var(--text-muted) 12%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--surface-base) 82%, var(--surface-elevated) 18%);
+  box-shadow:
+    inset 0 -1px 0 rgba(0, 0, 0, 0.46),
+    0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
 .session-scrim {
@@ -266,6 +291,7 @@ summary,
   inset: calc(var(--titlebar-height) + var(--topbar-height)) 0 0 0;
   z-index: calc(var(--z-drawers) - 1);
   background: var(--scrim);
+  backdrop-filter: blur(3px);
   transition: opacity var(--duration-normal) var(--ease-out-quart);
 }
 
@@ -279,8 +305,11 @@ summary,
   width: var(--sidebar-width);
   max-width: 100vw;
   flex-direction: column;
-  border-right: 1px solid var(--surface-overlay);
-  background: var(--surface-elevated);
+  border-right: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0)),
+    var(--surface-elevated);
+  box-shadow: 14px 0 36px rgba(0, 0, 0, 0.28);
   transform: translateX(-100%);
   transition: transform var(--duration-normal) var(--ease-out-quart);
 }
@@ -295,16 +324,22 @@ summary,
   width: 100%;
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid transparent;
+  padding: var(--space-2) var(--space-3) var(--space-2) calc(var(--space-3) - 2px);
   text-align: left;
   transition:
     background-color var(--duration-fast) var(--ease-out-quart),
+    border-color var(--duration-fast) var(--ease-out-quart),
     color var(--duration-fast) var(--ease-out-quart);
 }
 
 .session-row:hover,
 .session-row.is-active {
-  background: var(--surface-overlay);
+  background: color-mix(in srgb, var(--surface-overlay) 78%, var(--surface-elevated) 22%);
+}
+
+.session-row.is-active {
+  border-left-color: var(--accent-action);
 }
 
 .session-row-dot {
@@ -317,7 +352,7 @@ summary,
 }
 
 .session-row.is-active .session-row-dot {
-  background: var(--accent-structure);
+  background: var(--accent-action);
   opacity: 1;
 }
 
@@ -331,9 +366,12 @@ summary,
   max-height: 400px;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--surface-overlay);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
+    var(--surface-elevated);
+  box-shadow: var(--shadow-floating);
 }
 
 .workspace-row {
@@ -349,11 +387,11 @@ summary,
 
 .workspace-row:hover,
 .workspace-row.is-active {
-  background: var(--surface-overlay);
+  background: color-mix(in srgb, var(--surface-overlay) 78%, var(--surface-elevated) 22%);
 }
 
 .workspace-row.is-active {
-  border-color: var(--surface-overlay);
+  border-color: color-mix(in srgb, var(--accent-action) 42%, var(--surface-overlay));
 }
 
 .workspace-row-dot {
@@ -372,8 +410,11 @@ summary,
   width: min(100%, 560px);
   max-width: 560px;
   flex-direction: column;
-  border-left: 1px solid var(--surface-overlay);
-  background: var(--surface-elevated);
+  border-left: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+    var(--surface-elevated);
+  box-shadow: -18px 0 42px rgba(0, 0, 0, 0.32);
   animation: fadeSlideIn var(--duration-normal) var(--ease-out-quart);
 }
 
@@ -382,6 +423,7 @@ summary,
   inset: 0;
   z-index: calc(var(--z-palette) - 1);
   background: var(--scrim);
+  backdrop-filter: blur(3px);
   animation: fade-in var(--duration-fast) var(--ease-out-quart);
 }
 
@@ -395,10 +437,14 @@ summary,
   max-height: min(620px, 72vh);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--surface-overlay);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 70%, var(--text-muted) 18%);
   border-radius: var(--radius-lg);
-  background: var(--surface-elevated);
-  box-shadow: var(--shadow-dialog);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)),
+    var(--surface-elevated);
+  box-shadow:
+    var(--shadow-dialog),
+    inset 0 1px 0 rgba(255, 255, 255, 0.055);
   transform: translateX(-50%);
   animation: palette-enter var(--duration-normal) var(--ease-out-quart);
 }
@@ -425,7 +471,7 @@ summary,
 
 .command-palette-result:hover,
 .command-palette-result.is-active {
-  background: var(--surface-overlay);
+  background: color-mix(in srgb, var(--surface-overlay) 82%, var(--surface-elevated) 18%);
 }
 
 .command-palette-icon {
@@ -434,11 +480,195 @@ summary,
   height: 24px;
   place-items: center;
   border-radius: var(--radius-sm);
-  background: var(--surface-overlay);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  background: var(--surface-base);
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   font-weight: 600;
+}
+
+.app-topbar button,
+.app-topbar input,
+.topbar-model-badge {
+  border: 1px solid transparent;
+}
+
+.app-topbar button:hover,
+.app-topbar button[aria-pressed="true"],
+.app-topbar input:focus,
+.topbar-model-badge {
+  border-color: color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.app-topbar button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--surface-overlay) 74%, var(--accent-action) 12%);
+}
+
+.topbar-model-badge {
+  background: color-mix(in srgb, var(--surface-overlay) 72%, var(--surface-base) 28%);
+  color: var(--text-secondary);
+}
+
+.chat-view {
+  background: transparent;
+}
+
+.chat-feed {
+  padding-top: var(--space-6);
+  padding-bottom: var(--space-6);
+}
+
+.chat-empty-state > div {
+  max-width: min(560px, calc(100vw - 48px));
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--surface-elevated) 82%, var(--surface-base) 18%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.agent-turn {
+  position: relative;
+}
+
+.agent-turn::before {
+  position: absolute;
+  top: 34px;
+  bottom: 2px;
+  left: 10px;
+  width: 1px;
+  content: "";
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-action) 42%, transparent), transparent);
+}
+
+.agent-avatar {
+  border: 1px solid color-mix(in srgb, var(--accent-action) 58%, var(--surface-overlay));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent-action) 12%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.user-avatar {
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 14%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.message-body,
+.agent-text-block,
+.tool-row-button,
+.action-card,
+.review-summary,
+.review-finding {
+  border-color: color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 14%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 1px 0 rgba(0, 0, 0, 0.22);
+}
+
+.message-body-user {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--surface-overlay) 82%, var(--surface-elevated) 18%);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 72%, var(--text-muted) 16%);
+}
+
+.message-body-agent,
+.agent-text-block {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--surface-base) 82%, var(--surface-elevated) 18%);
+}
+
+.message-actions button {
+  color: var(--text-muted);
+}
+
+.running-pill {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-action) 12%, transparent), transparent),
+    var(--surface-base);
+  border-color: color-mix(in srgb, var(--accent-action) 46%, var(--surface-overlay));
+}
+
+.tool-timeline {
+  position: relative;
+}
+
+.tool-row-button {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
+    var(--surface-elevated);
+}
+
+.tool-row-button:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--surface-overlay) 72%, var(--surface-elevated) 28%);
+}
+
+.action-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
+    var(--surface-elevated);
+}
+
+.action-card pre,
+.review-finding pre {
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 12%);
+  background:
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 24px),
+    var(--code-block-background);
+}
+
+.input-bar {
+  border-top-color: color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
+    var(--surface-elevated);
+  box-shadow:
+    0 -10px 36px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.composer-input {
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0)),
+    var(--surface-base);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.composer-input:focus {
+  border-color: color-mix(in srgb, var(--accent-action) 58%, var(--surface-overlay));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent-action) 13%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  outline: none;
+}
+
+.model-menu {
+  border-color: color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  box-shadow: var(--shadow-floating);
+}
+
+.review-summary,
+.review-finding {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--surface-base) 78%, var(--surface-elevated) 22%);
+}
+
+.review-finding {
+  border-left-width: 2px;
+  border-left-color: color-mix(in srgb, var(--accent-signal) 52%, var(--surface-overlay));
+}
+
+.review-finding details {
+  background: color-mix(in srgb, var(--surface-elevated) 72%, var(--surface-base) 28%);
 }
 
 @media (min-width: 1280px) {
@@ -602,72 +832,72 @@ summary,
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --background: var(--surface-base);
+  --foreground: var(--text-primary);
+  --card: var(--surface-elevated);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-action);
+  --primary-foreground: var(--text-inverse);
+  --secondary: var(--surface-overlay);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-overlay);
+  --muted-foreground: var(--text-muted);
+  --accent: color-mix(in srgb, var(--surface-overlay) 82%, var(--accent-action) 18%);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--status-error);
+  --border: color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 14%);
+  --input: color-mix(in srgb, var(--surface-overlay) 86%, var(--text-muted) 14%);
+  --ring: var(--accent-action);
+  --chart-1: var(--accent-action);
+  --chart-2: var(--accent-structure);
+  --chart-3: var(--accent-signal);
+  --chart-4: var(--accent-data);
+  --chart-5: var(--text-muted);
+  --radius: 0.5rem;
+  --sidebar: var(--surface-elevated);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent-action);
+  --sidebar-primary-foreground: var(--text-inverse);
+  --sidebar-accent: var(--surface-overlay);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--accent-action);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: var(--surface-base);
+  --foreground: var(--text-primary);
+  --card: var(--surface-elevated);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-action);
+  --primary-foreground: var(--text-inverse);
+  --secondary: var(--surface-overlay);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-overlay);
+  --muted-foreground: var(--text-muted);
+  --accent: color-mix(in srgb, var(--surface-overlay) 82%, var(--accent-action) 18%);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--status-error);
+  --border: color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 14%);
+  --input: color-mix(in srgb, var(--surface-overlay) 86%, var(--text-muted) 14%);
+  --ring: var(--accent-action);
+  --chart-1: var(--accent-action);
+  --chart-2: var(--accent-structure);
+  --chart-3: var(--accent-signal);
+  --chart-4: var(--accent-data);
+  --chart-5: var(--text-muted);
+  --sidebar: var(--surface-elevated);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent-action);
+  --sidebar-primary-foreground: var(--text-inverse);
+  --sidebar-accent: var(--surface-overlay);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--accent-action);
 }
 
 @layer base {

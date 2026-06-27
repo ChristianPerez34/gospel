@@ -170,7 +170,7 @@ export function InputBar({
   }, []);
 
   return (
-    <div className="bg-surface-elevated border-t border-surface-overlay flex flex-col gap-2 shrink-0 z-[--z-sticky-input] p-3">
+    <div className="input-bar bg-surface-elevated border-t border-surface-overlay flex flex-col gap-2 shrink-0 z-[--z-sticky-input] p-3">
       <div className="relative">
         <SlashCommandMenu
           skills={skills}
@@ -200,7 +200,7 @@ export function InputBar({
             {currentModel?.name || unavailableMessage}
           </Button>
           {modelOpen && (
-            <div className="absolute bottom-full left-0 w-60 max-h-[200px] overflow-y-auto bg-surface-elevated border border-surface-overlay rounded-lg mb-1 z-[--z-dropdowns]" role="listbox">
+            <div className="model-menu absolute bottom-full left-0 w-60 max-h-[200px] overflow-y-auto bg-surface-elevated border border-surface-overlay rounded-lg mb-1 z-[--z-dropdowns]" role="listbox">
               {models.length === 0 ? (
                 <div className="flex flex-col gap-1 p-3 text-text-muted text-body-sm">
                   <strong className="text-text-primary font-medium">{unavailableMessage}</strong>
@@ -246,7 +246,7 @@ export function InputBar({
         </div>
         <textarea
           ref={textareaRef}
-          className="flex-1 min-h-[64px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary rounded-lg overflow-y-auto placeholder:text-text-muted disabled:opacity-50 bg-surface-overlay py-2.5 px-3"
+          className="composer-input flex-1 min-h-[64px] max-h-[200px] resize-none font-body text-body leading-relaxed text-text-primary rounded-lg overflow-y-auto placeholder:text-text-muted disabled:opacity-50 bg-surface-overlay py-2.5 px-3"
           placeholder={noModels ? unavailableMessage : "Type a prompt or /skill-name (Shift+Enter for new line)"}
           value={value}
           onChange={handleInput}

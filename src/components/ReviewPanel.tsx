@@ -397,7 +397,7 @@ export function ReviewPanel({
         </div>
 
         {result && (
-          <div className="grid gap-2 rounded-md border border-surface-overlay bg-surface-base p-3">
+          <div className="review-summary grid gap-2 rounded-md border border-surface-overlay bg-surface-base p-3">
             <div className="flex flex-wrap items-center gap-2">
               <Badge className="border-accent-action text-accent-action">
                 {formatPercent(result.snr_percent)} SNR
@@ -461,7 +461,7 @@ export function ReviewPanel({
               return (
                 <li
                   key={comment.comment_id || `${comment.file}-${comment.line_start}-${index}`}
-                  className="rounded-md border border-surface-overlay bg-surface-base p-3"
+                  className="review-finding rounded-md border border-surface-overlay bg-surface-base p-3"
                 >
                   <div className="grid gap-2">
                     <div className="flex flex-wrap items-center gap-2">

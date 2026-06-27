@@ -129,7 +129,7 @@ export function ActionCard({ card, className }: ActionCardProps) {
   return (
     <section
       className={classNames(
-        `overflow-hidden rounded-lg border border-surface-overlay border-l-2 ${borderClass} bg-surface-elevated animate-fade-slide-in motion-reduce:animate-none`,
+        `action-card overflow-hidden rounded-lg border border-surface-overlay border-l-2 ${borderClass} bg-surface-elevated animate-fade-slide-in motion-reduce:animate-none`,
         className ?? "ml-16",
       )}
       aria-label={card.summary}
