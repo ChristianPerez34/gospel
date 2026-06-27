@@ -1,7 +1,7 @@
-use super::{ReviewComment, Severity};
+use super::{ReviewComment, ReviewFocus, Severity};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SignalTier {
@@ -27,6 +27,24 @@ impl Default for SignalTier {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignalRules {
+    #[serde(default)]
+    pub tier1_cwes: Vec<String>,
+    #[serde(default)]
+    pub tier2_cwes: Vec<String>,
+    #[serde(default)]
+    pub noise_cwes: Vec<String>,
+    #[serde(default)]
+    pub tier1_categories: Vec<String>,
+    #[serde(default)]
+    pub tier2_categories: Vec<String>,
+    #[serde(default)]
+    pub noise_categories: Vec<String>,
+    #[serde(default, alias = "focus_rules")]
+    pub per_focus: BTreeMap<ReviewFocus, FocusSignalRules>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FocusSignalRules {
     #[serde(default)]
     pub tier1_cwes: Vec<String>,
     #[serde(default)]
@@ -100,12 +118,29 @@ impl Default for SignalRules {
             .into_iter()
             .map(str::to_string)
             .collect(),
+            per_focus: BTreeMap::new(),
         }
     }
 }
 
 impl SignalRules {
     pub fn merge(&mut self, override_rules: PartialSignalRules) {
+        extend_unique_cwes(&mut self.tier1_cwes, override_rules.tier1_cwes);
+        extend_unique_cwes(&mut self.tier2_cwes, override_rules.tier2_cwes);
+        extend_unique_cwes(&mut self.noise_cwes, override_rules.noise_cwes);
+        extend_unique_categories(&mut self.tier1_categories, override_rules.tier1_categories);
+        extend_unique_categories(&mut self.tier2_categories, override_rules.tier2_categories);
+        extend_unique_categories(&mut self.noise_categories, override_rules.noise_categories);
+        if let Some(per_focus) = override_rules.per_focus {
+            for (focus, rules) in per_focus {
+                self.per_focus.entry(focus).or_default().merge(rules);
+            }
+        }
+    }
+}
+
+impl FocusSignalRules {
+    fn merge(&mut self, override_rules: PartialFocusSignalRules) {
         extend_unique_cwes(&mut self.tier1_cwes, override_rules.tier1_cwes);
         extend_unique_cwes(&mut self.tier2_cwes, override_rules.tier2_cwes);
         extend_unique_cwes(&mut self.noise_cwes, override_rules.noise_cwes);
@@ -123,6 +158,18 @@ pub struct PartialSignalRules {
     pub tier1_categories: Option<Vec<String>>,
     pub tier2_categories: Option<Vec<String>>,
     pub noise_categories: Option<Vec<String>>,
+    #[serde(default, alias = "focus_rules")]
+    pub per_focus: Option<BTreeMap<ReviewFocus, PartialFocusSignalRules>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct PartialFocusSignalRules {
+    pub tier1_cwes: Option<Vec<String>>,
+    pub tier2_cwes: Option<Vec<String>>,
+    pub noise_cwes: Option<Vec<String>>,
+    pub tier1_categories: Option<Vec<String>>,
+    pub tier2_categories: Option<Vec<String>>,
+    pub noise_categories: Option<Vec<String>>,
 }
 
 pub fn normalize_review_comment(comment: &mut ReviewComment, rules: &SignalRules) {
@@ -133,39 +180,51 @@ pub fn normalize_review_comment(comment: &mut ReviewComment, rules: &SignalRules
 pub fn classify_comment(comment: &ReviewComment, rules: &SignalRules) -> SignalTier {
     let cwe_id = comment.cwe_id.as_deref().map(normalize_cwe);
     let category = normalize_category(&comment.category);
+    let focus_subcategory = comment
+        .focus_subcategory
+        .as_deref()
+        .map(normalize_category)
+        .filter(|value| !value.is_empty());
+    let focus_rules = rules.per_focus.get(&comment.focus);
 
-    let cwe_in = |values: &[String]| {
-        cwe_id
-            .as_deref()
-            .map(|id| values.iter().any(|value| normalize_cwe(value) == id))
-            .unwrap_or(false)
+    let cwe_in = |base: &[String], focused: fn(&FocusSignalRules) -> &[String]| {
+        cwe_matches(cwe_id.as_deref(), base)
+            || focus_rules
+                .map(|rules| cwe_matches(cwe_id.as_deref(), focused(rules)))
+                .unwrap_or(false)
     };
-    let category_in = |values: &[String]| {
-        values
-            .iter()
-            .map(|value| normalize_category(value))
-            .any(|rule| !rule.is_empty() && category.contains(&rule))
+    let category_in = |base: &[String], focused: fn(&FocusSignalRules) -> &[String]| {
+        category_matches(&category, None, base)
+            || focus_rules
+                .map(|rules| {
+                    category_matches(&category, focus_subcategory.as_deref(), focused(rules))
+                })
+                .unwrap_or(false)
     };
 
     if comment.severity == Severity::Critical {
         return SignalTier::Tier1;
     }
 
-    if cwe_in(&rules.tier1_cwes) || category_in(&rules.tier1_categories) {
+    if cwe_in(&rules.tier1_cwes, |rules| &rules.tier1_cwes)
+        || category_in(&rules.tier1_categories, |rules| &rules.tier1_categories)
+    {
         if matches!(comment.severity, Severity::High | Severity::Medium) {
             return SignalTier::Tier1;
         }
     }
 
     if matches!(comment.severity, Severity::Low | Severity::Info)
-        && (cwe_in(&rules.noise_cwes) || category_in(&rules.noise_categories))
+        && (cwe_in(&rules.noise_cwes, |rules| &rules.noise_cwes)
+            || category_in(&rules.noise_categories, |rules| &rules.noise_categories))
     {
         return SignalTier::Noise;
     }
 
     if comment.signal_tier == SignalTier::Unclassified
         && matches!(comment.severity, Severity::High | Severity::Medium)
-        && (cwe_in(&rules.tier2_cwes) || category_in(&rules.tier2_categories))
+        && (cwe_in(&rules.tier2_cwes, |rules| &rules.tier2_cwes)
+            || category_in(&rules.tier2_categories, |rules| &rules.tier2_categories))
     {
         return SignalTier::Tier2;
     }
@@ -252,6 +311,25 @@ fn normalize_category(value: &str) -> String {
         .join(" ")
 }
 
+fn cwe_matches(cwe_id: Option<&str>, values: &[String]) -> bool {
+    cwe_id
+        .map(|id| values.iter().any(|value| normalize_cwe(value) == id))
+        .unwrap_or(false)
+}
+
+fn category_matches(category: &str, focus_subcategory: Option<&str>, values: &[String]) -> bool {
+    values
+        .iter()
+        .map(|value| normalize_category(value))
+        .any(|rule| {
+            !rule.is_empty()
+                && (category.contains(&rule)
+                    || focus_subcategory
+                        .map(|subcategory| subcategory.contains(&rule))
+                        .unwrap_or(false))
+        })
+}
+
 fn normalize_file_anchor(file: &str) -> String {
     file.trim_start_matches("./").replace('\\', "/")
 }
@@ -284,6 +362,8 @@ mod tests {
             line_end: 12,
             severity,
             category: category.to_string(),
+            focus: ReviewFocus::Security,
+            focus_subcategory: None,
             cwe_id: cwe_id.map(str::to_string),
             cwe_name: None,
             title: "Finding".to_string(),
@@ -366,6 +446,7 @@ mod tests {
             tier1_categories: Vec::new(),
             tier2_categories: Vec::new(),
             noise_categories: Vec::new(),
+            per_focus: BTreeMap::new(),
         };
 
         rules.merge(PartialSignalRules {
@@ -392,5 +473,70 @@ mod tests {
         assert_ne!(finding.comment_id, model_id);
         assert_eq!(finding.comment_id, comment_id_for(&finding));
         assert!(finding.comment_id.starts_with("rc_"));
+    }
+
+    #[test]
+    fn classify_comment_uses_focus_specific_categories() {
+        let mut rules = SignalRules::default();
+        rules.merge(PartialSignalRules {
+            per_focus: Some(BTreeMap::from([(
+                ReviewFocus::BugHunt,
+                PartialFocusSignalRules {
+                    tier1_categories: Some(vec!["state transition".to_string()]),
+                    ..PartialFocusSignalRules::default()
+                },
+            )])),
+            ..PartialSignalRules::default()
+        });
+        let mut finding = comment(
+            Severity::Medium,
+            None,
+            "correctness",
+            SignalTier::Unclassified,
+        );
+        finding.focus = ReviewFocus::BugHunt;
+        finding.focus_subcategory = Some("state transition".to_string());
+
+        assert_eq!(classify_comment(&finding, &rules), SignalTier::Tier1);
+
+        finding.focus = ReviewFocus::Security;
+        assert_eq!(classify_comment(&finding, &rules), SignalTier::Unclassified);
+    }
+
+    #[test]
+    fn focus_subcategory_does_not_match_global_categories() {
+        let mut finding = comment(
+            Severity::Medium,
+            None,
+            "correctness",
+            SignalTier::Unclassified,
+        );
+        finding.focus = ReviewFocus::BugHunt;
+        finding.focus_subcategory = Some("authorization".to_string());
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Unclassified
+        );
+    }
+
+    #[test]
+    fn classify_comment_legacy_security_unchanged() {
+        let tier1 = comment(
+            Severity::High,
+            Some("CWE-78"),
+            "command injection",
+            SignalTier::Unclassified,
+        );
+        let noise = comment(Severity::Low, None, "style", SignalTier::Tier2);
+
+        assert_eq!(
+            classify_comment(&tier1, &SignalRules::default()),
+            SignalTier::Tier1
+        );
+        assert_eq!(
+            classify_comment(&noise, &SignalRules::default()),
+            SignalTier::Noise
+        );
     }
 }

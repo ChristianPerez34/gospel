@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -61,46 +62,55 @@ pub struct SessionStoreState {
     pub init_warning: Option<String>,
 }
 
+const SESSION_STORE_SCHEMA: &str = "PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    workspace_id TEXT,
+    display_transcript TEXT NOT NULL DEFAULT '[]',
+    model_history TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_notes (
+    id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL,
+    note_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_message_id TEXT,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);
+CREATE INDEX IF NOT EXISTS idx_notes_unresolved ON session_notes(session_id, resolved);";
+
 impl SessionStore {
     pub fn new() -> Result<Self, SessionStoreError> {
         let dir = app_data_dir();
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("sessions.sqlite3"))?;
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
+        Self::from_connection(conn)
+    }
 
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY NOT NULL,
-                title TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'draft',
-                workspace_id TEXT,
-                display_transcript TEXT NOT NULL DEFAULT '[]',
-                model_history TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
-            CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
-            CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
-
-            CREATE TABLE IF NOT EXISTS session_notes (
-                id TEXT PRIMARY KEY NOT NULL,
-                session_id TEXT NOT NULL,
-                note_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                source_message_id TEXT,
-                resolved INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);
-            CREATE INDEX IF NOT EXISTS idx_notes_unresolved ON session_notes(session_id, resolved);",
-        )?;
+    fn from_connection(conn: Connection) -> Result<Self, SessionStoreError> {
+        conn.execute_batch(SESSION_STORE_SCHEMA)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_memory_for_test() -> Result<Self, SessionStoreError> {
+        Self::from_connection(Connection::open_in_memory()?)
     }
 
     pub fn create_session(
@@ -246,6 +256,25 @@ impl SessionStore {
         Ok(count)
     }
 
+    pub fn workspace_session_counts(&self) -> Result<HashMap<String, i64>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, COUNT(*)
+             FROM sessions
+             WHERE workspace_id IS NOT NULL AND workspace_id != '' AND status != 'draft'
+             GROUP BY workspace_id",
+        )?;
+        let rows = stmt.query_map(params![], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut counts = HashMap::new();
+        for row in rows {
+            let (workspace_id, count) = row?;
+            counts.insert(workspace_id, count);
+        }
+        Ok(counts)
+    }
+
     pub fn validate_workspace_binding(
         &self,
         session_id: &str,
@@ -373,40 +402,7 @@ mod tests {
     use super::*;
 
     fn test_store() -> SessionStore {
-        let dir = std::env::temp_dir().join(format!("gospel-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("test.sqlite3")).unwrap();
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
-
-            CREATE TABLE sessions (
-                id TEXT PRIMARY KEY NOT NULL,
-                title TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'draft',
-                workspace_id TEXT,
-                display_transcript TEXT NOT NULL DEFAULT '[]',
-                model_history TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE session_notes (
-                id TEXT PRIMARY KEY NOT NULL,
-                session_id TEXT NOT NULL,
-                note_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                source_message_id TEXT,
-                resolved INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-            );",
-        )
-        .unwrap();
-        SessionStore {
-            conn: Mutex::new(conn),
-        }
+        SessionStore::in_memory_for_test().unwrap()
     }
 
     #[test]
@@ -475,6 +471,47 @@ mod tests {
             .collect();
         assert!(unscoped_titles.contains(&"Unscoped".to_string()));
         assert!(!unscoped_titles.contains(&"Scoped".to_string()));
+    }
+
+    #[test]
+    fn workspace_session_counts_include_only_non_draft_workspace_sessions() {
+        let store = test_store();
+        let draft = store
+            .create_session("Draft", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let active = store
+            .create_session("Active", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let error = store
+            .create_session("Error", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let other = store
+            .create_session("Other", "openai", "gpt-4", Some("ws2"))
+            .unwrap();
+        let unscoped = store
+            .create_session("Unscoped", "openai", "gpt-4", None)
+            .unwrap();
+        let empty_ws = store
+            .create_session("EmptyWs", "openai", "gpt-4", Some(""))
+            .unwrap();
+
+        store.update_status(&active.id, "active").unwrap();
+        store.update_status(&error.id, "error").unwrap();
+        store.update_status(&other.id, "active").unwrap();
+        store.update_status(&unscoped.id, "active").unwrap();
+        store.update_status(&empty_ws.id, "active").unwrap();
+
+        let counts = store.workspace_session_counts().unwrap();
+
+        assert_eq!(counts.get("ws1"), Some(&2));
+        assert_eq!(counts.get("ws2"), Some(&1));
+        assert!(counts.get("ws3").is_none());
+        assert!(counts.get("").is_none());
+        assert_eq!(store.workspace_session_count("ws1").unwrap(), 2);
+        assert_eq!(
+            store.get_session(&draft.id).unwrap().unwrap().status,
+            "draft"
+        );
     }
 
     #[test]

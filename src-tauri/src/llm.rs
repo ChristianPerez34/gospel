@@ -187,7 +187,8 @@ use crate::corpus::tools::{
 };
 use crate::provider_client::provider_client;
 use crate::review::tools::{
-    create_record_review_outcome_tool, create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
+    create_record_review_outcome_tool, create_run_review_tool, create_run_security_review_tool,
+    REVIEW_TOOLS_SYSTEM_PROMPT,
 };
 use crate::workspace_tools::{
     build_base_workspace_tools_with_external_approval, create_context_search_tool,
@@ -821,6 +822,12 @@ where
                     ))
                     .tool(create_write_harness_file_tool(
                         workspace_context.workspace_path.clone(),
+                    ))
+                    .tool(create_run_review_tool(
+                        workspace_context.workspace_path.clone(),
+                        provider.to_string(),
+                        model.to_string(),
+                        api_key.to_string(),
                     ))
                     .tool(create_run_security_review_tool(
                         workspace_context.workspace_path.clone(),

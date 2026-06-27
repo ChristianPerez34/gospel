@@ -1,4 +1,10 @@
-import type { ReviewComment, ReviewMode, ReviewResult, SignalTier } from "./types";
+import type {
+  ReviewComment,
+  ReviewFocus,
+  ReviewMode,
+  ReviewResult,
+  SignalTier,
+} from "./types";
 
 interface ReviewFindingPromptContext {
   comment: ReviewComment;
@@ -12,6 +18,14 @@ const TIER_LABELS: Record<SignalTier, string> = {
   tier_2: "Tier 2",
   noise: "Noise",
   unclassified: "Unclassified",
+};
+
+const FOCUS_LABELS: Record<ReviewFocus, string> = {
+  Security: "Security",
+  BugHunt: "Bug hunt",
+  Architecture: "Architecture",
+  Performance: "Performance",
+  Style: "Style",
 };
 
 export function isActionableReviewFinding(comment: ReviewComment) {
@@ -46,6 +60,8 @@ function findingMetadata({
     optionalLine("Finding index", index),
     optionalLine("Finding ID", comment.comment_id),
     optionalLine("Tier", TIER_LABELS[comment.signal_tier]),
+    optionalLine("Focus", FOCUS_LABELS[review?.focus ?? comment.focus]),
+    optionalLine("Focus subcategory", comment.focus_subcategory),
     optionalLine("Severity", comment.severity),
     optionalLine("Category", comment.category),
     optionalLine("CWE", cweLabel(comment)),
@@ -59,7 +75,7 @@ function findingMetadata({
 export function buildExternalAgentFindingPrompt(context: ReviewFindingPromptContext) {
   const { comment } = context;
   const sections = [
-    "You are an external coding agent. Work from this single security review finding and keep the response scoped to it.",
+    "You are an external coding agent. Work from this single review finding and keep the response scoped to it.",
     ["Finding metadata:", ...findingMetadata(context)].join("\n"),
     `Title:\n${comment.title}`,
     `Description:\n${comment.description}`,
@@ -80,10 +96,11 @@ export function buildExternalAgentFindingPrompt(context: ReviewFindingPromptCont
 
 export function buildGospelFixFindingPrompt(context: ReviewFindingPromptContext) {
   const { comment, review } = context;
+  const focus = review?.focus ?? comment.focus;
   const rerunInstruction = review?.mode.type === "local"
-    ? "- After the minimal fix, rerun `run_security_review` in `local` mode if the changed scope is still local."
+    ? `- After the minimal fix, rerun \`run_review\` with focus \`${focus}\` in \`local\` mode if the changed scope is still local.`
     : review?.mode.type === "pull_request"
-      ? `- After the minimal fix, rerun \`run_security_review\` in \`pr\` mode for PR #${review.mode.pr_number}.`
+      ? `- After the minimal fix, rerun \`run_review\` with focus \`${focus}\` in \`pr\` mode for PR #${review.mode.pr_number}.`
       : null;
 
   const workflow = [
@@ -98,7 +115,7 @@ export function buildGospelFixFindingPrompt(context: ReviewFindingPromptContext)
 
   const sections = [
     `Start with file: ${comment.file}`,
-    "You are the main Gospel agent fixing one actionable security review finding in the active workspace.",
+    "You are the main Gospel agent fixing one actionable review finding in the active workspace.",
     ["Review metadata:", ...findingMetadata(context)].join("\n"),
     `Title:\n${comment.title}`,
     `Description:\n${comment.description}`,

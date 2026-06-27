@@ -1,5 +1,5 @@
 use super::signal::{percentage, SignalTier};
-use super::{ReviewComment, ReviewMode};
+use super::{ReviewComment, ReviewFocus, ReviewMode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -42,6 +42,8 @@ pub struct ReviewMetricsRecord {
     pub run_id: String,
     pub timestamp: DateTime<Utc>,
     pub mode: ReviewMode,
+    #[serde(default)]
+    pub focus: ReviewFocus,
     pub provider: String,
     pub model: String,
     pub total: usize,
@@ -61,6 +63,7 @@ impl ReviewMetricsRecord {
         run_id: String,
         timestamp: DateTime<Utc>,
         mode: ReviewMode,
+        focus: ReviewFocus,
         provider: String,
         model: String,
         comments: &[ReviewComment],
@@ -72,6 +75,7 @@ impl ReviewMetricsRecord {
             timestamp,
             pr_number: pr_number_for_mode(&mode),
             mode,
+            focus,
             provider,
             model,
             total: 0,
@@ -275,6 +279,8 @@ mod tests {
             line_end: 1,
             severity: Severity::Medium,
             category: category.to_string(),
+            focus: ReviewFocus::Security,
+            focus_subcategory: None,
             cwe_id: None,
             cwe_name: None,
             title: "Finding".to_string(),
@@ -295,6 +301,7 @@ mod tests {
             "run-1".to_string(),
             Utc::now(),
             ReviewMode::Local,
+            ReviewFocus::Security,
             "openai".to_string(),
             "model".to_string(),
             &[comment("injection", SignalTier::Tier1)],
@@ -316,6 +323,7 @@ mod tests {
             "run-1".to_string(),
             Utc::now(),
             ReviewMode::Local,
+            ReviewFocus::Security,
             "openai".to_string(),
             "model".to_string(),
             &[
@@ -329,6 +337,7 @@ mod tests {
             "run-2".to_string(),
             Utc::now(),
             ReviewMode::FullScan,
+            ReviewFocus::Security,
             "openai".to_string(),
             "model".to_string(),
             &[comment("style", SignalTier::Noise)],

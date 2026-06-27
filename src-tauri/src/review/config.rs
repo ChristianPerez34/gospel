@@ -120,7 +120,12 @@ mod tests {
               "noise_threshold_percent": 42,
               "signal_rules": {
                 "tier1_cwes": ["CWE-999"],
-                "noise_categories": ["cosmetic"]
+                "noise_categories": ["cosmetic"],
+                "per_focus": {
+                  "BugHunt": {
+                    "tier1_categories": ["state transition"]
+                  }
+                }
               }
             }"#,
         )
@@ -141,5 +146,12 @@ mod tests {
             .signal_rules
             .noise_categories
             .contains(&"cosmetic".to_string()));
+        assert!(config
+            .signal_rules
+            .per_focus
+            .get(&super::super::ReviewFocus::BugHunt)
+            .unwrap()
+            .tier1_categories
+            .contains(&"state transition".to_string()));
     }
 }

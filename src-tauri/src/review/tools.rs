@@ -1,5 +1,5 @@
 use super::outcome::{record_review_outcome, ReviewOutcome};
-use super::{run_review, ReviewComment, ReviewConfig, ReviewResult};
+use super::{run_review, ReviewComment, ReviewConfig, ReviewFocus, ReviewResult};
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
 use rig::completion::ToolDefinition;
@@ -10,9 +10,11 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub const REVIEW_TOOLS_SYSTEM_PROMPT: &str = r#"
-## Security Review Tools
+## Review Tools
 
-Use `run_security_review` when the user asks to review local changes, a pull request, or the full workspace for security findings.
+Use `run_review` when the user asks to review local changes, a pull request, or the full workspace. Set `focus` to `Security` for security findings.
+
+`run_security_review` is a deprecated compatibility alias. It always runs the `Security` focus and must not be used for other focuses.
 
 When narrating review results:
 - Prefix each visible finding with its stable index, e.g. `[1]`, `[2]`.
@@ -22,9 +24,28 @@ When narrating review results:
 "#;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunReviewArgs {
+    mode: String,
+    pr_number: Option<u64>,
+    #[serde(default)]
+    focus: ReviewFocus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunSecurityReviewArgs {
     mode: String,
     pr_number: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RunReviewTool {
+    workspace_root: PathBuf,
+    provider: String,
+    model: String,
+    #[serde(skip_serializing, skip_deserializing)]
+    api_key: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -34,6 +55,18 @@ pub struct RunSecurityReviewTool {
     model: String,
     #[serde(skip_serializing, skip_deserializing)]
     api_key: String,
+}
+
+impl fmt::Debug for RunReviewTool {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RunReviewTool")
+            .field("workspace_root", &self.workspace_root)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &"REDACTED")
+            .finish()
+    }
 }
 
 impl fmt::Debug for RunSecurityReviewTool {
@@ -56,7 +89,7 @@ pub struct IndexedReviewComment {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RunSecurityReviewOutput {
+pub struct RunReviewOutput {
     pub success: bool,
     pub message: String,
     pub reason: Option<String>,
@@ -64,71 +97,156 @@ pub struct RunSecurityReviewOutput {
     pub findings: Vec<IndexedReviewComment>,
 }
 
+impl Tool for RunReviewTool {
+    const NAME: &'static str = "run_review";
+
+    type Error = WorkspaceToolError;
+    type Args = RunReviewArgs;
+    type Output = RunReviewOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Run Gospel's code review pipeline for a single review focus over local changes, a pull request, or the full workspace and return structured findings.".to_string(),
+            parameters: review_tool_parameters(true),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        run_review_tool(
+            self.workspace_root.clone(),
+            self.provider.clone(),
+            self.model.clone(),
+            self.api_key.clone(),
+            args.mode,
+            args.pr_number,
+            args.focus,
+        )
+        .await
+    }
+}
+
 impl Tool for RunSecurityReviewTool {
     const NAME: &'static str = "run_security_review";
 
     type Error = WorkspaceToolError;
     type Args = RunSecurityReviewArgs;
-    type Output = RunSecurityReviewOutput;
+    type Output = RunReviewOutput;
 
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Run Gospel's security review pipeline for local changes, a pull request, or the full workspace and return structured findings.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "mode": {
-                        "type": "string",
-                        "enum": ["local", "pr", "scan"],
-                        "description": "Review mode: local staged/unstaged changes, a GitHub pull request, or a full workspace scan."
-                    },
-                    "pr_number": {
-                        "type": "integer",
-                        "description": "Required when mode is pr."
-                    }
-                },
-                "required": ["mode"]
-            }),
+            description: "Deprecated alias for run_review with focus fixed to Security. Run Gospel's security review pipeline for local changes, a pull request, or the full workspace and return structured findings.".to_string(),
+            parameters: review_tool_parameters(false),
         }
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let config = ReviewConfig {
-            provider: self.provider.clone(),
-            model: self.model.clone(),
-            mode: args.mode,
-            pr_number: args.pr_number,
-        };
+        run_review_tool(
+            self.workspace_root.clone(),
+            self.provider.clone(),
+            self.model.clone(),
+            self.api_key.clone(),
+            args.mode,
+            args.pr_number,
+            ReviewFocus::Security,
+        )
+        .await
+    }
+}
 
-        match run_review(config, self.workspace_root.clone(), self.api_key.clone()).await {
-            Ok(review) => {
-                let findings = review
-                    .comments
-                    .iter()
-                    .cloned()
-                    .enumerate()
-                    .map(|(index, comment)| IndexedReviewComment {
-                        index: index + 1,
-                        comment,
-                    })
-                    .collect();
-                Ok(RunSecurityReviewOutput {
-                    success: true,
-                    message: review.summary.clone(),
-                    reason: None,
-                    review: Some(review),
-                    findings,
-                })
-            }
-            Err(error) => Ok(RunSecurityReviewOutput {
-                success: false,
-                message: format!("Security review failed: {}", error),
-                reason: Some("review_failed".to_string()),
-                review: None,
-                findings: Vec::new(),
+fn review_tool_parameters(include_focus: bool) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "mode".to_string(),
+        json!({
+            "type": "string",
+            "enum": ["local", "pr", "scan"],
+            "description": "Review mode: local staged/unstaged changes, a GitHub pull request, or a full workspace scan."
+        }),
+    );
+    properties.insert(
+        "pr_number".to_string(),
+        json!({
+            "type": "integer",
+            "description": "Required when mode is pr."
+        }),
+    );
+    if include_focus {
+        properties.insert(
+            "focus".to_string(),
+            json!({
+                "type": "string",
+                "enum": ["Security"],
+                "description": "Review focus for this single invocation. Phase 1 accepts only Security."
             }),
+        );
+    }
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": ["mode"]
+    })
+}
+
+async fn run_review_tool(
+    workspace_root: PathBuf,
+    provider: String,
+    model: String,
+    api_key: String,
+    mode: String,
+    pr_number: Option<u64>,
+    focus: ReviewFocus,
+) -> Result<RunReviewOutput, WorkspaceToolError> {
+    if focus != ReviewFocus::Security {
+        return Ok(RunReviewOutput {
+            success: false,
+            message: format!(
+                "{} review focus is not available yet. Use Security for now.",
+                focus
+            ),
+            reason: Some("focus_not_available".to_string()),
+            review: None,
+            findings: Vec::new(),
+        });
+    }
+
+    let config = ReviewConfig {
+        provider,
+        model,
+        mode,
+        focus,
+        pr_number,
+    };
+
+    match run_review(config, workspace_root, api_key).await {
+        Ok(review) => {
+            let findings = review
+                .comments
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, comment)| IndexedReviewComment {
+                    index: index + 1,
+                    comment,
+                })
+                .collect();
+            Ok(RunReviewOutput {
+                success: true,
+                message: review.summary.clone(),
+                reason: None,
+                review: Some(review),
+                findings,
+            })
         }
+        Err(error) => Ok(RunReviewOutput {
+            success: false,
+            message: format!("{} review failed: {}", focus, error),
+            reason: Some("review_failed".to_string()),
+            review: None,
+            findings: Vec::new(),
+        }),
     }
 }
 
@@ -164,13 +282,13 @@ impl Tool for RecordReviewOutcomeTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Record whether a security review finding was accepted or rejected. Validates the run_id and comment_id before writing outcome storage.".to_string(),
+            description: "Record whether a review finding was accepted or rejected. Validates the run_id and comment_id before writing outcome storage.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "run_id": {
                         "type": "string",
-                        "description": "The run_id returned by run_security_review."
+                        "description": "The run_id returned by run_review."
                     },
                     "comment_id": {
                         "type": "string",
@@ -228,6 +346,20 @@ pub fn create_run_security_review_tool(
     }
 }
 
+pub fn create_run_review_tool(
+    workspace_root: PathBuf,
+    provider: String,
+    model: String,
+    api_key: String,
+) -> RunReviewTool {
+    RunReviewTool {
+        workspace_root,
+        provider,
+        model,
+        api_key,
+    }
+}
+
 pub fn create_record_review_outcome_tool(workspace_root: PathBuf) -> RecordReviewOutcomeTool {
     RecordReviewOutcomeTool { workspace_root }
 }
@@ -252,5 +384,82 @@ mod tests {
         let serialized = serde_json::to_string(&tool).unwrap();
         assert!(!serialized.contains("api_key"));
         assert!(!serialized.contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn run_review_tool_redacts_api_key_from_debug_and_serialization() {
+        let tool = create_run_review_tool(
+            PathBuf::from("/workspace"),
+            "openai".to_string(),
+            "gpt-test".to_string(),
+            "sk-secret-value".to_string(),
+        );
+
+        let debug = format!("{:?}", tool);
+        assert!(debug.contains("REDACTED"));
+        assert!(!debug.contains("sk-secret-value"));
+
+        let serialized = serde_json::to_string(&tool).unwrap();
+        assert!(!serialized.contains("api_key"));
+        assert!(!serialized.contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn run_security_review_alias_rejects_focus_argument() {
+        let parsed = serde_json::from_value::<RunSecurityReviewArgs>(json!({
+            "mode": "local",
+            "focus": "BugHunt"
+        }));
+
+        assert!(parsed.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_review_tool_definition_exposes_focus_but_alias_does_not() {
+        let canonical = create_run_review_tool(
+            PathBuf::from("/workspace"),
+            "openai".to_string(),
+            "gpt-test".to_string(),
+            "sk-secret-value".to_string(),
+        );
+        let alias = create_run_security_review_tool(
+            PathBuf::from("/workspace"),
+            "openai".to_string(),
+            "gpt-test".to_string(),
+            "sk-secret-value".to_string(),
+        );
+
+        let canonical_parameters = canonical.definition(String::new()).await.parameters;
+        let alias_parameters = alias.definition(String::new()).await.parameters;
+
+        assert!(canonical_parameters.to_string().contains("focus"));
+        assert_eq!(
+            canonical_parameters["properties"]["focus"]["enum"],
+            json!(["Security"])
+        );
+        assert!(!alias_parameters.to_string().contains("focus"));
+    }
+
+    #[tokio::test]
+    async fn run_review_tool_rejects_non_security_focus_before_dispatch() {
+        let output = run_review_tool(
+            PathBuf::from("/workspace"),
+            "openai".to_string(),
+            "gpt-test".to_string(),
+            "sk-secret-value".to_string(),
+            "local".to_string(),
+            None,
+            ReviewFocus::BugHunt,
+        )
+        .await
+        .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.reason.as_deref(), Some("focus_not_available"));
+        assert!(output
+            .message
+            .contains("BugHunt review focus is not available"));
+        assert!(output.review.is_none());
+        assert!(output.findings.is_empty());
     }
 }

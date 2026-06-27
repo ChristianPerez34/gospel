@@ -12,6 +12,8 @@ const actionableComment: ReviewComment = {
   line_end: 12,
   severity: "High",
   category: "injection",
+  focus: "Security",
+  focus_subcategory: null,
   cwe_id: "CWE-78",
   cwe_name: "OS Command Injection",
   title: "Unsanitized command",
@@ -33,6 +35,7 @@ const noiseComment: ReviewComment = {
 
 const reviewResult: ReviewResult = {
   run_id: "run-1",
+  focus: "Security",
   comments: [actionableComment, noiseComment],
   summary: "Found two findings.",
   validated: true,
@@ -123,7 +126,8 @@ describe("ReviewPanel", () => {
     const prompt = onFixFinding.mock.calls[0]![0];
     expect(prompt.startsWith("Start with file: src/main.rs")).toBe(true);
     expect(prompt).toContain("Do not call `record_review_outcome`");
-    expect(prompt).toContain("run_security_review");
+    expect(prompt).toContain("run_review");
+    expect(prompt).not.toContain("run_security_review");
   });
 
   it("disables Fix issue when Gospel cannot send a turn but leaves Copy to agent enabled", async () => {
