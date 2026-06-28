@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentStatus,
@@ -27,6 +34,8 @@ export interface SessionManagerErrorAction {
 export interface UseSessionManagerParams {
   models: ModelOption[];
   selectedModel: SelectedModel | null;
+  sessions: Session[];
+  onSessionsChange: Dispatch<SetStateAction<Session[]>>;
   activeWorkspaceId?: string;
   onSwitchWorkspace?: (workspaceId: string) => Promise<boolean>;
   onError?: (message: string, action?: SessionManagerErrorAction) => void;
@@ -50,75 +59,43 @@ export interface UseSessionManagerResult {
 export function useSessionManager({
   models,
   selectedModel,
+  sessions,
+  onSessionsChange,
   activeWorkspaceId,
   onSwitchWorkspace,
   onError,
   onSuccess,
   onOpenSettings,
 }: UseSessionManagerParams): UseSessionManagerResult {
-  const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const statusRef = useRef(status);
   statusRef.current = status;
   const latestSelectedSessionRef = useRef<string | null>(null);
-  const hasLoadedSessionsRef = useRef(false);
-
-  interface BackendSessionRecord {
-    id: string;
-    title: string;
-    provider: string;
-    model: string;
-    status: string;
-    workspace_id: string | null;
-    updated_at: string;
-  }
-
-  const mapBackendSessions = useCallback((backendSessions: BackendSessionRecord[]) => {
-    return backendSessions.map((s) => ({
-      id: s.id,
-      title: s.title,
-      provider: s.provider,
-      model: s.model,
-      timestamp: new Date(s.updated_at),
-      messages: [],
-      status: (s.status === "active" ? "idle" : "error") as Session["status"],
-      backendCreated: true,
-      workspaceId: s.workspace_id ?? undefined,
-    }));
-  }, []);
-
-  const loadSessions = useCallback(
-    async (workspaceId?: string) => {
-      const args = workspaceId ? { workspace_id: workspaceId } : {};
-      const backendSessions = await invoke<BackendSessionRecord[]>("list_sessions", args);
-      const loadedSessions = mapBackendSessions(backendSessions);
-      setSessions(loadedSessions);
-      return loadedSessions;
-    },
-    [mapBackendSessions],
-  );
+  const skipNextWorkspaceResetRef = useRef<string | null>(null);
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
-  // Load persisted sessions from backend on mount and when workspace changes.
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
 
     const workspaceChanged = prevWorkspaceRef.current !== activeWorkspaceId;
-    if (hasLoadedSessionsRef.current && workspaceChanged) {
-      latestSelectedSessionRef.current = null;
-      setActiveSessionId(null);
-      setMessages([]);
-    }
+    if (!workspaceChanged) return;
 
     prevWorkspaceRef.current = activeWorkspaceId;
-    hasLoadedSessionsRef.current = true;
+    if (
+      skipNextWorkspaceResetRef.current &&
+      skipNextWorkspaceResetRef.current === activeWorkspaceId
+    ) {
+      skipNextWorkspaceResetRef.current = null;
+      return;
+    }
 
-    loadSessions(activeWorkspaceId).catch((e) => {
-      console.warn("Failed to load sessions from backend:", e);
-    });
-  }, [activeWorkspaceId, status, loadSessions]);
+    skipNextWorkspaceResetRef.current = null;
+    latestSelectedSessionRef.current = null;
+    setActiveSessionId(null);
+    setMessages([]);
+  }, [activeWorkspaceId, status]);
 
   const {
     currentTurn,
@@ -142,7 +119,7 @@ export function useSessionManager({
 
   useEffect(() => {
     if (!activeSessionId) return;
-    setSessions((prev) =>
+    onSessionsChange((prev) =>
       prev.map((session) =>
         session.id === activeSessionId
           ? {
@@ -153,7 +130,7 @@ export function useSessionManager({
           : session
       )
     );
-  }, [activeSessionId, messages]);
+  }, [activeSessionId, messages, onSessionsChange]);
 
   const handleSend = useCallback(
     async (message: string, invokedSkill?: { name: string; args?: string }) => {
@@ -192,11 +169,14 @@ export function useSessionManager({
         // Try backend session creation first
         let backendSession: { id: string } | null = null;
         try {
-          backendSession = await invoke<{ id: string }>("create_session", {
-            title,
-            provider: selectedModel.provider,
-            model: selectedModel.model,
-          });
+          if (activeWorkspaceId) {
+            backendSession = await invoke<{ id: string }>("create_session", {
+              title,
+              provider: selectedModel.provider,
+              model: selectedModel.model,
+              workspaceId: activeWorkspaceId,
+            });
+          }
         } catch (e) {
           console.warn("Backend session creation failed, using local session:", e);
         }
@@ -211,8 +191,9 @@ export function useSessionManager({
           messages: [userMsg],
           status: "active",
           backendCreated: !!backendSession,
+          workspaceId: activeWorkspaceId,
         };
-        setSessions((prev) => [newSession, ...prev]);
+        onSessionsChange((prev) => [newSession, ...prev]);
         setActiveSessionId(sessionId);
         effectiveSessionId = sessionId;
       }
@@ -234,7 +215,17 @@ export function useSessionManager({
         });
       }
     },
-    [activeSessionId, models, selectedModel, onError, onOpenSettings, resetStream, startStream],
+    [
+      activeSessionId,
+      activeWorkspaceId,
+      models,
+      onError,
+      onOpenSettings,
+      onSessionsChange,
+      resetStream,
+      selectedModel,
+      startStream,
+    ],
   );
 
   const handleSessionSelect = useCallback(
@@ -244,29 +235,20 @@ export function useSessionManager({
       latestSelectedSessionRef.current = selectionId;
 
       try {
-        let selectedSession = session;
+        const selectedSession = session;
 
         if (
           onSwitchWorkspace &&
           selectedSession.workspaceId &&
-          activeWorkspaceId &&
           selectedSession.workspaceId !== activeWorkspaceId
         ) {
+          skipNextWorkspaceResetRef.current = selectedSession.workspaceId;
           const switched = await onSwitchWorkspace(selectedSession.workspaceId);
           if (!switched) {
+            skipNextWorkspaceResetRef.current = null;
             onError?.("Unable to switch workspace for this session.");
             return;
           }
-
-          const reloadedSessions = await loadSessions(selectedSession.workspaceId);
-          const matched = reloadedSessions.find((s) => s.id === session.id);
-          if (!matched) {
-            if (latestSelectedSessionRef.current !== selectionId) return;
-            onError?.("Selected session was not found in the target workspace.");
-            return;
-          }
-
-          selectedSession = matched;
         }
 
         // If session was backend-created and has no local messages, load from backend
@@ -305,11 +287,13 @@ export function useSessionManager({
 
             setActiveSessionId(selectedSession.id);
             setMessages(loadedMessages);
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id === selectedSession.id ? { ...s, messages: loadedMessages } : s,
-              ),
-            );
+            onSessionsChange((prev) => {
+              const updated = { ...selectedSession, messages: loadedMessages };
+              if (!prev.some((s) => s.id === selectedSession.id)) {
+                return [updated, ...prev];
+              }
+              return prev.map((s) => (s.id === selectedSession.id ? updated : s));
+            });
             return;
           } catch (e) {
             if (latestSelectedSessionRef.current !== selectionId) return;
@@ -325,7 +309,7 @@ export function useSessionManager({
         onError?.(`Unable to open session: ${e}`);
       }
     },
-    [activeWorkspaceId, loadSessions, onError, onSwitchWorkspace],
+    [activeWorkspaceId, onError, onSessionsChange, onSwitchWorkspace],
   );
 
   const handleNewSession = useCallback(() => {

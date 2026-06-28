@@ -1511,24 +1511,18 @@ fn reload_skills(
 #[tauri::command]
 fn create_session(
     session_store: tauri::State<'_, SessionStoreState>,
-    app_config: tauri::State<'_, AppConfigState>,
     title: String,
     provider: String,
     model: String,
+    workspace_id: String,
 ) -> Result<SessionRecord, String> {
-    let workspace_id = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
-        None => None,
+    if workspace_id.is_empty() {
+        return Err("workspace_id is required".to_string());
     }
-    .flatten();
 
     match &session_store.store {
         Some(store) => store
-            .create_session(&title, &provider, &model, workspace_id.as_deref())
+            .create_session(&title, &provider, &model, &workspace_id)
             .map_err(|e| e.to_string()),
         None => Err(session_store
             .init_warning
@@ -2083,21 +2077,17 @@ mod workspace_response_tests {
 
         let session_store = SessionStore::in_memory_for_test().unwrap();
         let active = session_store
-            .create_session("Active", "openai", "gpt-4", Some(&first_workspace.id))
+            .create_session("Active", "openai", "gpt-4", &first_workspace.id)
             .unwrap();
         let errored = session_store
-            .create_session("Errored", "openai", "gpt-4", Some(&first_workspace.id))
+            .create_session("Errored", "openai", "gpt-4", &first_workspace.id)
             .unwrap();
         let draft = session_store
-            .create_session("Draft", "openai", "gpt-4", Some(&first_workspace.id))
-            .unwrap();
-        let unscoped = session_store
-            .create_session("Unscoped", "openai", "gpt-4", None)
+            .create_session("Draft", "openai", "gpt-4", &first_workspace.id)
             .unwrap();
 
         session_store.update_status(&active.id, "active").unwrap();
         session_store.update_status(&errored.id, "error").unwrap();
-        session_store.update_status(&unscoped.id, "active").unwrap();
 
         let app_state = AppConfigState {
             store: Some(app_store),

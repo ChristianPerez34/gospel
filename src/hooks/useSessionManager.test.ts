@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { useState } from "react";
 import { renderHook, act } from "@testing-library/react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { useSessionManager } from "./useSessionManager";
+import { useSessionManager, type UseSessionManagerParams } from "./useSessionManager";
 import type { Message, ModelOption, Session } from "../types";
 
 type ListenerCallback = (event: { payload: unknown }) => void;
@@ -45,6 +46,32 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
+type RenderSessionManagerOptions = Partial<
+  Omit<UseSessionManagerParams, "sessions" | "onSessionsChange">
+> & {
+  initialSessions?: Session[];
+};
+
+function renderSessionManager(options: RenderSessionManagerOptions = {}) {
+  const {
+    initialSessions = [],
+    models = SAMPLE_MODELS,
+    selectedModel = { provider: "openai", model: "gpt-4o" },
+    ...rest
+  } = options;
+
+  return renderHook(() => {
+    const [sessions, setSessions] = useState<Session[]>(initialSessions);
+    return useSessionManager({
+      models,
+      selectedModel,
+      sessions,
+      onSessionsChange: setSessions,
+      ...rest,
+    });
+  });
+}
+
 describe("useSessionManager", () => {
   beforeEach(() => {
     capturedListeners = {};
@@ -65,12 +92,7 @@ describe("useSessionManager", () => {
 
   describe("session lifecycle", () => {
     it("creates a new session, sets activeSessionId, and adds the user message when sending without an active session", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -88,13 +110,36 @@ describe("useSessionManager", () => {
       expect(userMessage?.content).toBe("hello");
     });
 
+    it("passes the active workspace id when creating a backend session", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "backend-session" };
+        return undefined;
+      });
+
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("hello");
+      });
+
+      expect(invoke).toHaveBeenCalledWith("create_session", {
+        title: "hello",
+        provider: "openai",
+        model: "gpt-4o",
+        workspaceId: "ws-active",
+      });
+      expect(result.current.activeSessionId).toBe("backend-session");
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "backend-session",
+        backendCreated: true,
+        workspaceId: "ws-active",
+      });
+    });
+
     it("uses the first 50 chars of the message as the session title and truncates with ellipsis", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       const longPrompt = "x".repeat(80);
       await act(async () => {
@@ -107,12 +152,7 @@ describe("useSessionManager", () => {
     });
 
     it("does not create a new session when one is already active and reuses the existing one", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("first");
@@ -133,12 +173,7 @@ describe("useSessionManager", () => {
     });
 
     it("handleSessionSelect switches activeSessionId and loads that session's messages", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       const target = makeSession({
         id: "s-target",
@@ -166,26 +201,7 @@ describe("useSessionManager", () => {
       const onError = vi.fn();
 
       vi.mocked(invoke).mockImplementation(async (...callArgs: Parameters<typeof invoke>) => {
-        const [cmd, rawParams] = callArgs;
-        const params = rawParams as { workspace_id?: string } | undefined;
-
-        if (cmd === "list_sessions") {
-          if (params?.workspace_id === "ws-other") {
-            return [
-              {
-                id: "s-target",
-                title: "Target in ws-other",
-                provider: "openai",
-                model: "gpt-4o",
-                status: "active",
-                workspace_id: "ws-other",
-                updated_at: "2024-01-02T00:00:00.000Z",
-              },
-            ];
-          }
-          return [];
-        }
-
+        const [cmd] = callArgs;
         if (cmd === "get_session") {
           return {
             id: "s-target",
@@ -213,15 +229,11 @@ describe("useSessionManager", () => {
         return undefined;
       });
 
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-          activeWorkspaceId: "ws-active",
-          onSwitchWorkspace,
-          onError,
-        }),
-      );
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+        onError,
+      });
 
       const target = makeSession({
         id: "s-target",
@@ -236,7 +248,6 @@ describe("useSessionManager", () => {
       });
 
       expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
-      expect(invoke).toHaveBeenCalledWith("list_sessions", { workspace_id: "ws-other" });
       expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-target" });
       expect(result.current.activeSessionId).toBe("s-target");
       expect(result.current.messages.map((m) => m.content)).toEqual([
@@ -259,15 +270,11 @@ describe("useSessionManager", () => {
       const onSwitchWorkspace = vi.fn().mockResolvedValue(false);
       const onError = vi.fn();
 
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-          activeWorkspaceId: "ws-active",
-          onSwitchWorkspace,
-          onError,
-        }),
-      );
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+        onError,
+      });
 
       const target = makeSession({
         id: "s-other",
@@ -302,12 +309,7 @@ describe("useSessionManager", () => {
         return undefined;
       });
 
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       const restored = makeSession({
         id: "s-restored",
@@ -334,12 +336,7 @@ describe("useSessionManager", () => {
     });
 
     it("handleSessionSelect replaces streamed block history from the previous session", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");
@@ -374,12 +371,7 @@ describe("useSessionManager", () => {
     });
 
     it("handleNewSession resets messages to empty and activeSessionId to null", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -399,12 +391,7 @@ describe("useSessionManager", () => {
 
   describe("message orchestration", () => {
     it("invokes startStream with the correct provider, model, prompt, and sessionId when a valid model is selected", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hello world");
@@ -423,13 +410,10 @@ describe("useSessionManager", () => {
 
     it("invokes onError and does not call startStream when no model is selected", async () => {
       const onError = vi.fn();
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: null,
-          onError,
-        }),
-      );
+      const { result } = renderSessionManager({
+        selectedModel: null,
+        onError,
+      });
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -445,13 +429,10 @@ describe("useSessionManager", () => {
 
     it("invokes onError and does not call startStream when the selected model is not in the models list", async () => {
       const onError = vi.fn();
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-99-not-listed" },
-          onError,
-        }),
-      );
+      const { result } = renderSessionManager({
+        selectedModel: { provider: "openai", model: "gpt-99-not-listed" },
+        onError,
+      });
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -472,13 +453,9 @@ describe("useSessionManager", () => {
       });
 
       const onError = vi.fn();
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-          onError,
-        }),
-      );
+      const { result } = renderSessionManager({
+        onError,
+      });
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -491,34 +468,22 @@ describe("useSessionManager", () => {
 
   describe("status derivation", () => {
     it("initial status is 'idle' when no models are available", () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: [],
-          selectedModel: null,
-        }),
-      );
+      const { result } = renderSessionManager({
+        models: [],
+        selectedModel: null,
+      });
 
       expect(result.current.status).toBe("idle");
     });
 
     it("initial status is 'connected' when at least one model is available", () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       expect(result.current.status).toBe("connected");
     });
 
     it("transitions to 'thinking' when handleSend is called", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       expect(result.current.status).toBe("connected");
 
@@ -530,12 +495,7 @@ describe("useSessionManager", () => {
     });
 
     it("transitions to 'connected' when the onStatusChange callback receives 'connected' from useChatStream", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -553,12 +513,7 @@ describe("useSessionManager", () => {
     });
 
     it("transitions to 'acting' when the onStatusChange callback receives 'acting' from useChatStream", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -575,12 +530,7 @@ describe("useSessionManager", () => {
     });
 
     it("transitions to 'error' when the onStatusChange callback receives 'error' from useChatStream", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hello");
@@ -597,12 +547,7 @@ describe("useSessionManager", () => {
     });
 
     it("appends the streamed assistant message to messages when llm-done fires", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");
@@ -623,12 +568,7 @@ describe("useSessionManager", () => {
     });
 
     it("creates a stable currentTurn from the first streamed token", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");
@@ -657,12 +597,7 @@ describe("useSessionManager", () => {
     });
 
     it("groups live text and tool blocks inside currentTurn and finalizes them into the assistant message", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");
@@ -735,12 +670,7 @@ describe("useSessionManager", () => {
 
     it("warns and appends a completed tool block when an llm-tool-result arrives with no matching call", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");
@@ -771,12 +701,7 @@ describe("useSessionManager", () => {
     });
 
     it("clears the live turn on errors while preserving tool blocks on the error message", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");
@@ -820,12 +745,7 @@ describe("useSessionManager", () => {
 
   describe("session message sync", () => {
     it("persists streamed assistant messages into the active session after llm-done", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");
@@ -846,12 +766,7 @@ describe("useSessionManager", () => {
     });
 
     it("accepts llm-done object payload while preserving action content", async () => {
-      const { result } = renderHook(() =>
-        useSessionManager({
-          models: SAMPLE_MODELS,
-          selectedModel: { provider: "openai", model: "gpt-4o" },
-        }),
-      );
+      const { result } = renderSessionManager();
 
       await act(async () => {
         await result.current.handleSend("hi");

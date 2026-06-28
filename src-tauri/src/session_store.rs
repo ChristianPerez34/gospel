@@ -103,6 +103,7 @@ impl SessionStore {
 
     fn from_connection(conn: Connection) -> Result<Self, SessionStoreError> {
         conn.execute_batch(SESSION_STORE_SCHEMA)?;
+        conn.execute("DELETE FROM sessions WHERE workspace_id IS NULL", params![])?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -114,6 +115,16 @@ impl SessionStore {
     }
 
     pub fn create_session(
+        &self,
+        title: &str,
+        provider: &str,
+        model: &str,
+        workspace_id: &str,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        self.insert_session(title, provider, model, Some(workspace_id))
+    }
+
+    fn insert_session(
         &self,
         title: &str,
         provider: &str,
@@ -137,6 +148,16 @@ impl SessionStore {
             created_at: String::new(),
             updated_at: String::new(),
         })
+    }
+
+    #[cfg(test)]
+    fn create_unscoped_session_for_test(
+        &self,
+        title: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        self.insert_session(title, provider, model, None)
     }
 
     pub fn get_session(&self, id: &str) -> Result<Option<SessionDetail>, SessionStoreError> {
@@ -174,7 +195,8 @@ impl SessionStore {
         let mut stmt = conn.prepare(
             "SELECT id, title, provider, model, status, workspace_id, created_at, updated_at
              FROM sessions
-             WHERE workspace_id IS ?1 AND status != 'draft'
+             WHERE ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)
+                AND status != 'draft'
              ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map(params![workspace_id], |row| {
@@ -409,24 +431,55 @@ mod tests {
     fn create_and_get_session() {
         let store = test_store();
         let session = store
-            .create_session("Test Session", "openai", "gpt-4", None)
+            .create_session("Test Session", "openai", "gpt-4", "ws1")
             .unwrap();
         assert_eq!(session.title, "Test Session");
         assert_eq!(session.status, "draft");
+        assert_eq!(session.workspace_id.as_deref(), Some("ws1"));
 
         let detail = store.get_session(&session.id).unwrap().unwrap();
         assert_eq!(detail.id, session.id);
+        assert_eq!(detail.workspace_id.as_deref(), Some("ws1"));
         assert_eq!(detail.display_transcript, "[]");
+    }
+
+    #[test]
+    fn from_connection_deletes_sessions_without_workspace() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SESSION_STORE_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title, provider, model, status, workspace_id)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            params![
+                "orphan-session",
+                "Orphan",
+                "openai",
+                "gpt-4",
+                Option::<&str>::None
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title, provider, model, status, workspace_id)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            params!["workspace-session", "Scoped", "openai", "gpt-4", "ws1"],
+        )
+        .unwrap();
+
+        let store = SessionStore::from_connection(conn).unwrap();
+
+        assert!(store.get_session("orphan-session").unwrap().is_none());
+        assert!(store.get_session("workspace-session").unwrap().is_some());
     }
 
     #[test]
     fn list_filters_drafts() {
         let store = test_store();
         store
-            .create_session("Draft", "openai", "gpt-4", Some("ws1"))
+            .create_session("Draft", "openai", "gpt-4", "ws1")
             .unwrap();
         let s = store
-            .create_session("Active", "openai", "gpt-4", Some("ws1"))
+            .create_session("Active", "openai", "gpt-4", "ws1")
             .unwrap();
         store.update_status(&s.id, "active").unwrap();
 
@@ -439,13 +492,13 @@ mod tests {
     fn list_workspace_excludes_unscoped_sessions() {
         let store = test_store();
         let unscoped = store
-            .create_session("Unscoped", "openai", "gpt-4", None)
+            .create_unscoped_session_for_test("Unscoped", "openai", "gpt-4")
             .unwrap();
         let scoped = store
-            .create_session("Scoped", "openai", "gpt-4", Some("ws1"))
+            .create_session("Scoped", "openai", "gpt-4", "ws1")
             .unwrap();
         let other = store
-            .create_session("Other", "openai", "gpt-4", Some("ws2"))
+            .create_session("Other", "openai", "gpt-4", "ws2")
             .unwrap();
 
         store.update_status(&unscoped.id, "active").unwrap();
@@ -477,22 +530,22 @@ mod tests {
     fn workspace_session_counts_include_only_non_draft_workspace_sessions() {
         let store = test_store();
         let draft = store
-            .create_session("Draft", "openai", "gpt-4", Some("ws1"))
+            .create_session("Draft", "openai", "gpt-4", "ws1")
             .unwrap();
         let active = store
-            .create_session("Active", "openai", "gpt-4", Some("ws1"))
+            .create_session("Active", "openai", "gpt-4", "ws1")
             .unwrap();
         let error = store
-            .create_session("Error", "openai", "gpt-4", Some("ws1"))
+            .create_session("Error", "openai", "gpt-4", "ws1")
             .unwrap();
         let other = store
-            .create_session("Other", "openai", "gpt-4", Some("ws2"))
+            .create_session("Other", "openai", "gpt-4", "ws2")
             .unwrap();
         let unscoped = store
-            .create_session("Unscoped", "openai", "gpt-4", None)
+            .create_unscoped_session_for_test("Unscoped", "openai", "gpt-4")
             .unwrap();
         let empty_ws = store
-            .create_session("EmptyWs", "openai", "gpt-4", Some(""))
+            .create_session("EmptyWs", "openai", "gpt-4", "")
             .unwrap();
 
         store.update_status(&active.id, "active").unwrap();
@@ -518,7 +571,7 @@ mod tests {
     fn unscoped_sessions_cannot_continue_inside_workspace() {
         let store = test_store();
         let unscoped = store
-            .create_session("Unscoped", "openai", "gpt-4", None)
+            .create_unscoped_session_for_test("Unscoped", "openai", "gpt-4")
             .unwrap();
 
         assert!(store.validate_workspace_binding(&unscoped.id, None).is_ok());
@@ -531,7 +584,7 @@ mod tests {
     fn delete_session_removes_record() {
         let store = test_store();
         let s = store
-            .create_session("To Delete", "openai", "gpt-4", None)
+            .create_session("To Delete", "openai", "gpt-4", "ws1")
             .unwrap();
         store.delete_session(&s.id).unwrap();
         assert!(store.get_session(&s.id).unwrap().is_none());
@@ -541,7 +594,7 @@ mod tests {
     fn delete_session_cascades_notes() {
         let store = test_store();
         let s = store
-            .create_session("With Note", "openai", "gpt-4", None)
+            .create_session("With Note", "openai", "gpt-4", "ws1")
             .unwrap();
         let note = store
             .create_note(&s.id, "verification_concern", "Check this", None)
@@ -556,7 +609,7 @@ mod tests {
     fn persist_turn_stores_transcript_and_history() {
         let store = test_store();
         let s = store
-            .create_session("Turn Test", "openai", "gpt-4", None)
+            .create_session("Turn Test", "openai", "gpt-4", "ws1")
             .unwrap();
         store
             .persist_turn(
@@ -581,7 +634,7 @@ mod tests {
 
         let store = test_store();
         let s = store
-            .create_session("Round Trip", "openai", "gpt-4", None)
+            .create_session("Round Trip", "openai", "gpt-4", "ws1")
             .unwrap();
 
         let original: Vec<Message> = vec![

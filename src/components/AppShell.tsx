@@ -70,17 +70,19 @@ export function AppShell() {
     onSuccess: showSuccess,
   });
 
+  const [sessions, setSessions] = useState<Session[]>([]);
+
   const session = useSessionManager({
     models,
     selectedModel,
+    sessions,
+    onSessionsChange: setSessions,
     activeWorkspaceId: activeWorkspace?.id,
     onSwitchWorkspace: switchWorkspace,
     onError: showError,
     onSuccess: showSuccess,
     onOpenSettings: openSettings,
   });
-
-  const [allWorkspaceSessions, setAllWorkspaceSessions] = useState<Session[]>([]);
 
   const workspaceNames = useMemo<Record<string, string>>(() => {
     const names: Record<string, string> = {};
@@ -90,7 +92,7 @@ export function AppShell() {
     return names;
   }, [workspaces]);
 
-  const mapBackendSessions = useCallback((backendSessions: BackendSessionRecord[]) => {
+  const mapBackendSessions = useCallback((backendSessions: BackendSessionRecord[]): Session[] => {
     return backendSessions.map((session) => ({
       id: session.id,
       title: session.title,
@@ -99,6 +101,7 @@ export function AppShell() {
       timestamp: new Date(session.updated_at),
       messages: [],
       status: (session.status === "active" ? "idle" : "error") as Session["status"],
+      backendCreated: true,
       workspaceId: session.workspace_id ?? undefined,
     }));
   }, []);
@@ -110,19 +113,42 @@ export function AppShell() {
       const ids = workspaces.map((item) => item.id);
       if (ids.length === 0) {
         if (!cancelled) {
-          setAllWorkspaceSessions([]);
+          setSessions((prev) => prev.filter((item) => !item.backendCreated));
         }
         return;
       }
 
       const workspaceSessions = await Promise.all(
-        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspace_id: id })),
+        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id })),
       );
 
       if (cancelled) return;
 
       const flattened = workspaceSessions.flatMap((backendSessions) => mapBackendSessions(backendSessions));
-      setAllWorkspaceSessions(flattened);
+      setSessions((prev) => {
+        const byId = new Map(flattened.map((item) => [item.id, item]));
+
+        for (const existing of prev) {
+          const loaded = byId.get(existing.id);
+          if (loaded && existing.messages.length > 0) {
+            byId.set(existing.id, {
+              ...loaded,
+              messages: existing.messages,
+              status: existing.status,
+              timestamp:
+                existing.timestamp.getTime() > loaded.timestamp.getTime()
+                  ? existing.timestamp
+                  : loaded.timestamp,
+            });
+          } else if (!loaded && (!existing.backendCreated || existing.messages.length > 0)) {
+            byId.set(existing.id, existing);
+          }
+        }
+
+        return Array.from(byId.values()).sort(
+          (left, right) => right.timestamp.getTime() - left.timestamp.getTime(),
+        );
+      });
     };
 
     void loadWorkspaceSessions();
@@ -133,20 +159,10 @@ export function AppShell() {
   }, [mapBackendSessions, workspaces]);
 
   const allSessions = useMemo(() => {
-    const byId = new Map<string, Session>();
-
-    for (const item of allWorkspaceSessions) {
-      byId.set(item.id, item);
-    }
-
-    for (const item of session.sessions) {
-      byId.set(item.id, item);
-    }
-
-    return Array.from(byId.values()).sort(
+    return [...session.sessions].sort(
       (left, right) => right.timestamp.getTime() - left.timestamp.getTime(),
     );
-  }, [allWorkspaceSessions, session.sessions]);
+  }, [session.sessions]);
 
   const activeSession = session.sessions.find((s) => s.id === session.activeSessionId);
   const sessionTitle = activeSession?.title || "New session";
