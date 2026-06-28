@@ -156,9 +156,26 @@ export interface Session {
   model: string;
   timestamp: Date;
   messages: Message[];
-  status: "idle" | "active" | "error";
+  status: "idle" | "active" | "error" | "archived";
   workspaceId?: string;
   backendCreated?: boolean;
+  archivedAt?: Date;
+}
+
+export interface ArchivePolicy {
+  workspace_id: string | null;
+  retention_days: number;
+  auto_archive_hours: number;
+  uses_workspace_override: boolean;
+}
+
+export interface ArchiveStats {
+  workspace_id: string | null;
+  live_count: number;
+  archived_count: number;
+  expired_count: number;
+  archived_bytes: number;
+  oldest_archived_at: string | null;
 }
 
 export interface Workspace {

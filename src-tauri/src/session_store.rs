@@ -14,6 +14,8 @@ pub enum SessionStoreError {
     Database(#[from] rusqlite::Error),
     #[error("session not found: {0}")]
     NotFound(String),
+    #[error("invalid session status for operation: {0}")]
+    InvalidStatus(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +42,92 @@ pub struct SessionDetail {
     pub model_history: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchivedSessionRecord {
+    pub id: String,
+    pub title: String,
+    pub provider: String,
+    pub model: String,
+    pub status: String,
+    pub workspace_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchivedSessionDetail {
+    pub id: String,
+    pub title: String,
+    pub provider: String,
+    pub model: String,
+    pub status: String,
+    pub workspace_id: Option<String>,
+    pub display_transcript: String,
+    pub model_history: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivePolicy {
+    pub workspace_id: Option<String>,
+    pub retention_days: i64,
+    pub auto_archive_hours: i64,
+    pub uses_workspace_override: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveStats {
+    pub workspace_id: Option<String>,
+    pub live_count: i64,
+    pub archived_count: i64,
+    pub expired_count: i64,
+    pub archived_bytes: i64,
+    pub oldest_archived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveMaintenanceResult {
+    pub archived_count: usize,
+    pub deleted_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivedSessionExport {
+    pub version: u8,
+    pub exported_at: String,
+    pub sessions: Vec<ArchivedSessionExportItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivedSessionExportItem {
+    pub id: String,
+    pub title: String,
+    pub provider: String,
+    pub model: String,
+    pub status: String,
+    pub workspace_id: Option<String>,
+    pub display_transcript: String,
+    pub model_history: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: String,
+    pub notes: Vec<ArchivedSessionExportNote>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivedSessionExportNote {
+    pub id: String,
+    pub note_type: String,
+    pub content: String,
+    pub source_message_id: Option<String>,
+    pub resolved: bool,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +168,30 @@ CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS archived_sessions (
+    id TEXT PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    workspace_id TEXT,
+    display_transcript TEXT NOT NULL DEFAULT '[]',
+    model_history TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_archived_sessions_workspace ON archived_sessions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_archived_sessions_archived_at ON archived_sessions(archived_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_archive_policies (
+    workspace_id TEXT PRIMARY KEY NOT NULL,
+    retention_days INTEGER NOT NULL DEFAULT 90,
+    auto_archive_hours INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS session_notes (
     id TEXT PRIMARY KEY NOT NULL,
     session_id TEXT NOT NULL,
@@ -91,7 +203,19 @@ CREATE TABLE IF NOT EXISTS session_notes (
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);
-CREATE INDEX IF NOT EXISTS idx_notes_unresolved ON session_notes(session_id, resolved);";
+CREATE INDEX IF NOT EXISTS idx_notes_unresolved ON session_notes(session_id, resolved);
+
+CREATE TABLE IF NOT EXISTS archived_session_notes (
+    id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL,
+    note_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_message_id TEXT,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES archived_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_archived_notes_session ON archived_session_notes(session_id);";
 
 impl SessionStore {
     pub fn new() -> Result<Self, SessionStoreError> {
@@ -187,6 +311,30 @@ impl SessionStore {
         Ok(row)
     }
 
+    fn get_session_record(&self, id: &str) -> Result<Option<SessionRecord>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT id, title, provider, model, status, workspace_id, created_at, updated_at
+                 FROM sessions WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(SessionRecord {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        provider: row.get(2)?,
+                        model: row.get(3)?,
+                        status: row.get(4)?,
+                        workspace_id: row.get(5)?,
+                        created_at: row.get(6)?,
+                        updated_at: row.get(7)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     pub fn list_sessions_for_workspace(
         &self,
         workspace_id: Option<&str>,
@@ -216,6 +364,122 @@ impl SessionStore {
             sessions.push(s?);
         }
         Ok(sessions)
+    }
+
+    pub fn list_archived_sessions_for_workspace(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<ArchivedSessionRecord>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, provider, model, status, workspace_id,
+                    created_at, updated_at, archived_at
+             FROM archived_sessions
+             WHERE deleted_at IS NULL
+                AND ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)
+             ORDER BY archived_at DESC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], |row| {
+            Ok(ArchivedSessionRecord {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                provider: row.get(2)?,
+                model: row.get(3)?,
+                status: row.get(4)?,
+                workspace_id: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                archived_at: row.get(8)?,
+            })
+        })?;
+        let mut sessions = Vec::new();
+        for s in rows {
+            sessions.push(s?);
+        }
+        Ok(sessions)
+    }
+
+    pub fn get_archive_policy(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<ArchivePolicy, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let requested_workspace_id = normalize_workspace_id(workspace_id);
+        let scoped = if !requested_workspace_id.is_empty() {
+            conn.query_row(
+                "SELECT retention_days, auto_archive_hours
+                 FROM session_archive_policies
+                 WHERE workspace_id = ?1",
+                params![requested_workspace_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+        } else {
+            None
+        };
+
+        if let Some((retention_days, auto_archive_hours)) = scoped {
+            return Ok(ArchivePolicy {
+                workspace_id: workspace_id.map(str::to_string),
+                retention_days,
+                auto_archive_hours,
+                uses_workspace_override: true,
+            });
+        }
+
+        let global = conn
+            .query_row(
+                "SELECT retention_days, auto_archive_hours
+                 FROM session_archive_policies
+                 WHERE workspace_id = ''",
+                params![],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .unwrap_or((90, 1));
+
+        Ok(ArchivePolicy {
+            workspace_id: workspace_id.map(str::to_string),
+            retention_days: global.0,
+            auto_archive_hours: global.1,
+            uses_workspace_override: false,
+        })
+    }
+
+    pub fn set_archive_policy(
+        &self,
+        workspace_id: Option<&str>,
+        retention_days: i64,
+        auto_archive_hours: i64,
+    ) -> Result<ArchivePolicy, SessionStoreError> {
+        let normalized_workspace_id = normalize_workspace_id(workspace_id);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO session_archive_policies (
+                workspace_id, retention_days, auto_archive_hours, updated_at
+             )
+             VALUES (?1, ?2, ?3, datetime('now'))
+             ON CONFLICT(workspace_id) DO UPDATE SET
+                retention_days = excluded.retention_days,
+                auto_archive_hours = excluded.auto_archive_hours,
+                updated_at = datetime('now')",
+            params![normalized_workspace_id, retention_days, auto_archive_hours],
+        )?;
+        drop(conn);
+        self.get_archive_policy(workspace_id)
+    }
+
+    pub fn clear_workspace_archive_policy(
+        &self,
+        workspace_id: &str,
+    ) -> Result<ArchivePolicy, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM session_archive_policies WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        drop(conn);
+        self.get_archive_policy(Some(workspace_id))
     }
 
     pub fn update_status(&self, id: &str, status: &str) -> Result<(), SessionStoreError> {
@@ -256,6 +520,493 @@ impl SessionStore {
             return Err(SessionStoreError::NotFound(id.to_string()));
         }
         Ok(())
+    }
+
+    pub fn archive_session(&self, id: &str) -> Result<ArchivedSessionRecord, SessionStoreError> {
+        {
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction()?;
+            let status = tx
+                .query_row(
+                    "SELECT status FROM sessions WHERE id = ?1",
+                    params![id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| SessionStoreError::NotFound(id.to_string()))?;
+
+            if status == "draft" {
+                return Err(SessionStoreError::InvalidStatus(format!(
+                    "draft sessions cannot be archived: {}",
+                    id
+                )));
+            }
+
+            tx.execute(
+                "INSERT INTO archived_sessions (
+                    id, title, provider, model, status, workspace_id,
+                    display_transcript, model_history, created_at, updated_at, archived_at
+                 )
+                 SELECT id, title, provider, model, status, workspace_id,
+                        display_transcript, model_history, created_at, updated_at, datetime('now')
+                 FROM sessions
+                 WHERE id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "INSERT INTO archived_session_notes (
+                    id, session_id, note_type, content, source_message_id, resolved, created_at
+                 )
+                 SELECT id, session_id, note_type, content, source_message_id, resolved, created_at
+                 FROM session_notes
+                 WHERE session_id = ?1",
+                params![id],
+            )?;
+            tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+            tx.commit()?;
+        }
+
+        self.get_archived_session_record(id)?
+            .ok_or_else(|| SessionStoreError::NotFound(id.to_string()))
+    }
+
+    pub fn restore_archived_session(&self, id: &str) -> Result<SessionRecord, SessionStoreError> {
+        {
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction()?;
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
+                    params![id],
+                    |_| Ok(()),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Err(SessionStoreError::NotFound(id.to_string()));
+            }
+
+            tx.execute(
+                "INSERT INTO sessions (
+                    id, title, provider, model, status, workspace_id,
+                    display_transcript, model_history, created_at, updated_at
+                 )
+                 SELECT id, title, provider, model, status, workspace_id,
+                        display_transcript, model_history, created_at, updated_at
+                 FROM archived_sessions
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO session_notes (
+                    id, session_id, note_type, content, source_message_id, resolved, created_at
+                 )
+                 SELECT id, session_id, note_type, content, source_message_id, resolved, created_at
+                 FROM archived_session_notes
+                 WHERE session_id = ?1",
+                params![id],
+            )?;
+            tx.execute("DELETE FROM archived_sessions WHERE id = ?1", params![id])?;
+            tx.commit()?;
+        }
+
+        self.get_session_record(id)?
+            .ok_or_else(|| SessionStoreError::NotFound(id.to_string()))
+    }
+
+    pub fn delete_archived_session(&self, id: &str) -> Result<(), SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
+            params![id],
+        )?;
+        if rows == 0 {
+            return Err(SessionStoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn archive_sessions_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<ArchivedSessionRecord>, SessionStoreError> {
+        let mut archived = Vec::new();
+        for id in ids {
+            archived.push(self.archive_session(id)?);
+        }
+        Ok(archived)
+    }
+
+    pub fn restore_archived_sessions_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<SessionRecord>, SessionStoreError> {
+        let mut restored = Vec::new();
+        for id in ids {
+            restored.push(self.restore_archived_session(id)?);
+        }
+        Ok(restored)
+    }
+
+    pub fn delete_archived_sessions_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<usize, SessionStoreError> {
+        let mut deleted = 0;
+        for id in ids {
+            self.delete_archived_session(id)?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
+    pub fn archive_sessions_older_than_hours(
+        &self,
+        workspace_id: Option<&str>,
+        hours: i64,
+    ) -> Result<Vec<ArchivedSessionRecord>, SessionStoreError> {
+        if hours <= 0 {
+            return Ok(Vec::new());
+        }
+
+        let ids = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id
+                 FROM sessions
+                 WHERE status != 'draft'
+                    AND updated_at < datetime('now', ?2)
+                    AND ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)
+                 ORDER BY updated_at ASC",
+            )?;
+            let age_modifier = format!("-{} hours", hours);
+            let rows = stmt.query_map(params![workspace_id, age_modifier], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        self.archive_sessions_by_ids(&ids)
+    }
+
+    pub fn delete_archived_sessions_older_than_days(
+        &self,
+        workspace_id: Option<&str>,
+        days: i64,
+    ) -> Result<usize, SessionStoreError> {
+        if days <= 0 {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let age_modifier = format!("-{} days", days);
+        let rows = conn.execute(
+            "DELETE FROM archived_sessions
+             WHERE deleted_at IS NULL
+                AND archived_at < datetime('now', ?2)
+                AND ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)",
+            params![workspace_id, age_modifier],
+        )?;
+        Ok(rows)
+    }
+
+    pub fn run_archive_maintenance(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<ArchiveMaintenanceResult, SessionStoreError> {
+        let policy = self.get_archive_policy(workspace_id)?;
+        let archived_count = self
+            .archive_sessions_older_than_hours(workspace_id, policy.auto_archive_hours)?
+            .len();
+        let deleted_count =
+            self.delete_archived_sessions_older_than_days(workspace_id, policy.retention_days)?;
+        Ok(ArchiveMaintenanceResult {
+            archived_count,
+            deleted_count,
+        })
+    }
+
+    pub fn archive_stats(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<ArchiveStats, SessionStoreError> {
+        let policy = self.get_archive_policy(workspace_id)?;
+        let conn = self.conn.lock().unwrap();
+        let live_count = conn.query_row(
+            "SELECT COUNT(*)
+             FROM sessions
+             WHERE status != 'draft'
+                AND ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)",
+            params![workspace_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let archived_count = conn.query_row(
+            "SELECT COUNT(*)
+             FROM archived_sessions
+             WHERE deleted_at IS NULL
+                AND ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)",
+            params![workspace_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let expired_count = conn.query_row(
+            "SELECT COUNT(*)
+             FROM archived_sessions
+             WHERE deleted_at IS NULL
+                AND archived_at < datetime('now', ?2)
+                AND ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)",
+            params![workspace_id, format!("-{} days", policy.retention_days)],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let (archived_bytes, oldest_archived_at) = conn.query_row(
+            "SELECT COALESCE(SUM(
+                    length(display_transcript)
+                    + COALESCE(length(model_history), 0)
+                    + length(title)
+                    + length(provider)
+                    + length(model)
+                ), 0),
+                    MIN(archived_at)
+             FROM archived_sessions
+             WHERE deleted_at IS NULL
+                AND ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)",
+            params![workspace_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )?;
+
+        Ok(ArchiveStats {
+            workspace_id: workspace_id.map(str::to_string),
+            live_count,
+            archived_count,
+            expired_count,
+            archived_bytes,
+            oldest_archived_at,
+        })
+    }
+
+    pub fn get_archived_session(
+        &self,
+        id: &str,
+    ) -> Result<Option<ArchivedSessionDetail>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT id, title, provider, model, status, workspace_id,
+                        display_transcript, model_history, created_at, updated_at,
+                        archived_at, deleted_at
+                 FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| {
+                    Ok(ArchivedSessionDetail {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        provider: row.get(2)?,
+                        model: row.get(3)?,
+                        status: row.get(4)?,
+                        workspace_id: row.get(5)?,
+                        display_transcript: row.get(6)?,
+                        model_history: row.get(7)?,
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
+                        archived_at: row.get(10)?,
+                        deleted_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    fn get_archived_session_record(
+        &self,
+        id: &str,
+    ) -> Result<Option<ArchivedSessionRecord>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT id, title, provider, model, status, workspace_id,
+                        created_at, updated_at, archived_at
+                 FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| {
+                    Ok(ArchivedSessionRecord {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        provider: row.get(2)?,
+                        model: row.get(3)?,
+                        status: row.get(4)?,
+                        workspace_id: row.get(5)?,
+                        created_at: row.get(6)?,
+                        updated_at: row.get(7)?,
+                        archived_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn export_archived_sessions(
+        &self,
+        ids: &[String],
+    ) -> Result<String, SessionStoreError> {
+        let mut sessions = Vec::new();
+        for id in ids {
+            let detail = self
+                .get_archived_session(id)?
+                .ok_or_else(|| SessionStoreError::NotFound(id.to_string()))?;
+            sessions.push(ArchivedSessionExportItem {
+                id: detail.id,
+                title: detail.title,
+                provider: detail.provider,
+                model: detail.model,
+                status: detail.status,
+                workspace_id: detail.workspace_id,
+                display_transcript: detail.display_transcript,
+                model_history: detail.model_history,
+                created_at: detail.created_at,
+                updated_at: detail.updated_at,
+                archived_at: detail.archived_at,
+                notes: self.list_archived_notes_for_export(id)?,
+            });
+        }
+
+        let exported_at = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row("SELECT datetime('now')", params![], |row| {
+                row.get::<_, String>(0)
+            })?
+        };
+        let payload = ArchivedSessionExport {
+            version: 1,
+            exported_at,
+            sessions,
+        };
+        serde_json::to_string_pretty(&payload)
+            .map_err(|e| SessionStoreError::InvalidStatus(e.to_string()))
+    }
+
+    pub fn import_archived_sessions(
+        &self,
+        payload: &str,
+        workspace_id_override: Option<&str>,
+    ) -> Result<Vec<ArchivedSessionRecord>, SessionStoreError> {
+        let export: ArchivedSessionExport = serde_json::from_str(payload)
+            .map_err(|e| SessionStoreError::InvalidStatus(e.to_string()))?;
+        let mut imported_ids = Vec::new();
+        {
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction()?;
+            for session in export.sessions {
+                let live_exists = tx
+                    .query_row(
+                        "SELECT 1 FROM sessions WHERE id = ?1",
+                        params![session.id],
+                        |_| Ok(()),
+                    )
+                    .optional()?;
+                if live_exists.is_some() {
+                    return Err(SessionStoreError::InvalidStatus(format!(
+                        "session already exists outside archive: {}",
+                        session.id
+                    )));
+                }
+
+                let target_workspace_id = workspace_id_override
+                    .map(str::to_string)
+                    .or_else(|| session.workspace_id.clone());
+                tx.execute(
+                    "INSERT INTO archived_sessions (
+                        id, title, provider, model, status, workspace_id,
+                        display_transcript, model_history, created_at, updated_at,
+                        archived_at, deleted_at
+                     )
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)
+                     ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        provider = excluded.provider,
+                        model = excluded.model,
+                        status = excluded.status,
+                        workspace_id = excluded.workspace_id,
+                        display_transcript = excluded.display_transcript,
+                        model_history = excluded.model_history,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at,
+                        archived_at = excluded.archived_at,
+                        deleted_at = NULL",
+                    params![
+                        session.id,
+                        session.title,
+                        session.provider,
+                        session.model,
+                        session.status,
+                        target_workspace_id,
+                        session.display_transcript,
+                        session.model_history,
+                        session.created_at,
+                        session.updated_at,
+                        session.archived_at
+                    ],
+                )?;
+                tx.execute(
+                    "DELETE FROM archived_session_notes WHERE session_id = ?1",
+                    params![session.id],
+                )?;
+                for note in session.notes {
+                    tx.execute(
+                        "INSERT INTO archived_session_notes (
+                            id, session_id, note_type, content,
+                            source_message_id, resolved, created_at
+                         )
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![
+                            note.id,
+                            session.id,
+                            note.note_type,
+                            note.content,
+                            note.source_message_id,
+                            if note.resolved { 1 } else { 0 },
+                            note.created_at
+                        ],
+                    )?;
+                }
+                imported_ids.push(session.id);
+            }
+            tx.commit()?;
+        }
+
+        let mut imported = Vec::new();
+        for id in imported_ids {
+            imported.push(
+                self.get_archived_session_record(&id)?
+                    .ok_or_else(|| SessionStoreError::NotFound(id.to_string()))?,
+            );
+        }
+        Ok(imported)
+    }
+
+    fn list_archived_notes_for_export(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ArchivedSessionExportNote>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, note_type, content, source_message_id, resolved, created_at
+             FROM archived_session_notes
+             WHERE session_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let notes = stmt
+            .query_map(params![session_id], |row| {
+                Ok(ArchivedSessionExportNote {
+                    id: row.get(0)?,
+                    note_type: row.get(1)?,
+                    content: row.get(2)?,
+                    source_message_id: row.get(3)?,
+                    resolved: row.get::<_, i32>(4)? != 0,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(notes)
     }
 
     pub fn clean_stale_drafts(&self) -> Result<usize, SessionStoreError> {
@@ -304,22 +1055,34 @@ impl SessionStore {
     ) -> Result<(), SessionStoreError> {
         let session = self.get_session(session_id)?;
         match session {
-            Some(s) => match (&s.workspace_id, active_workspace_id) {
-                (Some(session_ws), Some(active_ws)) if session_ws == active_ws => Ok(()),
-                (Some(session_ws), Some(active_ws)) => Err(SessionStoreError::NotFound(format!(
-                    "Session {} belongs to workspace {}, but active workspace is {}",
-                    session_id, session_ws, active_ws
-                ))),
-                (Some(_), None) => Err(SessionStoreError::NotFound(format!(
-                    "Session {} is workspace-bound but no workspace is active",
-                    session_id
-                ))),
-                (None, None) => Ok(()),
-                (None, Some(active_ws)) => Err(SessionStoreError::NotFound(format!(
-                    "Session {} is unscoped, but active workspace is {}",
-                    session_id, active_ws
-                ))),
-            },
+            Some(s) => validate_workspace_binding_parts(
+                session_id,
+                s.workspace_id.as_deref(),
+                active_workspace_id,
+            ),
+            None => Err(SessionStoreError::NotFound(session_id.to_string())),
+        }
+    }
+
+    pub fn validate_archived_workspace_binding(
+        &self,
+        session_id: &str,
+        active_workspace_id: Option<&str>,
+    ) -> Result<(), SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let workspace_id = conn
+            .query_row(
+                "SELECT workspace_id FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        match workspace_id {
+            Some(workspace_id) => validate_workspace_binding_parts(
+                session_id,
+                workspace_id.as_deref(),
+                active_workspace_id,
+            ),
             None => Err(SessionStoreError::NotFound(session_id.to_string())),
         }
     }
@@ -412,6 +1175,33 @@ impl SessionStore {
     }
 }
 
+fn normalize_workspace_id(workspace_id: Option<&str>) -> String {
+    workspace_id.unwrap_or("").to_string()
+}
+
+fn validate_workspace_binding_parts(
+    session_id: &str,
+    session_workspace_id: Option<&str>,
+    active_workspace_id: Option<&str>,
+) -> Result<(), SessionStoreError> {
+    match (session_workspace_id, active_workspace_id) {
+        (Some(session_ws), Some(active_ws)) if session_ws == active_ws => Ok(()),
+        (Some(session_ws), Some(active_ws)) => Err(SessionStoreError::NotFound(format!(
+            "Session {} belongs to workspace {}, but active workspace is {}",
+            session_id, session_ws, active_ws
+        ))),
+        (Some(_), None) => Err(SessionStoreError::NotFound(format!(
+            "Session {} is workspace-bound but no workspace is active",
+            session_id
+        ))),
+        (None, None) => Ok(()),
+        (None, Some(active_ws)) => Err(SessionStoreError::NotFound(format!(
+            "Session {} is unscoped, but active workspace is {}",
+            session_id, active_ws
+        ))),
+    }
+}
+
 fn app_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::data_dir)
@@ -425,6 +1215,24 @@ mod tests {
 
     fn test_store() -> SessionStore {
         SessionStore::in_memory_for_test().unwrap()
+    }
+
+    fn set_session_updated_at(store: &SessionStore, id: &str, modifier: &str) {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET updated_at = datetime('now', ?2) WHERE id = ?1",
+            params![id, modifier],
+        )
+        .unwrap();
+    }
+
+    fn set_archived_at(store: &SessionStore, id: &str, modifier: &str) {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE archived_sessions SET archived_at = datetime('now', ?2) WHERE id = ?1",
+            params![id, modifier],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -603,6 +1411,231 @@ mod tests {
         store.delete_session(&s.id).unwrap();
 
         assert!(store.note_session_id(&note.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn archive_session_moves_payload_and_removes_live_record() {
+        let store = test_store();
+        let s = store
+            .create_session("Archive Me", "openai", "gpt-4", "ws1")
+            .unwrap();
+        store
+            .persist_turn(
+                &s.id,
+                "[{\"role\":\"user\",\"content\":\"hi\"}]",
+                Some("[{\"role\":\"user\",\"content\":\"hi\"}]"),
+            )
+            .unwrap();
+
+        let archived = store.archive_session(&s.id).unwrap();
+
+        assert_eq!(archived.id, s.id);
+        assert_eq!(archived.workspace_id.as_deref(), Some("ws1"));
+        assert!(store.get_session(&s.id).unwrap().is_none());
+
+        let archived_detail = store.get_archived_session(&s.id).unwrap().unwrap();
+        assert_eq!(
+            archived_detail.display_transcript,
+            "[{\"role\":\"user\",\"content\":\"hi\"}]"
+        );
+        assert_eq!(
+            archived_detail.model_history,
+            Some("[{\"role\":\"user\",\"content\":\"hi\"}]".to_string())
+        );
+        assert_eq!(store.workspace_session_count("ws1").unwrap(), 0);
+    }
+
+    #[test]
+    fn archive_rejects_draft_sessions() {
+        let store = test_store();
+        let s = store
+            .create_session("Draft", "openai", "gpt-4", "ws1")
+            .unwrap();
+
+        let err = store.archive_session(&s.id).unwrap_err();
+
+        assert!(matches!(err, SessionStoreError::InvalidStatus(_)));
+        assert!(store.get_session(&s.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn list_archived_sessions_filters_workspace() {
+        let store = test_store();
+        let first = store
+            .create_session("First", "openai", "gpt-4", "ws1")
+            .unwrap();
+        let second = store
+            .create_session("Second", "openai", "gpt-4", "ws2")
+            .unwrap();
+        store.update_status(&first.id, "active").unwrap();
+        store.update_status(&second.id, "active").unwrap();
+        store.archive_session(&first.id).unwrap();
+        store.archive_session(&second.id).unwrap();
+
+        let archived = store
+            .list_archived_sessions_for_workspace(Some("ws1"))
+            .unwrap();
+
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].title, "First");
+    }
+
+    #[test]
+    fn restore_archived_session_round_trips_notes() {
+        let store = test_store();
+        let s = store
+            .create_session("With Note", "openai", "gpt-4", "ws1")
+            .unwrap();
+        store
+            .persist_turn(
+                &s.id,
+                "[{\"role\":\"user\"}]",
+                Some("[{\"role\":\"user\"}]"),
+            )
+            .unwrap();
+        let note = store
+            .create_note(&s.id, "verification_concern", "Check this", None)
+            .unwrap();
+        store.archive_session(&s.id).unwrap();
+
+        assert!(store.note_session_id(&note.id).unwrap().is_none());
+
+        let restored = store.restore_archived_session(&s.id).unwrap();
+
+        assert_eq!(restored.id, s.id);
+        assert!(store.get_archived_session(&s.id).unwrap().is_none());
+        assert!(store.get_session(&s.id).unwrap().is_some());
+        assert_eq!(
+            store.note_session_id(&note.id).unwrap().as_deref(),
+            Some(s.id.as_str())
+        );
+    }
+
+    #[test]
+    fn delete_archived_session_removes_archive_record() {
+        let store = test_store();
+        let s = store
+            .create_session("Archive Me", "openai", "gpt-4", "ws1")
+            .unwrap();
+        store.update_status(&s.id, "active").unwrap();
+        store.archive_session(&s.id).unwrap();
+
+        store.delete_archived_session(&s.id).unwrap();
+
+        assert!(store.get_archived_session(&s.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn archive_policy_defaults_and_workspace_overrides() {
+        let store = test_store();
+
+        let default_policy = store.get_archive_policy(Some("ws1")).unwrap();
+        assert_eq!(default_policy.retention_days, 90);
+        assert_eq!(default_policy.auto_archive_hours, 1);
+        assert!(!default_policy.uses_workspace_override);
+
+        store.set_archive_policy(None, 30, 24).unwrap();
+        let global_policy = store.get_archive_policy(Some("ws1")).unwrap();
+        assert_eq!(global_policy.retention_days, 30);
+        assert_eq!(global_policy.auto_archive_hours, 24);
+        assert!(!global_policy.uses_workspace_override);
+
+        store.set_archive_policy(Some("ws1"), 7, 1).unwrap();
+        let scoped_policy = store.get_archive_policy(Some("ws1")).unwrap();
+        assert_eq!(scoped_policy.retention_days, 7);
+        assert_eq!(scoped_policy.auto_archive_hours, 1);
+        assert!(scoped_policy.uses_workspace_override);
+
+        let cleared = store.clear_workspace_archive_policy("ws1").unwrap();
+        assert_eq!(cleared.retention_days, 30);
+        assert!(!cleared.uses_workspace_override);
+    }
+
+    #[test]
+    fn archive_maintenance_archives_old_live_and_deletes_expired_archives() {
+        let store = test_store();
+        store.set_archive_policy(Some("ws1"), 7, 1).unwrap();
+        let old = store
+            .create_session("Old", "openai", "gpt-4", "ws1")
+            .unwrap();
+        let recent = store
+            .create_session("Recent", "openai", "gpt-4", "ws1")
+            .unwrap();
+        store.update_status(&old.id, "active").unwrap();
+        store.update_status(&recent.id, "active").unwrap();
+        set_session_updated_at(&store, &old.id, "-2 hours");
+
+        let result = store.run_archive_maintenance(Some("ws1")).unwrap();
+
+        assert_eq!(result.archived_count, 1);
+        assert_eq!(result.deleted_count, 0);
+        assert!(store.get_archived_session(&old.id).unwrap().is_some());
+        assert!(store.get_session(&recent.id).unwrap().is_some());
+
+        set_archived_at(&store, &old.id, "-8 days");
+        let stats = store.archive_stats(Some("ws1")).unwrap();
+        assert_eq!(stats.archived_count, 1);
+        assert_eq!(stats.expired_count, 1);
+
+        let cleanup = store.run_archive_maintenance(Some("ws1")).unwrap();
+        assert_eq!(cleanup.deleted_count, 1);
+        assert!(store.get_archived_session(&old.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn bulk_restore_and_delete_archived_sessions() {
+        let store = test_store();
+        let first = store
+            .create_session("First", "openai", "gpt-4", "ws1")
+            .unwrap();
+        let second = store
+            .create_session("Second", "openai", "gpt-4", "ws1")
+            .unwrap();
+        store.update_status(&first.id, "active").unwrap();
+        store.update_status(&second.id, "active").unwrap();
+        let archived = store
+            .archive_sessions_by_ids(&[first.id.clone(), second.id.clone()])
+            .unwrap();
+        assert_eq!(archived.len(), 2);
+
+        let restored = store
+            .restore_archived_sessions_by_ids(&[first.id.clone()])
+            .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert!(store.get_session(&first.id).unwrap().is_some());
+
+        let deleted = store
+            .delete_archived_sessions_by_ids(&[second.id.clone()])
+            .unwrap();
+        assert_eq!(deleted, 1);
+        assert!(store.get_archived_session(&second.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn export_import_archived_sessions_round_trips_notes() {
+        let store = test_store();
+        let s = store
+            .create_session("Portable", "openai", "gpt-4", "ws1")
+            .unwrap();
+        store
+            .persist_turn(&s.id, "[{\"role\":\"user\"}]", Some("[{\"role\":\"user\"}]"))
+            .unwrap();
+        let note = store
+            .create_note(&s.id, "verification_concern", "Check this", None)
+            .unwrap();
+        store.archive_session(&s.id).unwrap();
+
+        let export = store.export_archived_sessions(&[s.id.clone()]).unwrap();
+        store.delete_archived_session(&s.id).unwrap();
+        let imported = store
+            .import_archived_sessions(&export, Some("ws2"))
+            .unwrap();
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].workspace_id.as_deref(), Some("ws2"));
+        let restored = store.restore_archived_session(&s.id).unwrap();
+        assert_eq!(restored.workspace_id.as_deref(), Some("ws2"));
+        assert_eq!(store.note_session_id(&note.id).unwrap().as_deref(), Some(s.id.as_str()));
     }
 
     #[test]

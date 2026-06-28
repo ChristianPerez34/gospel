@@ -51,7 +51,10 @@ use models::{ModelInfo, ModelRegistry};
 use once_cell::sync::Lazy;
 use rig::providers::chatgpt;
 use serde::Serialize;
-use session_store::{SessionDetail, SessionRecord, SessionStore, SessionStoreState};
+use session_store::{
+    ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
+    SessionRecord, SessionStore, SessionStoreState,
+};
 use skills::SkillSummary;
 use std::{
     collections::HashMap,
@@ -1597,6 +1600,7 @@ fn list_sessions(
         Some(store) => {
             // Clean up stale drafts on list
             let _ = store.clean_stale_drafts();
+            let _ = store.run_archive_maintenance(workspace_id.as_deref());
             store
                 .list_sessions_for_workspace(workspace_id.as_deref())
                 .map_err(|e| e.to_string())
@@ -1605,6 +1609,272 @@ fn list_sessions(
             .init_warning
             .clone()
             .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn list_archived_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    workspace_id: Option<String>,
+) -> Result<Vec<ArchivedSessionRecord>, String> {
+    let workspace_id = workspace_id.or_else(|| match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .and_then(|_| store.get_active_workspace().ok().flatten().map(|ws| ws.id)),
+        None => None,
+    });
+
+    match &session_store.store {
+        Some(store) => {
+            let _ = store.run_archive_maintenance(workspace_id.as_deref());
+            store
+                .list_archived_sessions_for_workspace(workspace_id.as_deref())
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn get_archive_policy(
+    session_store: tauri::State<'_, SessionStoreState>,
+    workspace_id: Option<String>,
+) -> Result<ArchivePolicy, String> {
+    match &session_store.store {
+        Some(store) => store
+            .get_archive_policy(workspace_id.as_deref())
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn set_archive_policy(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    workspace_id: Option<String>,
+    retention_days: i64,
+    auto_archive_hours: i64,
+) -> Result<ArchivePolicy, String> {
+    validate_archive_policy_values(retention_days, auto_archive_hours)?;
+    if let Some(ref workspace_id) = workspace_id {
+        validate_workspace_id_access(workspace_id, app_config.inner())?;
+    }
+
+    match &session_store.store {
+        Some(store) => store
+            .set_archive_policy(workspace_id.as_deref(), retention_days, auto_archive_hours)
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn clear_workspace_archive_policy(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    workspace_id: String,
+) -> Result<ArchivePolicy, String> {
+    validate_workspace_id_access(&workspace_id, app_config.inner())?;
+    match &session_store.store {
+        Some(store) => store
+            .clear_workspace_archive_policy(&workspace_id)
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn get_archive_stats(
+    session_store: tauri::State<'_, SessionStoreState>,
+    workspace_id: Option<String>,
+) -> Result<ArchiveStats, String> {
+    match &session_store.store {
+        Some(store) => store
+            .archive_stats(workspace_id.as_deref())
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn run_archive_maintenance(
+    session_store: tauri::State<'_, SessionStoreState>,
+    workspace_id: Option<String>,
+) -> Result<ArchiveMaintenanceResult, String> {
+    match &session_store.store {
+        Some(store) => store
+            .run_archive_maintenance(workspace_id.as_deref())
+            .map_err(|e| e.to_string()),
+        None => Ok(ArchiveMaintenanceResult {
+            archived_count: 0,
+            deleted_count: 0,
+        }),
+    }
+}
+
+#[tauri::command]
+fn archive_session(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+) -> Result<ArchivedSessionRecord, String> {
+    match &session_store.store {
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .archive_session(&session_id)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn archive_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_ids: Vec<String>,
+) -> Result<Vec<ArchivedSessionRecord>, String> {
+    match &session_store.store {
+        Some(store) => {
+            for session_id in &session_ids {
+                validate_session_access(store, session_id, app_config.inner())?;
+            }
+            store
+                .archive_sessions_by_ids(&session_ids)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn restore_archived_session(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+) -> Result<SessionRecord, String> {
+    match &session_store.store {
+        Some(store) => {
+            validate_archived_session_access(store, &session_id, app_config.inner())?;
+            store
+                .restore_archived_session(&session_id)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn restore_archived_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_ids: Vec<String>,
+) -> Result<Vec<SessionRecord>, String> {
+    match &session_store.store {
+        Some(store) => {
+            for session_id in &session_ids {
+                validate_archived_session_access(store, session_id, app_config.inner())?;
+            }
+            store
+                .restore_archived_sessions_by_ids(&session_ids)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn delete_archived_session(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => {
+            validate_archived_session_access(store, &session_id, app_config.inner())?;
+            store
+                .delete_archived_session(&session_id)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn delete_archived_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_ids: Vec<String>,
+) -> Result<usize, String> {
+    match &session_store.store {
+        Some(store) => {
+            for session_id in &session_ids {
+                validate_archived_session_access(store, session_id, app_config.inner())?;
+            }
+            store
+                .delete_archived_sessions_by_ids(&session_ids)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn delete_expired_archived_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    workspace_id: Option<String>,
+) -> Result<usize, String> {
+    match &session_store.store {
+        Some(store) => {
+            let policy = store
+                .get_archive_policy(workspace_id.as_deref())
+                .map_err(|e| e.to_string())?;
+            store
+                .delete_archived_sessions_older_than_days(
+                    workspace_id.as_deref(),
+                    policy.retention_days,
+                )
+                .map_err(|e| e.to_string())
+        }
+        None => Ok(0),
     }
 }
 
@@ -1698,6 +1968,50 @@ fn export_session(
 }
 
 #[tauri::command]
+fn export_archived_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_ids: Vec<String>,
+) -> Result<String, String> {
+    match &session_store.store {
+        Some(store) => {
+            for session_id in &session_ids {
+                validate_archived_session_access(store, session_id, app_config.inner())?;
+            }
+            store
+                .export_archived_sessions(&session_ids)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn import_archived_sessions(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    payload: String,
+    workspace_id: Option<String>,
+) -> Result<Vec<ArchivedSessionRecord>, String> {
+    if let Some(ref workspace_id) = workspace_id {
+        validate_workspace_id_access(workspace_id, app_config.inner())?;
+    }
+
+    match &session_store.store {
+        Some(store) => store
+            .import_archived_sessions(&payload, workspace_id.as_deref())
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
 fn get_workspace_session_count(
     session_store: tauri::State<'_, SessionStoreState>,
     workspace_id: String,
@@ -1774,6 +2088,36 @@ fn active_workspace_id(app_config: &AppConfigState) -> Option<String> {
     }
 }
 
+fn validate_archive_policy_values(
+    retention_days: i64,
+    auto_archive_hours: i64,
+) -> Result<(), String> {
+    let retention_allowed = [7, 30, 90, 365];
+    let auto_archive_allowed = [0, 1, 24, 168, 720];
+    if !retention_allowed.contains(&retention_days) {
+        return Err("retention_days must be one of 7, 30, 90, or 365".to_string());
+    }
+    if !auto_archive_allowed.contains(&auto_archive_hours) {
+        return Err("auto_archive_hours must be one of 0, 1, 24, 168, or 720".to_string());
+    }
+    Ok(())
+}
+
+fn validate_workspace_id_access(
+    workspace_id: &str,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    let active_ws_id = active_workspace_id(app_config)
+        .ok_or_else(|| "No active workspace is available".to_string())?;
+    if workspace_id != active_ws_id {
+        return Err(format!(
+            "Workspace {} is not the active workspace {}",
+            workspace_id, active_ws_id
+        ));
+    }
+    Ok(())
+}
+
 fn validate_session_access(
     store: &SessionStore,
     session_id: &str,
@@ -1782,6 +2126,17 @@ fn validate_session_access(
     let active_ws_id = active_workspace_id(app_config);
     store
         .validate_workspace_binding(session_id, active_ws_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+fn validate_archived_session_access(
+    store: &SessionStore,
+    session_id: &str,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    let active_ws_id = active_workspace_id(app_config);
+    store
+        .validate_archived_workspace_binding(session_id, active_ws_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -1899,9 +2254,24 @@ pub fn run() {
             create_session,
             get_session,
             list_sessions,
+            list_archived_sessions,
+            get_archive_policy,
+            set_archive_policy,
+            clear_workspace_archive_policy,
+            get_archive_stats,
+            run_archive_maintenance,
+            archive_session,
+            archive_sessions,
+            restore_archived_session,
+            restore_archived_sessions,
+            delete_archived_session,
+            delete_archived_sessions,
+            delete_expired_archived_sessions,
             delete_session_cmd,
             cleanup_stale_drafts,
             export_session,
+            export_archived_sessions,
+            import_archived_sessions,
             get_workspace_session_count,
             create_session_note,
             list_session_notes,

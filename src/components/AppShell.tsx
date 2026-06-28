@@ -13,10 +13,10 @@ import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useThemePreference } from "../hooks/useThemePreference";
-import { modelOptionId, type Session } from "../types";
+import { modelOptionId, type ArchivePolicy, type ArchiveStats, type Session } from "../types";
 import { noModelCopy } from "../modelAvailabilityCopy";
 
-type SettingsTab = "general" | "models";
+type SettingsTab = "general" | "models" | "data";
 type TrappedSurface = "sessions" | "review" | null;
 
 interface BackendSessionRecord {
@@ -27,6 +27,48 @@ interface BackendSessionRecord {
   status: string;
   workspace_id: string | null;
   updated_at: string;
+}
+
+interface BackendArchivedSessionRecord extends BackendSessionRecord {
+  archived_at: string;
+}
+
+function sortSessionsByTimestamp(items: Session[]): Session[] {
+  return [...items].sort(
+    (left, right) => right.timestamp.getTime() - left.timestamp.getTime(),
+  );
+}
+
+function mergeLoadedSessions(loadedSessions: Session[], existingSessions: Session[]): Session[] {
+  const byId = new Map(loadedSessions.map((item) => [item.id, item]));
+
+  for (const existing of existingSessions) {
+    const loaded = byId.get(existing.id);
+    if (loaded && existing.messages.length > 0) {
+      byId.set(existing.id, {
+        ...loaded,
+        messages: existing.messages,
+        status: existing.status,
+        timestamp:
+          existing.timestamp.getTime() > loaded.timestamp.getTime()
+            ? existing.timestamp
+            : loaded.timestamp,
+      });
+    } else if (!loaded && (!existing.backendCreated || existing.messages.length > 0)) {
+      byId.set(existing.id, existing);
+    }
+  }
+
+  return sortSessionsByTimestamp(Array.from(byId.values()));
+}
+
+function groupSessionsByWorkspace(items: Session[]): Session[][] {
+  const groups = new Map<string, Session[]>();
+  for (const item of items) {
+    const key = item.workspaceId ?? "";
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  return Array.from(groups.values());
 }
 
 export function AppShell() {
@@ -71,6 +113,12 @@ export function AppShell() {
   });
 
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
+  const [archivePolicy, setArchivePolicy] = useState<ArchivePolicy | null>(null);
+  const [workspaceArchivePolicy, setWorkspaceArchivePolicy] = useState<ArchivePolicy | null>(null);
+  const [archiveStats, setArchiveStats] = useState<ArchiveStats | null>(null);
+  const [archivePolicySaving, setArchivePolicySaving] = useState(false);
 
   const session = useSessionManager({
     models,
@@ -106,6 +154,34 @@ export function AppShell() {
     }));
   }, []);
 
+  const mapBackendArchivedSessions = useCallback((backendSessions: BackendArchivedSessionRecord[]): Session[] => {
+    return backendSessions.map((session) => ({
+      id: session.id,
+      title: session.title,
+      provider: session.provider,
+      model: session.model,
+      timestamp: new Date(session.archived_at),
+      messages: [],
+      status: "archived" as const,
+      backendCreated: true,
+      workspaceId: session.workspace_id ?? undefined,
+      archivedAt: new Date(session.archived_at),
+    }));
+  }, []);
+
+  const loadArchiveMeta = useCallback(async (workspaceId?: string) => {
+    const [globalPolicy, scopedPolicy, stats] = await Promise.all([
+      invoke<ArchivePolicy>("get_archive_policy", { workspaceId: null }),
+      workspaceId
+        ? invoke<ArchivePolicy>("get_archive_policy", { workspaceId })
+        : Promise.resolve(null),
+      invoke<ArchiveStats>("get_archive_stats", { workspaceId: workspaceId ?? null }),
+    ]);
+    setArchivePolicy(globalPolicy);
+    setWorkspaceArchivePolicy(scopedPolicy);
+    setArchiveStats(stats);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -114,41 +190,38 @@ export function AppShell() {
       if (ids.length === 0) {
         if (!cancelled) {
           setSessions((prev) => prev.filter((item) => !item.backendCreated));
+          setArchivedSessions([]);
+          await loadArchiveMeta();
         }
         return;
       }
 
-      const workspaceSessions = await Promise.all(
-        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id })),
-      );
+      const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
+        Promise.all(
+          ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id })),
+        ),
+        Promise.all(
+          ids.map((id) =>
+            invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id }),
+          ),
+        ),
+      ]);
 
       if (cancelled) return;
 
       const flattened = workspaceSessions.flatMap((backendSessions) => mapBackendSessions(backendSessions));
+      const flattenedArchived = workspaceArchivedSessions.flatMap((backendSessions) =>
+        mapBackendArchivedSessions(backendSessions),
+      );
       setSessions((prev) => {
-        const byId = new Map(flattened.map((item) => [item.id, item]));
-
-        for (const existing of prev) {
-          const loaded = byId.get(existing.id);
-          if (loaded && existing.messages.length > 0) {
-            byId.set(existing.id, {
-              ...loaded,
-              messages: existing.messages,
-              status: existing.status,
-              timestamp:
-                existing.timestamp.getTime() > loaded.timestamp.getTime()
-                  ? existing.timestamp
-                  : loaded.timestamp,
-            });
-          } else if (!loaded && (!existing.backendCreated || existing.messages.length > 0)) {
-            byId.set(existing.id, existing);
-          }
-        }
-
-        return Array.from(byId.values()).sort(
-          (left, right) => right.timestamp.getTime() - left.timestamp.getTime(),
-        );
+        return mergeLoadedSessions(flattened, prev);
       });
+      setArchivedSessions(sortSessionsByTimestamp(flattenedArchived));
+      if (activeWorkspace?.id) {
+        await loadArchiveMeta(activeWorkspace.id);
+      } else {
+        await loadArchiveMeta();
+      }
     };
 
     void loadWorkspaceSessions();
@@ -156,13 +229,250 @@ export function AppShell() {
     return () => {
       cancelled = true;
     };
-  }, [mapBackendSessions, workspaces]);
+  }, [activeWorkspace?.id, loadArchiveMeta, mapBackendArchivedSessions, mapBackendSessions, workspaces]);
+
+  const reloadArchiveData = useCallback(async () => {
+    const ids = workspaces.map((item) => item.id);
+    if (ids.length === 0) {
+      setArchivedSessions([]);
+      await loadArchiveMeta();
+      return;
+    }
+
+    const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
+      Promise.all(
+        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id })),
+      ),
+      Promise.all(
+        ids.map((id) =>
+          invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id }),
+        ),
+      ),
+    ]);
+    setSessions((prev) =>
+      mergeLoadedSessions(workspaceSessions.flatMap(mapBackendSessions), prev),
+    );
+    setArchivedSessions(sortSessionsByTimestamp(
+      workspaceArchivedSessions.flatMap(mapBackendArchivedSessions),
+    ));
+    await loadArchiveMeta(activeWorkspace?.id);
+  }, [
+    activeWorkspace?.id,
+    loadArchiveMeta,
+    mapBackendArchivedSessions,
+    mapBackendSessions,
+    workspaces,
+  ]);
 
   const allSessions = useMemo(() => {
-    return [...session.sessions].sort(
-      (left, right) => right.timestamp.getTime() - left.timestamp.getTime(),
-    );
+    return sortSessionsByTimestamp(session.sessions);
   }, [session.sessions]);
+
+  const ensureSessionWorkspaceActive = useCallback(
+    async (target: Session) => {
+      if (!target.workspaceId || target.workspaceId === activeWorkspace?.id) return true;
+      const switched = await switchWorkspace(target.workspaceId);
+      if (!switched) {
+        showError("Unable to switch workspace for this session.");
+      }
+      return switched;
+    },
+    [activeWorkspace?.id, showError, switchWorkspace],
+  );
+
+  const handleArchiveSessions = useCallback(
+    async (targets: Session[]) => {
+      if (session.isStreaming || targets.length === 0) return;
+
+      try {
+        for (const group of groupSessionsByWorkspace(targets)) {
+          const first = group[0];
+          if (!first || !(await ensureSessionWorkspaceActive(first))) return;
+          await invoke<BackendArchivedSessionRecord[]>("archive_sessions", {
+            sessionIds: group.map((item) => item.id),
+          });
+        }
+        if (targets.some((target) => target.id === session.activeSessionId)) {
+          session.handleNewSession();
+        }
+        await reloadArchiveData();
+        showSuccess(targets.length === 1 ? "Session archived." : `${targets.length} sessions archived.`);
+      } catch (e) {
+        showError(`Failed to archive session: ${e}`);
+      }
+    },
+    [
+      ensureSessionWorkspaceActive,
+      reloadArchiveData,
+      session,
+      showError,
+      showSuccess,
+    ],
+  );
+
+  const handleRestoreArchivedSessions = useCallback(
+    async (targets: Session[]) => {
+      if (session.isStreaming || targets.length === 0) return;
+
+      try {
+        for (const group of groupSessionsByWorkspace(targets)) {
+          const first = group[0];
+          if (!first || !(await ensureSessionWorkspaceActive(first))) return;
+          await invoke<BackendSessionRecord[]>("restore_archived_sessions", {
+            sessionIds: group.map((item) => item.id),
+          });
+        }
+        await reloadArchiveData();
+        showSuccess(targets.length === 1 ? "Session restored." : `${targets.length} sessions restored.`);
+      } catch (e) {
+        showError(`Failed to restore session: ${e}`);
+      }
+    },
+    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess],
+  );
+
+  const handleDeleteArchivedSessions = useCallback(
+    async (targets: Session[]) => {
+      if (session.isStreaming || targets.length === 0) return;
+      const label = targets.length === 1 ? `"${targets[0]?.title || "Untitled"}"` : `${targets.length} sessions`;
+      if (!window.confirm(`Delete archived ${label} permanently?`)) return;
+
+      try {
+        for (const group of groupSessionsByWorkspace(targets)) {
+          const first = group[0];
+          if (!first || !(await ensureSessionWorkspaceActive(first))) return;
+          await invoke<number>("delete_archived_sessions", {
+            sessionIds: group.map((item) => item.id),
+          });
+        }
+        await reloadArchiveData();
+        showSuccess(targets.length === 1 ? "Archived session deleted." : `${targets.length} archived sessions deleted.`);
+      } catch (e) {
+        showError(`Failed to delete archived session: ${e}`);
+      }
+    },
+    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess],
+  );
+
+  const handleExportArchivedSessions = useCallback(
+    async (targets: Session[]) => {
+      if (targets.length === 0) return;
+
+      try {
+        const exportedPayloads: string[] = [];
+        for (const group of groupSessionsByWorkspace(targets)) {
+          const first = group[0];
+          if (!first || !(await ensureSessionWorkspaceActive(first))) return;
+          exportedPayloads.push(
+            await invoke<string>("export_archived_sessions", {
+              sessionIds: group.map((item) => item.id),
+            }),
+          );
+        }
+        const clipboardPayload =
+          exportedPayloads.length === 1
+            ? exportedPayloads[0]
+            : JSON.stringify(
+                {
+                  version: 1,
+                  exported_at: new Date().toISOString(),
+                  sessions: exportedPayloads.flatMap((payload) => JSON.parse(payload).sessions ?? []),
+                },
+                null,
+                2,
+              );
+        await navigator.clipboard.writeText(clipboardPayload);
+        showSuccess(targets.length === 1 ? "Archive export copied." : `${targets.length} archive exports copied.`);
+      } catch (e) {
+        showError(`Failed to export archive: ${e}`);
+      }
+    },
+    [ensureSessionWorkspaceActive, showError, showSuccess],
+  );
+
+  const handleImportArchivedSessions = useCallback(
+    async (payload: string) => {
+      if (!payload.trim()) return;
+
+      try {
+        await invoke<BackendArchivedSessionRecord[]>("import_archived_sessions", {
+          payload,
+          workspaceId: activeWorkspace?.id ?? null,
+        });
+        await reloadArchiveData();
+        showSuccess("Archive import complete.");
+      } catch (e) {
+        showError(`Failed to import archive: ${e}`);
+      }
+    },
+    [activeWorkspace?.id, reloadArchiveData, showError, showSuccess],
+  );
+
+  const handleDeleteExpiredArchivedSessions = useCallback(async () => {
+    if (!archiveStats || archiveStats.expired_count === 0) return;
+    if (!window.confirm(`Delete ${archiveStats.expired_count} expired archived sessions permanently?`)) return;
+
+    try {
+      await invoke<number>("delete_expired_archived_sessions", {
+        workspaceId: activeWorkspace?.id ?? null,
+      });
+      await reloadArchiveData();
+      showSuccess("Expired archived sessions deleted.");
+    } catch (e) {
+      showError(`Failed to delete expired archives: ${e}`);
+    }
+  }, [activeWorkspace?.id, archiveStats, reloadArchiveData, showError, showSuccess]);
+
+  const handleArchivePolicyChange = useCallback(
+    async (workspaceId: string | null, retentionDays: number, autoArchiveHours: number) => {
+      setArchivePolicySaving(true);
+      try {
+        await invoke<ArchivePolicy>("set_archive_policy", {
+          workspaceId,
+          retentionDays,
+          autoArchiveHours,
+        });
+        await reloadArchiveData();
+        showSuccess("Archive policy updated.");
+      } catch (e) {
+        showError(`Failed to update archive policy: ${e}`);
+      } finally {
+        setArchivePolicySaving(false);
+      }
+    },
+    [reloadArchiveData, showError, showSuccess],
+  );
+
+  const handleClearWorkspaceArchivePolicy = useCallback(async () => {
+    if (!activeWorkspace?.id) return;
+    setArchivePolicySaving(true);
+    try {
+      await invoke<ArchivePolicy>("clear_workspace_archive_policy", {
+        workspaceId: activeWorkspace.id,
+      });
+      await reloadArchiveData();
+      showSuccess("Workspace archive policy cleared.");
+    } catch (e) {
+      showError(`Failed to clear workspace policy: ${e}`);
+    } finally {
+      setArchivePolicySaving(false);
+    }
+  }, [activeWorkspace?.id, reloadArchiveData, showError, showSuccess]);
+
+  const handleRunArchiveMaintenance = useCallback(async () => {
+    setArchivePolicySaving(true);
+    try {
+      await invoke("run_archive_maintenance", {
+        workspaceId: activeWorkspace?.id ?? null,
+      });
+      await reloadArchiveData();
+      showSuccess("Archive cleanup complete.");
+    } catch (e) {
+      showError(`Archive cleanup failed: ${e}`);
+    } finally {
+      setArchivePolicySaving(false);
+    }
+  }, [activeWorkspace?.id, reloadArchiveData, showError, showSuccess]);
 
   const activeSession = session.sessions.find((s) => s.id === session.activeSessionId);
   const sessionTitle = activeSession?.title || "New session";
@@ -286,14 +596,37 @@ export function AppShell() {
       </div>
         <SessionDrawer
           sessions={allSessions}
+          archivedSessions={archivedSessions}
           activeSessionId={session.activeSessionId ?? undefined}
           workspaceNames={workspaceNames}
           activeWorkspaceId={activeWorkspace?.id}
+          showArchived={showArchivedSessions}
+          onShowArchivedChange={setShowArchivedSessions}
+          archiveStats={archiveStats}
           onSelect={(s) => {
             if (session.isStreaming) return;
             void session.handleSessionSelect(s);
             closeSessionDrawer();
           }}
+          onArchiveSessions={(items) => {
+            void handleArchiveSessions(items);
+          }}
+          onRestoreArchivedSessions={(items) => {
+            void handleRestoreArchivedSessions(items);
+          }}
+          onDeleteArchivedSessions={(items) => {
+            void handleDeleteArchivedSessions(items);
+          }}
+          onExportArchivedSessions={(items) => {
+            void handleExportArchivedSessions(items);
+          }}
+          onImportArchivedSessions={(payload) => {
+            void handleImportArchivedSessions(payload);
+          }}
+          onDeleteExpiredArchivedSessions={() => {
+            void handleDeleteExpiredArchivedSessions();
+          }}
+          archiveActionsDisabled={session.isStreaming}
           onNewSession={() => {
             if (session.isStreaming) return;
             session.handleNewSession();
@@ -340,6 +673,14 @@ export function AppShell() {
         initialTab={settingsInitialTab}
         themePreference={themePreference}
         onThemePreferenceChange={setThemePreference}
+        archivePolicy={archivePolicy}
+        workspaceArchivePolicy={workspaceArchivePolicy}
+        archiveStats={archiveStats}
+        activeWorkspaceName={activeWorkspace?.name}
+        onArchivePolicyChange={handleArchivePolicyChange}
+        onClearWorkspaceArchivePolicy={handleClearWorkspaceArchivePolicy}
+        onRunArchiveMaintenance={handleRunArchiveMaintenance}
+        archivePolicySaving={archivePolicySaving}
       />
       <CommandPalette
         open={commandPaletteOpen}

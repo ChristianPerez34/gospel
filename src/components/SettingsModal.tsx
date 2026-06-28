@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
-import type { ThemePreference } from "../types";
+import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 
 function themeIndex(value: ThemePreference) {
@@ -26,15 +26,48 @@ interface SettingsModalProps {
   initialTab?: TabKey;
   themePreference: ThemePreference;
   onThemePreferenceChange: (theme: ThemePreference) => void;
+  archivePolicy?: ArchivePolicy | null;
+  workspaceArchivePolicy?: ArchivePolicy | null;
+  archiveStats?: ArchiveStats | null;
+  activeWorkspaceName?: string;
+  onArchivePolicyChange?: (
+    workspaceId: string | null,
+    retentionDays: number,
+    autoArchiveHours: number,
+  ) => Promise<void>;
+  onClearWorkspaceArchivePolicy?: () => Promise<void>;
+  onRunArchiveMaintenance?: () => Promise<void>;
+  archivePolicySaving?: boolean;
 }
 
-type TabKey = "general" | "models";
+type TabKey = "general" | "models" | "data";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string; detail: string }> = [
   { value: "dark", label: "Dark", detail: "Default focus theme" },
   { value: "light", label: "Light", detail: "Bright surfaces" },
   { value: "system", label: "System", detail: "Follow OS" },
 ];
+
+const RETENTION_OPTIONS = [
+  { value: 7, label: "7d" },
+  { value: 30, label: "30d" },
+  { value: 90, label: "90d" },
+  { value: 365, label: "365d" },
+];
+
+const AUTO_ARCHIVE_OPTIONS = [
+  { value: 0, label: "Off" },
+  { value: 1, label: "1h" },
+  { value: 24, label: "24h" },
+  { value: 168, label: "7d" },
+  { value: 720, label: "30d" },
+];
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export function SettingsModal({
   open,
@@ -46,6 +79,14 @@ export function SettingsModal({
   initialTab = "models",
   themePreference,
   onThemePreferenceChange,
+  archivePolicy,
+  workspaceArchivePolicy,
+  archiveStats,
+  activeWorkspaceName,
+  onArchivePolicyChange,
+  onClearWorkspaceArchivePolicy,
+  onRunArchiveMaintenance,
+  archivePolicySaving = false,
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const themeOptionRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -113,6 +154,17 @@ export function SettingsModal({
             >
               Models
             </button>
+            <button
+              className={`min-h-11 px-3.5 bg-transparent border-b-2 font-body text-body-sm font-medium cursor-pointer transition-colors duration-150 ${
+                activeTab === "data"
+                  ? "text-accent-action border-b-accent-action"
+                  : "text-text-muted border-b-transparent hover:text-text-secondary"
+              }`}
+              onClick={() => setActiveTab("data")}
+              type="button"
+            >
+              Data
+            </button>
           </div>
 
           <div className="p-5 overflow-y-auto min-h-0 bg-surface-elevated">
@@ -134,7 +186,7 @@ export function SettingsModal({
                 </p>
                 <ProviderSelector providers={providers} onProvidersChange={onProvidersChange} onRefreshAvailability={onRefreshAvailability} />
               </div>
-            ) : (
+            ) : activeTab === "general" ? (
               <div className="flex flex-col gap-4">
                 <section className="grid gap-2">
                   <div>
@@ -180,9 +232,145 @@ export function SettingsModal({
                   </div>
                 </section>
               </div>
+            ) : (
+              <div className="flex flex-col gap-5">
+                <section className="grid gap-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="m-0 text-heading-sm font-medium text-text-primary">Archive</h3>
+                      <p className="m-0 text-body-sm text-text-muted">
+                        {archiveStats
+                          ? `${archiveStats.archived_count} archived, ${archiveStats.expired_count} expired, ${formatBytes(archiveStats.archived_bytes)} stored`
+                          : "Archive statistics unavailable"}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void onRunArchiveMaintenance?.()}
+                      disabled={archivePolicySaving || !onRunArchiveMaintenance}
+                    >
+                      Run cleanup
+                    </Button>
+                  </div>
+                </section>
+
+                {archivePolicy && (
+                  <section className="grid gap-3">
+                    <div>
+                      <h3 className="m-0 text-heading-sm font-medium text-text-primary">Global policy</h3>
+                      <p className="m-0 text-body-sm text-text-muted">Default for every workspace without an override.</p>
+                    </div>
+                    <PolicyControls
+                      policy={archivePolicy}
+                      disabled={archivePolicySaving || !onArchivePolicyChange}
+                      onChange={(retentionDays, autoArchiveHours) =>
+                        onArchivePolicyChange?.(null, retentionDays, autoArchiveHours)
+                      }
+                    />
+                  </section>
+                )}
+
+                {workspaceArchivePolicy && activeWorkspaceName && (
+                  <section className="grid gap-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="m-0 text-heading-sm font-medium text-text-primary">Workspace policy</h3>
+                        <p className="m-0 text-body-sm text-text-muted">
+                          {workspaceArchivePolicy.uses_workspace_override
+                            ? activeWorkspaceName
+                            : `${activeWorkspaceName} uses the global policy`}
+                        </p>
+                      </div>
+                      {workspaceArchivePolicy.uses_workspace_override && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void onClearWorkspaceArchivePolicy?.()}
+                          disabled={archivePolicySaving || !onClearWorkspaceArchivePolicy}
+                        >
+                          Use global
+                        </Button>
+                      )}
+                    </div>
+                    <PolicyControls
+                      policy={workspaceArchivePolicy}
+                      disabled={archivePolicySaving || !onArchivePolicyChange}
+                      onChange={(retentionDays, autoArchiveHours) =>
+                        onArchivePolicyChange?.(
+                          workspaceArchivePolicy.workspace_id,
+                          retentionDays,
+                          autoArchiveHours,
+                        )
+                      }
+                    />
+                  </section>
+                )}
+              </div>
             )}
           </div>
         </div>
+    </div>
+  );
+}
+
+function PolicyControls({
+  policy,
+  disabled,
+  onChange,
+}: {
+  policy: ArchivePolicy;
+  disabled: boolean;
+  onChange: (retentionDays: number, autoArchiveHours: number) => void;
+}) {
+  return (
+    <div className="grid gap-3">
+      <div className="grid gap-1.5">
+        <div className="text-caption font-medium uppercase tracking-[0.04em] text-text-muted">Retention</div>
+        <div className="grid grid-cols-4 overflow-hidden rounded-md border border-surface-overlay">
+          {RETENTION_OPTIONS.map((option) => {
+            const selected = option.value === policy.retention_days;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`min-h-9 px-2 text-body-sm transition-colors duration-150 ease-out-quart ${
+                  selected
+                    ? "bg-surface-overlay text-accent-action"
+                    : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
+                }`}
+                disabled={disabled}
+                onClick={() => onChange(option.value, policy.auto_archive_hours)}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="grid gap-1.5">
+        <div className="text-caption font-medium uppercase tracking-[0.04em] text-text-muted">Auto archive</div>
+        <div className="grid grid-cols-5 overflow-hidden rounded-md border border-surface-overlay">
+          {AUTO_ARCHIVE_OPTIONS.map((option) => {
+            const selected = option.value === policy.auto_archive_hours;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`min-h-9 px-2 text-body-sm transition-colors duration-150 ease-out-quart ${
+                  selected
+                    ? "bg-surface-overlay text-accent-action"
+                    : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
+                }`}
+                disabled={disabled}
+                onClick={() => onChange(policy.retention_days, option.value)}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
