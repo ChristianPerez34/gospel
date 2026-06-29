@@ -129,13 +129,75 @@ describe("useSessionManager", () => {
         provider: "openai",
         model: "gpt-4o",
         workspaceId: "ws-active",
+        mode: "Build",
       });
       expect(result.current.activeSessionId).toBe("backend-session");
       expect(result.current.sessions[0]).toMatchObject({
         id: "backend-session",
         backendCreated: true,
         workspaceId: "ws-active",
+        mode: "Build",
       });
+    });
+
+    it("uses the selected draft session mode when creating a backend session", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "backend-session" };
+        return undefined;
+      });
+
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+      });
+
+      await act(async () => {
+        await result.current.handleSessionModeChange("ReadOnly");
+      });
+      await act(async () => {
+        await result.current.handleSend("inspect only");
+      });
+
+      expect(invoke).toHaveBeenCalledWith("create_session", {
+        title: "inspect only",
+        provider: "openai",
+        model: "gpt-4o",
+        workspaceId: "ws-active",
+        mode: "ReadOnly",
+      });
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "backend-session",
+        mode: "ReadOnly",
+      });
+    });
+
+    it("persists mode changes for an active backend session", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "update_session_mode") return undefined;
+        return [];
+      });
+
+      const backendSession = makeSession({
+        id: "s-backend",
+        backendCreated: true,
+        mode: "Build",
+      });
+      const { result } = renderSessionManager({
+        initialSessions: [backendSession],
+      });
+
+      await act(async () => {
+        await result.current.handleSessionSelect(backendSession);
+      });
+      await act(async () => {
+        await result.current.handleSessionModeChange("ReadOnly");
+      });
+
+      expect(invoke).toHaveBeenCalledWith("update_session_mode", {
+        sessionId: "s-backend",
+        mode: "ReadOnly",
+      });
+      expect(result.current.activeSessionMode).toBe("ReadOnly");
+      expect(result.current.sessions[0]?.mode).toBe("ReadOnly");
     });
 
     it("uses the first 50 chars of the message as the session title and truncates with ellipsis", async () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Archive, CheckSquare, Download, RotateCcw, Square, Trash2, Upload } from "lucide-react";
+import { Archive, CheckSquare, Download, Lock, RotateCcw, Square, Trash2, Upload } from "lucide-react";
 import type { ArchiveStats, Session } from "../types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 
@@ -438,6 +438,12 @@ export function SessionDrawer({
                         <span className="font-mono text-caption text-text-muted">
                           {session.model}
                         </span>
+                        {session.mode === "ReadOnly" && (
+                          <span className="session-readonly-badge">
+                            <Lock aria-hidden="true" />
+                            Read-only
+                          </span>
+                        )}
                         {hasCrossWorkspaceSessions && workspaceNames && getWorkspaceLabel(session) && (
                           <span className="max-w-40 truncate rounded-full border border-surface-overlay px-2 py-0.5 text-caption text-text-muted">
                             {getWorkspaceLabel(session)}

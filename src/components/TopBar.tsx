@@ -1,13 +1,16 @@
 import { useState, useRef, useEffect, type RefObject } from "react";
-import type { Workspace, AgentStatus } from "../types";
+import { Check, Hammer, Lock, X } from "lucide-react";
+import type { Workspace, AgentStatus, SessionMode } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
 interface TopBarProps {
   workspace: Workspace;
   sessionTitle: string;
+  sessionMode: SessionMode;
   model: string;
   status: AgentStatus;
   onWorkspaceSwitch: () => void;
+  onSessionModeChange: (mode: SessionMode) => Promise<void>;
   onToggleSessions: () => void;
   onOpenReview: () => void;
   onOpenSettings: () => void;
@@ -20,9 +23,11 @@ interface TopBarProps {
 export function TopBar({
   workspace,
   sessionTitle,
+  sessionMode,
   model,
   status,
   onWorkspaceSwitch,
+  onSessionModeChange,
   onToggleSessions,
   onOpenReview,
   onOpenSettings,
@@ -33,11 +38,17 @@ export function TopBar({
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(sessionTitle);
+  const [pendingMode, setPendingMode] = useState<SessionMode | null>(null);
+  const [savingMode, setSavingMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setTitle(sessionTitle);
   }, [sessionTitle]);
+
+  useEffect(() => {
+    setPendingMode(null);
+  }, [sessionMode, sessionTitle]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -48,6 +59,25 @@ export function TopBar({
 
   const handleSubmit = () => {
     setEditing(false);
+  };
+
+  const nextMode: SessionMode = sessionMode === "Build" ? "ReadOnly" : "Build";
+  const modeLabel = sessionMode === "Build" ? "Build" : "Read-only";
+  const nextModeLabel = nextMode === "Build" ? "Build" : "Read-only";
+  const pendingCopy =
+    pendingMode === "ReadOnly"
+      ? "Future turns will refuse workspace edits. Prior edits remain."
+      : "Future turns can edit the workspace again.";
+
+  const confirmModeChange = async () => {
+    if (!pendingMode) return;
+    setSavingMode(true);
+    try {
+      await onSessionModeChange(pendingMode);
+      setPendingMode(null);
+    } finally {
+      setSavingMode(false);
+    }
   };
 
   const sessionToggleClass = sessionsOpen
@@ -124,6 +154,44 @@ export function TopBar({
             {sessionTitle || "New session"}
           </button>
         )}
+        <div className="topbar-session-mode-wrap">
+          <button
+            type="button"
+            className={`topbar-session-mode hit-target ${sessionMode === "ReadOnly" ? "is-readonly" : ""}`}
+            onClick={() => setPendingMode(nextMode)}
+            aria-label={`Session mode: ${modeLabel}. Change to ${nextModeLabel}.`}
+            aria-pressed={sessionMode === "ReadOnly"}
+            title={`Session mode: ${modeLabel}`}
+          >
+            {sessionMode === "ReadOnly" ? <Lock aria-hidden="true" /> : <Hammer aria-hidden="true" />}
+            <span>{modeLabel}</span>
+          </button>
+          {pendingMode && (
+            <div className="topbar-mode-confirm" role="status" aria-live="polite">
+              <span>{pendingCopy}</span>
+              <button
+                type="button"
+                className="topbar-mode-confirm-action"
+                onClick={() => void confirmModeChange()}
+                aria-label={`Confirm ${nextModeLabel} mode`}
+                title="Apply"
+                disabled={savingMode}
+              >
+                <Check aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="topbar-mode-confirm-action"
+                onClick={() => setPendingMode(null)}
+                aria-label="Cancel session mode change"
+                title="Cancel"
+                disabled={savingMode}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <div className="topbar-actions flex items-center gap-3 shrink-0">
         <span className="topbar-model-badge font-mono text-caption tracking-[0.02em] py-0.5 px-2 rounded-sm bg-surface-overlay text-text-muted whitespace-nowrap">

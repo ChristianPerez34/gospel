@@ -229,6 +229,7 @@ pub async fn run_review(
     let workspace = WorkspaceToolContext {
         workspace_path,
         corpus_available: false,
+        session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
     };
 
     let result = match mode {

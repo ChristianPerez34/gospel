@@ -433,6 +433,22 @@ summary,
   opacity: 1;
 }
 
+.session-readonly-badge {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent-signal);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+}
+
+.session-readonly-badge svg {
+  width: 12px;
+  height: 12px;
+}
+
 .session-mode-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -742,6 +758,106 @@ summary,
   background: color-mix(in srgb, var(--surface-overlay) 74%, var(--accent-action) 12%);
 }
 
+.topbar-session-mode-wrap {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.topbar-session-mode {
+  display: inline-flex;
+  min-height: 32px;
+  max-width: 116px;
+  align-items: center;
+  gap: var(--space-1);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 12%);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  padding: 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  transition:
+    background-color var(--duration-fast) var(--ease-out-quart),
+    border-color var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.topbar-session-mode:hover,
+.topbar-session-mode.is-readonly {
+  border-color: color-mix(in srgb, var(--accent-signal) 38%, var(--surface-overlay) 62%);
+  background: color-mix(in srgb, var(--surface-overlay) 82%, var(--accent-signal) 18%);
+  color: var(--text-secondary);
+}
+
+.topbar-session-mode svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.topbar-session-mode span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-mode-confirm {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: var(--z-dropdowns);
+  display: grid;
+  width: min(420px, calc(100vw - 32px));
+  min-height: 36px;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  gap: var(--space-1);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-floating);
+  color: var(--text-secondary);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
+  font-size: var(--text-caption);
+}
+
+.topbar-mode-confirm span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-mode-confirm-action {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition:
+    background-color var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.topbar-mode-confirm-action:hover {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
+
+.topbar-mode-confirm-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.topbar-mode-confirm-action svg {
+  width: 14px;
+  height: 14px;
+}
+
 .topbar-model-badge {
   background: color-mix(in srgb, var(--surface-overlay) 72%, var(--surface-base) 28%);
   color: var(--text-secondary);
@@ -954,6 +1070,22 @@ summary,
   .topbar-model-badge,
   .topbar-status-label {
     display: none;
+  }
+
+  .topbar-session-mode {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .topbar-session-mode span {
+    display: none;
+  }
+
+  .topbar-mode-confirm {
+    left: auto;
+    right: 0;
+    width: calc(100vw - 16px);
   }
 
   .topbar-primary,

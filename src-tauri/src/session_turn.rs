@@ -1,4 +1,5 @@
 use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent, WorkspaceToolContext};
+use crate::session_mode::SESSION_MODE_BUILD;
 use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
 use crate::trace;
@@ -66,6 +67,8 @@ pub trait SessionTurnSessions: Send + Sync {
         session_id: &str,
         active_workspace_id: Option<&str>,
     ) -> Result<(), String>;
+
+    fn session_mode(&self, session_id: &str) -> Result<String, String>;
 
     fn unresolved_notes(&self, session_id: &str) -> Vec<SessionNote>;
 
@@ -153,7 +156,7 @@ pub async fn run_streaming_turn(
     let workspace_resolution =
         resolve_streaming_active_workspace(deps.workspace, active_workspace).await;
     let workspace_path = workspace_resolution.workspace_path.clone();
-    let workspace_context = workspace_resolution.tool_context.clone();
+    let mut workspace_context = workspace_resolution.tool_context.clone();
 
     eprintln!(
         "[CORPUS-AUTO] complete_streaming workspace path: {}",
@@ -168,13 +171,21 @@ pub async fn run_streaming_turn(
         .api_key(&request.provider)
         .map_err(|error| error.to_dto())?;
 
-    if let Some(sid) = &request.session_id {
+    let session_mode = if let Some(sid) = &request.session_id {
         if let Err(e) = deps
             .sessions
             .validate_workspace_binding(sid, workspace_resolution.workspace_id.as_deref())
         {
             return Err(LlmError::ProviderError(e.to_string()).to_dto());
         }
+        deps.sessions
+            .session_mode(sid)
+            .map_err(|e| LlmError::ProviderError(e).to_dto())?
+    } else {
+        SESSION_MODE_BUILD.to_string()
+    };
+    if let Some(context) = workspace_context.as_mut() {
+        context.session_mode = session_mode;
     }
 
     let chat_history = deps
@@ -940,6 +951,7 @@ pub fn resolve_active_workspace_context(
             tool_context: Some(WorkspaceToolContext {
                 workspace_path: selection.path,
                 corpus_available: true,
+                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
             }),
             corpus_failure_reason: None,
         },
@@ -950,6 +962,7 @@ pub fn resolve_active_workspace_context(
                 tool_context: Some(WorkspaceToolContext {
                     workspace_path: selection.path,
                     corpus_available: false,
+                    session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
                 }),
                 corpus_failure_reason: Some(reason),
             }
@@ -1098,6 +1111,7 @@ mod tests {
         corpus_failure_emissions: Mutex<usize>,
         api_key: String,
         validated_bindings: Mutex<Vec<(String, Option<String>)>>,
+        session_mode: String,
         unresolved_notes: Vec<SessionNote>,
         failure_snapshot: Mutex<Option<SessionFailureSnapshot>>,
         persisted_turns: Mutex<Vec<PersistedTurn>>,
@@ -1127,6 +1141,7 @@ mod tests {
                 corpus_failure_emissions: Mutex::new(0),
                 api_key: "api-key".to_string(),
                 validated_bindings: Mutex::new(Vec::new()),
+                session_mode: SESSION_MODE_BUILD.to_string(),
                 unresolved_notes: Vec::new(),
                 failure_snapshot: Mutex::new(None),
                 persisted_turns: Mutex::new(Vec::new()),
@@ -1197,6 +1212,10 @@ mod tests {
                 active_workspace_id.map(str::to_string),
             ));
             Ok(())
+        }
+
+        fn session_mode(&self, _session_id: &str) -> Result<String, String> {
+            Ok(self.session_mode.clone())
         }
 
         fn unresolved_notes(&self, _session_id: &str) -> Vec<SessionNote> {
@@ -1742,6 +1761,7 @@ mod tests {
         let workspace = WorkspaceToolContext {
             workspace_path: PathBuf::from("/tmp/workspace"),
             corpus_available: true,
+            session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
         };
 
         assert!(verification_job_request(
@@ -1938,6 +1958,7 @@ mod tests {
             Some(WorkspaceToolContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: true,
+                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
             })
         );
         drop(stream_requests);
@@ -2007,6 +2028,48 @@ mod tests {
         assert_eq!(verifications[0].api_key, "api-key");
         assert_eq!(verifications[0].session_id.as_deref(), Some("session-1"));
         assert!(verifications[0].workspace.corpus_available);
+    }
+
+    #[tokio::test]
+    async fn streaming_turn_passes_read_only_session_mode_to_workspace_tools() {
+        let history = vec![user_message("inspect"), assistant_message("Done.")];
+        let mut adapters =
+            FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+                full_response: "Done.".to_string(),
+                history: Some(history),
+                source_edit_succeeded: false,
+                prompt_tokens: 2,
+                response_tokens: 1,
+                tool_calls: 0,
+            }));
+        adapters.session_mode = crate::session_mode::SESSION_MODE_READ_ONLY.to_string();
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            StreamingTurnRequest {
+                provider: "openai".to_string(),
+                prompt: "inspect".to_string(),
+                model: "gpt-test".to_string(),
+                session_id: Some("session-1".to_string()),
+                invoked_skill: None,
+                delegate_provider: "openai".to_string(),
+                delegate_model: "gpt-4o-mini".to_string(),
+                delegate_api_key: "api-key".to_string(),
+            },
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let stream_requests = adapters.stream_requests.lock().unwrap();
+        assert_eq!(
+            stream_requests[0]
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.session_mode.as_str()),
+            Some(crate::session_mode::SESSION_MODE_READ_ONLY)
+        );
     }
 
     #[tokio::test]

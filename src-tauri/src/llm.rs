@@ -190,12 +190,13 @@ use crate::review::tools::{
     create_record_review_outcome_tool, create_run_review_tool, create_run_security_review_tool,
     REVIEW_TOOLS_SYSTEM_PROMPT,
 };
+use crate::session_mode::session_mode_allows_source_edit;
 use crate::workspace_tools::{
     build_base_workspace_tools_with_external_approval, create_context_search_tool,
     create_find_files_tool, create_read_file_tool, create_search_code_tool,
     create_source_edit_tool, create_write_harness_file_tool, truncate_text_bytes,
     workspace_root_inventory, ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
-    WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
 const AGENT_MAX_TURNS: usize = 50;
@@ -300,6 +301,7 @@ pub enum StreamEvent {
 pub struct WorkspaceToolContext {
     pub workspace_path: PathBuf,
     pub corpus_available: bool,
+    pub session_mode: String,
 }
 
 pub struct LlmService;
@@ -520,7 +522,7 @@ fn build_system_preamble(
     }
 
     if workspace.is_some() {
-        sections.push(WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string());
+        sections.push(workspace_tools_system_prompt(workspace.unwrap()));
         if include_harness {
             sections.push(REVIEW_TOOLS_SYSTEM_PROMPT.trim().to_string());
             sections.push(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.trim().to_string());
@@ -540,6 +542,42 @@ fn build_system_preamble(
     } else {
         Some(sections.join("\n\n"))
     }
+}
+
+fn workspace_source_edits_enabled(workspace: &WorkspaceToolContext) -> bool {
+    session_mode_allows_source_edit(&workspace.session_mode)
+}
+
+fn workspace_tools_system_prompt(workspace: &WorkspaceToolContext) -> String {
+    if workspace_source_edits_enabled(workspace) {
+        WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string()
+    } else {
+        READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string()
+    }
+}
+
+#[cfg(test)]
+fn registered_main_workspace_tool_names(workspace: &WorkspaceToolContext) -> Vec<&'static str> {
+    let mut names = vec!["read_file", "search_code", "find_files", "list_directory"];
+    if workspace_source_edits_enabled(workspace) {
+        names.push("source_edit");
+    }
+    names.extend([
+        "write_harness_file",
+        "run_review",
+        "run_security_review",
+        "record_review_outcome",
+    ]);
+    if workspace.corpus_available {
+        names.extend([
+            "corpus_summary",
+            "corpus_query",
+            "corpus_neighbors",
+            "context_search",
+        ]);
+    }
+    names.push("delegate_exploration");
+    names
 }
 
 #[derive(Debug, Default, Clone)]
@@ -817,9 +855,6 @@ where
                         workspace_context.workspace_path.clone(),
                         external_path_approval.clone(),
                     ))
-                    .tool(create_source_edit_tool(
-                        workspace_context.workspace_path.clone(),
-                    ))
                     .tool(create_write_harness_file_tool(
                         workspace_context.workspace_path.clone(),
                     ))
@@ -838,6 +873,12 @@ where
                     .tool(create_record_review_outcome_tool(
                         workspace_context.workspace_path.clone(),
                     ));
+
+                if workspace_source_edits_enabled(workspace_context) {
+                    b = b.tool(create_source_edit_tool(
+                        workspace_context.workspace_path.clone(),
+                    ));
+                }
 
                 if workspace_context.corpus_available {
                     b = b
@@ -1080,6 +1121,7 @@ mod tests {
             workspace: WorkspaceToolContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
+                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
             },
             provider: "openai".to_string(),
             model: "gpt-4o-mini".to_string(),
@@ -1169,6 +1211,7 @@ mod tests {
             Some(&WorkspaceToolContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: true,
+                session_mode: "Build".to_string(),
             }),
             true,
             None,
@@ -1181,6 +1224,38 @@ mod tests {
         assert!(preamble.contains("source-of-truth"));
         assert!(preamble.contains("delegate_exploration"));
         assert!(preamble.contains("Harness Control Area"));
+        assert!(preamble.contains(".gospel/PLAN.md"));
+    }
+
+    #[test]
+    fn build_mode_workspace_tools_include_source_edit_and_harness_writer() {
+        let workspace = WorkspaceToolContext {
+            workspace_path: PathBuf::from("/tmp/workspace"),
+            corpus_available: false,
+            session_mode: "Build".to_string(),
+        };
+
+        let tools = registered_main_workspace_tool_names(&workspace);
+
+        assert!(tools.contains(&"source_edit"));
+        assert!(tools.contains(&"write_harness_file"));
+    }
+
+    #[test]
+    fn read_only_mode_workspace_tools_omit_source_edit_but_keep_harness_writer() {
+        let workspace = WorkspaceToolContext {
+            workspace_path: PathBuf::from("/tmp/workspace"),
+            corpus_available: false,
+            session_mode: "ReadOnly".to_string(),
+        };
+
+        let tools = registered_main_workspace_tool_names(&workspace);
+        let preamble = build_system_preamble(Some(&workspace), true, None, None, true).unwrap();
+
+        assert!(!tools.contains(&"source_edit"));
+        assert!(tools.contains(&"write_harness_file"));
+        assert!(!preamble.contains("Use `source_edit`"));
+        assert!(preamble.contains("Read-Only Session"));
         assert!(preamble.contains(".gospel/PLAN.md"));
     }
 

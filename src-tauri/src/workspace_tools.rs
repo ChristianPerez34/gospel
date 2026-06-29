@@ -43,6 +43,32 @@ You can inspect the active Gospel workspace with live tools.
 - `source_edit` is for narrow in-place changes only. It requires one exact `old_text` match, rejects unsafe targets, and returns a capped diff preview.
 "#;
 
+pub const READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT: &str = r#"
+## Live Workspace Tools
+
+You can inspect the active Gospel workspace with live tools.
+
+### Use These Tools For Source Of Truth
+
+- Use `find_files` to discover relevant files.
+- Use `list_directory` to inspect directory structure.
+- Use `search_code` to find where text or symbols appear.
+- Use `read_file` to verify exact code and content.
+
+### Context Search
+
+- Use `context_search` for broad natural-language retrieval across source, docs, and project artifacts.
+- Context Search returns ranked results with path, line range, content type, snippet, and score.
+- **Always verify important claims with live workspace tools** (read_file, search_code) after using Context Search.
+- Use Context Search to find likely relevant areas, then use live tools to confirm details.
+
+### Read-Only Session
+
+- This Session does not provide workspace source mutation tools.
+- Do not claim to have edited workspace source files.
+- Harness control artifacts remain available through the Harness Control Area contract.
+"#;
+
 pub const HARNESS_CONTROL_AREA_SYSTEM_PROMPT: &str = r#"
 ## Harness Control Area (Persistent Substrate)
 

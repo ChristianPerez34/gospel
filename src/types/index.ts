@@ -8,6 +8,8 @@ export type ThemePreference = "dark" | "light" | "system";
 
 export type ResolvedTheme = "dark" | "light";
 
+export type SessionMode = "Build" | "ReadOnly";
+
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 
 export type SignalTier = "tier_1" | "tier_2" | "noise" | "unclassified";
@@ -154,6 +156,7 @@ export interface Session {
   title: string;
   provider: string;
   model: string;
+  mode?: SessionMode;
   timestamp: Date;
   messages: Message[];
   status: "idle" | "active" | "error" | "archived";
@@ -199,4 +202,8 @@ export interface ProviderStatus {
 
 export function modelOptionId(provider: string, model: string): string {
   return `${provider.toLowerCase()}::${model}`;
+}
+
+export function normalizeSessionMode(mode?: string | null): SessionMode {
+  return mode === "ReadOnly" ? "ReadOnly" : "Build";
 }

@@ -9,6 +9,7 @@ mod llm;
 mod models;
 mod provider_client;
 mod review;
+pub mod session_mode;
 pub mod session_store;
 mod session_turn;
 pub mod skills;
@@ -766,6 +767,17 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
+    fn session_mode(&self, session_id: &str) -> Result<String, String> {
+        match &self.session_store_state.store {
+            Some(store) => store
+                .get_session(session_id)
+                .map_err(|e| e.to_string())?
+                .map(|session| session.mode)
+                .ok_or_else(|| format!("Session not found: {}", session_id)),
+            None => Err("session store unavailable".to_string()),
+        }
+    }
+
     fn unresolved_notes(&self, session_id: &str) -> Vec<session_store::SessionNote> {
         match &self.session_store_state.store {
             Some(store) => store.list_unresolved_notes(session_id).unwrap_or_default(),
@@ -1518,14 +1530,33 @@ fn create_session(
     provider: String,
     model: String,
     workspace_id: String,
+    mode: Option<String>,
 ) -> Result<SessionRecord, String> {
     if workspace_id.is_empty() {
         return Err("workspace_id is required".to_string());
     }
 
+    let mode = mode.unwrap_or_else(|| session_mode::SESSION_MODE_BUILD.to_string());
     match &session_store.store {
         Some(store) => store
-            .create_session(&title, &provider, &model, &workspace_id)
+            .create_session_with_mode(&title, &provider, &model, &workspace_id, &mode)
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn update_session_mode(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+    mode: String,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => store
+            .update_session_mode(&session_id, &mode)
             .map_err(|e| e.to_string()),
         None => Err(session_store
             .init_warning
@@ -2252,6 +2283,7 @@ pub fn run() {
             list_skills,
             reload_skills,
             create_session,
+            update_session_mode,
             get_session,
             list_sessions,
             list_archived_sessions,

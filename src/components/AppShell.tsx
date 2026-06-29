@@ -13,7 +13,13 @@ import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useThemePreference } from "../hooks/useThemePreference";
-import { modelOptionId, type ArchivePolicy, type ArchiveStats, type Session } from "../types";
+import {
+  modelOptionId,
+  normalizeSessionMode,
+  type ArchivePolicy,
+  type ArchiveStats,
+  type Session,
+} from "../types";
 import { noModelCopy } from "../modelAvailabilityCopy";
 
 type SettingsTab = "general" | "models" | "data";
@@ -25,6 +31,7 @@ interface BackendSessionRecord {
   provider: string;
   model: string;
   status: string;
+  mode?: string | null;
   workspace_id: string | null;
   updated_at: string;
 }
@@ -146,6 +153,7 @@ export function AppShell() {
       title: session.title,
       provider: session.provider,
       model: session.model,
+      mode: normalizeSessionMode(session.mode),
       timestamp: new Date(session.updated_at),
       messages: [],
       status: (session.status === "active" ? "idle" : "error") as Session["status"],
@@ -160,6 +168,7 @@ export function AppShell() {
       title: session.title,
       provider: session.provider,
       model: session.model,
+      mode: normalizeSessionMode(session.mode),
       timestamp: new Date(session.archived_at),
       messages: [],
       status: "archived" as const,
@@ -536,6 +545,8 @@ export function AppShell() {
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
+        sessionMode={session.activeSessionMode}
+        onSessionModeChange={session.handleSessionModeChange}
         model={currentModelName}
         status={session.status}
         onWorkspaceSwitch={() => setWorkspaceSwitcherOpen(true)}
