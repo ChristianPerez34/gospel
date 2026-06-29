@@ -57,7 +57,7 @@ describe("SessionDrawer", () => {
     expect(screen.queryByText("Main")).toBeNull();
   });
 
-  it("shows a read-only badge for read-only sessions", () => {
+  it("shows a plan badge for read-only sessions", () => {
     renderDrawer({
       sessions: [
         {
@@ -67,7 +67,7 @@ describe("SessionDrawer", () => {
       ],
     });
 
-    expect(screen.getByText("Read-only")).toBeTruthy();
+    expect(screen.getByText("Plan")).toBeTruthy();
   });
 
   it("calls onSelect for clicked session", () => {

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type RefObject } from "react";
-import { Check, Hammer, Lock, X } from "lucide-react";
+import { Hammer, Lock } from "lucide-react";
 import type { Workspace, AgentStatus, SessionMode } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
@@ -38,17 +38,11 @@ export function TopBar({
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(sessionTitle);
-  const [pendingMode, setPendingMode] = useState<SessionMode | null>(null);
-  const [savingMode, setSavingMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setTitle(sessionTitle);
   }, [sessionTitle]);
-
-  useEffect(() => {
-    setPendingMode(null);
-  }, [sessionMode, sessionTitle]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -62,23 +56,8 @@ export function TopBar({
   };
 
   const nextMode: SessionMode = sessionMode === "Build" ? "ReadOnly" : "Build";
-  const modeLabel = sessionMode === "Build" ? "Build" : "Read-only";
-  const nextModeLabel = nextMode === "Build" ? "Build" : "Read-only";
-  const pendingCopy =
-    pendingMode === "ReadOnly"
-      ? "Future turns will refuse workspace edits. Prior edits remain."
-      : "Future turns can edit the workspace again.";
-
-  const confirmModeChange = async () => {
-    if (!pendingMode) return;
-    setSavingMode(true);
-    try {
-      await onSessionModeChange(pendingMode);
-      setPendingMode(null);
-    } finally {
-      setSavingMode(false);
-    }
-  };
+  const modeLabel = sessionMode === "Build" ? "Build" : "Plan";
+  const nextModeLabel = nextMode === "Build" ? "Build" : "Plan";
 
   const sessionToggleClass = sessionsOpen
     ? "bg-surface-overlay text-accent-structure"
@@ -158,7 +137,7 @@ export function TopBar({
           <button
             type="button"
             className={`topbar-session-mode hit-target ${sessionMode === "ReadOnly" ? "is-readonly" : ""}`}
-            onClick={() => setPendingMode(nextMode)}
+            onClick={() => void onSessionModeChange(nextMode)}
             aria-label={`Session mode: ${modeLabel}. Change to ${nextModeLabel}.`}
             aria-pressed={sessionMode === "ReadOnly"}
             title={`Session mode: ${modeLabel}`}
@@ -166,31 +145,6 @@ export function TopBar({
             {sessionMode === "ReadOnly" ? <Lock aria-hidden="true" /> : <Hammer aria-hidden="true" />}
             <span>{modeLabel}</span>
           </button>
-          {pendingMode && (
-            <div className="topbar-mode-confirm" role="status" aria-live="polite">
-              <span>{pendingCopy}</span>
-              <button
-                type="button"
-                className="topbar-mode-confirm-action"
-                onClick={() => void confirmModeChange()}
-                aria-label={`Confirm ${nextModeLabel} mode`}
-                title="Apply"
-                disabled={savingMode}
-              >
-                <Check aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="topbar-mode-confirm-action"
-                onClick={() => setPendingMode(null)}
-                aria-label="Cancel session mode change"
-                title="Cancel"
-                disabled={savingMode}
-              >
-                <X aria-hidden="true" />
-              </button>
-            </div>
-          )}
         </div>
       </div>
       <div className="topbar-actions flex items-center gap-3 shrink-0">

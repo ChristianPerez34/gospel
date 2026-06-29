@@ -441,7 +441,7 @@ export function SessionDrawer({
                         {session.mode === "ReadOnly" && (
                           <span className="session-readonly-badge">
                             <Lock aria-hidden="true" />
-                            Read-only
+                            Plan
                           </span>
                         )}
                         {hasCrossWorkspaceSessions && workspaceNames && getWorkspaceLabel(session) && (
