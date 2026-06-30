@@ -6,6 +6,7 @@ mod conversation;
 pub mod corpus;
 pub mod keychain;
 mod llm;
+pub mod mcp;
 mod models;
 mod provider_client;
 mod review;
@@ -38,7 +39,7 @@ mod model_fetch {
     }
 }
 
-use app_config::{AppConfigError, AppConfigState, Workspace};
+use app_config::{AppConfigError, AppConfigState, AppConfigStore, Workspace};
 use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
 use corpus::commands::{
@@ -296,6 +297,120 @@ fn set_provider_visibility(
             .clone()
             .unwrap_or_else(|| "App config store is unavailable".to_string())),
     }
+}
+
+fn app_config_store(app_config: &AppConfigState) -> Result<&AppConfigStore, String> {
+    app_config.store.as_ref().ok_or_else(|| {
+        app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())
+    })
+}
+
+#[tauri::command]
+fn list_mcp_servers(
+    app_config: tauri::State<'_, AppConfigState>,
+) -> Result<Vec<mcp::McpServer>, String> {
+    app_config_store(app_config.inner())?
+        .list_mcp_servers()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_mcp_server(
+    app_config: tauri::State<'_, AppConfigState>,
+    request: mcp::CreateMcpServerRequest,
+) -> Result<mcp::McpServer, String> {
+    app_config_store(app_config.inner())?
+        .create_mcp_server(request)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_mcp_server(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+    request: mcp::UpdateMcpServerRequest,
+) -> Result<mcp::McpServer, String> {
+    app_config_store(app_config.inner())?
+        .update_mcp_server(&id, request)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_mcp_server(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+) -> Result<(), String> {
+    app_config_store(app_config.inner())?
+        .delete_mcp_server(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_mcp_server_enabled(
+    app_config: tauri::State<'_, AppConfigState>,
+    kind: String,
+    id: String,
+    enabled: bool,
+) -> Result<mcp::McpServer, String> {
+    app_config_store(app_config.inner())?
+        .set_mcp_server_enabled(&kind, &id, enabled)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn trust_mcp_server(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+) -> Result<mcp::McpServer, String> {
+    app_config_store(app_config.inner())?
+        .trust_mcp_server(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn revoke_trust_mcp_server(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+) -> Result<mcp::McpServer, String> {
+    app_config_store(app_config.inner())?
+        .revoke_trust_mcp_server(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn refresh_mcp_server(
+    app_config: tauri::State<'_, AppConfigState>,
+    kind: String,
+    id: String,
+) -> Result<mcp::McpServer, String> {
+    let store = app_config_store(app_config.inner())?;
+    let active_workspace_path = store.get_workspace_path().ok().flatten().map(PathBuf::from);
+    store
+        .refresh_mcp_server(&kind, &id, active_workspace_path.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn preview_import_mcp_servers(
+    app_config: tauri::State<'_, AppConfigState>,
+    source_path: String,
+) -> Result<mcp::McpImportPreview, String> {
+    app_config_store(app_config.inner())?
+        .preview_import_mcp_servers(&source_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn apply_import_mcp_servers(
+    app_config: tauri::State<'_, AppConfigState>,
+    request: mcp::McpApplyImportRequest,
+) -> Result<mcp::McpApplyImportResult, String> {
+    app_config_store(app_config.inner())?
+        .apply_import_mcp_servers(request)
+        .map_err(|e| e.to_string())
 }
 
 async fn build_model_availability(
@@ -2265,6 +2380,16 @@ pub fn run() {
             get_available_models,
             get_model_availability,
             set_provider_visibility,
+            list_mcp_servers,
+            create_mcp_server,
+            update_mcp_server,
+            delete_mcp_server,
+            set_mcp_server_enabled,
+            trust_mcp_server,
+            revoke_trust_mcp_server,
+            refresh_mcp_server,
+            preview_import_mcp_servers,
+            apply_import_mcp_servers,
             complete,
             complete_streaming,
             clear_conversation_history,

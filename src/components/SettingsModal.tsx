@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
+import { McpSettingsPanel } from "./McpSettingsPanel";
 import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 
@@ -40,7 +41,7 @@ interface SettingsModalProps {
   archivePolicySaving?: boolean;
 }
 
-type TabKey = "general" | "models" | "data";
+type TabKey = "general" | "models" | "mcp" | "data";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string; detail: string }> = [
   { value: "dark", label: "Dark", detail: "Default focus theme" },
@@ -111,7 +112,7 @@ export function SettingsModal({
     <div className="fixed inset-0 bg-scrim z-[var(--z-dialog)] flex items-center justify-center animate-fade-in" onClick={onClose}>
         <div
           ref={dialogRef}
-          className="w-[520px] max-w-[90vw] max-h-[80vh] flex flex-col bg-surface-elevated border border-surface-overlay rounded-lg shadow-[var(--shadow-dialog)] animate-slide-up"
+          className="w-[680px] max-w-[92vw] max-h-[84vh] flex flex-col bg-surface-elevated border border-surface-overlay rounded-lg shadow-[var(--shadow-dialog)] animate-slide-up"
           onClick={(e) => e.stopPropagation()}
           role="dialog"
           aria-modal="true"
@@ -153,6 +154,17 @@ export function SettingsModal({
               type="button"
             >
               Models
+            </button>
+            <button
+              className={`min-h-11 px-3.5 bg-transparent border-b-2 font-body text-body-sm font-medium cursor-pointer transition-colors duration-150 ${
+                activeTab === "mcp"
+                  ? "text-accent-action border-b-accent-action"
+                  : "text-text-muted border-b-transparent hover:text-text-secondary"
+              }`}
+              onClick={() => setActiveTab("mcp")}
+              type="button"
+            >
+              MCP
             </button>
             <button
               className={`min-h-11 px-3.5 bg-transparent border-b-2 font-body text-body-sm font-medium cursor-pointer transition-colors duration-150 ${
@@ -232,6 +244,8 @@ export function SettingsModal({
                   </div>
                 </section>
               </div>
+            ) : activeTab === "mcp" ? (
+              <McpSettingsPanel />
             ) : (
               <div className="flex flex-col gap-5">
                 <section className="grid gap-3">

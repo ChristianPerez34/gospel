@@ -181,6 +181,87 @@ export interface ArchiveStats {
   oldest_archived_at: string | null;
 }
 
+export type McpServerKind = "built_in" | "custom";
+
+export type McpSafetyClass = "read_only" | "mutating" | "unknown";
+
+export interface McpEnvValue {
+  key: string;
+  value: string;
+}
+
+export interface McpToolInventoryItem {
+  name: string;
+  description?: string | null;
+}
+
+export interface McpServer {
+  id: string;
+  kind: McpServerKind;
+  displayName: string;
+  description?: string | null;
+  enabled: boolean;
+  trusted: boolean;
+  trustRevokedReason?: string | null;
+  safetyClass: McpSafetyClass;
+  scope: string;
+  command?: string | null;
+  args: string[];
+  env: McpEnvValue[];
+  secretEnvKeys: string[];
+  readiness: string;
+  health: string;
+  inventory: McpToolInventoryItem[];
+  lastErrorSummary?: string | null;
+  lastSuccessAt?: string | null;
+  lastResolvedExecutablePath?: string | null;
+  externalFingerprint?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateMcpServerRequest {
+  displayName: string;
+  command: string;
+  args: string[];
+  env: McpEnvValue[];
+  secretEnvKeys: string[];
+  safetyClass?: McpSafetyClass;
+  scope?: string;
+}
+
+export type UpdateMcpServerRequest = CreateMcpServerRequest;
+
+export interface McpImportFieldDiff {
+  field: string;
+  current?: string | null;
+  incoming?: string | null;
+}
+
+export interface McpImportPreviewServer {
+  externalId: string;
+  name: string;
+  proposed: CreateMcpServerRequest;
+  matchedServerId?: string | null;
+  conflict: boolean;
+  fieldDiffs: McpImportFieldDiff[];
+  warnings: string[];
+}
+
+export interface McpImportPreview {
+  token: string;
+  sourcePath: string;
+  servers: McpImportPreviewServer[];
+  warnings: string[];
+}
+
+export interface McpApplyImportResult {
+  created: string[];
+  updated: string[];
+  skipped: string[];
+  warnings: string[];
+}
+
 export interface Workspace {
   id: string;
   name: string;
