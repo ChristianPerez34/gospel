@@ -23,6 +23,7 @@ fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
         "groq",
         "mistral",
         "chatgpt",
+        "github_copilot",
     ];
     if !supported.contains(&provider) {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
@@ -60,6 +61,11 @@ struct AuthRecord {
     refresh_token: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct CopilotApiKeyRecord {
+    token: Option<String>,
+}
+
 fn xdg_config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -79,6 +85,22 @@ fn xdg_config_dir() -> PathBuf {
 
 pub(crate) fn chatgpt_auth_file_path() -> PathBuf {
     xdg_config_dir().join("chatgpt").join("auth.json")
+}
+
+fn gospel_config_dir() -> PathBuf {
+    xdg_config_dir().join("gospel")
+}
+
+pub(crate) fn github_copilot_token_dir() -> PathBuf {
+    gospel_config_dir().join("github_copilot")
+}
+
+fn github_copilot_access_token_path() -> PathBuf {
+    github_copilot_token_dir().join("access-token")
+}
+
+fn github_copilot_api_key_path() -> PathBuf {
+    github_copilot_token_dir().join("api-key.json")
 }
 
 pub fn has_chatgpt_oauth_session() -> bool {
@@ -111,11 +133,48 @@ pub fn delete_chatgpt_auth_file() -> Result<(), KeychainError> {
     Ok(())
 }
 
-pub fn provider_has_credentials(provider: &str) -> bool {
-    if provider == "chatgpt" {
-        return has_chatgpt_oauth_session();
+pub fn has_github_copilot_oauth_session() -> bool {
+    let access_token_path = github_copilot_access_token_path();
+    if let Ok(token) = std::fs::read_to_string(access_token_path) {
+        if !token.trim().is_empty() {
+            return true;
+        }
     }
-    has_key(provider)
+
+    let api_key_path = github_copilot_api_key_path();
+    let content = match std::fs::read_to_string(api_key_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let record: CopilotApiKeyRecord = match serde_json::from_str(&content) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    record
+        .token
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+pub fn delete_github_copilot_auth_files() -> Result<(), KeychainError> {
+    for path in [
+        github_copilot_access_token_path(),
+        github_copilot_api_key_path(),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn provider_has_credentials(provider: &str) -> bool {
+    match provider {
+        "chatgpt" => has_chatgpt_oauth_session(),
+        "github_copilot" => has_github_copilot_oauth_session(),
+        _ => has_key(provider),
+    }
 }
 
 #[cfg(test)]

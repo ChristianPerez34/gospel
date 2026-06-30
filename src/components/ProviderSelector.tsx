@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 
-export type ProviderId = "openai" | "chatgpt" | "anthropic" | "gemini" | "groq" | "mistral";
+export type ProviderId = "openai" | "chatgpt" | "github_copilot" | "anthropic" | "gemini" | "groq" | "mistral";
 
 export interface ProviderConfig {
   id: ProviderId;
@@ -27,6 +27,37 @@ interface ProviderSelectorProps {
   onRefreshAvailability: (forceRefresh?: boolean) => Promise<void>;
 }
 
+interface OAuthChallenge {
+  provider: ProviderId;
+  verification_url: string;
+  user_code: string;
+}
+
+interface OAuthCompletion {
+  provider: ProviderId;
+  success: boolean;
+}
+
+const OAUTH_PROVIDER_IDS: ProviderId[] = ["chatgpt", "github_copilot"];
+
+function oauthCopy(provider: ProviderConfig) {
+  switch (provider.id) {
+    case "github_copilot":
+      return {
+        prompt: "Sign in with the GitHub account that has Copilot access",
+        button: "Sign in with GitHub",
+        connecting: "Connecting to GitHub...",
+      };
+    case "chatgpt":
+    default:
+      return {
+        prompt: "Sign in with your ChatGPT Plus/Pro account",
+        button: "Sign in with OpenAI",
+        connecting: "Connecting...",
+      };
+  }
+}
+
 function providerAvailabilitySummary(provider: ProviderConfig) {
   if (!provider.credentialed) return "Not credentialed";
   if (!provider.visible) return "Hidden";
@@ -39,7 +70,7 @@ function providerAvailabilitySummary(provider: ProviderConfig) {
 export function ProviderSelector({ providers, onProvidersChange, onRefreshAvailability }: ProviderSelectorProps) {
   const [showKeyFor, setShowKeyFor] = useState<ProviderId | null>(null);
   const [editingKeyFor, setEditingKeyFor] = useState<ProviderId | null>(null);
-  const [oauthChallenge, setOauthChallenge] = useState<{ verification_url: string; user_code: string } | null>(null);
+  const [oauthChallenge, setOauthChallenge] = useState<OAuthChallenge | null>(null);
   const isOperationInProgress = useRef(false);
 
   const providersRef = useRef(providers);
@@ -55,13 +86,20 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const status = await invoke<{ configured: boolean }>("is_chatgpt_authenticated");
-        if (!cancelled && status.configured) {
+        const statuses = await Promise.all(
+          OAUTH_PROVIDER_IDS.map(async (provider) => ({
+            provider,
+            status: await invoke<{ configured: boolean }>("is_provider_authenticated", { provider }),
+          })),
+        );
+        if (!cancelled) {
           const current = providersRef.current;
-          const chatgptProvider = current.find(p => p.id === "chatgpt");
-          if (chatgptProvider) {
+          const configured = new Set(statuses.filter(({ status }) => status.configured).map(({ provider }) => provider));
+          if (configured.size > 0) {
             const updated = current.map((p) =>
-              p.id === "chatgpt" ? { ...p, isAuthenticated: true, credentialed: true, status: "success" as const, testMessage: "Authenticated" } : p
+              configured.has(p.id)
+                ? { ...p, isAuthenticated: true, credentialed: true, status: "success" as const, testMessage: "Authenticated" }
+                : p
             );
             onProvidersChangeRef.current(updated);
           }
@@ -73,19 +111,19 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
     (async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
-        const unlistenFn = await listen("chatgpt-auth-complete", (event) => {
-          const success = event.payload as boolean;
+        const unlistenFn = await listen("provider-auth-complete", (event) => {
+          const { provider, success } = event.payload as OAuthCompletion;
           const current = providersRef.current;
           if (success) {
             const updated = current.map((p) =>
-              p.id === "chatgpt" ? { ...p, isAuthenticated: true, credentialed: true, status: "success" as const, testMessage: "Authenticated" } : p
+              p.id === provider ? { ...p, isAuthenticated: true, credentialed: true, status: "success" as const, testMessage: "Authenticated" } : p
             );
             onProvidersChangeRef.current(updated);
             setOauthChallenge(null);
             void onRefreshAvailability();
           } else {
             const updated = current.map((p) =>
-              p.id === "chatgpt" ? { ...p, status: "error" as const, testMessage: "Authentication failed" } : p
+              p.id === provider ? { ...p, status: "error" as const, testMessage: "Authentication failed" } : p
             );
             onProvidersChangeRef.current(updated);
             void onRefreshAvailability();
@@ -183,8 +221,8 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
       updateProvider(provider.id, { status: "testing", testMessage: "Starting authentication..." });
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const challenge = await invoke<{ verification_url: string; user_code: string }>("start_chatgpt_oauth");
-        setOauthChallenge(challenge);
+        const challenge = await invoke<{ verification_url: string; user_code: string }>("start_provider_oauth", { provider: provider.id });
+        setOauthChallenge({ ...challenge, provider: provider.id });
         updateProvider(provider.id, { status: "testing", testMessage: `Enter code: ${challenge.user_code}` });
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `OAuth failed: ${e}` });
@@ -200,8 +238,9 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
     async (provider: ProviderConfig) => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("logout_chatgpt");
+        await invoke("logout_provider_oauth", { provider: provider.id });
         updateProvider(provider.id, { isAuthenticated: false, credentialed: false, status: "idle", testMessage: "" });
+        setOauthChallenge((current) => (current?.provider === provider.id ? null : current));
         await onRefreshAvailability();
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `Logout failed: ${e}` });
@@ -219,6 +258,8 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
         const isTesting = provider.status === "testing";
         const isSuccess = provider.status === "success";
         const isError = provider.status === "error";
+        const copy = provider.isOAuth ? oauthCopy(provider) : null;
+        const providerChallenge = oauthChallenge?.provider === provider.id ? oauthChallenge : null;
 
         const cardBorder = isError
           ? "border-status-error"
@@ -289,21 +330,21 @@ export function ProviderSelector({ providers, onProvidersChange, onRefreshAvaila
                       </>
                     ) : (
                       <>
-                        <span className="text-caption text-text-muted font-body">Sign in with your ChatGPT Plus/Pro account</span>
+                        <span className="text-caption text-text-muted font-body">{copy?.prompt}</span>
                         <Button
                           variant="default"
                           size="sm"
                           onClick={() => handleOAuthLogin(provider)}
                           disabled={isOperationInProgress.current}
                         >
-                          {isOperationInProgress.current ? "Connecting..." : "Sign in with OpenAI"}
+                          {isOperationInProgress.current ? copy?.connecting : copy?.button}
                         </Button>
                       </>
                     )}
-                    {oauthChallenge && (
+                    {providerChallenge && (
                       <div className="flex items-center gap-2 pt-2">
                         <span className="text-caption text-text-muted font-body">Your code:</span>
-                        <code className="font-mono text-body-sm text-accent-action bg-surface-base py-0.5 px-2 rounded-sm tracking-[0.15em]">{oauthChallenge.user_code}</code>
+                        <code className="font-mono text-body-sm text-accent-action bg-surface-base py-0.5 px-2 rounded-sm tracking-[0.15em]">{providerChallenge.user_code}</code>
                       </div>
                     )}
                   </div>

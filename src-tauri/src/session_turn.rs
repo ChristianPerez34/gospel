@@ -1011,6 +1011,7 @@ mod tests {
         Message::User {
             content: OneOrMany::one(UserContent::Text(Text {
                 text: text.to_string(),
+                additional_params: Some(serde_json::json!({})),
             })),
         }
     }
@@ -1020,6 +1021,7 @@ mod tests {
             id: None,
             content: OneOrMany::one(AssistantContent::Text(Text {
                 text: text.to_string(),
+                additional_params: Some(serde_json::json!({})),
             })),
         }
     }
@@ -1033,6 +1035,7 @@ mod tests {
                 AssistantPart::Text(t) => {
                     content.push(AssistantContent::Text(Text {
                         text: t.to_string(),
+                        additional_params: Some(serde_json::json!({})),
                     }));
                 }
                 AssistantPart::ToolCall {
@@ -1067,6 +1070,7 @@ mod tests {
                 call_id: None,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: text.to_string(),
+                    additional_params: Some(serde_json::json!({})),
                 })),
             })),
         }

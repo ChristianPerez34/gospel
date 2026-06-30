@@ -9,11 +9,11 @@ pub mod tools;
 pub mod validator;
 
 use crate::llm::WorkspaceToolContext;
+use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::workspace_tools::build_base_workspace_tools;
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
-use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::ErrorKind;
@@ -1280,7 +1280,7 @@ pub(crate) struct AgentConfig<'a> {
 pub(crate) async fn run_workspace_agent(
     config: AgentConfig<'_>,
 ) -> Result<String, ReviewAgentError> {
-    if config.provider != "chatgpt" && config.api_key.trim().is_empty() {
+    if !ModelRegistry::is_oauth_provider(config.provider) && config.api_key.trim().is_empty() {
         return Err(ReviewAgentError::Provider(format!(
             "API key not configured for {}",
             config.provider
@@ -1305,9 +1305,13 @@ pub(crate) async fn run_workspace_agent(
         }};
     }
 
-    provider_client!(config.provider, config.api_key, ReviewAgentError::Provider, ReviewAgentError::Provider, |client| {
-        run_from_client!(client, config.model)
-    })
+    provider_client!(
+        config.provider,
+        config.api_key,
+        ReviewAgentError::Provider,
+        ReviewAgentError::Provider,
+        |client| { run_from_client!(client, config.model) }
+    )
 }
 
 #[cfg(test)]
@@ -1521,7 +1525,10 @@ Binary files a/icon.png and b/icon.png differ
         assert_eq!(parsed.comments[0].focus, ReviewFocus::Security);
         let comments = filter_rejected_comments(parsed.comments, &store);
 
-        assert!(comments.is_empty(), "Security-stamped comment should be filtered by Security rejection");
+        assert!(
+            comments.is_empty(),
+            "Security-stamped comment should be filtered by Security rejection"
+        );
     }
 
     #[test]

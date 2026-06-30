@@ -1789,12 +1789,14 @@ mod tests {
             Message::User {
                 content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
                     text: "hi".to_string(),
+                    additional_params: Some(serde_json::json!({})),
                 })),
             },
             Message::Assistant {
                 id: None,
                 content: rig::one_or_many::OneOrMany::one(AssistantContent::Text(Text {
                     text: "hello back".to_string(),
+                    additional_params: Some(serde_json::json!({})),
                 })),
             },
         ];

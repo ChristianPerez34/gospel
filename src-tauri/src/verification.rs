@@ -7,13 +7,13 @@ use crate::corpus::tools::{
     CORPUS_SYSTEM_PROMPT,
 };
 use crate::llm::WorkspaceToolContext;
+use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::workspace_tools::{
     build_base_workspace_tools, create_context_search_tool, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
-use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
@@ -74,7 +74,7 @@ pub async fn run_verification(
     response_to_verify: &str,
     user_prompt: &str,
 ) -> VerificationResult {
-    if provider != "chatgpt" && api_key.trim().is_empty() {
+    if !ModelRegistry::is_oauth_provider(provider) && api_key.trim().is_empty() {
         return unavailable("Verification unavailable: API key is not configured.");
     }
 
@@ -134,9 +134,13 @@ async fn run_verification_agent(
         }};
     }
 
-    provider_client!(provider, api_key, |e: String| e, |s: String| format!("unsupported provider: {}", s), |client| {
-        verify_from_client!(client, model)
-    })
+    provider_client!(
+        provider,
+        api_key,
+        |e: String| e,
+        |s: String| format!("unsupported provider: {}", s),
+        |client| { verify_from_client!(client, model) }
+    )
 }
 
 fn build_verification_preamble(workspace: &WorkspaceToolContext) -> String {

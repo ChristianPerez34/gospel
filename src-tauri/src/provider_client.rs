@@ -1,6 +1,3 @@
-#[allow(unused_imports)]
-use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
-
 /// Dispatches to the correct rig provider client based on the provider string.
 ///
 /// Usage:
@@ -17,34 +14,42 @@ macro_rules! provider_client {
     ($provider:expr, $api_key:expr, $client_err:expr, $unsupported_err:expr, |$client:ident| $body:block) => {
         match $provider {
             "openai" => {
-                let $client = openai::Client::new($api_key)
+                let $client = rig::providers::openai::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
             }
             "chatgpt" => {
-                let $client = chatgpt::Client::builder()
+                let $client = rig::providers::chatgpt::Client::builder()
                     .oauth()
                     .build()
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
             }
+            "github_copilot" => {
+                let $client = rig::providers::copilot::Client::builder()
+                    .oauth()
+                    .token_dir(crate::keychain::github_copilot_token_dir())
+                    .build()
+                    .map_err(|e| $client_err(e.to_string()))?;
+                $body
+            }
             "anthropic" => {
-                let $client = anthropic::Client::new($api_key)
+                let $client = rig::providers::anthropic::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
             }
             "gemini" => {
-                let $client = gemini::Client::new($api_key)
+                let $client = rig::providers::gemini::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
             }
             "groq" => {
-                let $client = groq::Client::new($api_key)
+                let $client = rig::providers::groq::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
             }
             "mistral" => {
-                let $client = mistral::Client::new($api_key)
+                let $client = rig::providers::mistral::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
             }

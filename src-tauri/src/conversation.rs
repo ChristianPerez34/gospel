@@ -193,6 +193,7 @@ mod tests {
         Message::User {
             content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
                 text: text.to_string(),
+                additional_params: Some(serde_json::json!({})),
             })),
         }
     }
@@ -204,6 +205,7 @@ mod tests {
                 call_id: None,
                 content: rig::one_or_many::OneOrMany::one(ToolResultContent::Text(Text {
                     text: text.to_string(),
+                    additional_params: Some(serde_json::json!({})),
                 })),
             })),
         }
@@ -214,6 +216,7 @@ mod tests {
             id: None,
             content: rig::one_or_many::OneOrMany::one(AssistantContent::Text(Text {
                 text: text.to_string(),
+                additional_params: Some(serde_json::json!({})),
             })),
         }
     }

@@ -48,6 +48,7 @@ pub async fn fetch_models_for_provider(
         match provider {
             "openai" => fetch_openai_models_impl(api_key.unwrap_or("")).await,
             "chatgpt" => fetch_chatgpt_models_impl().await,
+            "github_copilot" => fetch_github_copilot_models_impl().await,
             "anthropic" => fetch_anthropic_models_impl(api_key.unwrap_or("")).await,
             "gemini" => fetch_gemini_models_impl(api_key.unwrap_or("")).await,
             "mistral" => fetch_mistral_models_impl(api_key.unwrap_or("")).await,
@@ -144,6 +145,40 @@ async fn fetch_mistral_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Stri
         .collect();
 
     tracing::info!("Fetched {} models from Mistral", models.len());
+    Ok(models)
+}
+
+async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
+    if !crate::keychain::has_github_copilot_oauth_session() {
+        return Err("GitHub Copilot OAuth session not found".to_string());
+    }
+
+    let client = rig::providers::copilot::Client::builder()
+        .oauth()
+        .token_dir(crate::keychain::github_copilot_token_dir())
+        .build()
+        .map_err(|e| format!("failed to create GitHub Copilot client: {}", e))?;
+    let list = client
+        .list_models()
+        .await
+        .map_err(|e| format!("failed to list GitHub Copilot models: {}", e))?;
+
+    let total = list.data.len();
+    let models: Vec<ModelInfo> = list
+        .data
+        .into_iter()
+        .filter(|m| ModelRegistry::is_github_copilot_tool_capable_model(&m.id))
+        .map(|m| ModelInfo {
+            model: m.id,
+            provider: "github_copilot".to_string(),
+        })
+        .collect();
+
+    tracing::info!(
+        "Fetched {} models from GitHub Copilot, filtered to {} tool-capable models",
+        total,
+        models.len()
+    );
     Ok(models)
 }
 

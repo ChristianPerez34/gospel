@@ -137,6 +137,20 @@ mod model_lists {
         "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ];
+
+    pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
+
+    pub const GITHUB_COPILOT_TOOL_CAPABLE_MODELS: &[&str] = &[
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.1-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "claude-sonnet-4.6",
+        "claude-opus-4.6",
+        "claude-opus-4.7",
+    ];
 }
 
 #[cfg(test)]
@@ -243,11 +257,26 @@ mod model_lists {
         "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ];
+
+    pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
+
+    pub const GITHUB_COPILOT_TOOL_CAPABLE_MODELS: &[&str] = &[
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.1-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "claude-sonnet-4.6",
+        "claude-opus-4.6",
+        "claude-opus-4.7",
+    ];
 }
 
 use model_lists::{
-    ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS, GROQ_MODELS,
-    MISTRAL_MODELS, OPENAI_MODELS,
+    ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS,
+    GITHUB_COPILOT_MODELS, GITHUB_COPILOT_TOOL_CAPABLE_MODELS, GROQ_MODELS, MISTRAL_MODELS,
+    OPENAI_MODELS,
 };
 
 #[derive(Serialize, Clone, Debug)]
@@ -281,8 +310,7 @@ pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
     Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 type PendingMap = Arc<RwLock<HashMap<String, Arc<Notify>>>>;
-pub static PENDING_REQUESTS: Lazy<PendingMap> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+pub static PENDING_REQUESTS: Lazy<PendingMap> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 
@@ -303,6 +331,7 @@ impl ModelRegistry {
         match provider {
             "openai" => OPENAI_MODELS,
             "chatgpt" => CHATGPT_MODELS,
+            "github_copilot" => GITHUB_COPILOT_MODELS,
             "anthropic" => ANTHROPIC_MODELS,
             "gemini" => GEMINI_MODELS,
             "groq" => GROQ_MODELS,
@@ -315,10 +344,40 @@ impl ModelRegistry {
         CHATGPT_DISCOVERABLE_MODELS.contains(&model)
     }
 
+    pub fn is_github_copilot_tool_capable_model(model: &str) -> bool {
+        GITHUB_COPILOT_TOOL_CAPABLE_MODELS.contains(&model)
+    }
+
+    pub fn is_oauth_provider(provider: &str) -> bool {
+        matches!(provider, "chatgpt" | "github_copilot")
+    }
+
+    pub fn provider_display_name(provider: &str) -> &'static str {
+        match provider {
+            "openai" => "OpenAI",
+            "chatgpt" => "ChatGPT Plus/Pro",
+            "github_copilot" => "GitHub Copilot",
+            "anthropic" => "Anthropic",
+            "gemini" => "Gemini",
+            "groq" => "Groq",
+            "mistral" => "Mistral",
+            _ => "Unknown Provider",
+        }
+    }
+
+    pub fn provider_auth_type(provider: &str) -> &'static str {
+        if Self::is_oauth_provider(provider) {
+            "oauth"
+        } else {
+            "api_key"
+        }
+    }
+
     pub fn all_providers() -> &'static [&'static str] {
         &[
             "openai",
             "chatgpt",
+            "github_copilot",
             "anthropic",
             "gemini",
             "groq",
@@ -622,6 +681,39 @@ mod tests {
         assert!(models.contains(&"gpt-5.3-codex-spark"));
         assert!(!models.contains(&"gpt-5.3-codex"));
         assert!(!models.contains(&"gpt-5.4-pro"));
+    }
+
+    #[test]
+    fn test_github_copilot_is_registered_as_oauth_provider() {
+        assert!(ModelRegistry::all_providers().contains(&"github_copilot"));
+        assert!(ModelRegistry::is_oauth_provider("github_copilot"));
+        assert_eq!(
+            ModelRegistry::provider_display_name("github_copilot"),
+            "GitHub Copilot"
+        );
+        assert_eq!(ModelRegistry::provider_auth_type("github_copilot"), "oauth");
+    }
+
+    #[test]
+    fn test_github_copilot_has_no_hardcoded_model_fallback() {
+        assert!(ModelRegistry::models_for_provider("github_copilot").is_empty());
+        assert!(ModelRegistry::hardcoded_models_for("github_copilot").is_empty());
+    }
+
+    #[test]
+    fn test_github_copilot_tool_capable_allowlist() {
+        assert!(ModelRegistry::is_github_copilot_tool_capable_model(
+            "gpt-5.3-codex"
+        ));
+        assert!(ModelRegistry::is_github_copilot_tool_capable_model(
+            "claude-sonnet-4.6"
+        ));
+        assert!(!ModelRegistry::is_github_copilot_tool_capable_model(
+            "text-embedding-3-large"
+        ));
+        assert!(!ModelRegistry::is_github_copilot_tool_capable_model(
+            "gpt-unknown"
+        ));
     }
 
     #[test]

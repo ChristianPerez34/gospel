@@ -2,7 +2,9 @@
 
 ## Glossary
 
-- **Credentialed Provider**: A supported model provider for which Gospel can access a usable credential source. API-key providers are credentialed when a key exists in the OS keychain. ChatGPT Plus/Pro is credentialed when a reusable OAuth session exists in the local ChatGPT auth cache.
+- **Credentialed Provider**: A supported model provider for which Gospel can access a usable credential source. API-key providers are credentialed when a key exists in the OS keychain. OAuth providers are credentialed when a reusable provider-specific OAuth session exists in local auth storage.
+- **OAuth Provider Credential**: A durable, locally stored OAuth session that lets Gospel derive provider access without a user-entered API key. ChatGPT Plus/Pro uses OpenAI/ChatGPT OAuth-managed auth data; GitHub Copilot uses GitHub/Copilot OAuth token files under Gospel config.
+- **OAuth Authority**: The external account system that issues an OAuth Provider Credential. OpenAI/ChatGPT is the authority for the ChatGPT provider; GitHub.com is the authority for the GitHub Copilot provider.
 - **Provider Visibility**: A non-secret user preference that determines whether a credentialed provider should contribute models to the model picker. Missing visibility data defaults to visible.
 - **Available Model**: A backend-returned provider/model entry that is selectable because its provider is credentialed, visible, and model loading returned a live or cached model list.
 - **Live Workspace Tools**: Workspace-scoped chat tools that inspect and narrowly mutate the active Gospel workspace directly, including safe file reads, code search, directory discovery, and exact source edits. These are the source of truth for file contents.

@@ -4,7 +4,6 @@ use rig::agent::{HookAction, PromptHook, ToolCallHookAction};
 use rig::client::CompletionClient;
 use rig::completion::message::Message;
 use rig::completion::{CompletionModel, Prompt, ToolDefinition};
-use rig::providers::{anthropic, chatgpt, gemini, groq, mistral, openai};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
 use rig::tool::Tool;
 use serde::ser::SerializeStruct;
@@ -185,6 +184,7 @@ use crate::corpus::tools::{
     create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
     CORPUS_SYSTEM_PROMPT,
 };
+use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::review::tools::{
     create_record_review_outcome_tool, create_run_review_tool, create_run_security_review_tool,
@@ -307,7 +307,7 @@ pub struct WorkspaceToolContext {
 pub struct LlmService;
 
 fn validate_api_key(provider: &str, api_key: &str) -> Result<(), LlmError> {
-    if provider != "chatgpt" && api_key.trim().is_empty() {
+    if !ModelRegistry::is_oauth_provider(provider) && api_key.trim().is_empty() {
         return Err(LlmError::ApiKeyMissing);
     }
 
@@ -323,13 +323,19 @@ impl LlmService {
     ) -> Result<String, LlmError> {
         validate_api_key(provider, api_key)?;
 
-        let response = provider_client!(provider, api_key, LlmError::ProviderError, LlmError::UnsupportedProvider, |client| {
-            let agent = client.agent(model).build();
-            agent
-                .prompt(prompt)
-                .await
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?
-        });
+        let response = provider_client!(
+            provider,
+            api_key,
+            LlmError::ProviderError,
+            LlmError::UnsupportedProvider,
+            |client| {
+                let agent = client.agent(model).build();
+                agent
+                    .prompt(prompt)
+                    .await
+                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
+            }
+        );
         Ok(response)
     }
 }
@@ -592,7 +598,8 @@ struct ParsedDelegateSections {
 
 fn parse_delegation_sections(text: &str) -> ParsedDelegateSections {
     let mut section = "other".to_string();
-    let mut sections: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut sections: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     sections.insert("summary".to_string(), Vec::new());
     sections.insert("key_files".to_string(), Vec::new());
     sections.insert("findings".to_string(), Vec::new());
@@ -805,9 +812,13 @@ async fn run_exploration_agent(
         }};
     }
 
-    provider_client!(provider, api_key, LlmError::ProviderError, LlmError::UnsupportedProvider, |client| {
-        Ok(exploration_from_client!(client, model))
-    })
+    provider_client!(
+        provider,
+        api_key,
+        LlmError::ProviderError,
+        LlmError::UnsupportedProvider,
+        |client| { Ok(exploration_from_client!(client, model)) }
+    )
 }
 
 pub async fn stream_completion<F>(
@@ -1052,9 +1063,15 @@ where
         }};
     }
 
-    provider_client!(provider, api_key, LlmError::ProviderError, LlmError::UnsupportedProvider, |client| {
-        stream_from_client!(client, model);
-    });
+    provider_client!(
+        provider,
+        api_key,
+        LlmError::ProviderError,
+        LlmError::UnsupportedProvider,
+        |client| {
+            stream_from_client!(client, model);
+        }
+    );
     let response_tokens = estimate_tokens(&full_response);
 
     Ok(StreamCompletionResult {
@@ -1095,9 +1112,7 @@ fn estimate_message_tokens(message: &Message) -> usize {
                 .collect::<Vec<_>>()
                 .join(" "),
         ),
-        Message::System { content } => estimate_tokens(
-            content,
-        ),
+        Message::System { content } => estimate_tokens(content),
     }
 }
 
@@ -1172,7 +1187,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_api_key_rejects_blank_key_for_non_chatgpt() {
+    fn validate_api_key_allows_blank_key_for_github_copilot() {
+        let result = validate_api_key("github_copilot", "   ");
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_api_key_rejects_blank_key_for_non_oauth_provider() {
         let result = validate_api_key("openai", "");
 
         assert!(matches!(result, Err(LlmError::ApiKeyMissing)));
@@ -1266,11 +1288,14 @@ mod tests {
 
     #[test]
     fn build_exploration_prompt_includes_optional_context() {
-        let prompt = build_exploration_prompt(&DelegateExplorationArgs {
-            task: "Trace startup flow".to_string(),
-            context: Some("Focus on Tauri setup".to_string()),
-            expected_output: Some("Highlight risky assumptions".to_string()),
-        }, "");
+        let prompt = build_exploration_prompt(
+            &DelegateExplorationArgs {
+                task: "Trace startup flow".to_string(),
+                context: Some("Focus on Tauri setup".to_string()),
+                expected_output: Some("Highlight risky assumptions".to_string()),
+            },
+            "",
+        );
 
         assert!(prompt.contains("Task:"));
         assert!(prompt.contains("Focus on Tauri setup"));
