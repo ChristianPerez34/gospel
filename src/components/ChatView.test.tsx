@@ -304,6 +304,37 @@ describe("ChatView scroll following", () => {
     expect(scrollContainer.scrollTop).toBe(500);
   });
 
+  it("resumes auto-scroll when a new user turn is submitted while scrolled away", () => {
+    const { container, rerender } = renderChat();
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1200,
+      clientHeight: 400,
+      scrollTop: 500,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    rerender(
+      <ChatView
+        messages={[
+          userMessage,
+          {
+            id: "m-user-2",
+            role: "user",
+            content: "Follow up prompt",
+            timestamp: new Date("2026-06-24T00:02:00Z"),
+          },
+        ]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={null}
+      />,
+    );
+
+    expect(scrollContainer.scrollTop).toBe(1200);
+  });
+
   it("resumes auto-scroll after the user returns near the bottom", () => {
     const { container, rerender } = renderChat({
       currentTurn: {
