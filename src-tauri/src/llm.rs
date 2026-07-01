@@ -93,13 +93,12 @@ impl LoopDetector {
         }
     }
 
-    fn canonicalize_args(args: &serde_json::Value) -> String {
-        let sorted = sort_json_keys(args);
-        serde_json::to_string(&sorted).unwrap_or_default()
-    }
-
     fn record_call(&mut self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
-        let canonical = format!("{}:{}", tool_name, Self::canonicalize_args(args));
+        let canonical = format!(
+            "{}:{}",
+            tool_name,
+            crate::json_utils::canonical_json_string(args)
+        );
         let mut hasher = DefaultHasher::new();
         canonical.hash(&mut hasher);
         let hash = hasher.finish();
@@ -162,24 +161,6 @@ enum LoopStatus {
     Stop,
 }
 
-fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut sorted: Vec<_> = map.iter().collect();
-            sorted.sort_by_key(|(k, _)| k.as_str());
-            let sorted_map: serde_json::Map<String, serde_json::Value> = sorted
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            serde_json::Value::Object(sorted_map)
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(sort_json_keys).collect())
-        }
-        other => other.clone(),
-    }
-}
-
 use crate::corpus::tools::{
     create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
     CORPUS_SYSTEM_PROMPT,
@@ -191,11 +172,12 @@ use crate::review::tools::{
     REVIEW_TOOLS_SYSTEM_PROMPT,
 };
 use crate::session_mode::session_mode_allows_source_edit;
+use crate::text_utils::truncate_text_bytes;
 use crate::workspace_tools::{
     build_base_workspace_tools_with_external_approval, create_context_search_tool,
     create_find_files_tool, create_read_file_tool, create_search_code_tool,
-    create_source_edit_tool, create_write_harness_file_tool, truncate_text_bytes,
-    workspace_root_inventory, ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
+    create_source_edit_tool, create_write_harness_file_tool, workspace_root_inventory,
+    ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
     READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 

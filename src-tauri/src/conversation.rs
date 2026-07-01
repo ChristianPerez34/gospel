@@ -1,4 +1,4 @@
-use crate::workspace_tools::truncate_text_bytes;
+use crate::text_utils::truncate_text_bytes;
 use rig::completion::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use std::collections::HashMap;
 use std::sync::Mutex;
