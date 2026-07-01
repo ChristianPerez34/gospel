@@ -17,6 +17,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "gospel-corpus")]
 #[command(about = "Gospel Corpus Sidecar - standalone corpus operations")]
+#[command(version)]
 struct Cli {
     /// Enable JSON-RPC mode (stdio communication)
     #[arg(long)]

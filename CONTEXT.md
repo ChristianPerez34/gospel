@@ -47,6 +47,13 @@
 - **Context Search**: An offline broad-retrieval index built on SQLite FTS as part of the corpus subsystem. Covers safe source files, documentation, workspace skills, and harness planning artifacts. Used by agents to find likely relevant areas, then verified with live workspace tools.
 - **Session Context Note**: A session-scoped note injected into future turns as context (not persisted into provider Model History). Version one creates notes from Verification Agent concerns. The note shape is generic for future note kinds.
 
+### Versioning
+
+- **App Version**: The human-readable SemVer string identifying a Gospel release.
+- **Dev Build**: A locally produced build whose App Version carries a `-dev` suffix. Dev Builds are not distributed.
+- **Release Build**: A build produced from a versioned git tag for distribution to users.
+- **Version Sync**: The release-preparation step that keeps Gospel's public package metadata aligned to one App Version.
+
 ## Harness Interface Baseline
 
 Code plays three roles in any agent-assisted workflow:

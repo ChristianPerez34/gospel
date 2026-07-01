@@ -134,6 +134,7 @@ impl ExternalPathApproval for TauriExternalPathApproval {
 
 #[derive(Parser, Debug)]
 #[command(name = "gospel", about = "Gospel AI coding assistant")]
+#[command(version)]
 struct Cli {
     #[arg(short = 'd', long = "dir")]
     dir: Option<String>,

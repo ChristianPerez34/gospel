@@ -8,6 +8,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "version:sync": "python3 scripts/sync-version.py --dev",
+    "version:bump": "python3 scripts/bump-version.py patch",
+    "version:bump:minor": "python3 scripts/bump-version.py minor",
+    "version:bump:major": "python3 scripts/bump-version.py major",
     "test": "vitest run",
     "test:watch": "vitest"
   },
