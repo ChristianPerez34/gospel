@@ -166,7 +166,7 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
   const ariaLabel = classNames(
     card.summary,
     card.target,
-    groupCount > 1 && `${groupCount} passes`,
+    groupCount > 1 && expanded ? `${groupCount} passes - expanded` : groupCount > 1 ? `${groupCount} passes` : null,
     isRunning ? "Running" : "Done",
   );
 
