@@ -115,10 +115,17 @@ export interface ActionCard {
   type: ActionCardType;
   summary: string;
   detail?: string;
+  /** Primary target (path / pattern / glob / identifier) shown inline in the
+   * compact timeline header and used as the grouping key. */
+  target?: string;
   sections?: ActionCardSection[];
   rawPayload?: string;
   expanded?: boolean;
   status?: "calling" | "completed";
+  /** Number of consecutive identical calls merged into this step (>= 2 when grouped). */
+  groupCount?: number;
+  /** Per-call cards when consecutive identical calls are grouped into one step. */
+  passes?: ActionCard[];
 }
 
 export interface ActionCardField {
