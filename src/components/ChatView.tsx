@@ -1,9 +1,8 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import { Button } from "@/components/ui/button";
 import type {
-  ActionCardType,
   CurrentTurn,
   Message,
   ToolCallActivity,
@@ -11,10 +10,10 @@ import type {
 } from "../types";
 import {
   summarizeLiveToolActivity,
-  toolActivitiesToActionCards,
+  toolActivitiesToTimelineSteps,
 } from "../toolActivityCards";
 import { MessageBlock } from "./MessageBlock";
-import { ActionCard } from "./ActionCard";
+import { ActivityStep } from "./ActivityStep";
 
 interface ChatViewProps {
   messages: Message[];
@@ -32,17 +31,11 @@ interface AgentTurnBlockProps {
 type TextTurnBlock = Extract<TurnBlock, { kind: "text" }>;
 type ToolTurnBlock = Extract<TurnBlock, { kind: "tool" }>;
 
-const TOOL_TYPE_ICONS: Record<ActionCardType, string> = {
-  file: "F",
-  terminal: ">",
-  diff: "+/-",
-  search: "S",
-};
-const AUTO_FOLLOW_THRESHOLD_PX = 64;
+type TurnSegment =
+  | { kind: "text"; block: TextTurnBlock }
+  | { kind: "tools"; blocks: ToolTurnBlock[] };
 
-function classNames(...classes: (string | false | null | undefined)[]) {
-  return classes.filter(Boolean).join(" ");
-}
+const AUTO_FOLLOW_THRESHOLD_PX = 64;
 
 function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
   return {
@@ -54,8 +47,23 @@ function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
   };
 }
 
-function toolStatus(block: ToolTurnBlock) {
-  return block.status === "calling" ? "Running" : "Done";
+/** Collapses consecutive tool blocks into one segment so they share a single
+ * connected activity timeline, while preserving text/tool occurrence order. */
+function coalesceBlocks(blocks: TurnBlock[]): TurnSegment[] {
+  const segments: TurnSegment[] = [];
+  for (const block of blocks) {
+    if (block.kind === "tool") {
+      const last = segments[segments.length - 1];
+      if (last?.kind === "tools") {
+        last.blocks.push(block);
+      } else {
+        segments.push({ kind: "tools", blocks: [block] });
+      }
+    } else {
+      segments.push({ kind: "text", block });
+    }
+  }
+  return segments;
 }
 
 function isNearBottom(element: HTMLElement) {
@@ -100,100 +108,22 @@ function RunningPill({
   );
 }
 
-function ToolRow({
-  block,
-  defaultExpanded = false,
-}: {
-  block: ToolTurnBlock;
-  defaultExpanded?: boolean;
-}) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const activity = useMemo(() => toolBlockToActivity(block), [block]);
-  const card = useMemo(
-    () => toolActivitiesToActionCards([activity])[0],
-    [activity],
-  );
-
-  if (!card) return null;
-
-  const isRunning = block.status === "calling";
-  const icon = TOOL_TYPE_ICONS[card.type] ?? TOOL_TYPE_ICONS.file;
-  const chevronClass = expanded ? "rotate-180" : "";
-
-  return (
-    <li className="grid gap-2" key={block.id}>
-      <button
-        type="button"
-        className="tool-row-button grid min-h-11 w-full max-w-[720px] grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-surface-overlay bg-surface-elevated px-3 py-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action motion-reduce:transition-none"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        aria-label={`${card.summary}${card.detail ? `: ${card.detail}` : ""} ${toolStatus(block)}`}
-      >
-        <span
-          className={classNames(
-            "h-2 w-2 rounded-full",
-            isRunning
-              ? "bg-accent-action animate-pulse motion-reduce:animate-none"
-              : "bg-text-muted",
-          )}
-          aria-hidden="true"
-        />
-        <span
-          className="flex h-5 min-w-5 shrink-0 items-center justify-center font-mono text-caption font-semibold text-text-muted"
-          aria-hidden="true"
-        >
-          {icon}
-        </span>
-        <span
-          className="min-w-0 truncate font-body font-medium text-text-primary"
-          data-testid="tool-row-label"
-          title={card.summary}
-        >
-          {card.summary}
-        </span>
-        {isRunning && (
-          <span className="shrink-0 font-mono text-caption text-accent-action">
-            Running
-          </span>
-        )}
-        <svg
-          className={`shrink-0 text-text-muted transition-transform duration-150 ease-out-quart motion-reduce:transition-none ${chevronClass}`}
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          aria-hidden="true"
-        >
-          <path
-            d="M4 4.5L6 6.5L8 4.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
-      {expanded && (
-        <ActionCard
-          card={{ ...card, expanded: true }}
-          className="w-full max-w-[960px]"
-        />
-      )}
-    </li>
-  );
-}
-
 function ToolTimeline({ blocks }: { blocks: ToolTurnBlock[] }) {
-  if (blocks.length === 0) return null;
+  const steps = useMemo(
+    () => toolActivitiesToTimelineSteps(blocks.map(toolBlockToActivity)),
+    [blocks],
+  );
+
+  if (steps.length === 0) return null;
 
   return (
     <div
-      className="tool-timeline ml-16 flex w-[calc(100%-3.25rem)] max-w-[960px] flex-col gap-2"
+      className="tool-timeline ml-16 w-[calc(100%-3.25rem)] max-w-[960px]"
       data-testid="inline-tool-activity-list"
     >
       <ol className="m-0 flex list-none flex-col gap-2 p-0">
-        {blocks.map((block) => (
-          <ToolRow block={block} key={block.id} />
+        {steps.map((step) => (
+          <ActivityStep card={step} key={step.id} />
         ))}
       </ol>
     </div>
@@ -271,6 +201,7 @@ function AgentTurnBlock({ message, currentTurn, isThinking }: AgentTurnBlockProp
     (block): block is ToolTurnBlock => block.kind === "tool",
   );
   const showActions = Boolean(message && !currentTurn);
+  const segments = useMemo(() => coalesceBlocks(visibleBlocks), [visibleBlocks]);
 
   return (
     <div
@@ -283,11 +214,11 @@ function AgentTurnBlock({ message, currentTurn, isThinking }: AgentTurnBlockProp
           <RunningPill toolBlocks={toolBlocks} />
         </div>
       )}
-      {visibleBlocks.map((block) =>
-        block.kind === "text" ? (
-          <AgentTextBlock block={block} key={block.id} />
+      {segments.map((segment) =>
+        segment.kind === "text" ? (
+          <AgentTextBlock block={segment.block} key={segment.block.id} />
         ) : (
-          <ToolTimeline blocks={[block]} key={block.id} />
+          <ToolTimeline blocks={segment.blocks} key={`tools-${segment.blocks[0].id}`} />
         ),
       )}
       {message?.error && <ErrorBlock message={message.error} />}

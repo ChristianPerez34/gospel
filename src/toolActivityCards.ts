@@ -31,7 +31,7 @@ const TOOL_LABELS: Record<string, string> = {
   replace_in_file: "Edit file",
 };
 
-const MAX_PREVIEW_ROWS = 8;
+const MAX_PREVIEW_ROWS = 6;
 const MAX_TEXT_PREVIEW_CHARS = 2400;
 
 function startCase(value: string) {
@@ -172,6 +172,18 @@ function parsedResult(activity: ToolCallActivity) {
   return parseJsonValue(activity.result);
 }
 
+function toolTarget(activity: ToolCallActivity): string | undefined {
+  const args = parsedArguments(activity);
+  const result = resultRecord(activity);
+  const candidate =
+    args?.path ??
+    args?.pattern ??
+    args?.glob ??
+    args?.identifier ??
+    result?.path;
+  return displayValue(candidate);
+}
+
 function resultRecord(activity: ToolCallActivity) {
   return asRecord(parsedResult(activity));
 }
@@ -209,8 +221,6 @@ function readFileCard(activity: ToolCallActivity): Partial<ActionCard> {
       field("Path", path),
       field("Lines", range || undefined),
       field("Total", result?.total_lines),
-      field("Size", byteSize(result?.size_bytes)),
-      field("Truncated", result?.truncated),
     ]),
     ...failureSection(result),
     textSection("Content", result?.content, true),
@@ -241,9 +251,6 @@ function searchCodeCard(activity: ToolCallActivity): Partial<ActionCard> {
       field("Path", args?.path ?? "workspace"),
       field("Include", args?.include_glob),
       result ? field("Matches", matches.length) : undefined,
-      result ? field("Scanned", result.scanned_files) : undefined,
-      result ? field("Skipped", result.skipped_files) : undefined,
-      result ? field("Truncated", result.truncated) : undefined,
     ]),
     ...failureSection(result),
     result ? rowsSection("Matches", rows, "No matches returned.") : undefined,
@@ -265,8 +272,6 @@ function findFilesCard(activity: ToolCallActivity): Partial<ActionCard> {
       field("Glob", args?.glob),
       field("Path", args?.path ?? "workspace"),
       result ? field("Files", files.length) : undefined,
-      result ? field("Scanned", result.scanned_entries) : undefined,
-      result ? field("Truncated", result.truncated) : undefined,
     ]),
     ...failureSection(result),
     result
@@ -302,8 +307,6 @@ function listDirectoryCard(activity: ToolCallActivity): Partial<ActionCard> {
       field("Path", args?.path ?? "workspace"),
       field("Depth", args?.depth),
       result ? field("Entries", entries.length) : undefined,
-      result ? field("Visited", result.visited_entries) : undefined,
-      result ? field("Truncated", result.truncated) : undefined,
     ]),
     ...failureSection(result),
     result ? rowsSection("Entries", rows, "No entries returned.") : undefined,
@@ -504,8 +507,6 @@ function sourceEditCard(activity: ToolCallActivity): Partial<ActionCard> {
       result ? field("Changed", result.changed) : undefined,
       result ? field("Replacements", result.replacements) : undefined,
       result ? field("Lines", range || undefined) : undefined,
-      result ? field("Size", byteSize(result.size_bytes)) : undefined,
-      result ? field("Truncated", result.truncated) : undefined,
     ]),
     ...failureSection(result),
     textSection("Diff", result?.diff_preview, true),
@@ -695,12 +696,60 @@ export function toolActivitiesToActionCards(
       id: activity.id,
       type: actionCardTypeForTool(activity.name),
       summary: formatToolActivityLabel(activity),
+      target: toolTarget(activity),
       rawPayload: rawPayload(activity),
       expanded: false,
       status: activity.status,
       ...formatted,
     };
   });
+}
+
+function groupKey(activity: ToolCallActivity, card: ActionCard): string | null {
+  if (!card.target) return null;
+  return `${activity.name}::${card.target}`;
+}
+
+function mergeGroupedCards(cards: ActionCard[]): ActionCard {
+  const first = cards[0];
+  const status = cards.some((card) => card.status === "calling")
+    ? "calling"
+    : "completed";
+  return {
+    ...first,
+    id: first.id,
+    status,
+    groupCount: cards.length,
+    passes: cards,
+  };
+}
+
+/**
+ * Builds the collapsed timeline steps for a run of tool activities, merging
+ * consecutive calls to the same tool + target into a single grouped step.
+ */
+export function toolActivitiesToTimelineSteps(
+  activities: ToolCallActivity[]
+): ActionCard[] {
+  const cards = toolActivitiesToActionCards(activities);
+  const steps: ActionCard[] = [];
+
+  let index = 0;
+  while (index < cards.length) {
+    const key = groupKey(activities[index], cards[index]);
+    let end = index + 1;
+    if (key !== null) {
+      while (end < cards.length && groupKey(activities[end], cards[end]) === key) {
+        end += 1;
+      }
+    }
+    steps.push(
+      end - index === 1 ? cards[index] : mergeGroupedCards(cards.slice(index, end))
+    );
+    index = end;
+  }
+
+  return steps;
 }
 
 const TOOL_CARD_FORMATTERS: Record<string, (activity: ToolCallActivity) => Partial<ActionCard>> = {

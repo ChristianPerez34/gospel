@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { toolActivitiesToActionCards } from "./toolActivityCards";
+import {
+  toolActivitiesToActionCards,
+  toolActivitiesToTimelineSteps,
+} from "./toolActivityCards";
 import type { ActionCardSection } from "./types";
 
 type RowsSection = Extract<ActionCardSection, { type: "rows" }>;
@@ -226,6 +229,118 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(reviewFields).toMatchObject({
       fields: expect.arrayContaining([{ label: "Focus", value: "Security" }]),
     });
+  });
+
+  it("groups consecutive identical tool + target calls into one timeline step", () => {
+    const steps = toolActivitiesToTimelineSteps([
+      {
+        id: "read-1",
+        name: "read_file",
+        arguments: { path: "src/main.rs", start_line: 1, end_line: 40 },
+        result: JSON.stringify({ path: "src/main.rs", content: "a" }),
+        status: "completed",
+      },
+      {
+        id: "read-2",
+        name: "read_file",
+        arguments: { path: "src/main.rs", start_line: 41, end_line: 80 },
+        result: JSON.stringify({ path: "src/main.rs", content: "b" }),
+        status: "completed",
+      },
+      {
+        id: "read-3",
+        name: "read_file",
+        arguments: { path: "src/lib.rs" },
+        result: JSON.stringify({ path: "src/lib.rs", content: "c" }),
+        status: "completed",
+      },
+    ]);
+
+    expect(steps).toHaveLength(2);
+    expect(steps[0]?.groupCount).toBe(2);
+    expect(steps[0]?.id).toBe("read-1");
+    expect(steps[0]?.target).toBe("src/main.rs");
+    expect(steps[0]?.detail).toBe("src/main.rs, from 1, to 40");
+    expect(steps[0]?.passes?.map((pass) => pass.id)).toEqual(["read-1", "read-2"]);
+    expect(steps[1]?.groupCount).toBeUndefined();
+    expect(steps[1]?.target).toBe("src/lib.rs");
+  });
+
+  it("does not group identical tools split by a different target", () => {
+    const steps = toolActivitiesToTimelineSteps([
+      {
+        id: "read-a",
+        name: "read_file",
+        arguments: { path: "src/a.rs" },
+        result: JSON.stringify({ path: "src/a.rs", content: "a" }),
+        status: "completed",
+      },
+      {
+        id: "read-b",
+        name: "read_file",
+        arguments: { path: "src/b.rs" },
+        result: JSON.stringify({ path: "src/b.rs", content: "b" }),
+        status: "completed",
+      },
+    ]);
+
+    expect(steps).toHaveLength(2);
+    expect(steps.every((step) => step.groupCount === undefined)).toBe(true);
+  });
+
+  it("marks a grouped step as calling when any merged pass is still running", () => {
+    const steps = toolActivitiesToTimelineSteps([
+      {
+        id: "read-1",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        result: JSON.stringify({ path: "src/main.rs", content: "a" }),
+        status: "completed",
+      },
+      {
+        id: "read-2",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        status: "calling",
+      },
+    ]);
+
+    expect(steps).toHaveLength(1);
+    expect(steps[0]?.status).toBe("calling");
+  });
+
+  it("keeps a grouped step's id stable as new passes are appended", () => {
+    const activities = [
+      {
+        id: "read-1",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        result: JSON.stringify({ path: "src/main.rs", content: "a" }),
+        status: "completed",
+      },
+      {
+        id: "read-2",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        status: "calling",
+      },
+    ];
+    const initial = toolActivitiesToTimelineSteps(activities);
+    const extended = toolActivitiesToTimelineSteps([
+      ...activities,
+      {
+        id: "read-3",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        status: "calling",
+      },
+    ]);
+
+    expect(initial).toHaveLength(1);
+    expect(extended).toHaveLength(1);
+    expect(extended[0]?.id).toBe(initial[0]?.id);
+    expect(extended[0]?.id).toBe("read-1");
+    expect(extended[0]?.groupCount).toBe(3);
   });
 
   it("formats delegate_exploration with parsed structured sections", () => {

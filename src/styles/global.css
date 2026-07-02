@@ -856,8 +856,6 @@ summary,
 
 .message-body,
 .agent-text-block,
-.tool-row-button,
-.action-card,
 .review-summary,
 .review-finding {
   border-color: color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 14%);
@@ -895,25 +893,35 @@ summary,
   position: relative;
 }
 
-.tool-row-button {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
-    var(--surface-elevated);
+/* Vertical connector threading each activity step's status dot together.
+ * The line runs from this step's dot down to the next step's dot, so it stays
+ * continuous whether a step is collapsed or expanded. */
+.activity-step::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: 18px;
+  bottom: calc(-1 * (var(--space-2) + 18px));
+  width: 1px;
+  background: color-mix(in srgb, var(--surface-overlay) 82%, var(--text-muted) 14%);
 }
 
-.tool-row-button:hover {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
-    color-mix(in srgb, var(--surface-overlay) 72%, var(--surface-elevated) 28%);
+.activity-step:last-child::before {
+  display: none;
 }
 
-.action-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
-    var(--surface-elevated);
+.activity-step-dot {
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 0 0 3px var(--surface-base);
 }
 
-.action-card pre,
+.activity-step-body {
+  background: color-mix(in srgb, var(--surface-elevated) 62%, var(--surface-base) 38%);
+  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 12%);
+}
+
+.activity-step-body pre,
 .review-finding pre {
   border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 12%);
   background:
