@@ -177,6 +177,41 @@ describe("ChatView block timeline rendering", () => {
     expect(screen.getByText("pub fn main() {}")).not.toBeNull();
   });
 
+  it("renders consecutive tool blocks inside a single shared timeline", () => {
+    const { container } = renderChat({
+      currentTurn: {
+        id: "turn-tools-run",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
+        blocks: [
+          {
+            kind: "tool",
+            id: "tool-search",
+            name: "search_code",
+            arguments: { pattern: "currentTurn" },
+            result: JSON.stringify({ matches: [], scanned_files: 2 }),
+            status: "completed",
+          },
+          {
+            kind: "tool",
+            id: "tool-read",
+            name: "read_file",
+            arguments: { path: "src/components/ChatView.tsx" },
+            result: JSON.stringify({
+              path: "src/components/ChatView.tsx",
+              content: "export function ChatView() {}",
+            }),
+            status: "completed",
+          },
+        ],
+      },
+    });
+
+    expect(screen.getAllByTestId("inline-tool-activity-list")).toHaveLength(1);
+
+    const items = container.querySelectorAll("[data-testid='inline-tool-activity-list'] li");
+    expect(items).toHaveLength(2);
+  });
+
   it("renders historical text-only sessions without stale tool rows", () => {
     renderChat({
       messages: [

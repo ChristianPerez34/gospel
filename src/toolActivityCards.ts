@@ -712,12 +712,11 @@ function groupKey(activity: ToolCallActivity, card: ActionCard): string | null {
 
 function mergeGroupedCards(cards: ActionCard[]): ActionCard {
   const first = cards[0];
-  const last = cards[cards.length - 1];
   const status = cards.some((card) => card.status === "calling")
     ? "calling"
     : "completed";
   return {
-    ...last,
+    ...first,
     id: first.id,
     status,
     groupCount: cards.length,
