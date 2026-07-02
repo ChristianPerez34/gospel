@@ -258,6 +258,7 @@ describe("toolActivitiesToActionCards review tools", () => {
 
     expect(steps).toHaveLength(2);
     expect(steps[0]?.groupCount).toBe(2);
+    expect(steps[0]?.id).toBe("read-1");
     expect(steps[0]?.target).toBe("src/main.rs");
     expect(steps[0]?.passes?.map((pass) => pass.id)).toEqual(["read-1", "read-2"]);
     expect(steps[1]?.groupCount).toBeUndefined();
@@ -305,6 +306,45 @@ describe("toolActivitiesToActionCards review tools", () => {
 
     expect(steps).toHaveLength(1);
     expect(steps[0]?.status).toBe("calling");
+  });
+
+  it("keeps a grouped step's id stable as new passes are appended", () => {
+    const initial = toolActivitiesToTimelineSteps([
+      {
+        id: "read-1",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        result: JSON.stringify({ path: "src/main.rs", content: "a" }),
+        status: "completed",
+      },
+      {
+        id: "read-2",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        status: "calling",
+      },
+    ]);
+    const extended = toolActivitiesToTimelineSteps([
+      ...(initial[0]?.passes ?? []).map((pass) => ({
+        id: pass.id,
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        result: pass.rawPayload,
+        status: pass.status ?? "completed",
+      })),
+      {
+        id: "read-3",
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+        status: "calling",
+      },
+    ]);
+
+    expect(initial).toHaveLength(1);
+    expect(extended).toHaveLength(1);
+    expect(extended[0]?.id).toBe(initial[0]?.id);
+    expect(extended[0]?.id).toBe("read-1");
+    expect(extended[0]?.groupCount).toBe(3);
   });
 
   it("formats delegate_exploration with parsed structured sections", () => {

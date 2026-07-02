@@ -176,11 +176,11 @@ function toolTarget(activity: ToolCallActivity): string | undefined {
   const args = parsedArguments(activity);
   const result = resultRecord(activity);
   const candidate =
-    result?.path ??
     args?.path ??
     args?.pattern ??
     args?.glob ??
-    args?.identifier;
+    args?.identifier ??
+    result?.path;
   return displayValue(candidate);
 }
 
@@ -711,12 +711,14 @@ function groupKey(activity: ToolCallActivity, card: ActionCard): string | null {
 }
 
 function mergeGroupedCards(cards: ActionCard[]): ActionCard {
+  const first = cards[0];
   const last = cards[cards.length - 1];
   const status = cards.some((card) => card.status === "calling")
     ? "calling"
     : "completed";
   return {
     ...last,
+    id: first.id,
     status,
     groupCount: cards.length,
     passes: cards,

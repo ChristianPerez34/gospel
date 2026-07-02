@@ -201,6 +201,7 @@ function AgentTurnBlock({ message, currentTurn, isThinking }: AgentTurnBlockProp
     (block): block is ToolTurnBlock => block.kind === "tool",
   );
   const showActions = Boolean(message && !currentTurn);
+  const segments = useMemo(() => coalesceBlocks(visibleBlocks), [visibleBlocks]);
 
   return (
     <div
@@ -213,7 +214,7 @@ function AgentTurnBlock({ message, currentTurn, isThinking }: AgentTurnBlockProp
           <RunningPill toolBlocks={toolBlocks} />
         </div>
       )}
-      {coalesceBlocks(visibleBlocks).map((segment) =>
+      {segments.map((segment) =>
         segment.kind === "text" ? (
           <AgentTextBlock block={segment.block} key={segment.block.id} />
         ) : (

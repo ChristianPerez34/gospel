@@ -36,19 +36,20 @@ function readFileCard(status: ActionCardType["status"]): ActionCardType {
 }
 
 function groupedReadCard(): ActionCardType {
-  const single = (id: string, detail: string): ActionCardType => ({
+  const single = (id: string, detail: string, rawPayload?: string): ActionCardType => ({
     ...readFileCard("completed"),
     id,
     detail,
+    rawPayload,
   });
   return {
     ...readFileCard("completed"),
     id: "tool-read-group",
     groupCount: 3,
     passes: [
-      single("pass-1", "from 1 to 40"),
-      single("pass-2", "from 41 to 80"),
-      single("pass-3", "from 81 to 120"),
+      single("pass-1", "from 1 to 40", "{\"path\":\"src/lib.rs\",\"bytes\":1}"),
+      single("pass-2", "from 41 to 80", "{\"path\":\"src/lib.rs\",\"bytes\":2}"),
+      single("pass-3", "from 81 to 120", "{\"path\":\"src/lib.rs\",\"bytes\":3}"),
     ],
   };
 }
@@ -97,5 +98,19 @@ describe("ActivityStep", () => {
     expect(screen.getByText(/Pass 1/)).not.toBeNull();
     expect(screen.getByText(/Pass 3/)).not.toBeNull();
     expect(screen.getAllByText("file contents")).toHaveLength(3);
+  });
+
+  it("exposes the per-pass raw JSON toggle on grouped steps", () => {
+    renderStep(groupedReadCard());
+
+    fireEvent.click(screen.getByRole("button", { name: /read file/i }));
+
+    const toggles = screen.getAllByRole("button", { name: /show raw json/i });
+    expect(toggles).toHaveLength(3);
+
+    fireEvent.click(toggles[0]);
+
+    expect(toggles[0].getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText('{"path":"src/lib.rs","bytes":1}')).not.toBeNull();
   });
 });

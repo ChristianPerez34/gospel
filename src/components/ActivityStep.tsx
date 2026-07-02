@@ -146,6 +146,29 @@ function renderSection(section: ActionCardSection, keyPrefix = "") {
   );
 }
 
+function RawPayload({ payload }: { payload: string }) {
+  const [showRaw, setShowRaw] = useState(false);
+
+  return (
+    <section className="grid gap-2">
+      <Button
+        variant="ghost"
+        size="xs"
+        className="justify-self-start"
+        onClick={() => setShowRaw((value) => !value)}
+        aria-expanded={showRaw}
+      >
+        {showRaw ? "Hide raw JSON" : "Show raw JSON"}
+      </Button>
+      {showRaw && (
+        <pre className="m-0 max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 font-mono text-mono text-text-primary">
+          {payload}
+        </pre>
+      )}
+    </section>
+  );
+}
+
 /**
  * A single node on the tool-activity timeline. The header is the collapsed
  * state (status dot + type glyph + label + target); clicking expands the
@@ -153,7 +176,6 @@ function renderSection(section: ActionCardSection, keyPrefix = "") {
  */
 export function ActivityStep({ card, className }: ActivityStepProps) {
   const [expanded, setExpanded] = useState(card.expanded ?? false);
-  const [showRaw, setShowRaw] = useState(false);
 
   const accentClass = TYPE_ACCENT[card.type] || TYPE_ACCENT.file;
   const isRunning = card.status === "calling";
@@ -163,12 +185,14 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
     (card.sections?.length ?? 0) > 0 ||
     Boolean(card.rawPayload);
   const chevronClass = expanded ? "rotate-180" : "";
-  const ariaLabel = classNames(
-    card.summary,
-    card.target,
-    groupCount > 1 && expanded ? `${groupCount} passes - expanded` : groupCount > 1 ? `${groupCount} passes` : null,
-    isRunning ? "Running" : "Done",
-  );
+  const ariaLabelParts = [card.summary, card.target].filter(Boolean);
+  if (groupCount > 1) {
+    ariaLabelParts.push(
+      expanded ? `${groupCount} passes - expanded` : `${groupCount} passes`,
+    );
+  }
+  ariaLabelParts.push(isRunning ? "Running" : "Done");
+  const ariaLabel = ariaLabelParts.join(" ");
 
   return (
     <li className={classNames("activity-step relative", className)}>
@@ -245,27 +269,11 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
                     {pass.detail ? ` · ${pass.detail}` : ""}
                   </h4>
                   {pass.sections?.map((section) => renderSection(section, `${pass.id}-`))}
+                  {pass.rawPayload && <RawPayload payload={pass.rawPayload} />}
                 </div>
               ))
             : card.sections?.map((section) => renderSection(section))}
-          {!card.passes && card.rawPayload && (
-            <section className="grid gap-2">
-              <Button
-                variant="ghost"
-                size="xs"
-                className="justify-self-start"
-                onClick={() => setShowRaw((value) => !value)}
-                aria-expanded={showRaw}
-              >
-                {showRaw ? "Hide raw JSON" : "Show raw JSON"}
-              </Button>
-              {showRaw && (
-                <pre className="m-0 max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 font-mono text-mono text-text-primary">
-                  {card.rawPayload}
-                </pre>
-              )}
-            </section>
-          )}
+          {!card.passes && card.rawPayload && <RawPayload payload={card.rawPayload} />}
         </div>
       )}
     </li>
