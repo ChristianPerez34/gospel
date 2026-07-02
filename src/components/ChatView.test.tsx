@@ -22,7 +22,7 @@ function renderChat({
   messages?: Message[];
   currentTurn?: CurrentTurn | null;
   isThinking?: boolean;
-}) {
+} = {}) {
   return render(
     <ChatView
       messages={messages}
@@ -31,6 +31,29 @@ function renderChat({
       currentTurn={currentTurn}
     />,
   );
+}
+
+function chatView(container: HTMLElement) {
+  const element = container.querySelector(".chat-view");
+  if (!(element instanceof HTMLElement)) {
+    throw new Error("Expected chat view element to be rendered");
+  }
+  return element;
+}
+
+function defineScrollMetrics(
+  element: HTMLElement,
+  {
+    scrollHeight,
+    clientHeight,
+    scrollTop,
+  }: { scrollHeight: number; clientHeight: number; scrollTop: number },
+) {
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: scrollHeight },
+    clientHeight: { configurable: true, value: clientHeight },
+  });
+  element.scrollTop = scrollTop;
 }
 
 describe("ChatView block timeline rendering", () => {
@@ -223,5 +246,136 @@ describe("ChatView block timeline rendering", () => {
 
     expect(screen.queryByText("Thinking...")).toBeNull();
     expect(screen.queryByTestId("agent-turn-thinking-placeholder")).toBeNull();
+  });
+});
+
+describe("ChatView scroll following", () => {
+  it("auto-scrolls live updates when the chat is near the bottom", () => {
+    const { container, rerender } = renderChat();
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1200,
+      clientHeight: 400,
+      scrollTop: 800,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    rerender(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "turn-follow",
+          createdAt: new Date("2026-06-24T00:00:30Z"),
+          blocks: [{ kind: "text", id: "text-0", text: "Streaming text" }],
+        }}
+      />,
+    );
+
+    expect(scrollContainer.scrollTop).toBe(1200);
+  });
+
+  it("does not auto-scroll live updates after the user scrolls away from the bottom", () => {
+    const { container, rerender } = renderChat();
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1200,
+      clientHeight: 400,
+      scrollTop: 500,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    rerender(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "turn-paused",
+          createdAt: new Date("2026-06-24T00:00:30Z"),
+          blocks: [{ kind: "text", id: "text-0", text: "Streaming text" }],
+        }}
+      />,
+    );
+
+    expect(scrollContainer.scrollTop).toBe(500);
+  });
+
+  it("resumes auto-scroll when a new user turn is submitted while scrolled away", () => {
+    const { container, rerender } = renderChat();
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1200,
+      clientHeight: 400,
+      scrollTop: 500,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    rerender(
+      <ChatView
+        messages={[
+          userMessage,
+          {
+            id: "m-user-2",
+            role: "user",
+            content: "Follow up prompt",
+            timestamp: new Date("2026-06-24T00:02:00Z"),
+          },
+        ]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={null}
+      />,
+    );
+
+    expect(scrollContainer.scrollTop).toBe(1200);
+  });
+
+  it("resumes auto-scroll after the user returns near the bottom", () => {
+    const { container, rerender } = renderChat({
+      currentTurn: {
+        id: "turn-resume",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
+        blocks: [{ kind: "text", id: "text-0", text: "First chunk" }],
+      },
+    });
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1200,
+      clientHeight: 400,
+      scrollTop: 500,
+    });
+    fireEvent.scroll(scrollContainer);
+
+    scrollContainer.scrollTop = 760;
+    fireEvent.scroll(scrollContainer);
+
+    rerender(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "turn-resume",
+          createdAt: new Date("2026-06-24T00:00:30Z"),
+          blocks: [
+            { kind: "text", id: "text-0", text: "First chunk" },
+            {
+              kind: "tool",
+              id: "tool-read",
+              name: "read_file",
+              arguments: { path: "src/components/ChatView.tsx" },
+              status: "calling",
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(scrollContainer.scrollTop).toBe(1200);
   });
 });

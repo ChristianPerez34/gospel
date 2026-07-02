@@ -266,6 +266,62 @@ fn normalized_category_name(category: &str) -> String {
     }
 }
 
+/// One detector chunk/batch that failed during a review run.
+///
+/// Persisted to `.gospel/review_failures.jsonl` so failures (which never reach
+/// `finalize_review_result` and therefore never get a metrics row) leave an
+/// on-disk trail for support and post-mortems.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewFailureChunk {
+    /// 1-indexed chunk/batch number.
+    pub index: usize,
+    /// "timeout" or "provider_error".
+    pub kind: String,
+    /// Inner error detail from the provider/agent.
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReviewFailureRecord {
+    pub timestamp: DateTime<Utc>,
+    pub mode: ReviewMode,
+    #[serde(default)]
+    pub focus: ReviewFocus,
+    pub provider: String,
+    pub model: String,
+    pub files_scanned: usize,
+    pub failed_chunks: usize,
+    pub chunks: Vec<ReviewFailureChunk>,
+}
+
+pub fn append_review_failure(
+    workspace_path: &Path,
+    record: &ReviewFailureRecord,
+) -> Result<(), String> {
+    let gospel_dir = workspace_path.join(".gospel");
+    fs::create_dir_all(&gospel_dir)
+        .map_err(|error| format!("Failed to create .gospel directory: {}", error))?;
+    let path = gospel_dir.join("review_failures.jsonl");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| {
+            format!(
+                "Failed to open review failures {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+    let mut line = serde_json::to_vec(record)
+        .map_err(|error| format!("Failed to serialize review failure: {}", error))?;
+    line.push(b'\n');
+    file.write_all(&line)
+        .map_err(|error| format!("Failed to append review failure: {}", error))?;
+    file.flush()
+        .map_err(|error| format!("Failed to flush review failure: {}", error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

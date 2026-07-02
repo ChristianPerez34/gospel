@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,7 @@ const TOOL_TYPE_ICONS: Record<ActionCardType, string> = {
   diff: "+/-",
   search: "S",
 };
+const AUTO_FOLLOW_THRESHOLD_PX = 64;
 
 function classNames(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
@@ -55,6 +56,12 @@ function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
 
 function toolStatus(block: ToolTurnBlock) {
   return block.status === "calling" ? "Running" : "Done";
+}
+
+function isNearBottom(element: HTMLElement) {
+  const distanceFromBottom =
+    element.scrollHeight - element.scrollTop - element.clientHeight;
+  return distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
 }
 
 function ErrorBlock({ message }: { message: string }) {
@@ -295,6 +302,8 @@ export function ChatView({
   isThinking,
   currentTurn,
 }: ChatViewProps) {
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowRef = useRef(true);
   const isEmpty = messages.length === 0 && !currentTurn && !isThinking;
   const visibleTurns = useMemo(() => {
     const turns: Array<
@@ -312,6 +321,31 @@ export function ChatView({
     }
     return turns;
   }, [messages, currentTurn, isThinking]);
+  const updateShouldFollow = useCallback(() => {
+    const element = scrollContainerRef.current;
+    if (!element) return;
+    shouldFollowRef.current = isNearBottom(element);
+  }, []);
+  const scrollToBottom = useCallback(() => {
+    const element = scrollContainerRef.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+  }, []);
+  const lastUserMessageId = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "user") return messages[index].id;
+    }
+    return null;
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    shouldFollowRef.current = true;
+  }, [lastUserMessageId]);
+
+  useLayoutEffect(() => {
+    if (!shouldFollowRef.current) return;
+    scrollToBottom();
+  }, [visibleTurns, scrollToBottom]);
 
   if (isEmpty) {
     return (
@@ -329,9 +363,11 @@ export function ChatView({
 
   return (
     <div
+      ref={scrollContainerRef}
       className="chat-view flex-1 overflow-y-auto overflow-x-hidden flex flex-col relative"
       role="main"
       aria-live="polite"
+      onScroll={updateShouldFollow}
     >
       <div className="chat-feed flex-1 flex flex-col gap-5 py-5 px-8 max-w-full">
         {visibleTurns.map((turn) => {
