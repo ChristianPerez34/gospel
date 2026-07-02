@@ -9,6 +9,7 @@ pub mod tools;
 pub mod validator;
 
 use crate::llm::WorkspaceToolContext;
+use crate::keychain;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::workspace_tools::build_base_workspace_tools;
@@ -190,6 +191,151 @@ pub(crate) enum ReviewAgentError {
     Provider(String),
 }
 
+/// One detector invocation that did not produce a parseable result.
+///
+/// Collected per chunk/batch so the total-failure path can surface the real
+/// inner reasons (timeout vs provider error) to the user and to on-disk
+/// diagnostics, instead of the opaque "All detector invocations failed".
+#[derive(Debug, Clone)]
+struct DetectorFailure {
+    /// 1-indexed chunk/batch number, matching the warning text.
+    index: usize,
+    kind: DetectorFailureKind,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectorFailureKind {
+    Timeout,
+    Provider,
+}
+
+impl DetectorFailureKind {
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Provider => "provider_error",
+        }
+    }
+}
+
+impl DetectorFailure {
+    fn from_error(index: usize, error: &ReviewAgentError) -> Self {
+        match error {
+            ReviewAgentError::Timeout => Self {
+                index,
+                kind: DetectorFailureKind::Timeout,
+                detail: "agent timed out".to_string(),
+            },
+            ReviewAgentError::Provider(message) => Self {
+                index,
+                kind: DetectorFailureKind::Provider,
+                detail: message.clone(),
+            },
+        }
+    }
+
+    fn warning_line(&self, scope: &str) -> String {
+        format!(
+            "Detector agent {} on {} {}: {}",
+            self.kind.as_label(),
+            scope,
+            self.index,
+            self.detail
+        )
+    }
+}
+
+/// Builds the user-visible error string when every detector invocation failed.
+///
+/// Includes provider/model/mode context plus the per-chunk reasons so the user
+/// (and support) can tell timeout storms apart from provider errors without
+/// needing logs that the app does not currently surface.
+fn all_detector_failures_error(
+    provider: &str,
+    model: &str,
+    mode: &ReviewMode,
+    scope: &str,
+    failures: &[DetectorFailure],
+) -> String {
+    let total = failures.len();
+    let timeouts = failures
+        .iter()
+        .filter(|failure| failure.kind == DetectorFailureKind::Timeout)
+        .count();
+    let provider_errors = total.saturating_sub(timeouts);
+
+    let mut lines = Vec::with_capacity(failures.len() + 4);
+    lines.push(format!(
+        "All {total} detector invocations failed for {mode} security review ({provider}/{model}).",
+        mode = mode_label(mode)
+    ));
+    lines.push(format!(
+        "Failures: {timeouts} timeout(s), {provider_errors} provider error(s)."
+    ));
+    lines.push("Per-chunk reasons:".to_string());
+    for failure in failures {
+        lines.push(format!(
+            "  {scope} {}: [{}] {}",
+            failure.index,
+            failure.kind.as_label(),
+            failure.detail
+        ));
+    }
+    lines.push(
+        "If timeouts dominate, try a smaller PR or run a Local review on a subset of the diff. \
+         If provider errors dominate, verify the provider session and model name."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+fn mode_label(mode: &ReviewMode) -> &'static str {
+    match mode {
+        ReviewMode::Local => "local",
+        ReviewMode::PullRequest { .. } => "pr",
+        ReviewMode::FullScan => "scan",
+    }
+}
+
+/// Persists a total-failure event to `.gospel/review_failures.jsonl`.
+///
+/// Best-effort: a write error is logged as a warning but never propagated,
+/// because the caller is already on an error path returning to the user.
+fn persist_review_failure(
+    workspace_path: &Path,
+    provider: &str,
+    model: &str,
+    mode: &ReviewMode,
+    focus: ReviewFocus,
+    failures: &[DetectorFailure],
+    files_scanned: usize,
+) {
+    let record = analytics::ReviewFailureRecord {
+        timestamp: chrono::Utc::now(),
+        mode: mode.clone(),
+        focus,
+        provider: provider.to_string(),
+        model: model.to_string(),
+        files_scanned,
+        failed_chunks: failures.len(),
+        chunks: failures
+            .iter()
+            .map(|failure| analytics::ReviewFailureChunk {
+                index: failure.index,
+                kind: failure.kind.as_label().to_string(),
+                detail: failure.detail.clone(),
+            })
+            .collect(),
+    };
+    if let Err(error) = analytics::append_review_failure(workspace_path, &record) {
+        tracing::warn!(
+            error = %error,
+            "failed to persist review failure record"
+        );
+    }
+}
+
 #[derive(Debug, Error)]
 enum CommandRunError {
     #[error("Timed out running {command}")]
@@ -226,13 +372,14 @@ pub async fn run_review(
             config.focus
         ));
     }
+    ensure_provider_session(&config.provider)?;
     let workspace = WorkspaceToolContext {
         workspace_path,
         corpus_available: false,
         session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
     };
 
-    let result = match mode {
+    let result = match mode.clone() {
         ReviewMode::Local => {
             let diff = get_local_diff(&workspace.workspace_path).await?;
             run_diff_review(
@@ -284,6 +431,24 @@ pub async fn run_review(
         &workspace.workspace_path,
         result,
     )
+}
+
+/// Verifies that an OAuth provider has a usable session before any review work
+/// (gh fetch, detector calls) runs. Mirrors the early guard used by model fetch
+/// and the chat path so the user sees a precise error instead of an opaque
+/// "All detector invocations failed" later.
+fn ensure_provider_session(provider: &str) -> Result<(), String> {
+    if !ModelRegistry::is_oauth_provider(provider) {
+        return Ok(());
+    }
+    if keychain::provider_has_credentials(provider) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is not authenticated. Sign in via the provider settings before running a review.",
+            provider
+        ))
+    }
 }
 
 fn finalize_review_result(
@@ -475,12 +640,13 @@ async fn run_full_scan_review(
     }
 
     let mut candidates = Vec::new();
-    let mut failed_batches = 0usize;
+    let mut failures: Vec<DetectorFailure> = Vec::new();
 
     let anti_pattern_store =
         load_anti_pattern_store_for_review(&workspace.workspace_path, &mut warnings);
 
     for (index, batch) in batches.iter().enumerate() {
+        let chunk_number = index + 1;
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
@@ -492,26 +658,44 @@ async fn run_full_scan_review(
                     &anti_pattern_store,
                 ));
             }
-            Err(ReviewAgentError::Timeout) => {
-                failed_batches += 1;
-                warnings.push(format!(
-                    "Detector agent timed out on scan batch {}",
-                    index + 1
-                ));
-            }
-            Err(ReviewAgentError::Provider(error)) => {
-                failed_batches += 1;
-                warnings.push(format!(
-                    "Detector agent failed on scan batch {}: {}",
-                    index + 1,
-                    error
-                ));
+            Err(error) => {
+                let failure = DetectorFailure::from_error(chunk_number, &error);
+                tracing::warn!(
+                    provider = provider,
+                    model = model,
+                    mode = "scan",
+                    chunk = chunk_number,
+                    kind = failure.kind.as_label(),
+                    detail = %failure.detail,
+                    "detector invocation failed"
+                );
+                warnings.push(failure.warning_line("scan batch"));
+                failures.push(failure);
             }
         }
     }
 
-    if failed_batches == batches.len() {
-        return Err("All detector invocations failed".to_string());
+    if !failures.is_empty() && failures.len() == batches.len() {
+        let mode = ReviewMode::FullScan;
+        let message = all_detector_failures_error(provider, model, &mode, "scan batch", &failures);
+        tracing::error!(
+            provider = provider,
+            model = model,
+            mode = "scan",
+            failed_chunks = failures.len(),
+            total_chunks = batches.len(),
+            "all detector invocations failed"
+        );
+        persist_review_failure(
+            &workspace.workspace_path,
+            provider,
+            model,
+            &mode,
+            focus,
+            &failures,
+            files_scanned,
+        );
+        return Err(message);
     }
 
     let (comments, validated, validator_summary, validator_warnings) = validate_candidates(
@@ -598,12 +782,13 @@ async fn run_diff_review(
     );
 
     let mut candidates = Vec::new();
-    let mut failed_chunks = 0usize;
+    let mut failures: Vec<DetectorFailure> = Vec::new();
 
     let anti_pattern_store =
         load_anti_pattern_store_for_review(&workspace.workspace_path, &mut warnings);
 
     for (index, chunk) in chunks.iter().enumerate() {
+        let chunk_number = index + 1;
         let prompt = detector::build_diff_prompt(&review_context, chunk);
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
@@ -615,26 +800,44 @@ async fn run_diff_review(
                     &anti_pattern_store,
                 ));
             }
-            Err(ReviewAgentError::Timeout) => {
-                failed_chunks += 1;
-                warnings.push(format!(
-                    "Detector agent timed out on diff chunk {}",
-                    index + 1
-                ));
-            }
-            Err(ReviewAgentError::Provider(error)) => {
-                failed_chunks += 1;
-                warnings.push(format!(
-                    "Detector agent failed on diff chunk {}: {}",
-                    index + 1,
-                    error
-                ));
+            Err(error) => {
+                let failure = DetectorFailure::from_error(chunk_number, &error);
+                tracing::warn!(
+                    provider = provider,
+                    model = model,
+                    mode = %mode_label(&mode),
+                    chunk = chunk_number,
+                    kind = failure.kind.as_label(),
+                    detail = %failure.detail,
+                    "detector invocation failed"
+                );
+                warnings.push(failure.warning_line("diff chunk"));
+                failures.push(failure);
             }
         }
     }
 
-    if failed_chunks == chunks.len() {
-        return Err("All detector invocations failed".to_string());
+    if !failures.is_empty() && failures.len() == chunks.len() {
+        let message =
+            all_detector_failures_error(provider, model, &mode, "diff chunk", &failures);
+        tracing::error!(
+            provider = provider,
+            model = model,
+            mode = %mode_label(&mode),
+            failed_chunks = failures.len(),
+            total_chunks = chunks.len(),
+            "all detector invocations failed"
+        );
+        persist_review_failure(
+            &workspace.workspace_path,
+            provider,
+            model,
+            &mode,
+            focus,
+            &failures,
+            files_scanned,
+        );
+        return Err(message);
     }
 
     let (comments, validated, validator_summary, validator_warnings) = validate_candidates(
@@ -1643,5 +1846,146 @@ Binary files a/icon.png and b/icon.png differ
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 131072);
         assert!(output.stderr.is_empty());
+    }
+
+    fn detector_failure(index: usize, kind: DetectorFailureKind, detail: &str) -> DetectorFailure {
+        DetectorFailure {
+            index,
+            kind,
+            detail: detail.to_string(),
+        }
+    }
+
+    #[test]
+    fn detector_failure_warning_line_includes_kind_index_and_detail() {
+        let failure = detector_failure(2, DetectorFailureKind::Timeout, "agent timed out");
+        assert_eq!(
+            failure.warning_line("diff chunk"),
+            "Detector agent timeout on diff chunk 2: agent timed out"
+        );
+
+        let failure = detector_failure(3, DetectorFailureKind::Provider, "rate limited");
+        assert_eq!(
+            failure.warning_line("scan batch"),
+            "Detector agent provider_error on scan batch 3: rate limited"
+        );
+    }
+
+    #[test]
+    fn detector_failure_from_error_classifies_timeout_and_provider() {
+        let timeout = DetectorFailure::from_error(1, &ReviewAgentError::Timeout);
+        assert_eq!(timeout.kind, DetectorFailureKind::Timeout);
+        assert_eq!(timeout.index, 1);
+
+        let provider =
+            DetectorFailure::from_error(2, &ReviewAgentError::Provider("boom".to_string()));
+        assert_eq!(provider.kind, DetectorFailureKind::Provider);
+        assert_eq!(provider.detail, "boom");
+    }
+
+    #[test]
+    fn all_detector_failures_error_lists_per_chunk_reasons_and_counts() {
+        let failures = vec![
+            detector_failure(1, DetectorFailureKind::Timeout, "agent timed out"),
+            detector_failure(2, DetectorFailureKind::Provider, "rate limited"),
+            detector_failure(3, DetectorFailureKind::Provider, "bad model"),
+        ];
+        let message = all_detector_failures_error(
+            "chatgpt",
+            "gpt-5.5",
+            &ReviewMode::PullRequest { pr_number: 42 },
+            "diff chunk",
+            &failures,
+        );
+
+        assert!(message.contains("All 3 detector invocations failed"));
+        assert!(message.contains("pr security review"));
+        assert!(message.contains("chatgpt/gpt-5.5"));
+        assert!(message.contains("Failures: 1 timeout(s), 2 provider error(s)."));
+        assert!(message.contains("diff chunk 1: [timeout] agent timed out"));
+        assert!(message.contains("diff chunk 2: [provider_error] rate limited"));
+        assert!(message.contains("diff chunk 3: [provider_error] bad model"));
+    }
+
+    #[test]
+    fn all_detector_failures_error_handles_all_timeouts() {
+        let failures = vec![
+            detector_failure(1, DetectorFailureKind::Timeout, "agent timed out"),
+            detector_failure(2, DetectorFailureKind::Timeout, "agent timed out"),
+        ];
+        let message = all_detector_failures_error(
+            "openai",
+            "gpt-4o",
+            &ReviewMode::Local,
+            "diff chunk",
+            &failures,
+        );
+
+        assert!(message.contains("Failures: 2 timeout(s), 0 provider error(s)."));
+        assert!(message.contains("try a smaller PR"));
+    }
+
+    #[test]
+    fn ensure_provider_session_passes_for_non_oauth_provider() {
+        assert!(ensure_provider_session("openai").is_ok());
+    }
+
+    #[test]
+    fn ensure_provider_session_rejects_unauthenticated_oauth_provider() {
+        // chatgpt/github_copilot are OAuth providers. The exact error only
+        // manifests when no session file is present on disk, so guard the
+        // assertion against a machine that happens to be authenticated.
+        if keychain::provider_has_credentials("chatgpt") {
+            return;
+        }
+        let error = ensure_provider_session("chatgpt").unwrap_err();
+        assert!(error.contains("chatgpt"));
+        assert!(error.contains("not authenticated"));
+        assert!(error.contains("Sign in"));
+
+        if keychain::provider_has_credentials("github_copilot") {
+            return;
+        }
+        let error = ensure_provider_session("github_copilot").unwrap_err();
+        assert!(error.contains("github_copilot"));
+        assert!(error.contains("not authenticated"));
+    }
+
+    #[test]
+    fn persist_review_failure_writes_jsonl_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let failures = vec![
+            detector_failure(1, DetectorFailureKind::Timeout, "agent timed out"),
+            detector_failure(2, DetectorFailureKind::Provider, "rate limited"),
+        ];
+
+        persist_review_failure(
+            dir.path(),
+            "chatgpt",
+            "gpt-5.5",
+            &ReviewMode::PullRequest { pr_number: 7 },
+            ReviewFocus::Security,
+            &failures,
+            12,
+        );
+
+        let content =
+            fs::read_to_string(dir.path().join(".gospel/review_failures.jsonl")).unwrap();
+        assert_eq!(content.lines().count(), 1);
+        let record: analytics::ReviewFailureRecord =
+            serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record.provider, "chatgpt");
+        assert_eq!(record.model, "gpt-5.5");
+        assert_eq!(record.files_scanned, 12);
+        assert_eq!(record.failed_chunks, 2);
+        assert_eq!(record.chunks.len(), 2);
+        assert_eq!(record.chunks[0].kind, "timeout");
+        assert_eq!(record.chunks[1].kind, "provider_error");
+        assert_eq!(record.chunks[1].detail, "rate limited");
+        assert_eq!(record.focus, ReviewFocus::Security);
+        match record.mode {
+            ReviewMode::PullRequest { pr_number } => assert_eq!(pr_number, 7),
+            _ => panic!("expected PullRequest mode"),
+        }
     }
 }

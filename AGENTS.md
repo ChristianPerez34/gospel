@@ -1,3 +1,7 @@
+## Package manager
+
+This project uses [Bun](https://bun.sh/) as its package manager (`bun.lock` is present at the repo root). Prefer `bun` over `npm` for installing dependencies, running scripts, and executing project commands.
+
 ## Agent skills
 
 ### Issue tracker

@@ -420,7 +420,7 @@ export function ReviewPanel({
         )}
 
         {error && (
-          <div className="rounded-md border border-status-error bg-surface-base p-3 text-body-sm text-status-error">
+          <div className="whitespace-pre-wrap rounded-md border border-status-error bg-surface-base p-3 text-body-sm text-status-error">
             {error}
           </div>
         )}
