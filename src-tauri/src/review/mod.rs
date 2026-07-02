@@ -230,7 +230,7 @@ impl DetectorFailure {
             ReviewAgentError::Provider(message) => Self {
                 index,
                 kind: DetectorFailureKind::Provider,
-                detail: message.clone(),
+                detail: sanitize_failure_detail(message),
             },
         }
     }
@@ -288,6 +288,27 @@ fn all_detector_failures_error(
             .to_string(),
     );
     lines.join("\n")
+}
+
+/// Redacts and truncates provider error text before it is surfaced to the
+/// user, logged as a warning, or persisted to `.gospel/review_failures.jsonl`.
+///
+/// Provider errors can include headers, URLs, tokens, or other sensitive
+/// transport details, so we never persist the raw message. We keep the first
+/// line and cap the length to bound on-disk and UI size.
+fn sanitize_failure_detail(raw: &str) -> String {
+    const MAX_LEN: usize = 500;
+    let first_line = raw.lines().next().unwrap_or("").trim();
+    if first_line.len() <= MAX_LEN {
+        first_line.to_string()
+    } else {
+        // Truncate on a character boundary to avoid panicking on UTF-8.
+        let mut end = MAX_LEN;
+        while !first_line.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &first_line[..end])
+    }
 }
 
 fn mode_label(mode: &ReviewMode) -> &'static str {
@@ -438,10 +459,20 @@ pub async fn run_review(
 /// and the chat path so the user sees a precise error instead of an opaque
 /// "All detector invocations failed" later.
 fn ensure_provider_session(provider: &str) -> Result<(), String> {
+    ensure_provider_session_with(provider, keychain::provider_has_credentials)
+}
+
+/// Same as [`ensure_provider_session`] but accepts the credential-checking
+/// dependency so tests can simulate authenticated/unauthenticated providers
+/// without touching the real keychain.
+fn ensure_provider_session_with(
+    provider: &str,
+    has_credentials: fn(&str) -> bool,
+) -> Result<(), String> {
     if !ModelRegistry::is_oauth_provider(provider) {
         return Ok(());
     }
-    if keychain::provider_has_credentials(provider) {
+    if has_credentials(provider) {
         Ok(())
     } else {
         Err(format!(
@@ -904,7 +935,7 @@ async fn validate_candidates(
             candidates.to_vec(),
             false,
             None,
-            vec![format!("Validator agent failed: {}", error)],
+            vec![format!("Validator agent failed: {}", sanitize_failure_detail(&error))],
         )),
     }
 }
@@ -1884,6 +1915,31 @@ Binary files a/icon.png and b/icon.png differ
     }
 
     #[test]
+    fn detector_failure_from_error_sanitizes_provider_detail() {
+        // Multi-line provider payloads should collapse to the first line so
+        // headers/stack traces never reach the user or disk.
+        let raw = "rate limited\nx-request-id: secret-token-abc";
+        let provider = DetectorFailure::from_error(3, &ReviewAgentError::Provider(raw.to_string()));
+        assert_eq!(provider.kind, DetectorFailureKind::Provider);
+        assert_eq!(provider.detail, "rate limited");
+    }
+
+    #[test]
+    fn sanitize_failure_detail_truncates_long_messages() {
+        let long = "x".repeat(600);
+        let sanitized = sanitize_failure_detail(&long);
+        // Truncates to the 500-char cap plus a trailing ellipsis character.
+        assert_eq!(sanitized.chars().count(), 501);
+        assert!(sanitized.ends_with('…'));
+    }
+
+    #[test]
+    fn sanitize_failure_detail_keeps_short_messages_intact() {
+        assert_eq!(sanitize_failure_detail("rate limited"), "rate limited");
+        assert_eq!(sanitize_failure_detail("  trimmed  "), "trimmed");
+    }
+
+    #[test]
     fn all_detector_failures_error_lists_per_chunk_reasons_and_counts() {
         let failures = vec![
             detector_failure(1, DetectorFailureKind::Timeout, "agent timed out"),
@@ -1932,23 +1988,34 @@ Binary files a/icon.png and b/icon.png differ
 
     #[test]
     fn ensure_provider_session_rejects_unauthenticated_oauth_provider() {
-        // chatgpt/github_copilot are OAuth providers. The exact error only
-        // manifests when no session file is present on disk, so guard the
-        // assertion against a machine that happens to be authenticated.
-        if keychain::provider_has_credentials("chatgpt") {
-            return;
+        // Simulate an unauthenticated provider explicitly so the test does not
+        // depend on real keychain state (which could skip assertions on a
+        // machine that happens to be signed in).
+        fn always_unauthenticated(_provider: &str) -> bool {
+            false
         }
-        let error = ensure_provider_session("chatgpt").unwrap_err();
+
+        let error = ensure_provider_session_with("chatgpt", always_unauthenticated).unwrap_err();
         assert!(error.contains("chatgpt"));
         assert!(error.contains("not authenticated"));
         assert!(error.contains("Sign in"));
 
-        if keychain::provider_has_credentials("github_copilot") {
-            return;
-        }
-        let error = ensure_provider_session("github_copilot").unwrap_err();
+        let error =
+            ensure_provider_session_with("github_copilot", always_unauthenticated).unwrap_err();
         assert!(error.contains("github_copilot"));
         assert!(error.contains("not authenticated"));
+    }
+
+    #[test]
+    fn ensure_provider_session_accepts_authenticated_oauth_provider() {
+        fn always_authenticated(_provider: &str) -> bool {
+            true
+        }
+
+        assert!(ensure_provider_session_with("chatgpt", always_authenticated).is_ok());
+        assert!(
+            ensure_provider_session_with("github_copilot", always_authenticated).is_ok()
+        );
     }
 
     #[test]
