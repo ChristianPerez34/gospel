@@ -74,6 +74,7 @@ pub async fn run_validator(
         prompt,
         timeout: VALIDATOR_TIMEOUT,
         max_turns: VALIDATOR_MAX_TURNS,
+        on_tool_event: None,
     })
     .await
 }

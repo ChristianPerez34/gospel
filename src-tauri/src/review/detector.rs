@@ -1,4 +1,4 @@
-use super::{knowledge, AgentConfig, FileDiff, ReviewAgentError};
+use super::{knowledge, AgentConfig, FileDiff, ReviewAgentError, ToolEventObserver};
 use crate::llm::WorkspaceToolContext;
 use std::time::Duration;
 
@@ -79,6 +79,7 @@ pub async fn run_detector(
     api_key: &str,
     workspace: &WorkspaceToolContext,
     prompt: &str,
+    on_tool_event: Option<&dyn ToolEventObserver>,
 ) -> Result<String, ReviewAgentError> {
     super::run_workspace_agent(AgentConfig {
         provider,
@@ -89,6 +90,7 @@ pub async fn run_detector(
         prompt,
         timeout: DETECTOR_TIMEOUT,
         max_turns: DETECTOR_MAX_TURNS,
+        on_tool_event,
     })
     .await
 }

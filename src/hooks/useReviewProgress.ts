@@ -11,6 +11,8 @@ import type {
   ReviewProgressEvent,
 } from "../types";
 
+type ReviewStagePhase = Exclude<ReviewPhase, { type: "detectorTool" }>;
+
 const INITIAL_PIPELINE: ReviewPipelineState = {
   detector: { chunk: 0, totalChunks: 0, candidateCount: 0, status: "idle" },
   validator: "idle",
@@ -36,7 +38,7 @@ export interface UseReviewProgress extends UseReviewProgressState {
 /** Cap the activity feed so a 20-batch scan can't grow it without bound. */
 const MAX_LOG_ENTRIES = 400;
 
-function describe(phase: ReviewPhase): string {
+function describe(phase: ReviewStagePhase): string {
   switch (phase.type) {
     case "detector": {
       const where =
@@ -120,7 +122,7 @@ function phaseStatusToNodeState(
 
 function reducePipeline(
   prev: ReviewPipelineState,
-  phase: ReviewPhase,
+  phase: ReviewStagePhase,
 ): ReviewPipelineState {
   const next: ReviewPipelineState = { ...prev, detector: { ...prev.detector } };
 
@@ -217,6 +219,8 @@ export function useReviewProgress(): UseReviewProgress {
           if (cancelled) return;
           const payload = event.payload;
           if (!payload?.run_id || !payload?.phase) return;
+          const phase = payload.phase;
+          if (phase.type === "detectorTool") return;
 
           setState((prev) => {
             // Reset on run_id change so a new review starts clean.
@@ -225,11 +229,11 @@ export function useReviewProgress(): UseReviewProgress {
             const baseLog = runChanged ? [] : prev.log;
             runIdRef.current = payload.run_id;
 
-            const pipeline = reducePipeline(basePipeline, payload.phase);
+            const pipeline = reducePipeline(basePipeline, phase);
             const entry: ReviewActivityEntry = {
               timestamp: payload.timestamp,
-              phase: payload.phase.type,
-              text: describe(payload.phase),
+              phase: phase.type,
+              text: describe(phase),
             };
             const log = [...baseLog, entry];
             if (log.length > MAX_LOG_ENTRIES) {

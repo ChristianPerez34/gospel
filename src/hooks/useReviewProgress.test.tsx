@@ -89,4 +89,24 @@ describe("useReviewProgress", () => {
     });
     expect(result.current.pipeline.validator).toBe("failed");
   });
+
+  it("ignores detector tool activity in the stage activity log", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({
+      type: "detectorTool",
+      chunk: 1,
+      toolName: "read_file",
+      event: { call: { arguments: {} } },
+    });
+
+    await waitFor(() => {
+      expect(result.current.log).toHaveLength(0);
+    });
+    expect(result.current.pipeline.detector.status).toBe("idle");
+  });
 });

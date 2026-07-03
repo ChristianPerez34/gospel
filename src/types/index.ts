@@ -104,6 +104,14 @@ export type ReviewPhase =
       candidateCount: number;
       status: PhaseStatus;
     }
+  | {
+      type: "detectorTool";
+      chunk: number;
+      toolName: string;
+      event:
+        | { call: { arguments: unknown } }
+        | { result: { summary: string } };
+    }
   | { type: "finalize"; status: PhaseStatus }
   | { type: "done"; findings: number; suppressed: number }
   | { type: "failed"; detail: string };

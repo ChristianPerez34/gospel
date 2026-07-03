@@ -1,3 +1,7 @@
+use futures::StreamExt;
+use rig::agent::MultiTurnStreamItem;
+use rig::client::CompletionClient;
+use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::timeout;
@@ -12,8 +16,6 @@ use crate::provider_client::provider_client;
 use crate::workspace_tools::{
     build_base_workspace_tools, create_context_search_tool, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
-use rig::client::CompletionClient;
-use rig::completion::Prompt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
@@ -127,10 +129,34 @@ async fn run_verification_agent(
             }
 
             let agent = builder.build();
-            agent
-                .prompt(prompt)
-                .await
-                .map_err(|error| error.to_string())
+            // Use stream_prompt instead of prompt: the ChatGPT Codex
+            // backend's non-streaming path drops tool calls when
+            // response.completed has an empty output array.
+            // See https://github.com/0xPlaygrounds/rig/issues/2000.
+            let mut stream = agent
+                .stream_prompt(prompt)
+                .multi_turn(VERIFICATION_MAX_TURNS)
+                .await;
+            let mut final_output = String::new();
+            loop {
+                match timeout(VERIFICATION_TIMEOUT, stream.next()).await {
+                    Err(_) => break Err("verification agent timed out".to_string()),
+                    Ok(None) => break Ok(final_output),
+                    Ok(Some(item)) => match item {
+                        Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
+                            final_output = final_response.response().to_owned();
+                            break Ok(final_output);
+                        }
+                        Ok(MultiTurnStreamItem::StreamAssistantItem(
+                            StreamedAssistantContent::Text(text),
+                        )) => {
+                            final_output.push_str(&text.text);
+                        }
+                        Ok(_) => {}
+                        Err(error) => break Err(error.to_string()),
+                    },
+                }
+            }
         }};
     }
 
