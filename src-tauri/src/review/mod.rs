@@ -317,6 +317,39 @@ fn sanitize_failure_detail(raw: &str) -> String {
     }
 }
 
+/// Formats a whole-run failed progress detail for the UI.
+///
+/// Raw provider errors still collapse to the first line through
+/// [`sanitize_failure_detail`]. The all-detector-failures path is assembled
+/// from already-sanitized per-chunk details, so preserve its multi-line
+/// summary to keep the progress feed diagnosable.
+fn progress_failure_detail(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if is_detector_failure_summary(trimmed) {
+        truncate_failure_detail(trimmed, 2_000)
+    } else {
+        sanitize_failure_detail(raw)
+    }
+}
+
+fn is_detector_failure_summary(detail: &str) -> bool {
+    detail.starts_with("All ")
+        && detail.contains(" detector invocations failed ")
+        && detail.contains("\nPer-chunk reasons:\n")
+}
+
+fn truncate_failure_detail(raw: &str, max_len: usize) -> String {
+    if raw.len() <= max_len {
+        return raw.to_string();
+    }
+
+    let mut end = max_len;
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &raw[..end])
+}
+
 fn mode_label(mode: &ReviewMode) -> &'static str {
     match mode {
         ReviewMode::Local => "local",
@@ -479,7 +512,7 @@ pub async fn run_review(
             emitter.emit_progress(ReviewProgressEvent::new(
                 &run_id,
                 ReviewPhase::Failed {
-                    detail: sanitize_failure_detail(&detail),
+                    detail: progress_failure_detail(&detail),
                 },
             ));
             return Err(detail);
@@ -508,7 +541,7 @@ pub async fn run_review(
             emitter.emit_progress(ReviewProgressEvent::new(
                 &run_id,
                 ReviewPhase::Failed {
-                    detail: sanitize_failure_detail(&detail),
+                    detail: progress_failure_detail(&detail),
                 },
             ));
             Err(detail)
@@ -2143,6 +2176,37 @@ Binary files a/icon.png and b/icon.png differ
     }
 
     #[test]
+    fn progress_failure_detail_preserves_detector_failure_summary() {
+        let failures = vec![
+            detector_failure(1, DetectorFailureKind::Provider, "bad model"),
+            detector_failure(2, DetectorFailureKind::Provider, "tool request rejected"),
+        ];
+        let message = all_detector_failures_error(
+            "chatgpt",
+            "gpt-5.5",
+            &ReviewMode::PullRequest { pr_number: 34 },
+            "diff chunk",
+            &failures,
+        );
+
+        let progress_detail = progress_failure_detail(&message);
+
+        assert!(progress_detail.contains("All 2 detector invocations failed"));
+        assert!(progress_detail.contains("Failures: 0 timeout(s), 2 provider error(s)."));
+        assert!(progress_detail.contains("Per-chunk reasons:"));
+        assert!(progress_detail.contains("diff chunk 1: [provider_error] bad model"));
+        assert!(progress_detail.contains("diff chunk 2: [provider_error] tool request rejected"));
+    }
+
+    #[test]
+    fn progress_failure_detail_sanitizes_unknown_multiline_errors() {
+        let progress_detail =
+            progress_failure_detail("provider failed\nx-request-id: should-not-be-shown");
+
+        assert_eq!(progress_detail, "provider failed");
+    }
+
+    #[test]
     fn all_detector_failures_error_lists_per_chunk_reasons_and_counts() {
         let failures = vec![
             detector_failure(1, DetectorFailureKind::Timeout, "agent timed out"),
@@ -2395,5 +2459,31 @@ Binary files a/icon.png and b/icon.png differ
         assert_eq!(json["phase"]["totalChunks"], 5);
         assert_eq!(json["phase"]["candidateCount"], 3);
         assert_eq!(json["phase"]["status"], "running");
+    }
+
+    #[test]
+    fn review_progress_failed_chunk_serializes_nested_failure_for_frontend() {
+        let event = ReviewProgressEvent::new(
+            "run-1",
+            ReviewPhase::Detector {
+                chunk: 1,
+                total_chunks: 1,
+                files: vec!["src/lib.rs".to_string()],
+                candidate_count: 0,
+                status: ChunkStatus::Failed {
+                    kind: "provider_error".to_string(),
+                    detail: "model rejected tool-capable request".to_string(),
+                },
+            },
+        );
+
+        let json = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(json["phase"]["status"]["failed"]["kind"], "provider_error");
+        assert_eq!(
+            json["phase"]["status"]["failed"]["detail"],
+            "model rejected tool-capable request"
+        );
+        assert!(json["phase"]["status"]["detail"].is_null());
     }
 }

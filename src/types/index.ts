@@ -73,13 +73,22 @@ export interface ReviewOutcomeOutput {
 
 // ── Real-time review progress (review-progress event) ──
 
+export interface ChunkFailure {
+  kind: string;
+  detail: string;
+}
+
+export interface PhaseFailure {
+  detail: string;
+}
+
 export type ChunkStatus =
   | "starting"
   | "running"
   | "done"
-  | { failed: string; detail: string };
+  | { failed: ChunkFailure };
 
-export type PhaseStatus = "running" | "done" | { failed: string; detail: string };
+export type PhaseStatus = "running" | "done" | { failed: PhaseFailure };
 
 export type ReviewPhase =
   | {

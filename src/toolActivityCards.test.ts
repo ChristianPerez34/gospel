@@ -3,7 +3,7 @@ import {
   toolActivitiesToActionCards,
   toolActivitiesToTimelineSteps,
 } from "./toolActivityCards";
-import type { ActionCardSection } from "./types";
+import type { ActionCardSection, ToolCallActivity } from "./types";
 
 type RowsSection = Extract<ActionCardSection, { type: "rows" }>;
 
@@ -310,7 +310,7 @@ describe("toolActivitiesToActionCards review tools", () => {
   });
 
   it("keeps a grouped step's id stable as new passes are appended", () => {
-    const activities = [
+    const activities: ToolCallActivity[] = [
       {
         id: "read-1",
         name: "read_file",

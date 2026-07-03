@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  ChunkFailure,
+  ChunkStatus,
+  PhaseFailure,
   ReviewActivityEntry,
+  ReviewNodeState,
   ReviewPhase,
   ReviewPipelineState,
   ReviewProgressEvent,
@@ -45,17 +49,17 @@ function describe(phase: ReviewPhase): string {
       if (phase.status === "running") return `Detector ${where} (running)${filesLabel}`;
       if (phase.status === "done")
         return `Detector ${where} done — ${phase.candidateCount} candidate${phase.candidateCount === 1 ? "" : "s"}`;
-      return `Detector ${where} failed (${phase.status.failed}): ${phase.status.detail}`;
+      return `Detector ${where} failed (${phase.status.failed.kind}): ${phase.status.failed.detail}`;
     }
     case "validator":
       if (phase.status === "running")
         return `Validator running — ${phase.candidateCount} candidate${phase.candidateCount === 1 ? "" : "s"}`;
       if (phase.status === "done") return "Validator done";
-      return `Validator failed: ${phase.status.detail}`;
+      return `Validator failed: ${phase.status.failed.detail}`;
     case "finalize":
       if (phase.status === "running") return "Finalizing results";
       if (phase.status === "done") return "Finalize complete";
-      return `Finalize failed: ${phase.status.detail}`;
+      return `Finalize failed: ${phase.status.failed.detail}`;
     case "done":
       return `Review complete — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}, ${phase.suppressed} suppressed`;
     case "failed":
@@ -67,8 +71,51 @@ function isChunkDone(status: unknown): status is "done" {
   return status === "done";
 }
 
-function isChunkFailed(status: unknown): status is { failed: string; detail: string } {
-  return typeof status === "object" && status !== null && "failed" in status;
+function hasObjectFailure<TFailure>(
+  status: unknown,
+  isFailure: (value: unknown) => value is TFailure,
+): status is { failed: TFailure } {
+  return (
+    typeof status === "object" &&
+    status !== null &&
+    "failed" in status &&
+    isFailure((status as { failed?: unknown }).failed)
+  );
+}
+
+function isChunkFailure(value: unknown): value is ChunkFailure {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Partial<ChunkFailure>).kind === "string" &&
+    typeof (value as Partial<ChunkFailure>).detail === "string"
+  );
+}
+
+function isPhaseFailure(value: unknown): value is PhaseFailure {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Partial<PhaseFailure>).detail === "string"
+  );
+}
+
+function isChunkFailed(status: unknown): status is Extract<ChunkStatus, { failed: ChunkFailure }> {
+  return hasObjectFailure(status, isChunkFailure);
+}
+
+function isPhaseFailed(status: unknown): status is { failed: PhaseFailure } {
+  return hasObjectFailure(status, isPhaseFailure);
+}
+
+function phaseStatusToNodeState(
+  status: unknown,
+  previous: ReviewNodeState,
+): ReviewNodeState {
+  if (status === "running") return "active";
+  if (status === "done") return "done";
+  if (isPhaseFailed(status)) return "failed";
+  return previous;
 }
 
 function reducePipeline(
@@ -111,12 +158,12 @@ function reducePipeline(
     }
     case "validator":
       next.detector = { ...prev.detector, status: "done" };
-      next.validator = phase.status === "running" ? "active" : phase.status === "done" ? "done" : "failed";
+      next.validator = phaseStatusToNodeState(phase.status, prev.validator);
       break;
     case "finalize":
       next.detector = { ...prev.detector, status: "done" };
       next.validator = "done";
-      next.finalize = phase.status === "running" ? "active" : phase.status === "done" ? "done" : "failed";
+      next.finalize = phaseStatusToNodeState(phase.status, prev.finalize);
       break;
     case "done":
       next.detector = { ...prev.detector, status: "done" };
