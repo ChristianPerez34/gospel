@@ -11,7 +11,7 @@ pub mod validator;
 
 pub use progress::{
     ChunkStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewPhase, ReviewProgressEmitter,
-    ReviewProgressEvent,
+    ReviewProgressEvent, ToolEventKind,
 };
 
 use crate::llm::WorkspaceToolContext;
@@ -19,8 +19,10 @@ use crate::keychain;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::workspace_tools::build_base_workspace_tools;
+use futures::StreamExt;
+use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
-use rig::completion::Prompt;
+use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::ErrorKind;
@@ -803,7 +805,7 @@ async fn run_full_scan_review(
             },
         ));
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
-        match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
+        match detector::run_detector(provider, model, api_key, workspace, &prompt, None).await {
             Ok(output) => {
                 let mut parsed = parse_agent_review_output(&output, "Detector");
                 stamp_parsed_comments_focus(&mut parsed, focus);
@@ -902,6 +904,52 @@ async fn run_full_scan_review(
     ))
 }
 
+/// Forwards detector tool-call/result events to the review progress emitter
+/// as `DetectorTool` phases so the frontend can show incremental activity
+/// ("reading file X") while a chunk is being analyzed.
+struct DetectorToolObserver<'a> {
+    run_id: &'a str,
+    chunk: usize,
+    emitter: &'a dyn ReviewProgressEmitter,
+}
+
+impl<'a> ToolEventObserver for DetectorToolObserver<'a> {
+    fn on_tool_call(&self, name: &str, arguments: &serde_json::Value) {
+        self.emitter.emit_progress(ReviewProgressEvent::new(
+            self.run_id,
+            ReviewPhase::DetectorTool {
+                chunk: self.chunk,
+                tool_name: name.to_string(),
+                event: ToolEventKind::Call {
+                    arguments: arguments.clone(),
+                },
+            },
+        ));
+    }
+
+    fn on_tool_result(&self, name: &str, result: &str) {
+        let summary = truncate_tool_result(result);
+        self.emitter.emit_progress(ReviewProgressEvent::new(
+            self.run_id,
+            ReviewPhase::DetectorTool {
+                chunk: self.chunk,
+                tool_name: name.to_string(),
+                event: ToolEventKind::Result { summary },
+            },
+        ));
+    }
+}
+
+/// Caps tool-result summaries forwarded to the frontend so a large file
+/// read does not balloon the progress event payload.
+fn truncate_tool_result(result: &str) -> String {
+    const MAX_RESULT_SUMMARY: usize = 200;
+    if result.len() <= MAX_RESULT_SUMMARY {
+        return result.to_string();
+    }
+    format!("{}…", &result[..MAX_RESULT_SUMMARY])
+}
+
 async fn run_diff_review(
     run_id: &str,
     emitter: &dyn ReviewProgressEmitter,
@@ -984,7 +1032,21 @@ async fn run_diff_review(
             },
         ));
         let prompt = detector::build_diff_prompt(&review_context, chunk);
-        match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
+        let observer = DetectorToolObserver {
+            run_id,
+            chunk: chunk_number,
+            emitter,
+        };
+        match detector::run_detector(
+            provider,
+            model,
+            api_key,
+            workspace,
+            &prompt,
+            Some(&observer),
+        )
+        .await
+        {
             Ok(output) => {
                 let mut parsed = parse_agent_review_output(&output, "Detector");
                 stamp_parsed_comments_focus(&mut parsed, focus);
@@ -1721,8 +1783,31 @@ pub(crate) struct AgentConfig<'a> {
     pub prompt: &'a str,
     pub timeout: Duration,
     pub max_turns: usize,
+    /// Optional observer invoked when the agent makes a tool call or receives
+    /// a tool result while streaming. Used by the detector to surface
+    /// "reading file X" progress to the review progress emitter.
+    pub on_tool_event: Option<&'a dyn ToolEventObserver>,
 }
 
+/// Observer for tool-call/tool-result events emitted during a streaming
+/// agent run. The review pipeline implements this to forward incremental
+/// progress to the frontend without coupling `run_workspace_agent` to the
+/// progress event types.
+pub trait ToolEventObserver: Send + Sync {
+    fn on_tool_call(&self, name: &str, arguments: &serde_json::Value);
+    fn on_tool_result(&self, name: &str, result: &str);
+}
+
+/// Drives a streaming agent run to completion, accumulating the final
+/// assistant text and forwarding tool events to the optional observer.
+///
+/// Uses `stream_prompt` instead of `prompt` because the ChatGPT Codex
+/// backend's non-streaming `completion_from_sse` path drops tool calls
+/// when `response.completed` arrives with an empty `output` array (which
+/// it does whenever the model emits a tool call). The streaming path
+/// processes SSE events incrementally and reconstructs tool calls from
+/// the streamed deltas, so it is unaffected. See
+/// <https://github.com/0xPlaygrounds/rig/issues/2000>.
 pub(crate) async fn run_workspace_agent(
     config: AgentConfig<'_>,
 ) -> Result<String, ReviewAgentError> {
@@ -1743,11 +1828,12 @@ pub(crate) async fn run_workspace_agent(
                     config.workspace.workspace_path.clone(),
                 ));
             let agent = agent_builder.build();
-            let future = agent.prompt(config.prompt).max_turns(config.max_turns);
-            timeout(config.timeout, future)
+            let stream = agent
+                .stream_prompt(config.prompt)
+                .multi_turn(config.max_turns)
+                .await;
+            consume_agent_stream(stream, config.timeout, config.on_tool_event)
                 .await
-                .map_err(|_| ReviewAgentError::Timeout)?
-                .map_err(|e| ReviewAgentError::Provider(e.to_string()))
         }};
     }
 
@@ -1758,6 +1844,99 @@ pub(crate) async fn run_workspace_agent(
         ReviewAgentError::Provider,
         |client| { run_from_client!(client, config.model) }
     )
+}
+
+/// Consumes a multi-turn agent stream to completion, returning the final
+/// assistant text. Tool calls/results are forwarded to the observer when
+/// present. The whole stream is bounded by `deadline` so a stuck agent
+/// surfaces as a timeout rather than hanging forever.
+async fn consume_agent_stream<R>(
+    mut stream: rig::agent::StreamingResult<R>,
+    deadline: Duration,
+    on_tool_event: Option<&dyn ToolEventObserver>,
+) -> Result<String, ReviewAgentError>
+where
+    R: Clone + Unpin,
+{
+    let mut tool_name_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut final_output = String::new();
+
+    loop {
+        let next = timeout(deadline, stream.next()).await;
+        match next {
+            Err(_) => return Err(ReviewAgentError::Timeout),
+            Ok(None) => break,
+            Ok(Some(item)) => match item {
+                Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
+                    StreamedAssistantContent::ToolCall {
+                        tool_call,
+                        internal_call_id,
+                    } => {
+                        tool_name_by_id
+                            .insert(internal_call_id.clone(), tool_call.function.name.clone());
+                        if let Some(observer) = on_tool_event {
+                            observer.on_tool_call(
+                                &tool_call.function.name,
+                                &tool_call.function.arguments,
+                            );
+                        }
+                    }
+                    StreamedAssistantContent::Text(_) => {}
+                    _ => {}
+                },
+                Ok(MultiTurnStreamItem::StreamUserItem(user_content)) => {
+                    if let Some(observer) = on_tool_event {
+                        if let Some((name, result_text)) =
+                            extract_tool_result(&user_content, &tool_name_by_id)
+                        {
+                            observer.on_tool_result(&name, &result_text);
+                        }
+                    }
+                }
+                Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
+                    final_output = final_response.response().to_owned();
+                    break;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(ReviewAgentError::Provider(error.to_string()));
+                }
+            },
+        }
+    }
+
+    Ok(final_output)
+}
+
+/// Extracts the tool name and a text summary from a streamed user-content
+/// tool result, falling back to the provider's tool result id when the
+/// internal call id has no recorded name.
+fn extract_tool_result(
+    user_content: &rig::streaming::StreamedUserContent,
+    tool_name_by_id: &std::collections::HashMap<String, String>,
+) -> Option<(String, String)> {
+    // `StreamedUserContent` currently has a single `ToolResult` variant;
+    // match explicitly so new variants added upstream surface as a
+    // compile error rather than silently being dropped.
+    let rig::streaming::StreamedUserContent::ToolResult {
+        tool_result,
+        internal_call_id,
+    } = user_content;
+    let name = tool_name_by_id
+        .get(internal_call_id)
+        .cloned()
+        .unwrap_or_else(|| tool_result.id.clone());
+    let result_text = tool_result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            rig::completion::message::ToolResultContent::Text(text) => Some(text.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some((name, result_text))
 }
 
 #[cfg(test)]

@@ -58,6 +58,15 @@ pub enum ReviewPhase {
         candidate_count: usize,
         status: PhaseStatus,
     },
+    /// Incremental tool activity from the detector agent. Emitted as the
+    /// detector streams tool calls/results so the frontend can show
+    /// "reading file X" while a chunk is in progress. `chunk` correlates
+    /// with the `Detector` chunk number.
+    DetectorTool {
+        chunk: usize,
+        tool_name: String,
+        event: ToolEventKind,
+    },
     /// Finalize stage. `Running` at entry to `finalize_review_result`,
     /// `Done` when the result is sealed.
     Finalize { status: PhaseStatus },
@@ -92,6 +101,16 @@ pub enum PhaseStatus {
     /// stage. Whole-run failures currently emit [`ReviewPhase::Failed`].
     #[allow(dead_code)]
     Failed { detail: String },
+}
+
+/// Kind of incremental tool event from the detector agent.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolEventKind {
+    /// The agent invoked a tool. `arguments` carries the raw JSON arguments.
+    Call { arguments: serde_json::Value },
+    /// The tool returned a result. `summary` is a best-effort text excerpt.
+    Result { summary: String },
 }
 
 /// Abstracts emission of review progress events so the review pipeline can
