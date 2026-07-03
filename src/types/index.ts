@@ -71,6 +71,77 @@ export interface ReviewOutcomeOutput {
   recorded_at: string;
 }
 
+// ── Real-time review progress (review-progress event) ──
+
+export interface ChunkFailure {
+  kind: string;
+  detail: string;
+}
+
+export interface PhaseFailure {
+  detail: string;
+}
+
+export type ChunkStatus =
+  | "starting"
+  | "running"
+  | "done"
+  | { failed: ChunkFailure };
+
+export type PhaseStatus = "running" | "done" | { failed: PhaseFailure };
+
+export type ReviewPhase =
+  | {
+      type: "detector";
+      chunk: number;
+      totalChunks: number;
+      files: string[];
+      candidateCount: number;
+      status: ChunkStatus;
+    }
+  | {
+      type: "validator";
+      candidateCount: number;
+      status: PhaseStatus;
+    }
+  | { type: "finalize"; status: PhaseStatus }
+  | { type: "done"; findings: number; suppressed: number }
+  | { type: "failed"; detail: string };
+
+export interface ReviewProgressEvent {
+  run_id: string;
+  phase: ReviewPhase;
+  timestamp: number;
+}
+
+/** Per-node state derived in the hook from the event stream. */
+export type ReviewNodeState = "idle" | "active" | "done" | "failed";
+
+export interface ReviewDetectorState {
+  chunk: number;
+  totalChunks: number;
+  candidateCount: number;
+  status: ReviewNodeState;
+}
+
+export interface ReviewPipelineState {
+  detector: ReviewDetectorState;
+  validator: ReviewNodeState;
+  finalize: ReviewNodeState;
+  /** Whole-run outcome once known. */
+  done: boolean;
+  failed: boolean;
+  failureDetail: string | null;
+  findings: number;
+  suppressed: number;
+}
+
+export interface ReviewActivityEntry {
+  timestamp: number;
+  phase: ReviewPhase["type"];
+  text: string;
+}
+
 export interface ToolCallActivity {
   id: string;
   name: string;

@@ -1,5 +1,7 @@
 use super::outcome::{record_review_outcome, ReviewOutcome};
-use super::{run_review, ReviewComment, ReviewConfig, ReviewFocus, ReviewResult};
+use super::{
+    run_review, NoopReviewProgressEmitter, ReviewComment, ReviewConfig, ReviewFocus, ReviewResult,
+};
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
 use rig::completion::ToolDefinition;
@@ -220,7 +222,10 @@ async fn run_review_tool(
         pr_number,
     };
 
-    match run_review(config, workspace_root, api_key).await {
+    // Phase 1: the agent-initiated tool path stays text-only in the chat
+    // transcript, so it uses a no-op emitter. Streaming into a tool-call card
+    // is a follow-up (see handoff "Out of scope").
+    match run_review(config, workspace_root, api_key, &NoopReviewProgressEmitter).await {
         Ok(review) => {
             let findings = review
                 .comments

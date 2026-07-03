@@ -793,6 +793,7 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
 
 #[tauri::command]
 async fn gospel_review(
+    app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
     config: review::ReviewConfig,
 ) -> Result<review::ReviewResult, String> {
@@ -818,7 +819,24 @@ async fn gospel_review(
             .map_err(|_| format!("API key not configured for {}", config.provider))?
     };
 
-    review::run_review(config, workspace_path, api_key).await
+    let emitter = TauriReviewProgressEmitter { app: &app };
+    review::run_review(config, workspace_path, api_key, &emitter).await
+}
+
+/// Tauri-backed [`review::ReviewProgressEmitter`] that forwards every event to
+/// the `review-progress` webview event. Mirrors the
+/// `TauriSessionTurnAdapters` pattern: the trait lives in `review::progress`
+/// (decoupled from Tauri), the real impl lives here next to the command.
+struct TauriReviewProgressEmitter<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
+}
+
+impl<R: tauri::Runtime> review::ReviewProgressEmitter for TauriReviewProgressEmitter<'_, R> {
+    fn emit_progress(&self, event: review::ReviewProgressEvent) {
+        if let Err(err) = self.app.emit("review-progress", event) {
+            tracing::warn!(error = %err, "failed to emit review-progress event");
+        }
+    }
 }
 
 struct TauriSessionTurnAdapters<'a> {
