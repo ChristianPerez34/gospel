@@ -157,16 +157,25 @@ function reducePipeline(
       break;
     }
     case "validator":
-      next.detector = { ...prev.detector, status: "done" };
+      next.detector = {
+        ...prev.detector,
+        status: prev.detector.status === "failed" ? "failed" : "done",
+      };
       next.validator = phaseStatusToNodeState(phase.status, prev.validator);
       break;
     case "finalize":
-      next.detector = { ...prev.detector, status: "done" };
+      next.detector = {
+        ...prev.detector,
+        status: prev.detector.status === "failed" ? "failed" : "done",
+      };
       next.validator = "done";
       next.finalize = phaseStatusToNodeState(phase.status, prev.finalize);
       break;
     case "done":
-      next.detector = { ...prev.detector, status: "done" };
+      next.detector = {
+        ...prev.detector,
+        status: prev.detector.status === "failed" ? "failed" : "done",
+      };
       next.validator = "done";
       next.finalize = "done";
       next.done = true;
@@ -204,7 +213,7 @@ export function useReviewProgress(): UseReviewProgress {
 
     (async () => {
       try {
-        unlisten = await listen<ReviewProgressEvent>("review-progress", (event) => {
+        const unsubscribe = await listen<ReviewProgressEvent>("review-progress", (event) => {
           if (cancelled) return;
           const payload = event.payload;
           if (!payload?.run_id || !payload?.phase) return;
@@ -229,6 +238,13 @@ export function useReviewProgress(): UseReviewProgress {
             return { runId: payload.run_id, pipeline, log };
           });
         });
+        // If the component unmounted while we were awaiting listen, tear down
+        // the subscription immediately instead of storing it for the cleanup.
+        if (cancelled) {
+          unsubscribe();
+        } else {
+          unlisten = unsubscribe;
+        }
       } catch (error) {
         console.error("[useReviewProgress] failed to listen for review-progress", error);
       }

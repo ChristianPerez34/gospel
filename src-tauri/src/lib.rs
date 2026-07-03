@@ -831,7 +831,9 @@ struct TauriReviewProgressEmitter<'a, R: tauri::Runtime> {
 
 impl<R: tauri::Runtime> review::ReviewProgressEmitter for TauriReviewProgressEmitter<'_, R> {
     fn emit_progress(&self, event: review::ReviewProgressEvent) {
-        let _ = self.app.emit("review-progress", event);
+        if let Err(err) = self.app.emit("review-progress", event) {
+            tracing::warn!(error = %err, "failed to emit review-progress event");
+        }
     }
 }
 

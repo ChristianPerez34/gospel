@@ -449,7 +449,7 @@ export function ReviewPanel({
           />
         )}
 
-        {result && !loading && (
+        {!loading && (reviewProgress.pipeline.done || reviewProgress.pipeline.failed) && (
           <div className="mb-1">
             <ReviewProgressView
               pipeline={reviewProgress.pipeline}
