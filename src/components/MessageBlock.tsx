@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
 import { Button } from "@/components/ui/button";
+import { codePlugin } from "@/lib/markdown";
 import type { Message } from "../types";
 
 interface MessageBlockProps {
@@ -43,7 +43,7 @@ export function MessageBlock({ message, showActions = true }: MessageBlockProps)
         {isUser ? (
           message.content
         ) : (
-          <Streamdown animated plugins={{ code }}>
+          <Streamdown animated plugins={{ code: codePlugin }}>
             {message.content}
           </Streamdown>
         )}

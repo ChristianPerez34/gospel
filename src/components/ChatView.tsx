@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
 import { Button } from "@/components/ui/button";
+import { codePlugin } from "@/lib/markdown";
 import type {
   CurrentTurn,
   Message,
@@ -135,7 +135,7 @@ function AgentTextBlock({ block }: { block: TextTurnBlock }) {
 
   return (
     <div className="agent-text-block ml-16 w-[calc(100%-3.25rem)] max-w-[680px] rounded-lg border border-surface-overlay bg-surface-base px-3 py-3 text-body leading-relaxed text-text-primary break-words prose">
-      <Streamdown animated plugins={{ code }}>
+      <Streamdown animated plugins={{ code: codePlugin }}>
         {block.text}
       </Streamdown>
     </div>
