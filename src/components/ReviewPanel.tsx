@@ -16,6 +16,8 @@ import {
   isActionableReviewFinding,
 } from "../reviewPrompts";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { useReviewProgress } from "../hooks/useReviewProgress";
+import { ReviewProgressView } from "./ReviewProgressView";
 
 type ReviewPanelMode = "local" | "pr" | "scan";
 
@@ -175,6 +177,7 @@ export function ReviewPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<Record<string, ReviewOutcome>>({});
+  const reviewProgress = useReviewProgress();
 
   const visibleComments = useMemo(
     () => result?.comments.filter((comment) => !isHidden(comment)) ?? [],
@@ -216,6 +219,7 @@ export function ReviewPanel({
 
     setLoading(true);
     setError(null);
+    reviewProgress.reset();
     try {
       const review = await invoke<ReviewResult>("gospel_review", {
         config: {
@@ -438,13 +442,20 @@ export function ReviewPanel({
         )}
 
         {loading && (
-          <div className="grid gap-2">
-            {Array.from({ length: 4 }).map((_, index) => (
-              <div
-                key={index}
-                className="h-24 animate-pulse rounded-md bg-surface-overlay"
-              />
-            ))}
+          <ReviewProgressView
+            pipeline={reviewProgress.pipeline}
+            log={reviewProgress.log}
+            variant="active"
+          />
+        )}
+
+        {result && !loading && (
+          <div className="mb-1">
+            <ReviewProgressView
+              pipeline={reviewProgress.pipeline}
+              log={reviewProgress.log}
+              variant="collapsed"
+            />
           </div>
         )}
 

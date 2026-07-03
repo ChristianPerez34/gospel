@@ -54,6 +54,32 @@ function groupedReadCard(): ActionCardType {
   };
 }
 
+function diffCard(): ActionCardType {
+  return {
+    id: "tool-diff",
+    type: "diff",
+    summary: "Edit file",
+    detail: "src/lib.rs",
+    target: "src/lib.rs",
+    status: "completed",
+    expanded: false,
+    sections: [
+      {
+        type: "text",
+        title: "Diff",
+        content: [
+          "@@ src/lib.rs:1 @@",
+          "  fn main() {",
+          "-    println!(\"old\");",
+          "+    println!(\"new\");",
+          "  }",
+        ].join("\n"),
+        monospace: true,
+      },
+    ],
+  };
+}
+
 describe("ActivityStep", () => {
   it("starts collapsed and does not auto-open when a running step completes", () => {
     const { rerender } = renderStep(readFileCard("calling"));
@@ -112,5 +138,33 @@ describe("ActivityStep", () => {
 
     expect(toggles[0].getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText('{"path":"src/lib.rs","bytes":1}')).not.toBeNull();
+  });
+
+  it("renders hunk, removed, added, and context rows for a diff preview", () => {
+    renderStep(diffCard());
+    fireEvent.click(screen.getByRole("button", { name: /edit file/i }));
+
+    expect(screen.getByText("@@ src/lib.rs:1 @@")).not.toBeNull();
+    expect(screen.getByLabelText(/Removed:.*println!\("old"\)/)).not.toBeNull();
+    expect(screen.getByLabelText(/Added:.*println!\("new"\)/)).not.toBeNull();
+    expect(screen.getByLabelText(/Context:\s*fn main\(\) \{/)).not.toBeNull();
+  });
+
+  it("keeps textual +/- markers visible on added and removed diff rows", () => {
+    renderStep(diffCard());
+    fireEvent.click(screen.getByRole("button", { name: /edit file/i }));
+
+    const added = screen.getByLabelText(/Added:.*println!\("new"\)/);
+    const removed = screen.getByLabelText(/Removed:.*println!\("old"\)/);
+    expect(added.textContent).toContain("+");
+    expect(removed.textContent).toContain("-");
+  });
+
+  it("still uses the plain preview and truncation for non-diff text sections", () => {
+    renderStep(readFileCard("completed"));
+    fireEvent.click(screen.getByRole("button", { name: /read file/i }));
+
+    expect(screen.queryByLabelText(/Context:/)).toBeNull();
+    expect(screen.getByText("file contents")).not.toBeNull();
   });
 });

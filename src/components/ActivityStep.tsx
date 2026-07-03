@@ -30,32 +30,121 @@ const TYPE_ACCENT: Record<string, string> = {
 
 const MAX_PREVIEW_LINES = 6;
 
+type DiffRowKind = "hunk" | "added" | "removed" | "context" | "other";
+
+interface DiffRow {
+  kind: DiffRowKind;
+  marker: string;
+  text: string;
+}
+
+function classifyDiffLine(line: string): DiffRow {
+  if (line.startsWith("@@")) {
+    return { kind: "hunk", marker: "", text: line };
+  }
+  if (line.startsWith("+")) {
+    return { kind: "added", marker: "+", text: line.slice(1) };
+  }
+  if (line.startsWith("-")) {
+    return { kind: "removed", marker: "-", text: line.slice(1) };
+  }
+  if (line.startsWith("  ")) {
+    return { kind: "context", marker: " ", text: line.slice(2) };
+  }
+  return { kind: "other", marker: " ", text: line };
+}
+
+const DIFF_ROW_STYLES: Record<DiffRowKind, string> = {
+  hunk: "text-text-muted",
+  added: "text-status-success",
+  removed: "text-status-error",
+  context: "text-text-secondary",
+  other: "text-text-secondary",
+};
+
+const DIFF_ROW_LABELS: Record<DiffRowKind, string> = {
+  hunk: "Hunk header",
+  added: "Added",
+  removed: "Removed",
+  context: "Context",
+  other: "Line",
+};
+
+function DiffPreview({ lines }: { lines: string[] }) {
+  const rows = lines.map(classifyDiffLine);
+
+  return (
+    <pre className="m-0 max-h-[320px] overflow-auto rounded-sm border border-surface-overlay bg-surface-base p-0 font-mono text-mono">
+      <code className="grid">
+        {rows.map((row, index) =>
+          row.kind === "hunk" ? (
+            <div
+              className={classNames(
+                "whitespace-pre-wrap break-words px-2 py-0.5",
+                DIFF_ROW_STYLES.hunk,
+              )}
+              key={index}
+            >
+              {row.text}
+            </div>
+          ) : (
+            <div
+              className="grid grid-cols-[1rem_minmax(0,1fr)] gap-2 px-2"
+              key={index}
+              aria-label={`${DIFF_ROW_LABELS[row.kind]}: ${row.text}`}
+            >
+              <span
+                className={classNames("select-none text-center", DIFF_ROW_STYLES[row.kind])}
+                aria-hidden="true"
+              >
+                {row.marker}
+              </span>
+              <span
+                className={classNames(
+                  "whitespace-pre-wrap break-words",
+                  DIFF_ROW_STYLES[row.kind],
+                )}
+              >
+                {row.text}
+              </span>
+            </div>
+          ),
+        )}
+      </code>
+    </pre>
+  );
+}
+
 function PreviewText({
   content,
   monospace,
+  diff,
 }: {
   content: string;
   monospace?: boolean;
+  diff?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   const lines = content.split("\n");
   const overflowing = lines.length > MAX_PREVIEW_LINES;
-  const visible =
-    showAll || !overflowing
-      ? content
-      : lines.slice(0, MAX_PREVIEW_LINES).join("\n");
+  const visibleLines =
+    showAll || !overflowing ? lines : lines.slice(0, MAX_PREVIEW_LINES);
   const hiddenCount = lines.length - MAX_PREVIEW_LINES;
 
   return (
     <div className="grid gap-1">
-      <pre
-        className={classNames(
-          "m-0 max-h-[320px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 text-text-primary",
-          monospace ? "font-mono text-mono" : "font-body text-body-sm",
-        )}
-      >
-        {visible}
-      </pre>
+      {diff ? (
+        <DiffPreview lines={visibleLines} />
+      ) : (
+        <pre
+          className={classNames(
+            "m-0 max-h-[320px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 text-text-primary",
+            monospace ? "font-mono text-mono" : "font-body text-body-sm",
+          )}
+        >
+          {visibleLines.join("\n")}
+        </pre>
+      )}
       {overflowing && (
         <Button
           variant="ghost"
@@ -141,7 +230,11 @@ function renderSection(section: ActionCardSection, keyPrefix = "") {
           {section.title}
         </h4>
       )}
-      <PreviewText content={section.content} monospace={section.monospace} />
+      <PreviewText
+        content={section.content}
+        monospace={section.monospace}
+        diff={section.title === "Diff" && section.monospace === true}
+      />
     </section>
   );
 }

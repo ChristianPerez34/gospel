@@ -4,9 +4,15 @@ pub mod config;
 pub mod detector;
 pub mod knowledge;
 pub mod outcome;
+pub mod progress;
 pub mod signal;
 pub mod tools;
 pub mod validator;
+
+pub use progress::{
+    ChunkStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewPhase, ReviewProgressEmitter,
+    ReviewProgressEvent,
+};
 
 use crate::llm::WorkspaceToolContext;
 use crate::keychain;
@@ -385,7 +391,9 @@ pub async fn run_review(
     config: ReviewConfig,
     workspace_path: PathBuf,
     api_key: String,
+    emitter: &dyn ReviewProgressEmitter,
 ) -> Result<ReviewResult, String> {
+    let run_id = Uuid::new_v4().to_string();
     let mode = config.review_mode()?;
     if config.focus != ReviewFocus::Security {
         return Err(format!(
@@ -400,10 +408,25 @@ pub async fn run_review(
         session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
     };
 
-    let result = match mode.clone() {
+    // Run-start handshake so the frontend can key on run_id and render the
+    // pipeline immediately, before chunking is known.
+    emitter.emit_progress(ReviewProgressEvent::new(
+        &run_id,
+        ReviewPhase::Detector {
+            chunk: 0,
+            total_chunks: 0,
+            files: Vec::new(),
+            candidate_count: 0,
+            status: ChunkStatus::Starting,
+        },
+    ));
+
+    let outcome = match mode.clone() {
         ReviewMode::Local => {
             let diff = get_local_diff(&workspace.workspace_path).await?;
             run_diff_review(
+                &run_id,
+                emitter,
                 &config.provider,
                 &config.model,
                 &api_key,
@@ -423,6 +446,8 @@ pub async fn run_review(
                 pr_number, pr.title, pr.body
             );
             run_diff_review(
+                &run_id,
+                emitter,
                 &config.provider,
                 &config.model,
                 &api_key,
@@ -436,6 +461,8 @@ pub async fn run_review(
         }
         ReviewMode::FullScan => {
             run_full_scan_review(
+                &run_id,
+                emitter,
                 &config.provider,
                 &config.model,
                 &api_key,
@@ -444,14 +471,49 @@ pub async fn run_review(
             )
             .await
         }
-    }?;
+    };
 
-    finalize_review_result(
+    let result = match outcome {
+        Ok(result) => result,
+        Err(detail) => {
+            emitter.emit_progress(ReviewProgressEvent::new(
+                &run_id,
+                ReviewPhase::Failed {
+                    detail: sanitize_failure_detail(&detail),
+                },
+            ));
+            return Err(detail);
+        }
+    };
+
+    match finalize_review_result(
+        &run_id,
+        emitter,
         &config.provider,
         &config.model,
         &workspace.workspace_path,
         result,
-    )
+    ) {
+        Ok(finalized) => {
+            emitter.emit_progress(ReviewProgressEvent::new(
+                &run_id,
+                ReviewPhase::Done {
+                    findings: finalized.comments.len(),
+                    suppressed: finalized.suppressed_count,
+                },
+            ));
+            Ok(finalized)
+        }
+        Err(detail) => {
+            emitter.emit_progress(ReviewProgressEvent::new(
+                &run_id,
+                ReviewPhase::Failed {
+                    detail: sanitize_failure_detail(&detail),
+                },
+            ));
+            Err(detail)
+        }
+    }
 }
 
 /// Verifies that an OAuth provider has a usable session before any review work
@@ -483,17 +545,25 @@ fn ensure_provider_session_with(
 }
 
 fn finalize_review_result(
+    run_id: &str,
+    emitter: &dyn ReviewProgressEmitter,
     provider: &str,
     model: &str,
     workspace_path: &Path,
     mut result: ReviewResult,
 ) -> Result<ReviewResult, String> {
+    emitter.emit_progress(ReviewProgressEvent::new(
+        run_id,
+        ReviewPhase::Finalize {
+            status: PhaseStatus::Running,
+        },
+    ));
+
     let mut warnings = Vec::new();
     let review_config =
         config::load_workspace_review_config_with_warnings(workspace_path, &mut warnings);
     result.warnings.extend(warnings);
 
-    let run_id = Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now();
     for comment in &mut result.comments {
         comment.focus = result.focus;
@@ -519,12 +589,12 @@ fn finalize_review_result(
         result.suppressed_count = 0;
     }
 
-    result.run_id = run_id.clone();
+    result.run_id = run_id.to_string();
     result.snr_percent = snr_percent;
     result.user_visible = total_count == 0 || !result.comments.is_empty();
 
     let metrics = analytics::ReviewMetricsRecord::from_comments(
-        run_id.clone(),
+        run_id.to_string(),
         timestamp,
         result.mode.clone(),
         result.focus,
@@ -541,7 +611,7 @@ fn finalize_review_result(
     }
 
     let run_record = outcome::ReviewRunRecord {
-        run_id,
+        run_id: run_id.to_string(),
         timestamp,
         focus: result.focus,
         mode: result.mode.clone(),
@@ -552,6 +622,13 @@ fn finalize_review_result(
             .warnings
             .push(format!("Failed to write review run index: {}", error));
     }
+
+    emitter.emit_progress(ReviewProgressEvent::new(
+        run_id,
+        ReviewPhase::Finalize {
+            status: PhaseStatus::Done,
+        },
+    ));
 
     Ok(result)
 }
@@ -641,6 +718,8 @@ fn load_anti_pattern_store_for_review(
 }
 
 async fn run_full_scan_review(
+    run_id: &str,
+    emitter: &dyn ReviewProgressEmitter,
     provider: &str,
     model: &str,
     api_key: &str,
@@ -670,6 +749,7 @@ async fn run_full_scan_review(
         warnings.push(partial_review_warning(files_scanned, total_files));
     }
 
+    let total_chunks = batches.len();
     let mut candidates = Vec::new();
     let mut failures: Vec<DetectorFailure> = Vec::new();
 
@@ -678,6 +758,17 @@ async fn run_full_scan_review(
 
     for (index, batch) in batches.iter().enumerate() {
         let chunk_number = index + 1;
+        let batch_files: Vec<String> = batch.iter().map(|file| file.path.clone()).collect();
+        emitter.emit_progress(ReviewProgressEvent::new(
+            run_id,
+            ReviewPhase::Detector {
+                chunk: chunk_number,
+                total_chunks,
+                files: batch_files.clone(),
+                candidate_count: candidates.len(),
+                status: ChunkStatus::Running,
+            },
+        ));
         let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
@@ -687,6 +778,16 @@ async fn run_full_scan_review(
                 candidates.extend(filter_rejected_comments(
                     parsed.comments,
                     &anti_pattern_store,
+                ));
+                emitter.emit_progress(ReviewProgressEvent::new(
+                    run_id,
+                    ReviewPhase::Detector {
+                        chunk: chunk_number,
+                        total_chunks,
+                        files: batch_files,
+                        candidate_count: candidates.len(),
+                        status: ChunkStatus::Done,
+                    },
                 ));
             }
             Err(error) => {
@@ -701,6 +802,19 @@ async fn run_full_scan_review(
                     "detector invocation failed"
                 );
                 warnings.push(failure.warning_line("scan batch"));
+                emitter.emit_progress(ReviewProgressEvent::new(
+                    run_id,
+                    ReviewPhase::Detector {
+                        chunk: chunk_number,
+                        total_chunks,
+                        files: batch_files,
+                        candidate_count: candidates.len(),
+                        status: ChunkStatus::Failed {
+                            kind: failure.kind.as_label().to_string(),
+                            detail: failure.detail.clone(),
+                        },
+                    },
+                ));
                 failures.push(failure);
             }
         }
@@ -730,6 +844,8 @@ async fn run_full_scan_review(
     }
 
     let (comments, validated, validator_summary, validator_warnings) = validate_candidates(
+        run_id,
+        emitter,
         provider,
         model,
         api_key,
@@ -754,6 +870,8 @@ async fn run_full_scan_review(
 }
 
 async fn run_diff_review(
+    run_id: &str,
+    emitter: &dyn ReviewProgressEmitter,
     provider: &str,
     model: &str,
     api_key: &str,
@@ -812,6 +930,7 @@ async fn run_diff_review(
         MAX_LINES_PER_INVOCATION,
     );
 
+    let total_chunks = chunks.len();
     let mut candidates = Vec::new();
     let mut failures: Vec<DetectorFailure> = Vec::new();
 
@@ -820,6 +939,17 @@ async fn run_diff_review(
 
     for (index, chunk) in chunks.iter().enumerate() {
         let chunk_number = index + 1;
+        let chunk_files: Vec<String> = chunk.iter().map(|file| file.file.clone()).collect();
+        emitter.emit_progress(ReviewProgressEvent::new(
+            run_id,
+            ReviewPhase::Detector {
+                chunk: chunk_number,
+                total_chunks,
+                files: chunk_files.clone(),
+                candidate_count: candidates.len(),
+                status: ChunkStatus::Running,
+            },
+        ));
         let prompt = detector::build_diff_prompt(&review_context, chunk);
         match detector::run_detector(provider, model, api_key, workspace, &prompt).await {
             Ok(output) => {
@@ -829,6 +959,16 @@ async fn run_diff_review(
                 candidates.extend(filter_rejected_comments(
                     parsed.comments,
                     &anti_pattern_store,
+                ));
+                emitter.emit_progress(ReviewProgressEvent::new(
+                    run_id,
+                    ReviewPhase::Detector {
+                        chunk: chunk_number,
+                        total_chunks,
+                        files: chunk_files,
+                        candidate_count: candidates.len(),
+                        status: ChunkStatus::Done,
+                    },
                 ));
             }
             Err(error) => {
@@ -843,6 +983,19 @@ async fn run_diff_review(
                     "detector invocation failed"
                 );
                 warnings.push(failure.warning_line("diff chunk"));
+                emitter.emit_progress(ReviewProgressEvent::new(
+                    run_id,
+                    ReviewPhase::Detector {
+                        chunk: chunk_number,
+                        total_chunks,
+                        files: chunk_files,
+                        candidate_count: candidates.len(),
+                        status: ChunkStatus::Failed {
+                            kind: failure.kind.as_label().to_string(),
+                            detail: failure.detail.clone(),
+                        },
+                    },
+                ));
                 failures.push(failure);
             }
         }
@@ -872,6 +1025,8 @@ async fn run_diff_review(
     }
 
     let (comments, validated, validator_summary, validator_warnings) = validate_candidates(
+        run_id,
+        emitter,
         provider,
         model,
         api_key,
@@ -896,6 +1051,8 @@ async fn run_diff_review(
 }
 
 async fn validate_candidates(
+    run_id: &str,
+    emitter: &dyn ReviewProgressEmitter,
     provider: &str,
     model: &str,
     api_key: &str,
@@ -905,6 +1062,13 @@ async fn validate_candidates(
     focus: ReviewFocus,
 ) -> Result<(Vec<ReviewComment>, bool, Option<String>, Vec<String>), String> {
     if candidates.is_empty() {
+        emitter.emit_progress(ReviewProgressEvent::new(
+            run_id,
+            ReviewPhase::Validator {
+                candidate_count: 0,
+                status: PhaseStatus::Done,
+            },
+        ));
         return Ok((
             Vec::new(),
             true,
@@ -913,9 +1077,16 @@ async fn validate_candidates(
         ));
     }
 
+    emitter.emit_progress(ReviewProgressEvent::new(
+        run_id,
+        ReviewPhase::Validator {
+            candidate_count: candidates.len(),
+            status: PhaseStatus::Running,
+        },
+    ));
     let prompt = validator::build_validator_prompt(candidates)
         .map_err(|e| format!("Failed to build validator prompt: {}", e))?;
-    match validator::run_validator(provider, model, api_key, workspace, &prompt).await {
+    let result = match validator::run_validator(provider, model, api_key, workspace, &prompt).await {
         Ok(output) => {
             let mut parsed = parse_agent_review_output(&output, "Validator");
             stamp_parsed_comments_focus(&mut parsed, focus);
@@ -937,7 +1108,15 @@ async fn validate_candidates(
             None,
             vec![format!("Validator agent failed: {}", sanitize_failure_detail(&error))],
         )),
-    }
+    };
+    emitter.emit_progress(ReviewProgressEvent::new(
+        run_id,
+        ReviewPhase::Validator {
+            candidate_count: candidates.len(),
+            status: PhaseStatus::Done,
+        },
+    ));
+    result
 }
 
 fn stamp_parsed_comments_focus(parsed: &mut AgentParseResult, focus: ReviewFocus) {
@@ -1796,7 +1975,15 @@ Binary files a/icon.png and b/icon.png differ
             ReviewMode::Local,
         );
 
-        let finalized = finalize_review_result("openai", "model", dir.path(), result).unwrap();
+        let finalized = finalize_review_result(
+            "test-run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            dir.path(),
+            result,
+        )
+        .unwrap();
 
         assert_eq!(finalized.comments.len(), 5);
         assert_eq!(finalized.suppressed_count, 0);
@@ -1817,7 +2004,15 @@ Binary files a/icon.png and b/icon.png differ
             ReviewMode::FullScan,
         );
 
-        let finalized = finalize_review_result("openai", "model", dir.path(), result).unwrap();
+        let finalized = finalize_review_result(
+            "test-run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            dir.path(),
+            result,
+        )
+        .unwrap();
 
         assert!(finalized.comments.is_empty());
         assert_eq!(finalized.suppressed_count, 0);
@@ -1841,7 +2036,15 @@ Binary files a/icon.png and b/icon.png differ
             ReviewMode::Local,
         );
 
-        let finalized = finalize_review_result("openai", "model", dir.path(), result).unwrap();
+        let finalized = finalize_review_result(
+            "test-run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            dir.path(),
+            result,
+        )
+        .unwrap();
 
         assert!(finalized.comments.is_empty());
         assert_eq!(finalized.suppressed_count, 2);
@@ -2054,5 +2257,143 @@ Binary files a/icon.png and b/icon.png differ
             ReviewMode::PullRequest { pr_number } => assert_eq!(pr_number, 7),
             _ => panic!("expected PullRequest mode"),
         }
+    }
+
+    /// Capturing emitter that records every event in order so tests can assert
+    /// the real emission sequence without touching Tauri.
+    #[derive(Default)]
+    struct CapturingEmitter {
+        events: std::sync::Mutex<Vec<ReviewProgressEvent>>,
+    }
+
+    impl ReviewProgressEmitter for CapturingEmitter {
+        fn emit_progress(&self, event: ReviewProgressEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    impl CapturingEmitter {
+        fn phases(&self) -> Vec<ReviewPhase> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|event| event.phase.clone())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn finalize_emits_running_then_done_with_run_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = review_result(
+            vec![tiered_comment(
+                Severity::High,
+                "injection",
+                SignalTier::Tier1,
+            )],
+            "Found 1 validated security finding.".to_string(),
+            true,
+            Vec::new(),
+            1,
+            ReviewFocus::Security,
+            ReviewMode::Local,
+        );
+        let emitter = CapturingEmitter::default();
+
+        let finalized = finalize_review_result(
+            "run-id-abc",
+            &emitter,
+            "openai",
+            "model",
+            dir.path(),
+            result,
+        )
+        .unwrap();
+
+        assert_eq!(finalized.run_id, "run-id-abc");
+
+        let phases = emitter.phases();
+        assert_eq!(phases.len(), 2, "finalize should emit exactly two events");
+        assert!(matches!(
+            phases[0],
+            ReviewPhase::Finalize {
+                status: PhaseStatus::Running
+            }
+        ));
+        assert!(matches!(
+            phases[1],
+            ReviewPhase::Finalize {
+                status: PhaseStatus::Done
+            }
+        ));
+        // Every event carries the same run_id.
+        for event in emitter.events.lock().unwrap().iter() {
+            assert_eq!(event.run_id, "run-id-abc");
+        }
+    }
+
+    #[test]
+    fn noop_emitter_does_not_panic_on_every_phase_variant() {
+        let noop = NoopReviewProgressEmitter;
+        let run_id = "noop-run";
+        for phase in [
+            ReviewPhase::Detector {
+                chunk: 0,
+                total_chunks: 0,
+                files: Vec::new(),
+                candidate_count: 0,
+                status: ChunkStatus::Starting,
+            },
+            ReviewPhase::Detector {
+                chunk: 1,
+                total_chunks: 3,
+                files: vec!["src/a.rs".to_string()],
+                candidate_count: 2,
+                status: ChunkStatus::Failed {
+                    kind: "timeout".to_string(),
+                    detail: "agent timed out".to_string(),
+                },
+            },
+            ReviewPhase::Validator {
+                candidate_count: 2,
+                status: PhaseStatus::Running,
+            },
+            ReviewPhase::Finalize {
+                status: PhaseStatus::Done,
+            },
+            ReviewPhase::Done {
+                findings: 1,
+                suppressed: 1,
+            },
+            ReviewPhase::Failed {
+                detail: "boom".to_string(),
+            },
+        ] {
+            noop.emit_progress(ReviewProgressEvent::new(run_id, phase));
+        }
+    }
+
+    #[test]
+    fn review_progress_event_serializes_phase_type_for_frontend() {
+        // The frontend switches on `event.payload.type`; assert the serde tag
+        // convention matches the SessionTurnEvent pattern.
+        let event = ReviewProgressEvent::new(
+            "run-1",
+            ReviewPhase::Detector {
+                chunk: 2,
+                total_chunks: 5,
+                files: vec!["src/lib.rs".to_string()],
+                candidate_count: 3,
+                status: ChunkStatus::Running,
+            },
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["run_id"], "run-1");
+        assert_eq!(json["phase"]["type"], "detector");
+        assert_eq!(json["phase"]["chunk"], 2);
+        assert_eq!(json["phase"]["totalChunks"], 5);
+        assert_eq!(json["phase"]["candidateCount"], 3);
+        assert_eq!(json["phase"]["status"], "running");
     }
 }
