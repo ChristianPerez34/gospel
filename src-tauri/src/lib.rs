@@ -944,6 +944,21 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
+    fn update_model_selection(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+        variant: Option<&str>,
+    ) -> Result<(), String> {
+        match &self.session_store_state.store {
+            Some(store) => store
+                .update_model_selection(session_id, provider, model, variant)
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
+        }
+    }
+
     fn update_status(&self, session_id: &str, status: &str) -> Result<(), String> {
         match &self.session_store_state.store {
             Some(store) => store
@@ -994,6 +1009,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.provider,
                 request.prompt,
                 request.model,
+                request.variant,
                 request.api_key,
                 request.delegate_provider,
                 request.delegate_model,
@@ -1140,6 +1156,7 @@ async fn complete_streaming(
     provider: String,
     prompt: String,
     model: String,
+    variant: Option<String>,
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
 ) -> Result<(), llm::LlmErrorDto> {
@@ -1170,6 +1187,7 @@ async fn complete_streaming(
             provider,
             prompt,
             model,
+            variant,
             delegate_provider,
             delegate_model,
             delegate_api_key,
@@ -1815,6 +1833,7 @@ fn create_session(
     title: String,
     provider: String,
     model: String,
+    variant: Option<String>,
     workspace_id: String,
     mode: Option<String>,
 ) -> Result<SessionRecord, String> {
@@ -1825,7 +1844,33 @@ fn create_session(
     let mode = mode.unwrap_or_else(|| session_mode::SESSION_MODE_BUILD.to_string());
     match &session_store.store {
         Some(store) => store
-            .create_session_with_mode(&title, &provider, &model, &workspace_id, &mode)
+            .create_session_with_selection(
+                &title,
+                &provider,
+                &model,
+                variant.as_deref(),
+                &workspace_id,
+                &mode,
+            )
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn update_session_model_selection(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+    provider: String,
+    model: String,
+    variant: Option<String>,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => store
+            .update_model_selection(&session_id, &provider, &model, variant.as_deref())
             .map_err(|e| e.to_string()),
         None => Err(session_store
             .init_warning
@@ -2585,6 +2630,7 @@ pub fn run() {
             list_skills,
             reload_skills,
             create_session,
+            update_session_model_selection,
             update_session_mode,
             get_session,
             list_sessions,

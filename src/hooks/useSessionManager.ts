@@ -24,6 +24,7 @@ export interface SessionManagerStreamOptions {
   provider: string;
   prompt: string;
   model: string;
+  variant?: string | null;
   sessionId: string | null;
   invokedSkill?: { name: string; args?: string } | null;
 }
@@ -144,14 +145,14 @@ export function useSessionManager({
 
   const handleSend = useCallback(
     async (message: string, invokedSkill?: { name: string; args?: string }) => {
-      if (
-        !selectedModel ||
-        !models.some(
-          (m) =>
-            m.name === selectedModel.model &&
-            m.provider.toLowerCase() === selectedModel.provider.toLowerCase(),
-        )
-      ) {
+      const selectedParentAvailable = selectedModel
+        ? models.some(
+            (m) =>
+              m.model === selectedModel.model &&
+              m.provider.toLowerCase() === selectedModel.provider.toLowerCase(),
+          )
+        : false;
+      if (!selectedModel || !selectedParentAvailable) {
         onError?.("Select an available model before sending.", {
           label: "Open Settings",
           onClick: () => onOpenSettings?.(),
@@ -185,6 +186,7 @@ export function useSessionManager({
               title,
               provider: selectedModel.provider,
               model: selectedModel.model,
+              variant: selectedModel.variant ?? null,
               workspaceId: activeWorkspaceId,
               mode,
             });
@@ -199,6 +201,7 @@ export function useSessionManager({
           title,
           provider: selectedModel.provider,
           model: selectedModel.model,
+          variant: selectedModel.variant ?? null,
           mode,
           timestamp: new Date(),
           messages: [userMsg],
@@ -216,6 +219,7 @@ export function useSessionManager({
           provider: selectedModel.provider,
           prompt: message,
           model: selectedModel.model,
+          variant: selectedModel.variant ?? null,
           sessionId: effectiveSessionId,
           invokedSkill: invokedSkill ?? null,
         });

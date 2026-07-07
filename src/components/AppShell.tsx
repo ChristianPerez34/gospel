@@ -30,6 +30,7 @@ interface BackendSessionRecord {
   title: string;
   provider: string;
   model: string;
+  variant?: string | null;
   status: string;
   mode?: string | null;
   workspace_id: string | null;
@@ -153,6 +154,7 @@ export function AppShell() {
       title: session.title,
       provider: session.provider,
       model: session.model,
+      variant: session.variant ?? null,
       mode: normalizeSessionMode(session.mode),
       timestamp: new Date(session.updated_at),
       messages: [],
@@ -168,6 +170,7 @@ export function AppShell() {
       title: session.title,
       provider: session.provider,
       model: session.model,
+      variant: session.variant ?? null,
       mode: normalizeSessionMode(session.mode),
       timestamp: new Date(session.archived_at),
       messages: [],
@@ -484,12 +487,116 @@ export function AppShell() {
   }, [activeWorkspace?.id, reloadArchiveData, showError, showSuccess]);
 
   const activeSession = session.sessions.find((s) => s.id === session.activeSessionId);
+  const activeSessionId = activeSession?.id;
+  const activeSessionProvider = activeSession?.provider;
+  const activeSessionModel = activeSession?.model;
+  const activeSessionVariant = activeSession?.variant ?? null;
   const sessionTitle = activeSession?.title || "New session";
   const selectedModelId = selectedModel ? modelOptionId(selectedModel.provider, selectedModel.model) : "";
-  const currentModelName = selectedModel?.model || "No model";
+  const currentModelName = models.find(
+    (model) =>
+      selectedModel &&
+      model.model === selectedModel.model &&
+      model.provider.toLowerCase() === selectedModel.provider.toLowerCase(),
+  )?.name || selectedModel?.model || "No model";
   const noModels = noModelCopy(availabilitySnapshot);
   const surfaceTrapOpen = trappedSurface !== null;
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
+
+  useEffect(() => {
+    if (!activeSessionId || !activeSessionProvider || !activeSessionModel) return;
+    setSelectedModel({
+      provider: activeSessionProvider,
+      model: activeSessionModel,
+      variant: activeSessionVariant,
+    });
+  }, [activeSessionId, activeSessionProvider, activeSessionModel, activeSessionVariant, setSelectedModel]);
+
+  const applyModelSelection = useCallback((modelId: string) => {
+    const match = models.find((m) => m.id === modelId);
+    if (!match) return;
+    const next = {
+      provider: match.provider,
+      model: match.model,
+      variant: null,
+    };
+    setSelectedModel(next);
+
+    if (!activeSession || session.isStreaming) return;
+
+    const previous = {
+      provider: activeSession.provider,
+      model: activeSession.model,
+      variant: activeSession.variant ?? null,
+    };
+    setSessions((prev) =>
+      prev.map((item) =>
+        item.id === activeSession.id
+          ? { ...item, provider: next.provider, model: next.model, variant: next.variant }
+          : item,
+      ),
+    );
+
+    if (!activeSession.backendCreated) return;
+
+    void invoke("update_session_model_selection", {
+      sessionId: activeSession.id,
+      provider: next.provider,
+      model: next.model,
+      variant: next.variant,
+    }).catch((error) => {
+      setSessions((prev) =>
+        prev.map((item) =>
+          item.id === activeSession.id
+            ? { ...item, provider: previous.provider, model: previous.model, variant: previous.variant }
+            : item,
+        ),
+      );
+      setSelectedModel(previous);
+      showError(`Failed to update session model: ${error}`);
+    });
+  }, [activeSession, models, session.isStreaming, setSelectedModel, showError]);
+
+  const applyVariantSelection = useCallback((variant: string | null) => {
+    if (!selectedModel) return;
+    const next = { ...selectedModel, variant };
+    const previousSelection = selectedModel;
+    setSelectedModel(next);
+
+    if (!activeSession || session.isStreaming) return;
+
+    const previous = {
+      provider: activeSession.provider,
+      model: activeSession.model,
+      variant: activeSession.variant ?? null,
+    };
+    setSessions((prev) =>
+      prev.map((item) =>
+        item.id === activeSession.id
+          ? { ...item, variant }
+          : item,
+      ),
+    );
+
+    if (!activeSession.backendCreated) return;
+
+    void invoke("update_session_model_selection", {
+      sessionId: activeSession.id,
+      provider: selectedModel.provider,
+      model: selectedModel.model,
+      variant,
+    }).catch((error) => {
+      setSessions((prev) =>
+        prev.map((item) =>
+          item.id === activeSession.id
+            ? { ...item, provider: previous.provider, model: previous.model, variant: previous.variant }
+            : item,
+        ),
+      );
+      setSelectedModel(previousSelection);
+      showError(`Failed to update session model: ${error}`);
+    });
+  }, [activeSession, selectedModel, session.isStreaming, setSelectedModel, showError]);
 
   const closeSessionDrawer = useCallback(() => {
     setSessionDrawerOpen(false);
@@ -577,10 +684,9 @@ export function AppShell() {
             <InputBar
               models={models}
               selectedModel={selectedModelId}
-              onModelChange={(modelId) => {
-                const match = models.find((m) => m.id === modelId);
-                if (match) setSelectedModel({ provider: match.provider, model: match.name });
-              }}
+              selectedVariant={selectedModel?.variant ?? null}
+              onModelChange={applyModelSelection}
+              onVariantChange={applyVariantSelection}
               onSend={session.handleSend}
               disabled={session.isStreaming || models.length === 0}
               unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
@@ -700,6 +806,7 @@ export function AppShell() {
         workspace={activeWorkspace}
         models={models}
         selectedModelId={selectedModelId}
+        selectedVariant={selectedModel?.variant ?? null}
         workspaceNames={workspaceNames}
         onClose={() => setCommandPaletteOpen(false)}
         onSelectSession={(s) => {
@@ -715,9 +822,9 @@ export function AppShell() {
         onToggleSessions={toggleSessionDrawer}
         onToggleReview={toggleReviewPanel}
         onSelectModel={(modelId) => {
-          const match = models.find((m) => m.id === modelId);
-          if (match) setSelectedModel({ provider: match.provider, model: match.name });
+          applyModelSelection(modelId);
         }}
+        onVariantChange={applyVariantSelection}
         restoreFocusRef={commandPaletteRestoreRef}
       />
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

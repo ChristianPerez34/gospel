@@ -277,6 +277,13 @@ pub enum StreamEvent {
         tool_name: String,
         message: String,
     },
+    ModelVariantWarning {
+        kind: String,
+        provider: String,
+        model: String,
+        variant: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -807,6 +814,7 @@ pub async fn stream_completion<F>(
     provider: &str,
     prompt: &str,
     model: &str,
+    variant: Option<&str>,
     api_key: &str,
     delegate_provider: &str,
     delegate_model: &str,
@@ -823,6 +831,16 @@ where
     F: FnMut(StreamEvent),
 {
     validate_api_key(provider, api_key)?;
+    let variant_resolution = ModelRegistry::resolve_model_variant(provider, model, variant);
+    if let Some(warning) = variant_resolution.warning.clone() {
+        on_event(StreamEvent::ModelVariantWarning {
+            kind: warning.kind,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            variant: warning.variant,
+            message: warning.message,
+        });
+    }
 
     let mut full_response = String::new();
     let mut tool_calls = 0usize;
@@ -836,7 +854,10 @@ where
 
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
-            let builder = $client.agent($model).default_max_turns(AGENT_MAX_TURNS);
+            let mut builder = $client.agent($model).default_max_turns(AGENT_MAX_TURNS);
+            if let Some(additional_params) = variant_resolution.additional_params.clone() {
+                builder = builder.additional_params(additional_params);
+            }
             let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true, matched_skills_section.clone(), invoked_skill_section.clone(), true) {
                 builder.preamble(&preamble)
             } else {
@@ -1142,6 +1163,7 @@ mod tests {
             "openai",
             "hello",
             "gpt-4o-mini",
+            None,
             "",
             "openai",
             "gpt-4o-mini",

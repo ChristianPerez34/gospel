@@ -242,6 +242,7 @@ export interface Session {
   title: string;
   provider: string;
   model: string;
+  variant?: string | null;
   mode?: SessionMode;
   timestamp: Date;
   messages: Message[];
@@ -355,11 +356,24 @@ export interface Workspace {
   sessionCount: number;
 }
 
+export interface AvailableModelVariant {
+  id: string;
+  name: string;
+  description: string;
+  deprecated?: boolean;
+}
+
 export interface ModelOption {
   id: string;
   name: string;
   provider: string;
+  model: string;
+  variant?: string | null;
+  variantName?: string;
+  description?: string;
+  deprecated?: boolean;
   configured?: boolean;
+  variants?: AvailableModelVariant[];
 }
 
 export interface ProviderStatus {
@@ -367,8 +381,9 @@ export interface ProviderStatus {
   configured: boolean;
 }
 
-export function modelOptionId(provider: string, model: string): string {
-  return `${provider.toLowerCase()}::${model}`;
+export function modelOptionId(provider: string, model: string, variant?: string | null): string {
+  const base = `${provider.toLowerCase()}::${model}`;
+  return variant ? `${base}::${variant}` : base;
 }
 
 export function normalizeSessionMode(mode?: string | null): SessionMode {

@@ -71,10 +71,7 @@ async fn fetch_openai_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Strin
         .data
         .into_iter()
         .filter(|m| should_include_completion_model(&m.id))
-        .map(|m| ModelInfo {
-            model: m.id,
-            provider: "openai".to_string(),
-        })
+        .map(|m| ModelRegistry::model_info("openai", &m.id))
         .collect();
 
     tracing::info!(
@@ -96,10 +93,7 @@ async fn fetch_anthropic_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, St
     let models: Vec<ModelInfo> = list
         .data
         .into_iter()
-        .map(|m| ModelInfo {
-            model: m.id,
-            provider: "anthropic".to_string(),
-        })
+        .map(|m| ModelRegistry::model_info("anthropic", &m.id))
         .collect();
 
     tracing::info!("Fetched {} models from Anthropic", models.len());
@@ -117,10 +111,7 @@ async fn fetch_gemini_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Strin
     let models: Vec<ModelInfo> = list
         .data
         .into_iter()
-        .map(|m| ModelInfo {
-            model: m.id,
-            provider: "gemini".to_string(),
-        })
+        .map(|m| ModelRegistry::model_info("gemini", &m.id))
         .collect();
 
     tracing::info!("Fetched {} models from Gemini", models.len());
@@ -138,10 +129,7 @@ async fn fetch_mistral_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Stri
     let models: Vec<ModelInfo> = list
         .data
         .into_iter()
-        .map(|m| ModelInfo {
-            model: m.id,
-            provider: "mistral".to_string(),
-        })
+        .map(|m| ModelRegistry::model_info("mistral", &m.id))
         .collect();
 
     tracing::info!("Fetched {} models from Mistral", models.len());
@@ -168,10 +156,7 @@ async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
         .data
         .into_iter()
         .filter(|m| ModelRegistry::is_github_copilot_tool_capable_model(&m.id))
-        .map(|m| ModelInfo {
-            model: m.id,
-            provider: "github_copilot".to_string(),
-        })
+        .map(|m| ModelRegistry::model_info("github_copilot", &m.id))
         .collect();
 
     tracing::info!(
@@ -242,10 +227,7 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
                 if !models.iter().any(|existing| existing.model == slug)
                     && ModelRegistry::is_chatgpt_subscription_model(slug)
                 {
-                    models.push(ModelInfo {
-                        model: slug.to_string(),
-                        provider: "chatgpt".to_string(),
-                    });
+                    models.push(ModelRegistry::model_info("chatgpt", slug));
                 }
             }
         }

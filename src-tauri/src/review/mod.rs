@@ -14,8 +14,8 @@ pub use progress::{
     ReviewProgressEvent, ToolEventKind,
 };
 
-use crate::llm::WorkspaceToolContext;
 use crate::keychain;
+use crate::llm::WorkspaceToolContext;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::workspace_tools::build_base_workspace_tools;
@@ -1097,8 +1097,7 @@ async fn run_diff_review(
     }
 
     if !failures.is_empty() && failures.len() == chunks.len() {
-        let message =
-            all_detector_failures_error(provider, model, &mode, "diff chunk", &failures);
+        let message = all_detector_failures_error(provider, model, &mode, "diff chunk", &failures);
         tracing::error!(
             provider = provider,
             model = model,
@@ -1181,7 +1180,8 @@ async fn validate_candidates(
     ));
     let prompt = validator::build_validator_prompt(candidates)
         .map_err(|e| format!("Failed to build validator prompt: {}", e))?;
-    let result = match validator::run_validator(provider, model, api_key, workspace, &prompt).await {
+    let result = match validator::run_validator(provider, model, api_key, workspace, &prompt).await
+    {
         Ok(output) => {
             let mut parsed = parse_agent_review_output(&output, "Validator");
             stamp_parsed_comments_focus(&mut parsed, focus);
@@ -1201,7 +1201,10 @@ async fn validate_candidates(
             candidates.to_vec(),
             false,
             None,
-            vec![format!("Validator agent failed: {}", sanitize_failure_detail(&error))],
+            vec![format!(
+                "Validator agent failed: {}",
+                sanitize_failure_detail(&error)
+            )],
         )),
     };
     emitter.emit_progress(ReviewProgressEvent::new(
@@ -1832,8 +1835,7 @@ pub(crate) async fn run_workspace_agent(
                 .stream_prompt(config.prompt)
                 .multi_turn(config.max_turns)
                 .await;
-            consume_agent_stream(stream, config.timeout, config.on_tool_event)
-                .await
+            consume_agent_stream(stream, config.timeout, config.on_tool_event).await
         }};
     }
 
@@ -2459,9 +2461,7 @@ Binary files a/icon.png and b/icon.png differ
         }
 
         assert!(ensure_provider_session_with("chatgpt", always_authenticated).is_ok());
-        assert!(
-            ensure_provider_session_with("github_copilot", always_authenticated).is_ok()
-        );
+        assert!(ensure_provider_session_with("github_copilot", always_authenticated).is_ok());
     }
 
     #[test]
@@ -2482,11 +2482,9 @@ Binary files a/icon.png and b/icon.png differ
             12,
         );
 
-        let content =
-            fs::read_to_string(dir.path().join(".gospel/review_failures.jsonl")).unwrap();
+        let content = fs::read_to_string(dir.path().join(".gospel/review_failures.jsonl")).unwrap();
         assert_eq!(content.lines().count(), 1);
-        let record: analytics::ReviewFailureRecord =
-            serde_json::from_str(content.trim()).unwrap();
+        let record: analytics::ReviewFailureRecord = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(record.provider, "chatgpt");
         assert_eq!(record.model, "gpt-5.5");
         assert_eq!(record.files_scanned, 12);

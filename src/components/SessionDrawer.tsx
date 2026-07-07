@@ -108,9 +108,10 @@ export function SessionDrawer({
   );
   const filteredSessions = visibleSessions.filter((session) => {
     const normalizedSearch = search.toLowerCase();
+    const modelLabel = session.variant ? `${session.model} ${session.variant}` : session.model;
     const matchesSearch =
       session.title.toLowerCase().includes(normalizedSearch) ||
-      session.model.toLowerCase().includes(normalizedSearch);
+      modelLabel.toLowerCase().includes(normalizedSearch);
     const matchesWorkspace =
       workspaceFilter === "all" || session.workspaceId === workspaceFilter;
     const rangeDays = dateRangeFilter === "all" ? null : Number(dateRangeFilter);
@@ -436,7 +437,7 @@ export function SessionDrawer({
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-caption text-text-muted">
-                          {session.model}
+                          {session.variant ? `${session.model} · ${session.variant}` : session.model}
                         </span>
                         {session.mode === "ReadOnly" && (
                           <span className="session-readonly-badge">
