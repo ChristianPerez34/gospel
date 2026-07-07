@@ -1,4 +1,5 @@
 use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent, WorkspaceToolContext};
+use crate::models::ModelRegistry;
 use crate::session_mode::SESSION_MODE_BUILD;
 use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
@@ -24,6 +25,7 @@ pub struct StreamingTurnRequest {
     pub provider: String,
     pub prompt: String,
     pub model: String,
+    pub variant: Option<String>,
     pub session_id: Option<String>,
     pub invoked_skill: Option<InvokedSkillRequest>,
     pub delegate_provider: String,
@@ -81,6 +83,14 @@ pub trait SessionTurnSessions: Send + Sync {
         model_history: Option<&str>,
     ) -> Result<(), String>;
 
+    fn update_model_selection(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+        variant: Option<&str>,
+    ) -> Result<(), String>;
+
     fn update_status(&self, session_id: &str, status: &str) -> Result<(), String>;
 }
 
@@ -103,6 +113,7 @@ pub struct SessionTurnStreamRequest<'a> {
     pub provider: &'a str,
     pub prompt: &'a str,
     pub model: &'a str,
+    pub variant: Option<&'a str>,
     pub api_key: &'a str,
     pub delegate_provider: &'a str,
     pub delegate_model: &'a str,
@@ -187,6 +198,21 @@ pub async fn run_streaming_turn(
     if let Some(context) = workspace_context.as_mut() {
         context.session_mode = session_mode;
     }
+    let resolved_model_variant = ModelRegistry::resolve_model_variant(
+        &request.provider,
+        &request.model,
+        request.variant.as_deref(),
+    );
+    if let Some(sid) = request.session_id.as_deref() {
+        deps.sessions
+            .update_model_selection(
+                sid,
+                &request.provider,
+                &request.model,
+                resolved_model_variant.variant.as_deref(),
+            )
+            .map_err(|e| LlmError::ProviderError(e).to_dto())?;
+    }
 
     let chat_history = deps
         .conversation
@@ -220,6 +246,7 @@ pub async fn run_streaming_turn(
                 provider: &request.provider,
                 prompt: &prompt_preparation.effective_prompt,
                 model: &request.model,
+                variant: request.variant.as_deref(),
                 api_key: &api_key,
                 delegate_provider: &request.delegate_provider,
                 delegate_model: &request.delegate_model,
@@ -642,6 +669,13 @@ pub enum SessionTurnEvent {
         tool_name: String,
         message: String,
     },
+    ModelVariantWarning {
+        kind: String,
+        provider: String,
+        model: String,
+        variant: String,
+        message: String,
+    },
 }
 
 impl From<StreamEvent> for SessionTurnEvent {
@@ -670,6 +704,19 @@ impl From<StreamEvent> for SessionTurnEvent {
             } => SessionTurnEvent::LoopStopped {
                 count,
                 tool_name,
+                message,
+            },
+            StreamEvent::ModelVariantWarning {
+                kind,
+                provider,
+                model,
+                variant,
+                message,
+            } => SessionTurnEvent::ModelVariantWarning {
+                kind,
+                provider,
+                model,
+                variant,
                 message,
             },
         }
@@ -716,6 +763,22 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
             name: "llm-loop-stopped",
             payload: json!({ "count": count, "toolName": tool_name, "message": message }),
         },
+        SessionTurnEvent::ModelVariantWarning {
+            kind,
+            provider,
+            model,
+            variant,
+            message,
+        } => UiEventPayload {
+            name: "llm-model-variant-warning",
+            payload: json!({
+                "kind": kind,
+                "provider": provider,
+                "model": model,
+                "variant": variant,
+                "message": message
+            }),
+        },
     }
 }
 
@@ -756,6 +819,12 @@ pub fn trace_event_for_session_turn_event(
             role: role.to_string(),
             reason: message.clone(),
             count: *count,
+            timestamp,
+        }),
+        SessionTurnEvent::ModelVariantWarning { message, .. } => Some(trace::TraceEvent::Warning {
+            session_id: session_id.to_string(),
+            role: role.to_string(),
+            message: message.clone(),
             timestamp,
         }),
     }
@@ -1097,6 +1166,7 @@ mod tests {
         provider: String,
         prompt: String,
         model: String,
+        variant: Option<String>,
         api_key: String,
         delegate_provider: String,
         delegate_model: String,
@@ -1125,6 +1195,7 @@ mod tests {
         skills: Vec<Skill>,
         stream_result: Mutex<Option<Result<StreamCompletionResult, LlmError>>>,
         stream_requests: Mutex<Vec<CapturedStreamRequest>>,
+        model_updates: Mutex<Vec<(String, String, String, Option<String>)>>,
         stream_events: Mutex<Vec<(String, String, SessionTurnEvent)>>,
         done_traces: Mutex<Vec<(String, String, usize, usize, usize, usize)>>,
         error_traces: Mutex<Vec<(String, String, String)>>,
@@ -1155,6 +1226,7 @@ mod tests {
                 skills: Vec::new(),
                 stream_result: Mutex::new(Some(result)),
                 stream_requests: Mutex::new(Vec::new()),
+                model_updates: Mutex::new(Vec::new()),
                 stream_events: Mutex::new(Vec::new()),
                 done_traces: Mutex::new(Vec::new()),
                 error_traces: Mutex::new(Vec::new()),
@@ -1244,6 +1316,22 @@ mod tests {
             Ok(())
         }
 
+        fn update_model_selection(
+            &self,
+            session_id: &str,
+            provider: &str,
+            model: &str,
+            variant: Option<&str>,
+        ) -> Result<(), String> {
+            self.model_updates.lock().unwrap().push((
+                session_id.to_string(),
+                provider.to_string(),
+                model.to_string(),
+                variant.map(str::to_string),
+            ));
+            Ok(())
+        }
+
         fn update_status(&self, session_id: &str, status: &str) -> Result<(), String> {
             self.statuses
                 .lock()
@@ -1285,6 +1373,7 @@ mod tests {
                     provider: request.provider.to_string(),
                     prompt: request.prompt.to_string(),
                     model: request.model.to_string(),
+                    variant: request.variant.map(str::to_string),
                     api_key: request.api_key.to_string(),
                     delegate_provider: request.delegate_provider.to_string(),
                     delegate_model: request.delegate_model.to_string(),
@@ -1926,6 +2015,7 @@ mod tests {
                 provider: "openai".to_string(),
                 prompt: "write code".to_string(),
                 model: "gpt-test".to_string(),
+                variant: Some("reasoning-high".to_string()),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
                 delegate_provider: "openai".to_string(),
@@ -1941,6 +2031,12 @@ mod tests {
         assert_eq!(
             *adapters.validated_bindings.lock().unwrap(),
             vec![("session-1".to_string(), Some("workspace-1".to_string()))]
+        );
+        assert_eq!(
+            adapters.stream_requests.lock().unwrap()[0]
+                .variant
+                .as_deref(),
+            Some("reasoning-high")
         );
 
         let stream_requests = adapters.stream_requests.lock().unwrap();
@@ -2035,6 +2131,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streaming_turn_persists_resolved_default_when_variant_falls_back() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+            full_response: "done".to_string(),
+            history: None,
+            source_edit_succeeded: false,
+            prompt_tokens: 1,
+            response_tokens: 1,
+            tool_calls: 0,
+        }));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            StreamingTurnRequest {
+                provider: "openai".to_string(),
+                prompt: "hello".to_string(),
+                model: "gpt-5.2".to_string(),
+                variant: Some("missing-variant".to_string()),
+                session_id: Some("session-1".to_string()),
+                invoked_skill: None,
+                delegate_provider: "openai".to_string(),
+                delegate_model: "gpt-4o-mini".to_string(),
+                delegate_api_key: "api-key".to_string(),
+            },
+        )
+        .await;
+
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        assert_eq!(
+            adapters.stream_requests.lock().unwrap()[0]
+                .variant
+                .as_deref(),
+            Some("missing-variant")
+        );
+        assert_eq!(
+            *adapters.model_updates.lock().unwrap(),
+            vec![(
+                "session-1".to_string(),
+                "openai".to_string(),
+                "gpt-5.2".to_string(),
+                None,
+            )]
+        );
+    }
+
+    #[tokio::test]
     async fn streaming_turn_passes_read_only_session_mode_to_workspace_tools() {
         let history = vec![user_message("inspect"), assistant_message("Done.")];
         let mut adapters =
@@ -2054,6 +2198,7 @@ mod tests {
                 provider: "openai".to_string(),
                 prompt: "inspect".to_string(),
                 model: "gpt-test".to_string(),
+                variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
                 delegate_provider: "openai".to_string(),
@@ -2094,6 +2239,7 @@ mod tests {
                 provider: "openai".to_string(),
                 prompt: "edit it".to_string(),
                 model: "gpt-test".to_string(),
+                variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
                 delegate_provider: "openai".to_string(),
@@ -2132,6 +2278,7 @@ mod tests {
                 provider: "openai".to_string(),
                 prompt: "edit it".to_string(),
                 model: "gpt-test".to_string(),
+                variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
                 delegate_provider: "openai".to_string(),
@@ -2163,6 +2310,7 @@ mod tests {
                 provider: "openai".to_string(),
                 prompt: "hi".to_string(),
                 model: "gpt-test".to_string(),
+                variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
                 delegate_provider: "openai".to_string(),

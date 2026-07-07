@@ -13,8 +13,8 @@ interface CapturedListeners {
 }
 
 const SAMPLE_MODELS: ModelOption[] = [
-  { id: "openai::gpt-4o", name: "gpt-4o", provider: "openai", configured: true },
-  { id: "anthropic::claude-3-5-sonnet", name: "claude-3-5-sonnet", provider: "anthropic", configured: true },
+  { id: "openai::gpt-4o", name: "gpt-4o", provider: "openai", model: "gpt-4o", configured: true },
+  { id: "anthropic::claude-3-5-sonnet", name: "claude-3-5-sonnet", provider: "anthropic", model: "claude-3-5-sonnet", configured: true },
 ];
 
 let capturedListeners: CapturedListeners = {};
@@ -128,6 +128,7 @@ describe("useSessionManager", () => {
         title: "hello",
         provider: "openai",
         model: "gpt-4o",
+        variant: null,
         workspaceId: "ws-active",
         mode: "Build",
       });
@@ -161,6 +162,7 @@ describe("useSessionManager", () => {
         title: "inspect only",
         provider: "openai",
         model: "gpt-4o",
+        variant: null,
         workspaceId: "ws-active",
         mode: "ReadOnly",
       });
@@ -464,10 +466,117 @@ describe("useSessionManager", () => {
         expect.objectContaining({
           provider: "openai",
           model: "gpt-4o",
+          variant: null,
           prompt: "hello world",
           sessionId: result.current.activeSessionId,
         }),
       );
+    });
+
+    it("sends the selected variant for same-slug model variants", async () => {
+      const variantModels: ModelOption[] = [
+        {
+          id: "openai::gpt-5.2",
+          name: "gpt-5.2",
+          provider: "openai",
+          model: "gpt-5.2",
+          variant: null,
+          configured: true,
+          variants: [
+            {
+              id: "reasoning-high",
+              name: "High reasoning",
+              description: "More test-time reasoning",
+            },
+          ],
+        },
+      ];
+      const { result } = renderSessionManager({
+        models: variantModels,
+        selectedModel: {
+          provider: "openai",
+          model: "gpt-5.2",
+          variant: "reasoning-high",
+        },
+      });
+
+      await act(async () => {
+        await result.current.handleSend("think hard");
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({
+          provider: "openai",
+          model: "gpt-5.2",
+          variant: "reasoning-high",
+          prompt: "think hard",
+          sessionId: result.current.activeSessionId,
+        }),
+      );
+      expect(result.current.sessions[0]).toMatchObject({
+        provider: "openai",
+        model: "gpt-5.2",
+        variant: "reasoning-high",
+      });
+    });
+
+    it("clears a missing model variant warning from the active session", async () => {
+      const onModelVariantFallback = vi.fn();
+      const variantModels: ModelOption[] = [
+        {
+          id: "openai::gpt-5.2",
+          name: "gpt-5.2",
+          provider: "openai",
+          model: "gpt-5.2",
+          configured: true,
+          variants: [
+            {
+              id: "reasoning-high",
+              name: "High reasoning",
+              description: "More test-time reasoning",
+            },
+          ],
+        },
+      ];
+      const { result } = renderSessionManager({
+        models: variantModels,
+        selectedModel: {
+          provider: "openai",
+          model: "gpt-5.2",
+          variant: "missing-variant",
+        },
+        onModelVariantFallback,
+      });
+
+      await act(async () => {
+        await result.current.handleSend("think hard");
+      });
+
+      expect(result.current.sessions[0]).toMatchObject({
+        provider: "openai",
+        model: "gpt-5.2",
+        variant: "missing-variant",
+      });
+
+      act(() => {
+        triggerEvent("llm-model-variant-warning", {
+          kind: "missing",
+          provider: "openai",
+          model: "gpt-5.2",
+          variant: "missing-variant",
+          message: "using Default",
+        });
+      });
+
+      expect(onModelVariantFallback).toHaveBeenCalledWith({
+        kind: "missing",
+        provider: "openai",
+        model: "gpt-5.2",
+        variant: "missing-variant",
+        message: "using Default",
+      });
+      expect(result.current.sessions[0]!.variant).toBeNull();
     });
 
     it("invokes onError and does not call startStream when no model is selected", async () => {

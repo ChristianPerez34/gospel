@@ -264,18 +264,17 @@ fn parse_skill_file(
             return Ok(None);
         }
         Err(e) => {
-            tracing::warn!(
-                "Failed to read {}: {}",
-                skill_md_path.display(),
-                e
-            );
+            tracing::warn!("Failed to read {}: {}", skill_md_path.display(), e);
             return Ok(None);
         }
     };
 
     let content = normalize_crlf(&raw);
 
-    let content = content.strip_prefix("---\n").or_else(|| content.strip_prefix("---\r\n")).unwrap_or(content.as_str());
+    let content = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))
+        .unwrap_or(content.as_str());
     let parts: Vec<&str> = content.splitn(2, "\n---\n").collect();
     if parts.len() < 2 {
         tracing::warn!(
@@ -287,21 +286,14 @@ fn parse_skill_file(
 
     let frontmatter_str = parts[0].trim();
     if frontmatter_str.is_empty() {
-        tracing::warn!(
-            "Empty frontmatter in {}",
-            skill_md_path.display()
-        );
+        tracing::warn!("Empty frontmatter in {}", skill_md_path.display());
         return Ok(None);
     }
 
     let frontmatter: SkillFrontmatter = match serde_yaml::from_str(frontmatter_str) {
         Ok(fm) => fm,
         Err(e) => {
-            tracing::warn!(
-                "YAML parse error in {}: {}",
-                skill_md_path.display(),
-                e
-            );
+            tracing::warn!("YAML parse error in {}: {}", skill_md_path.display(), e);
             return Ok(None);
         }
     };
@@ -324,11 +316,7 @@ fn parse_skill_file(
     let canonical_body_path = match fs::canonicalize(&skill_md_path) {
         Ok(path) => path,
         Err(e) => {
-            tracing::warn!(
-                "Failed to canonicalize {}: {}",
-                skill_md_path.display(),
-                e
-            );
+            tracing::warn!("Failed to canonicalize {}: {}", skill_md_path.display(), e);
             return Ok(None);
         }
     };
@@ -387,7 +375,10 @@ fn discover_scripts(skill_dir: &Path) -> Vec<String> {
     scripts
 }
 
-pub fn discover_skills(workspace_path: Option<&Path>, global_skills_dir: Option<&Path>) -> Vec<Skill> {
+pub fn discover_skills(
+    workspace_path: Option<&Path>,
+    global_skills_dir: Option<&Path>,
+) -> Vec<Skill> {
     let mut skills = Vec::new();
     let mut seen_names: Vec<String> = Vec::new();
 
@@ -441,7 +432,10 @@ fn discover_skills_in_dir(skills_dir: &Path, source: SkillSource) -> Result<Vec<
     let entries = match fs::read_dir(skills_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            tracing::warn!("Permission denied reading skills dir: {}", skills_dir.display());
+            tracing::warn!(
+                "Permission denied reading skills dir: {}",
+                skills_dir.display()
+            );
             return Ok(Vec::new());
         }
         Err(e) => return Err(format!("Failed to read skills dir: {}", e)),
@@ -562,7 +556,10 @@ fn token_overlap_score(query_tokens: &[String], skill_tokens: &[String]) -> f64 
     }
 
     let skill_set: std::collections::HashSet<&String> = skill_tokens.iter().collect();
-    let matched = query_tokens.iter().filter(|t| skill_set.contains(t)).count();
+    let matched = query_tokens
+        .iter()
+        .filter(|t| skill_set.contains(t))
+        .count();
 
     matched as f64 / query_tokens.len() as f64
 }
@@ -616,10 +613,7 @@ pub fn format_skills_preamble_section(matches: &[SkillMatch]) -> Option<String> 
 
     let mut section = String::from("## Active Skills\n\n");
     for m in matches {
-        section.push_str(&format!(
-            "- **{}**: {}",
-            m.skill.name, m.skill.description
-        ));
+        section.push_str(&format!("- **{}**: {}", m.skill.name, m.skill.description));
         section.push('\n');
     }
 
@@ -627,10 +621,7 @@ pub fn format_skills_preamble_section(matches: &[SkillMatch]) -> Option<String> 
 }
 
 pub fn format_invoked_skill_preamble(skill: &Skill) -> String {
-    format!(
-        "## Invoked Skill: {}\n\n{}",
-        skill.name, skill.body
-    )
+    format!("## Invoked Skill: {}\n\n{}", skill.name, skill.body)
 }
 
 const DEFAULT_SCRIPT_TIMEOUT: u64 = 30;
@@ -652,7 +643,11 @@ fn detect_interpreter(script_path: &Path) -> Result<String, String> {
 
     let first_line = content.lines().next().unwrap_or("");
     if first_line.starts_with("#!") {
-        let shebang = first_line.strip_prefix("#!").unwrap_or("").trim().to_string();
+        let shebang = first_line
+            .strip_prefix("#!")
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if !shebang.is_empty() {
             let tokens: Vec<&str> = shebang.split_whitespace().collect();
             let interpreter = if tokens[0].ends_with("/env") || tokens[0] == "env" {
@@ -833,7 +828,13 @@ mod tests {
     fn discovers_workspace_skills() {
         let dir = tempdir().unwrap();
         let skills_dir = dir.path().join(".agents").join("skills");
-        write_skill(&skills_dir, "tdd", "tdd", "Test driven development", "# TDD");
+        write_skill(
+            &skills_dir,
+            "tdd",
+            "tdd",
+            "Test driven development",
+            "# TDD",
+        );
         write_skill(
             &skills_dir,
             "diagnose",
@@ -871,13 +872,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let global = tempdir().unwrap();
         let ws_skills = workspace.path().join(".agents").join("skills");
-        write_skill(
-            &ws_skills,
-            "shared",
-            "shared",
-            "Workspace version",
-            "# WS",
-        );
+        write_skill(&ws_skills, "shared", "shared", "Workspace version", "# WS");
         write_skill(global.path(), "shared", "shared", "Global version", "# GL");
 
         let skills = discover_skills(Some(workspace.path()), Some(global.path()));
@@ -1026,8 +1021,16 @@ mod tests {
             "---\nname: with-scripts\ndescription: Has scripts\n---\n\nbody",
         )
         .unwrap();
-        fs::write(skill_dir.join("scripts").join("load-context"), "#!/bin/bash\necho hi").unwrap();
-        fs::write(skill_dir.join("scripts").join("run.sh"), "#!/bin/bash\necho run").unwrap();
+        fs::write(
+            skill_dir.join("scripts").join("load-context"),
+            "#!/bin/bash\necho hi",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("scripts").join("run.sh"),
+            "#!/bin/bash\necho run",
+        )
+        .unwrap();
 
         let skills = discover_skills(Some(dir.path()), None);
         assert_eq!(skills.len(), 1);
@@ -1068,7 +1071,10 @@ mod tests {
         assert_eq!(s.argument_hint.as_deref(), Some("[foo] [bar]"));
         assert!(!s.user_invocable);
         assert!(s.disable_model_invocation);
-        assert_eq!(s.allowed_tools, vec!["read_file".to_string(), "search_code".to_string()]);
+        assert_eq!(
+            s.allowed_tools,
+            vec!["read_file".to_string(), "search_code".to_string()]
+        );
         assert_eq!(s.timeout_seconds, Some(42));
         assert_eq!(s.license.as_deref(), Some("MIT"));
     }
@@ -1100,7 +1106,7 @@ mod tests {
         loader.load(Some(dir.path()));
 
         loader.invalidate(dir.path());
-        
+
         // After invalidation, it should try to discover again
         // We removed the directory, so it should be empty now
         fs::remove_dir_all(skills_dir).unwrap();
@@ -1217,10 +1223,26 @@ mod tests {
     #[test]
     fn top_n_limits_results() {
         let skills = vec![
-            make_skill("a", "test driven development testing", SkillSource::Workspace),
-            make_skill("b", "test driven development testing", SkillSource::Workspace),
-            make_skill("c", "test driven development testing", SkillSource::Workspace),
-            make_skill("d", "test driven development testing", SkillSource::Workspace),
+            make_skill(
+                "a",
+                "test driven development testing",
+                SkillSource::Workspace,
+            ),
+            make_skill(
+                "b",
+                "test driven development testing",
+                SkillSource::Workspace,
+            ),
+            make_skill(
+                "c",
+                "test driven development testing",
+                SkillSource::Workspace,
+            ),
+            make_skill(
+                "d",
+                "test driven development testing",
+                SkillSource::Workspace,
+            ),
         ];
 
         let matched = match_skills("test driven development", &skills);
@@ -1323,7 +1345,9 @@ mod tests {
             let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
             skill.timeout_seconds = Some(5);
 
-            let result = run_skill_script(&skill, "hello", Some(dir.path())).await.unwrap();
+            let result = run_skill_script(&skill, "hello", Some(dir.path()))
+                .await
+                .unwrap();
             assert_eq!(result.exit_code, 0);
             assert!(result.stdout.contains("hello from script"));
             assert!(!result.truncated);

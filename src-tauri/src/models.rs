@@ -1,5 +1,6 @@
 use once_cell::sync::Lazy;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -279,10 +280,42 @@ use model_lists::{
     OPENAI_MODELS,
 };
 
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ModelVariant {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub deprecated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ModelVariantDefinition {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    deprecated: bool,
+    additional_params: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelVariantWarning {
+    pub kind: String,
+    pub variant: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedModelVariant {
+    pub variant: Option<String>,
+    pub additional_params: Option<serde_json::Value>,
+    pub warning: Option<ModelVariantWarning>,
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct ModelInfo {
     pub model: String,
     pub provider: String,
+    pub variants: Vec<ModelVariant>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -327,6 +360,137 @@ pub fn get_cache_ttl() -> Duration {
 pub struct ModelRegistry;
 
 impl ModelRegistry {
+    pub fn model_info(provider: &str, model: &str) -> ModelInfo {
+        ModelInfo {
+            model: model.to_string(),
+            provider: provider.to_string(),
+            variants: Self::variants_for_model(provider, model),
+        }
+    }
+
+    pub fn variants_for_model(provider: &str, model: &str) -> Vec<ModelVariant> {
+        Self::variant_definitions(provider, model)
+            .into_iter()
+            .filter(|variant| !variant.deprecated)
+            .map(|variant| ModelVariant {
+                id: variant.id.to_string(),
+                name: variant.name.to_string(),
+                description: variant.description.to_string(),
+                deprecated: variant.deprecated,
+            })
+            .collect()
+    }
+
+    pub fn resolve_model_variant(
+        provider: &str,
+        model: &str,
+        variant: Option<&str>,
+    ) -> ResolvedModelVariant {
+        let Some(variant) = variant.map(str::trim).filter(|value| !value.is_empty()) else {
+            return ResolvedModelVariant {
+                variant: None,
+                additional_params: None,
+                warning: None,
+            };
+        };
+
+        if let Some(definition) = Self::variant_definition(provider, model, variant) {
+            let warning = if definition.deprecated {
+                Some(ModelVariantWarning {
+                    kind: "deprecated".to_string(),
+                    variant: variant.to_string(),
+                    message: format!(
+                        "Model variant '{}' is deprecated. It will run for this session, but it is hidden from new selections.",
+                        definition.name
+                    ),
+                })
+            } else {
+                None
+            };
+            return ResolvedModelVariant {
+                variant: Some(definition.id.to_string()),
+                additional_params: Some(definition.additional_params),
+                warning,
+            };
+        }
+
+        ResolvedModelVariant {
+            variant: None,
+            additional_params: None,
+            warning: Some(ModelVariantWarning {
+                kind: "missing".to_string(),
+                variant: variant.to_string(),
+                message: format!(
+                    "Model variant '{}' is no longer available for {} {}; using Default for this turn.",
+                    variant, provider, model
+                ),
+            }),
+        }
+    }
+
+    fn variant_definition(
+        provider: &str,
+        model: &str,
+        variant: &str,
+    ) -> Option<ModelVariantDefinition> {
+        Self::variant_definitions(provider, model)
+            .into_iter()
+            .find(|definition| definition.id == variant)
+    }
+
+    fn variant_definitions(provider: &str, model: &str) -> Vec<ModelVariantDefinition> {
+        let supports_reasoning_effort = match provider {
+            "openai" => openai_reasoning_effort_supported(model),
+            "chatgpt" => chatgpt_reasoning_effort_supported(model),
+            _ => false,
+        };
+        if !supports_reasoning_effort {
+            return Vec::new();
+        }
+
+        [
+            (
+                "reasoning-low",
+                "Low reasoning",
+                "Lower reasoning effort for faster responses.",
+            ),
+            (
+                "reasoning-medium",
+                "Medium reasoning",
+                "Medium reasoning effort when the provider default should be made explicit.",
+            ),
+            (
+                "reasoning-high",
+                "High reasoning",
+                "Higher reasoning effort for harder prompts that benefit from deeper deliberation.",
+            ),
+            (
+                "reasoning-extra-high",
+                "Extra high reasoning",
+                "Maximum reasoning effort for the hardest problems that require deeper deliberation.",
+            ),
+        ]
+        .into_iter()
+        .map(|(id, name, description)| {
+            let effort = match id {
+                "reasoning-extra-high" => "xhigh",
+                _ => id.trim_start_matches("reasoning-"),
+            };
+            ModelVariantDefinition {
+                id,
+                name,
+                description,
+                deprecated: false,
+                additional_params: json!({
+                    "reasoning": {
+                        "effort": effort
+                    }
+                }),
+            }
+        })
+        .collect()
+    }
+
     pub fn models_for_provider(provider: &str) -> &'static [&'static str] {
         match provider {
             "openai" => OPENAI_MODELS,
@@ -393,10 +557,7 @@ impl ModelRegistry {
             .flat_map(|&provider| {
                 Self::models_for_provider(provider)
                     .iter()
-                    .map(move |&model| ModelInfo {
-                        model: model.to_string(),
-                        provider: provider.to_string(),
-                    })
+                    .map(move |&model| Self::model_info(provider, model))
             })
             .collect()
     }
@@ -404,10 +565,7 @@ impl ModelRegistry {
     pub fn hardcoded_models_for(provider: &str) -> Vec<ModelInfo> {
         Self::models_for_provider(provider)
             .iter()
-            .map(|&m| ModelInfo {
-                model: m.to_string(),
-                provider: provider.to_string(),
-            })
+            .map(|&m| Self::model_info(provider, m))
             .collect()
     }
 
@@ -555,6 +713,14 @@ impl ModelRegistry {
     }
 }
 
+fn openai_reasoning_effort_supported(model: &str) -> bool {
+    matches!(model, "gpt-5.1" | "gpt-5.2")
+}
+
+fn chatgpt_reasoning_effort_supported(model: &str) -> bool {
+    ModelRegistry::is_chatgpt_subscription_model(model)
+}
+
 fn sanitize_model_fetch_error(error: &str) -> (String, String) {
     let lower = error.to_lowercase();
     let kind = if lower.contains("401")
@@ -640,6 +806,98 @@ mod tests {
         let models = ModelRegistry::hardcoded_models_for("openai");
         assert!(!models.is_empty());
         assert!(models.iter().all(|m| m.provider == "openai"));
+    }
+
+    fn expected_reasoning_variant_ids() -> Vec<&'static str> {
+        vec![
+            "reasoning-low",
+            "reasoning-medium",
+            "reasoning-high",
+            "reasoning-extra-high",
+        ]
+    }
+
+    fn variant_ids(model: &ModelInfo) -> Vec<&str> {
+        model
+            .variants
+            .iter()
+            .map(|variant| variant.id.as_str())
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn openai_reasoning_variants_decorate_supported_parent_models() {
+        let model = ModelRegistry::model_info("openai", "gpt-5.2");
+
+        assert_eq!(model.model, "gpt-5.2");
+        assert_eq!(variant_ids(&model), expected_reasoning_variant_ids());
+    }
+
+    #[test]
+    fn openai_reasoning_variant_resolves_to_responses_api_params() {
+        let resolved =
+            ModelRegistry::resolve_model_variant("openai", "gpt-5.2", Some("reasoning-high"));
+
+        assert_eq!(resolved.variant.as_deref(), Some("reasoning-high"));
+        assert_eq!(
+            resolved.additional_params,
+            Some(json!({
+                "reasoning": {
+                    "effort": "high"
+                }
+            }))
+        );
+        assert!(resolved.warning.is_none());
+    }
+
+    #[test]
+    fn chatgpt_reasoning_variants_decorate_all_models() {
+        for model in CHATGPT_DISCOVERABLE_MODELS {
+            let model = ModelRegistry::model_info("chatgpt", model);
+
+            assert_eq!(
+                variant_ids(&model),
+                expected_reasoning_variant_ids(),
+                "chatgpt model {} should expose reasoning variants",
+                model.model
+            );
+        }
+    }
+
+    #[test]
+    fn chatgpt_reasoning_variant_resolves_to_params() {
+        let resolved = ModelRegistry::resolve_model_variant(
+            "chatgpt",
+            "gpt-5.4-pro",
+            Some("reasoning-extra-high"),
+        );
+
+        assert_eq!(resolved.variant.as_deref(), Some("reasoning-extra-high"));
+        assert_eq!(
+            resolved.additional_params,
+            Some(json!({
+                "reasoning": {
+                    "effort": "xhigh"
+                }
+            }))
+        );
+        assert!(resolved.warning.is_none());
+    }
+
+    #[test]
+    fn missing_model_variant_falls_back_to_default_with_warning() {
+        let resolved =
+            ModelRegistry::resolve_model_variant("openai", "gpt-5.2", Some("missing-variant"));
+
+        assert_eq!(resolved.variant, None);
+        assert_eq!(resolved.additional_params, None);
+        assert_eq!(
+            resolved
+                .warning
+                .as_ref()
+                .map(|warning| warning.kind.as_str()),
+            Some("missing")
+        );
     }
 
     #[test]
@@ -766,10 +1024,7 @@ mod tests {
                     async move {
                         fetch_count.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(Duration::from_millis(50)).await;
-                        Ok(vec![ModelInfo {
-                            model: "gpt-4o".to_string(),
-                            provider: "openai".to_string(),
-                        }])
+                        Ok(vec![ModelRegistry::model_info("openai", "gpt-4o")])
                     }
                 })
                 .await

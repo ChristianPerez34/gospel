@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { modelOptionId, type ModelOption } from "../types";
+import { modelOptionId, type AvailableModelVariant, type ModelOption } from "../types";
 import type { ProviderConfig, ProviderId } from "../components/ProviderSelector";
 
 interface ProviderAvailability {
@@ -17,7 +17,7 @@ interface ProviderAvailability {
 
 export interface ModelAvailabilitySnapshot {
   providers: ProviderAvailability[];
-  available_models: { model: string; provider: string }[];
+  available_models: AvailableModel[];
   empty_reason?: string | null;
   warnings: string[];
 }
@@ -25,6 +25,13 @@ export interface ModelAvailabilitySnapshot {
 export interface SelectedModel {
   provider: string;
   model: string;
+  variant?: string | null;
+}
+
+export interface AvailableModel {
+  model: string;
+  provider: string;
+  variants?: AvailableModelVariant[];
 }
 
 function providerConfigFromAvailability(
@@ -51,7 +58,7 @@ function providerConfigFromAvailability(
 }
 
 function buildModelOptions(
-  models: { model: string; provider: string }[],
+  models: AvailableModel[],
   providers: ProviderConfig[],
 ): ModelOption[] {
   return models.map((m) => {
@@ -60,7 +67,10 @@ function buildModelOptions(
       id: modelOptionId(m.provider, m.model),
       name: m.model,
       provider: m.provider,
+      model: m.model,
+      variant: null,
       configured: provider?.credentialed ?? true,
+      variants: m.variants ?? [],
     };
   });
 }
@@ -75,7 +85,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [availabilitySnapshot, setAvailabilitySnapshot] = useState<ModelAvailabilitySnapshot | null>(null);
   const [isRefreshingModels, setIsRefreshingModels] = useState(false);
-  const [availableModels, setAvailableModels] = useState<{ model: string; provider: string }[]>([]);
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const isRefreshingModelsRef = useRef(false);
   const onErrorRef = useRef(onError);
@@ -134,16 +144,17 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
       return;
     }
     setSelectedModel((prev) => {
-      if (
-        prev &&
-        availableModels.some(
+      if (prev) {
+        const available = availableModels.find(
           (m) =>
             m.model === prev.model && m.provider.toLowerCase() === prev.provider.toLowerCase(),
-        )
-      ) {
-        return prev;
+        );
+        if (available) {
+          const variant = prev.variant && available.variants?.some((v) => v.id === prev.variant) ? prev.variant : null;
+          return { provider: available.provider, model: available.model, variant };
+        }
       }
-      return { provider: availableModels[0].provider, model: availableModels[0].model };
+      return { provider: availableModels[0].provider, model: availableModels[0].model, variant: null };
     });
   }, [availableModels, providers]);
 

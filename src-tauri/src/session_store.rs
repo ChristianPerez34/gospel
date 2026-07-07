@@ -27,6 +27,7 @@ pub struct SessionRecord {
     pub title: String,
     pub provider: String,
     pub model: String,
+    pub variant: Option<String>,
     pub status: String,
     pub mode: String,
     pub workspace_id: Option<String>,
@@ -40,6 +41,7 @@ pub struct SessionDetail {
     pub title: String,
     pub provider: String,
     pub model: String,
+    pub variant: Option<String>,
     pub status: String,
     pub mode: String,
     pub workspace_id: Option<String>,
@@ -55,6 +57,7 @@ pub struct ArchivedSessionRecord {
     pub title: String,
     pub provider: String,
     pub model: String,
+    pub variant: Option<String>,
     pub status: String,
     pub mode: String,
     pub workspace_id: Option<String>,
@@ -69,6 +72,7 @@ pub struct ArchivedSessionDetail {
     pub title: String,
     pub provider: String,
     pub model: String,
+    pub variant: Option<String>,
     pub status: String,
     pub mode: String,
     pub workspace_id: Option<String>,
@@ -117,6 +121,8 @@ pub struct ArchivedSessionExportItem {
     pub title: String,
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub variant: Option<String>,
     pub status: String,
     #[serde(default = "default_session_mode")]
     pub mode: String,
@@ -170,6 +176,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT NOT NULL,
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
+    variant TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     mode TEXT NOT NULL DEFAULT 'Build',
     workspace_id TEXT,
@@ -187,6 +194,7 @@ CREATE TABLE IF NOT EXISTS archived_sessions (
     title TEXT NOT NULL,
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
+    variant TEXT,
     status TEXT NOT NULL,
     mode TEXT NOT NULL DEFAULT 'Build',
     workspace_id TEXT,
@@ -242,7 +250,7 @@ impl SessionStore {
 
     fn from_connection(conn: Connection) -> Result<Self, SessionStoreError> {
         conn.execute_batch(SESSION_STORE_SCHEMA)?;
-        ensure_session_mode_columns(&conn)?;
+        ensure_session_schema_columns(&conn)?;
         conn.execute("DELETE FROM sessions WHERE workspace_id IS NULL", params![])?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -272,7 +280,19 @@ impl SessionStore {
         workspace_id: &str,
         mode: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, Some(workspace_id), mode)
+        self.insert_session(title, provider, model, None, Some(workspace_id), mode)
+    }
+
+    pub fn create_session_with_selection(
+        &self,
+        title: &str,
+        provider: &str,
+        model: &str,
+        variant: Option<&str>,
+        workspace_id: &str,
+        mode: &str,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        self.insert_session(title, provider, model, variant, Some(workspace_id), mode)
     }
 
     fn insert_session(
@@ -280,6 +300,7 @@ impl SessionStore {
         title: &str,
         provider: &str,
         model: &str,
+        variant: Option<&str>,
         workspace_id: Option<&str>,
         mode: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
@@ -289,15 +310,16 @@ impl SessionStore {
         let id = Uuid::new_v4().to_string();
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO sessions (id, title, provider, model, status, mode, workspace_id)
-             VALUES (?1, ?2, ?3, ?4, 'draft', ?5, ?6)",
-            params![id, title, provider, model, mode, workspace_id],
+            "INSERT INTO sessions (id, title, provider, model, variant, status, mode, workspace_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6, ?7)",
+            params![id, title, provider, model, variant, mode, workspace_id],
         )?;
         Ok(SessionRecord {
             id,
             title: title.to_string(),
             provider: provider.to_string(),
             model: model.to_string(),
+            variant: variant.map(|s| s.to_string()),
             status: "draft".to_string(),
             mode: mode.to_string(),
             workspace_id: workspace_id.map(|s| s.to_string()),
@@ -313,14 +335,14 @@ impl SessionStore {
         provider: &str,
         model: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, None, SESSION_MODE_BUILD)
+        self.insert_session(title, provider, model, None, None, SESSION_MODE_BUILD)
     }
 
     pub fn get_session(&self, id: &str) -> Result<Option<SessionDetail>, SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(
-                "SELECT id, title, provider, model, status, mode, workspace_id,
+                "SELECT id, title, provider, model, variant, status, mode, workspace_id,
                         display_transcript, model_history, created_at, updated_at
                  FROM sessions WHERE id = ?1",
                 params![id],
@@ -330,14 +352,15 @@ impl SessionStore {
                         title: row.get(1)?,
                         provider: row.get(2)?,
                         model: row.get(3)?,
-                        status: row.get(4)?,
-                        mode: normalize_session_mode(Some(row.get::<_, String>(5)?.as_str()))
+                        variant: row.get(4)?,
+                        status: row.get(5)?,
+                        mode: normalize_session_mode(Some(row.get::<_, String>(6)?.as_str()))
                             .to_string(),
-                        workspace_id: row.get(6)?,
-                        display_transcript: row.get(7)?,
-                        model_history: row.get(8)?,
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
+                        workspace_id: row.get(7)?,
+                        display_transcript: row.get(8)?,
+                        model_history: row.get(9)?,
+                        created_at: row.get(10)?,
+                        updated_at: row.get(11)?,
                     })
                 },
             )
@@ -349,7 +372,7 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(
-                "SELECT id, title, provider, model, status, mode, workspace_id, created_at, updated_at
+                "SELECT id, title, provider, model, variant, status, mode, workspace_id, created_at, updated_at
                  FROM sessions WHERE id = ?1",
                 params![id],
                 |row| {
@@ -358,12 +381,13 @@ impl SessionStore {
                         title: row.get(1)?,
                         provider: row.get(2)?,
                         model: row.get(3)?,
-                        status: row.get(4)?,
-                        mode: normalize_session_mode(Some(row.get::<_, String>(5)?.as_str()))
+                        variant: row.get(4)?,
+                        status: row.get(5)?,
+                        mode: normalize_session_mode(Some(row.get::<_, String>(6)?.as_str()))
                             .to_string(),
-                        workspace_id: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
+                        workspace_id: row.get(7)?,
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
                     })
                 },
             )
@@ -377,7 +401,7 @@ impl SessionStore {
     ) -> Result<Vec<SessionRecord>, SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, provider, model, status, mode, workspace_id, created_at, updated_at
+            "SELECT id, title, provider, model, variant, status, mode, workspace_id, created_at, updated_at
              FROM sessions
              WHERE ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)
                 AND status != 'draft'
@@ -389,11 +413,12 @@ impl SessionStore {
                 title: row.get(1)?,
                 provider: row.get(2)?,
                 model: row.get(3)?,
-                status: row.get(4)?,
-                mode: normalize_session_mode(Some(row.get::<_, String>(5)?.as_str())).to_string(),
-                workspace_id: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                variant: row.get(4)?,
+                status: row.get(5)?,
+                mode: normalize_session_mode(Some(row.get::<_, String>(6)?.as_str())).to_string(),
+                workspace_id: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
             })
         })?;
         let mut sessions = Vec::new();
@@ -409,7 +434,7 @@ impl SessionStore {
     ) -> Result<Vec<ArchivedSessionRecord>, SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, provider, model, status, mode, workspace_id,
+            "SELECT id, title, provider, model, variant, status, mode, workspace_id,
                     created_at, updated_at, archived_at
              FROM archived_sessions
              WHERE deleted_at IS NULL
@@ -422,12 +447,13 @@ impl SessionStore {
                 title: row.get(1)?,
                 provider: row.get(2)?,
                 model: row.get(3)?,
-                status: row.get(4)?,
-                mode: normalize_session_mode(Some(row.get::<_, String>(5)?.as_str())).to_string(),
-                workspace_id: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                archived_at: row.get(9)?,
+                variant: row.get(4)?,
+                status: row.get(5)?,
+                mode: normalize_session_mode(Some(row.get::<_, String>(6)?.as_str())).to_string(),
+                workspace_id: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                archived_at: row.get(10)?,
             })
         })?;
         let mut sessions = Vec::new();
@@ -547,6 +573,26 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn update_model_selection(
+        &self,
+        id: &str,
+        provider: &str,
+        model: &str,
+        variant: Option<&str>,
+    ) -> Result<(), SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE sessions SET provider = ?1, model = ?2, variant = ?3,
+                    updated_at = datetime('now')
+             WHERE id = ?4",
+            params![provider, model, variant, id],
+        )?;
+        if rows == 0 {
+            return Err(SessionStoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
     pub fn persist_turn(
         &self,
         id: &str,
@@ -597,10 +643,10 @@ impl SessionStore {
 
             tx.execute(
                 "INSERT INTO archived_sessions (
-                    id, title, provider, model, status, mode, workspace_id,
+                    id, title, provider, model, variant, status, mode, workspace_id,
                     display_transcript, model_history, created_at, updated_at, archived_at
                  )
-                 SELECT id, title, provider, model, status, mode, workspace_id,
+                 SELECT id, title, provider, model, variant, status, mode, workspace_id,
                         display_transcript, model_history, created_at, updated_at, datetime('now')
                  FROM sessions
                  WHERE id = ?1",
@@ -640,10 +686,10 @@ impl SessionStore {
 
             tx.execute(
                 "INSERT INTO sessions (
-                    id, title, provider, model, status, mode, workspace_id,
+                    id, title, provider, model, variant, status, mode, workspace_id,
                     display_transcript, model_history, created_at, updated_at
                  )
-                 SELECT id, title, provider, model, status, mode, workspace_id,
+                 SELECT id, title, provider, model, variant, status, mode, workspace_id,
                         display_transcript, model_history, created_at, updated_at
                  FROM archived_sessions
                  WHERE id = ?1 AND deleted_at IS NULL",
@@ -816,6 +862,7 @@ impl SessionStore {
                     + length(title)
                     + length(provider)
                     + length(model)
+                    + COALESCE(length(variant), 0)
                 ), 0),
                     MIN(archived_at)
              FROM archived_sessions
@@ -842,7 +889,7 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(
-                "SELECT id, title, provider, model, status, mode, workspace_id,
+                "SELECT id, title, provider, model, variant, status, mode, workspace_id,
                         display_transcript, model_history, created_at, updated_at,
                         archived_at, deleted_at
                  FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
@@ -853,16 +900,17 @@ impl SessionStore {
                         title: row.get(1)?,
                         provider: row.get(2)?,
                         model: row.get(3)?,
-                        status: row.get(4)?,
-                        mode: normalize_session_mode(Some(row.get::<_, String>(5)?.as_str()))
+                        variant: row.get(4)?,
+                        status: row.get(5)?,
+                        mode: normalize_session_mode(Some(row.get::<_, String>(6)?.as_str()))
                             .to_string(),
-                        workspace_id: row.get(6)?,
-                        display_transcript: row.get(7)?,
-                        model_history: row.get(8)?,
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                        archived_at: row.get(11)?,
-                        deleted_at: row.get(12)?,
+                        workspace_id: row.get(7)?,
+                        display_transcript: row.get(8)?,
+                        model_history: row.get(9)?,
+                        created_at: row.get(10)?,
+                        updated_at: row.get(11)?,
+                        archived_at: row.get(12)?,
+                        deleted_at: row.get(13)?,
                     })
                 },
             )
@@ -877,7 +925,7 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(
-                "SELECT id, title, provider, model, status, mode, workspace_id,
+                "SELECT id, title, provider, model, variant, status, mode, workspace_id,
                         created_at, updated_at, archived_at
                  FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
@@ -887,13 +935,14 @@ impl SessionStore {
                         title: row.get(1)?,
                         provider: row.get(2)?,
                         model: row.get(3)?,
-                        status: row.get(4)?,
-                        mode: normalize_session_mode(Some(row.get::<_, String>(5)?.as_str()))
+                        variant: row.get(4)?,
+                        status: row.get(5)?,
+                        mode: normalize_session_mode(Some(row.get::<_, String>(6)?.as_str()))
                             .to_string(),
-                        workspace_id: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                        archived_at: row.get(9)?,
+                        workspace_id: row.get(7)?,
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
+                        archived_at: row.get(10)?,
                     })
                 },
             )
@@ -912,6 +961,7 @@ impl SessionStore {
                 title: detail.title,
                 provider: detail.provider,
                 model: detail.model,
+                variant: detail.variant,
                 status: detail.status,
                 mode: detail.mode,
                 workspace_id: detail.workspace_id,
@@ -970,15 +1020,16 @@ impl SessionStore {
                     .or_else(|| session.workspace_id.clone());
                 tx.execute(
                     "INSERT INTO archived_sessions (
-                        id, title, provider, model, status, mode, workspace_id,
+                        id, title, provider, model, variant, status, mode, workspace_id,
                         display_transcript, model_history, created_at, updated_at,
                         archived_at, deleted_at
                      )
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL)
                      ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         provider = excluded.provider,
                         model = excluded.model,
+                        variant = excluded.variant,
                         status = excluded.status,
                         mode = excluded.mode,
                         workspace_id = excluded.workspace_id,
@@ -993,6 +1044,7 @@ impl SessionStore {
                         session.title,
                         session.provider,
                         session.model,
+                        session.variant,
                         session.status,
                         normalize_session_mode(Some(session.mode.as_str())),
                         target_workspace_id,
@@ -1232,7 +1284,7 @@ impl SessionStore {
     }
 }
 
-fn ensure_session_mode_columns(conn: &Connection) -> Result<(), SessionStoreError> {
+fn ensure_session_schema_columns(conn: &Connection) -> Result<(), SessionStoreError> {
     ensure_column(
         conn,
         "sessions",
@@ -1244,6 +1296,18 @@ fn ensure_session_mode_columns(conn: &Connection) -> Result<(), SessionStoreErro
         "archived_sessions",
         "mode",
         "ALTER TABLE archived_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'Build'",
+    )?;
+    ensure_column(
+        conn,
+        "sessions",
+        "variant",
+        "ALTER TABLE sessions ADD COLUMN variant TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "archived_sessions",
+        "variant",
+        "ALTER TABLE archived_sessions ADD COLUMN variant TEXT",
     )?;
     Ok(())
 }
@@ -1334,13 +1398,45 @@ mod tests {
         assert_eq!(session.title, "Test Session");
         assert_eq!(session.status, "draft");
         assert_eq!(session.mode, "Build");
+        assert_eq!(session.variant, None);
         assert_eq!(session.workspace_id.as_deref(), Some("ws1"));
 
         let detail = store.get_session(&session.id).unwrap().unwrap();
         assert_eq!(detail.id, session.id);
         assert_eq!(detail.mode, "Build");
+        assert_eq!(detail.variant, None);
         assert_eq!(detail.workspace_id.as_deref(), Some("ws1"));
         assert_eq!(detail.display_transcript, "[]");
+    }
+
+    #[test]
+    fn model_variant_round_trips_through_get_list_and_update() {
+        let store = test_store();
+        let session = store
+            .create_session_with_selection(
+                "Reasoning",
+                "openai",
+                "gpt-5.2",
+                Some("reasoning-high"),
+                "ws1",
+                SESSION_MODE_BUILD,
+            )
+            .unwrap();
+        store.update_status(&session.id, "active").unwrap();
+
+        let detail = store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(detail.variant.as_deref(), Some("reasoning-high"));
+
+        let listed = store.list_sessions_for_workspace(Some("ws1")).unwrap();
+        assert_eq!(listed[0].variant.as_deref(), Some("reasoning-high"));
+
+        store
+            .update_model_selection(&session.id, "openai", "gpt-5.2", Some("reasoning-low"))
+            .unwrap();
+        let updated = store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(updated.provider, "openai");
+        assert_eq!(updated.model, "gpt-5.2");
+        assert_eq!(updated.variant.as_deref(), Some("reasoning-low"));
     }
 
     #[test]
@@ -1723,7 +1819,14 @@ mod tests {
     fn export_import_archived_sessions_round_trips_notes() {
         let store = test_store();
         let s = store
-            .create_session("Portable", "openai", "gpt-4", "ws1")
+            .create_session_with_selection(
+                "Portable",
+                "openai",
+                "gpt-5.2",
+                Some("reasoning-high"),
+                "ws1",
+                SESSION_MODE_BUILD,
+            )
             .unwrap();
         store
             .persist_turn(
@@ -1745,8 +1848,10 @@ mod tests {
 
         assert_eq!(imported.len(), 1);
         assert_eq!(imported[0].workspace_id.as_deref(), Some("ws2"));
+        assert_eq!(imported[0].variant.as_deref(), Some("reasoning-high"));
         let restored = store.restore_archived_session(&s.id).unwrap();
         assert_eq!(restored.workspace_id.as_deref(), Some("ws2"));
+        assert_eq!(restored.variant.as_deref(), Some("reasoning-high"));
         assert_eq!(
             store.note_session_id(&note.id).unwrap().as_deref(),
             Some(s.id.as_str())

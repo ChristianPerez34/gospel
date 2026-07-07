@@ -18,12 +18,13 @@ import type {
   TurnBlock,
 } from "../types";
 import type { SelectedModel } from "./useModelAvailability";
-import { useChatStream } from "./useChatStream";
+import { useChatStream, type ModelVariantWarningPayload } from "./useChatStream";
 
 export interface SessionManagerStreamOptions {
   provider: string;
   prompt: string;
   model: string;
+  variant?: string | null;
   sessionId: string | null;
   invokedSkill?: { name: string; args?: string } | null;
 }
@@ -43,6 +44,7 @@ export interface UseSessionManagerParams {
   onError?: (message: string, action?: SessionManagerErrorAction) => void;
   onSuccess?: (message: string) => void;
   onOpenSettings?: () => void;
+  onModelVariantFallback?: (warning: ModelVariantWarningPayload) => void;
 }
 
 export interface UseSessionManagerResult {
@@ -70,6 +72,7 @@ export function useSessionManager({
   onError,
   onSuccess,
   onOpenSettings,
+  onModelVariantFallback,
 }: UseSessionManagerParams): UseSessionManagerResult {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -79,6 +82,8 @@ export function useSessionManager({
   statusRef.current = status;
   const latestSelectedSessionRef = useRef<string | null>(null);
   const skipNextWorkspaceResetRef = useRef<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
   useEffect(() => {
@@ -103,6 +108,23 @@ export function useSessionManager({
     setDraftSessionMode("Build");
   }, [activeWorkspaceId, status]);
 
+  const handleModelVariantWarning = useCallback((warning: ModelVariantWarningPayload) => {
+    if (warning.kind !== "missing") return;
+    onModelVariantFallback?.(warning);
+    const sessionId = activeSessionIdRef.current;
+    if (!sessionId) return;
+    onSessionsChange((prev) =>
+      prev.map((session) =>
+        session.id === sessionId &&
+        session.model === warning.model &&
+        session.provider.toLowerCase() === warning.provider.toLowerCase() &&
+        session.variant === warning.variant
+          ? { ...session, variant: null }
+          : session,
+      ),
+    );
+  }, [onModelVariantFallback, onSessionsChange]);
+
   const {
     currentTurn,
     startStream,
@@ -113,6 +135,7 @@ export function useSessionManager({
     onErrorToast: onError,
     onSuccessToast: onSuccess,
     onOpenSettings,
+    onModelVariantWarning: handleModelVariantWarning,
   });
 
   const isStreaming = status === "thinking" || status === "acting";
@@ -144,14 +167,14 @@ export function useSessionManager({
 
   const handleSend = useCallback(
     async (message: string, invokedSkill?: { name: string; args?: string }) => {
-      if (
-        !selectedModel ||
-        !models.some(
-          (m) =>
-            m.name === selectedModel.model &&
-            m.provider.toLowerCase() === selectedModel.provider.toLowerCase(),
-        )
-      ) {
+      const selectedParentAvailable = selectedModel
+        ? models.some(
+            (m) =>
+              m.model === selectedModel.model &&
+              m.provider.toLowerCase() === selectedModel.provider.toLowerCase(),
+          )
+        : false;
+      if (!selectedModel || !selectedParentAvailable) {
         onError?.("Select an available model before sending.", {
           label: "Open Settings",
           onClick: () => onOpenSettings?.(),
@@ -185,6 +208,7 @@ export function useSessionManager({
               title,
               provider: selectedModel.provider,
               model: selectedModel.model,
+              variant: selectedModel.variant ?? null,
               workspaceId: activeWorkspaceId,
               mode,
             });
@@ -199,6 +223,7 @@ export function useSessionManager({
           title,
           provider: selectedModel.provider,
           model: selectedModel.model,
+          variant: selectedModel.variant ?? null,
           mode,
           timestamp: new Date(),
           messages: [userMsg],
@@ -208,6 +233,7 @@ export function useSessionManager({
         };
         onSessionsChange((prev) => [newSession, ...prev]);
         setActiveSessionId(sessionId);
+        activeSessionIdRef.current = sessionId;
         effectiveSessionId = sessionId;
       }
 
@@ -216,6 +242,7 @@ export function useSessionManager({
           provider: selectedModel.provider,
           prompt: message,
           model: selectedModel.model,
+          variant: selectedModel.variant ?? null,
           sessionId: effectiveSessionId,
           invokedSkill: invokedSkill ?? null,
         });

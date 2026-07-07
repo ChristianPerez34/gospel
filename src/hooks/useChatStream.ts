@@ -20,6 +20,7 @@ interface UseChatStreamOptions {
   onSuccessToast?: (message: string) => void;
   onOpenSettings?: () => void;
   onRetry?: () => void;
+  onModelVariantWarning?: (warning: ModelVariantWarningPayload) => void;
 }
 
 interface LlmDonePayloadObject {
@@ -31,10 +32,19 @@ interface LlmDonePayloadObject {
 
 type LlmDonePayload = string | LlmDonePayloadObject;
 
+export interface ModelVariantWarningPayload {
+  kind: string;
+  provider: string;
+  model: string;
+  variant: string;
+  message: string;
+}
+
 interface StartStreamOptions {
   provider: string;
   prompt: string;
   model: string;
+  variant?: string | null;
   sessionId: string | null;
   invokedSkill?: { name: string; args?: string } | null;
 }
@@ -238,6 +248,12 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               optionsRef.current.onErrorToast?.("Corpus auto-build failed. Use Build Corpus to retry.");
             }
           })),
+          track(listen<ModelVariantWarningPayload>("llm-model-variant-warning", (event) => {
+            optionsRef.current.onErrorToast?.(
+              event.payload.message || "Model variant was not available; using Default.",
+            );
+            optionsRef.current.onModelVariantWarning?.(event.payload);
+          })),
         ]);
       } catch (error) {
         unlisteners.forEach((unlisten) => unlisten());
@@ -265,6 +281,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       provider: opts.provider,
       prompt: opts.prompt,
       model: opts.model,
+      variant: opts.variant ?? null,
       sessionId: opts.sessionId ?? null,
       invokedSkill: opts.invokedSkill ?? null,
     });

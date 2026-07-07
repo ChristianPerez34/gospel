@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { ModelOption, Session, Workspace } from "../types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 
-type CommandGroup = "Sessions" | "Files / context" | "Settings" | "Commands";
+type CommandGroup = "Sessions" | "Files / context" | "Settings" | "Variants" | "Commands";
 
 interface PaletteResult {
   id: string;
@@ -22,6 +22,7 @@ interface CommandPaletteProps {
   workspace?: Workspace | null;
   models: ModelOption[];
   selectedModelId: string;
+  selectedVariant?: string | null;
   onClose: () => void;
   onSelectSession: (session: Session) => void;
   onNewSession: () => void;
@@ -30,6 +31,7 @@ interface CommandPaletteProps {
   onToggleSessions: () => void;
   onToggleReview: () => void;
   onSelectModel: (modelId: string) => void;
+  onVariantChange: (variant: string | null) => void;
   restoreFocusRef?: RefObject<HTMLElement>;
   workspaceNames?: Record<string, string>;
 }
@@ -42,11 +44,15 @@ function includesQuery(result: PaletteResult, query: string) {
 
 function groupResults(results: PaletteResult[]) {
   const groups: Array<{ label: CommandGroup; results: PaletteResult[] }> = [];
-  for (const label of ["Sessions", "Files / context", "Settings", "Commands"] as CommandGroup[]) {
+  for (const label of ["Sessions", "Files / context", "Settings", "Variants", "Commands"] as CommandGroup[]) {
     const group = results.filter((result) => result.group === label);
     if (group.length > 0) groups.push({ label, results: group });
   }
   return groups;
+}
+
+function sessionModelLabel(session: Session) {
+  return session.variant ? `${session.model} · ${session.variant}` : session.model;
 }
 
 export function CommandPalette({
@@ -56,6 +62,7 @@ export function CommandPalette({
   workspace,
   models,
   selectedModelId,
+  selectedVariant = null,
   onClose,
   onSelectSession,
   onNewSession,
@@ -64,6 +71,7 @@ export function CommandPalette({
   onToggleSessions,
   onToggleReview,
   onSelectModel,
+  onVariantChange,
   restoreFocusRef,
   workspaceNames,
 }: CommandPaletteProps) {
@@ -79,17 +87,18 @@ export function CommandPalette({
     };
 
     const sessionResults = sessions.slice(0, query ? sessions.length : 5).map((session) => {
+      const modelLabel = sessionModelLabel(session);
       const workspaceName = session.workspaceId
         ? workspaceNames?.[session.workspaceId] || workspace?.name
         : workspace?.name;
       const detail = workspaceName
-        ? `${session.model} · ${workspaceName} · ${session.timestamp.toLocaleString([], {
+        ? `${modelLabel} · ${workspaceName} · ${session.timestamp.toLocaleString([], {
             month: "short",
             day: "numeric",
             hour: "2-digit",
             minute: "2-digit",
           })}`
-        : `${session.model} · ${session.timestamp.toLocaleString([], {
+        : `${modelLabel} · ${session.timestamp.toLocaleString([], {
             month: "short",
             day: "numeric",
             hour: "2-digit",
@@ -102,7 +111,7 @@ export function CommandPalette({
         icon: session.id === activeSessionId ? "A" : "S",
         label: session.title || "Untitled session",
         detail,
-        keywords: `session conversation ${session.model} ${workspaceName ? workspaceName.toLowerCase() : ""}`,
+        keywords: `session conversation ${session.model} ${session.variant ?? ""} ${workspaceName ? workspaceName.toLowerCase() : ""}`,
         action: closeAfter(() => onSelectSession(session)),
       };
     });
@@ -143,6 +152,38 @@ export function CommandPalette({
       },
     ];
 
+    const currentModel = models.find((model) => model.id === selectedModelId);
+    const currentVariant = currentModel?.variants?.find((variant) => variant.id === selectedVariant);
+    const variantOptions = currentModel?.variants?.filter((variant) => !variant.deprecated) ?? [];
+    const variantResults: PaletteResult[] = variantOptions.length > 0
+      ? [
+          { id: null, name: "Default", description: currentModel?.provider ?? "" },
+          ...variantOptions,
+        ].map((variant) => ({
+          id: `variant-${variant.id ?? "default"}`,
+          group: "Variants" as const,
+          icon: selectedVariant === variant.id ? "A" : "V",
+          label: variant.name,
+          detail: variant.id ? variant.description : currentModel?.provider,
+          keywords: `variant model ${currentModel?.model ?? ""} ${variant.name} ${variant.id ?? "default"} ${variant.description}`,
+          action: closeAfter(() => onVariantChange(variant.id)),
+        }))
+      : [];
+
+    const modelResults: PaletteResult[] = models.map((model) => {
+      const isActive = model.id === selectedModelId;
+      const activeVariant = isActive && currentVariant ? ` · ${currentVariant.name}` : "";
+      return {
+        id: `model-${model.id}`,
+        group: "Commands" as const,
+        icon: isActive ? "A" : "M",
+        label: `Use ${model.name}`,
+        detail: `${model.provider}${activeVariant}`,
+        keywords: `model provider ${model.name} ${model.model} ${model.provider} ${model.variants?.map((variant) => `${variant.id} ${variant.name} ${variant.description}`).join(" ") ?? ""}`,
+        action: closeAfter(() => onSelectModel(model.id)),
+      };
+    });
+
     const commandResults: PaletteResult[] = [
       {
         id: "new-session",
@@ -181,18 +222,10 @@ export function CommandPalette({
         keywords: "workspace switch directory",
         action: closeAfter(onOpenWorkspaceSwitcher),
       },
-      ...models.map((model) => ({
-        id: `model-${model.id}`,
-        group: "Commands" as const,
-        icon: model.id === selectedModelId ? "A" : "M",
-        label: `Use ${model.name}`,
-        detail: model.provider,
-        keywords: `model provider ${model.name} ${model.provider}`,
-        action: closeAfter(() => onSelectModel(model.id)),
-      })),
+      ...modelResults,
     ];
 
-    return [...sessionResults, ...workspaceResults, ...settingsResults, ...commandResults];
+    return [...sessionResults, ...workspaceResults, ...settingsResults, ...variantResults, ...commandResults];
   }, [
     activeSessionId,
     models,
@@ -202,10 +235,12 @@ export function CommandPalette({
     onOpenWorkspaceSwitcher,
     onSelectModel,
     onSelectSession,
+    onVariantChange,
     onToggleReview,
     onToggleSessions,
     query,
     selectedModelId,
+    selectedVariant,
     sessions,
     workspace,
     workspaceNames,

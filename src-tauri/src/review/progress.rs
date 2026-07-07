@@ -40,7 +40,11 @@ impl ReviewProgressEvent {
 /// (`Detector` -> `detector`); `rename_all_fields` renames the fields inside
 /// each struct variant (`total_chunks` -> `totalChunks`).
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ReviewPhase {
     /// Detector stage. Emitted once with `chunk: 0` and `Starting` when the
     /// run begins, then per chunk with `Running` before `run_detector` and
@@ -100,7 +104,9 @@ pub enum PhaseStatus {
     /// Reserved for future hard-failure surfacing at the validator/finalize
     /// stage. Whole-run failures currently emit [`ReviewPhase::Failed`].
     #[allow(dead_code)]
-    Failed { detail: String },
+    Failed {
+        detail: String,
+    },
 }
 
 /// Kind of incremental tool event from the detector agent.
