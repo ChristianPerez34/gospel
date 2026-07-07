@@ -135,6 +135,7 @@ describe("CommandPalette", () => {
     fireEvent.click(screen.getByRole("button", { name: /Reasoning High/ }));
     expect(onVariantChange).toHaveBeenCalledWith("reasoning-high");
 
+    cleanup();
     renderPalette({ onVariantChange, selectedVariant: "reasoning-high" });
     fireEvent.click(screen.getAllByRole("button", { name: /Default/ })[0]);
     expect(onVariantChange).toHaveBeenCalledWith(null);

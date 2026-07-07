@@ -51,7 +51,7 @@ export function InputBar({
 
   const currentModel = models.find((m) => m.id === selectedModel);
   const variants = currentModel?.variants?.filter((variant) => !variant.deprecated) ?? [];
-  const currentVariant = variants.find((variant) => variant.id === selectedVariant);
+  const currentVariant = currentModel?.variants?.find((variant) => variant.id === selectedVariant);
   const selectedModelFallbackLabel = selectedModel
     ? selectedModel.split("::").slice(1).join(" · ")
     : "";
@@ -251,7 +251,7 @@ export function InputBar({
                   <ChevronDown className="size-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                 </Button>
                 {modelOpen && (
-                  <div className="model-menu absolute bottom-full left-0 mb-2 max-h-[240px] w-80 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-[--z-dropdowns]" role="listbox">
+                  <div className="model-menu absolute bottom-full left-0 mb-2 max-h-[240px] w-80 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)" role="listbox">
                     {models.length === 0 ? (
                       <div className="flex flex-col gap-1 p-3 text-body-sm text-text-muted">
                         <strong className="font-medium text-text-primary">{unavailableMessage}</strong>
@@ -321,7 +321,7 @@ export function InputBar({
                     <ChevronDown className="size-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                   </Button>
                   {variantOpen && (
-                    <div className="model-menu variant-menu absolute bottom-full right-0 mb-2 overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-[--z-dropdowns]" role="listbox">
+                    <div className="model-menu variant-menu absolute bottom-full right-0 mb-2 overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)" role="listbox">
                       {[
                         {
                           id: null,

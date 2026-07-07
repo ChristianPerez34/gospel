@@ -521,6 +521,64 @@ describe("useSessionManager", () => {
       });
     });
 
+    it("clears a missing model variant warning from the active session", async () => {
+      const onModelVariantFallback = vi.fn();
+      const variantModels: ModelOption[] = [
+        {
+          id: "openai::gpt-5.2",
+          name: "gpt-5.2",
+          provider: "openai",
+          model: "gpt-5.2",
+          configured: true,
+          variants: [
+            {
+              id: "reasoning-high",
+              name: "High reasoning",
+              description: "More test-time reasoning",
+            },
+          ],
+        },
+      ];
+      const { result } = renderSessionManager({
+        models: variantModels,
+        selectedModel: {
+          provider: "openai",
+          model: "gpt-5.2",
+          variant: "missing-variant",
+        },
+        onModelVariantFallback,
+      });
+
+      await act(async () => {
+        await result.current.handleSend("think hard");
+      });
+
+      expect(result.current.sessions[0]).toMatchObject({
+        provider: "openai",
+        model: "gpt-5.2",
+        variant: "missing-variant",
+      });
+
+      act(() => {
+        triggerEvent("llm-model-variant-warning", {
+          kind: "missing",
+          provider: "openai",
+          model: "gpt-5.2",
+          variant: "missing-variant",
+          message: "using Default",
+        });
+      });
+
+      expect(onModelVariantFallback).toHaveBeenCalledWith({
+        kind: "missing",
+        provider: "openai",
+        model: "gpt-5.2",
+        variant: "missing-variant",
+        message: "using Default",
+      });
+      expect(result.current.sessions[0]!.variant).toBeNull();
+    });
+
     it("invokes onError and does not call startStream when no model is selected", async () => {
       const onError = vi.fn();
       const { result } = renderSessionManager({

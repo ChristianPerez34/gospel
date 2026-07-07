@@ -20,6 +20,7 @@ interface UseChatStreamOptions {
   onSuccessToast?: (message: string) => void;
   onOpenSettings?: () => void;
   onRetry?: () => void;
+  onModelVariantWarning?: (warning: ModelVariantWarningPayload) => void;
 }
 
 interface LlmDonePayloadObject {
@@ -31,7 +32,7 @@ interface LlmDonePayloadObject {
 
 type LlmDonePayload = string | LlmDonePayloadObject;
 
-interface ModelVariantWarningPayload {
+export interface ModelVariantWarningPayload {
   kind: string;
   provider: string;
   model: string;
@@ -251,6 +252,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             optionsRef.current.onErrorToast?.(
               event.payload.message || "Model variant was not available; using Default.",
             );
+            optionsRef.current.onModelVariantWarning?.(event.payload);
           })),
         ]);
       } catch (error) {

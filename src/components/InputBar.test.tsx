@@ -73,6 +73,16 @@ describe("InputBar", () => {
     expect(screen.queryByRole("option", { name: /Legacy Hidden/ })).toBeNull();
   });
 
+  it("keeps a deprecated selected variant visible in the picker label", () => {
+    renderInputBar({ selectedVariant: "legacy-hidden" });
+
+    expect(screen.getByText("Legacy Hidden")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select variant" }));
+
+    expect(screen.queryByRole("option", { name: /Legacy Hidden/ })).toBeNull();
+  });
+
   it("calls onVariantChange with a variant id and null for Default", () => {
     const onVariantChange = vi.fn();
     renderInputBar({ onVariantChange });

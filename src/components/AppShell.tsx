@@ -12,6 +12,7 @@ import { ToastContainer, useToasts } from "./Toast";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
+import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useThemePreference } from "../hooks/useThemePreference";
 import {
   modelOptionId,
@@ -79,6 +80,24 @@ function groupSessionsByWorkspace(items: Session[]): Session[][] {
   return Array.from(groups.values());
 }
 
+type ModelSelectionSnapshot = {
+  provider: string;
+  model: string;
+  variant?: string | null;
+};
+
+function sameModelSelection(
+  current: ModelSelectionSnapshot | null | undefined,
+  expected: ModelSelectionSnapshot,
+): boolean {
+  if (!current) return false;
+  return (
+    current.provider.toLowerCase() === expected.provider.toLowerCase() &&
+    current.model === expected.model &&
+    (current.variant ?? null) === (expected.variant ?? null)
+  );
+}
+
 export function AppShell() {
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
@@ -127,6 +146,19 @@ export function AppShell() {
   const [workspaceArchivePolicy, setWorkspaceArchivePolicy] = useState<ArchivePolicy | null>(null);
   const [archiveStats, setArchiveStats] = useState<ArchiveStats | null>(null);
   const [archivePolicySaving, setArchivePolicySaving] = useState(false);
+  const handleModelVariantFallback = useCallback((warning: ModelVariantWarningPayload) => {
+    if (warning.kind !== "missing") return;
+    setSelectedModel((current) => {
+      if (!current || !sameModelSelection(current, {
+        provider: warning.provider,
+        model: warning.model,
+        variant: warning.variant,
+      })) {
+        return current;
+      }
+      return { provider: current.provider, model: current.model, variant: null };
+    });
+  }, [setSelectedModel]);
 
   const session = useSessionManager({
     models,
@@ -138,6 +170,7 @@ export function AppShell() {
     onError: showError,
     onSuccess: showSuccess,
     onOpenSettings: openSettings,
+    onModelVariantFallback: handleModelVariantFallback,
   });
 
   const workspaceNames = useMemo<Record<string, string>>(() => {
@@ -491,6 +524,10 @@ export function AppShell() {
   const activeSessionProvider = activeSession?.provider;
   const activeSessionModel = activeSession?.model;
   const activeSessionVariant = activeSession?.variant ?? null;
+  const activeSessionRef = useRef(activeSession);
+  const selectedModelRef = useRef(selectedModel);
+  activeSessionRef.current = activeSession;
+  selectedModelRef.current = selectedModel;
   const sessionTitle = activeSession?.title || "New session";
   const selectedModelId = selectedModel ? modelOptionId(selectedModel.provider, selectedModel.model) : "";
   const currentModelName = models.find(
@@ -512,6 +549,39 @@ export function AppShell() {
     });
   }, [activeSessionId, activeSessionProvider, activeSessionModel, activeSessionVariant, setSelectedModel]);
 
+  const rollbackOptimisticModelSelection = useCallback((
+    sessionId: string,
+    optimistic: ModelSelectionSnapshot,
+    previous: ModelSelectionSnapshot,
+    previousSelection: ModelSelectionSnapshot,
+  ) => {
+    const latestActiveSession = activeSessionRef.current;
+    if (
+      latestActiveSession?.id !== sessionId ||
+      !sameModelSelection(latestActiveSession, optimistic) ||
+      !sameModelSelection(selectedModelRef.current, optimistic)
+    ) {
+      return;
+    }
+
+    setSessions((prev) =>
+      prev.map((item) =>
+        item.id === sessionId && sameModelSelection(item, optimistic)
+          ? { ...item, provider: previous.provider, model: previous.model, variant: previous.variant ?? null }
+          : item,
+      ),
+    );
+    setSelectedModel((current) =>
+      sameModelSelection(current, optimistic)
+        ? {
+            provider: previousSelection.provider,
+            model: previousSelection.model,
+            variant: previousSelection.variant ?? null,
+          }
+        : current,
+    );
+  }, [setSelectedModel, setSessions]);
+
   const applyModelSelection = useCallback((modelId: string) => {
     const match = models.find((m) => m.id === modelId);
     if (!match) return;
@@ -521,6 +591,7 @@ export function AppShell() {
       variant: null,
     };
     setSelectedModel(next);
+    selectedModelRef.current = next;
 
     if (!activeSession || session.isStreaming) return;
 
@@ -536,6 +607,7 @@ export function AppShell() {
           : item,
       ),
     );
+    activeSessionRef.current = { ...activeSession, provider: next.provider, model: next.model, variant: next.variant };
 
     if (!activeSession.backendCreated) return;
 
@@ -545,23 +617,17 @@ export function AppShell() {
       model: next.model,
       variant: next.variant,
     }).catch((error) => {
-      setSessions((prev) =>
-        prev.map((item) =>
-          item.id === activeSession.id
-            ? { ...item, provider: previous.provider, model: previous.model, variant: previous.variant }
-            : item,
-        ),
-      );
-      setSelectedModel(previous);
+      rollbackOptimisticModelSelection(activeSession.id, next, previous, previous);
       showError(`Failed to update session model: ${error}`);
     });
-  }, [activeSession, models, session.isStreaming, setSelectedModel, showError]);
+  }, [activeSession, models, rollbackOptimisticModelSelection, session.isStreaming, setSelectedModel, showError]);
 
   const applyVariantSelection = useCallback((variant: string | null) => {
     if (!selectedModel) return;
     const next = { ...selectedModel, variant };
     const previousSelection = selectedModel;
     setSelectedModel(next);
+    selectedModelRef.current = next;
 
     if (!activeSession || session.isStreaming) return;
 
@@ -577,6 +643,7 @@ export function AppShell() {
           : item,
       ),
     );
+    activeSessionRef.current = { ...activeSession, variant };
 
     if (!activeSession.backendCreated) return;
 
@@ -586,17 +653,10 @@ export function AppShell() {
       model: selectedModel.model,
       variant,
     }).catch((error) => {
-      setSessions((prev) =>
-        prev.map((item) =>
-          item.id === activeSession.id
-            ? { ...item, provider: previous.provider, model: previous.model, variant: previous.variant }
-            : item,
-        ),
-      );
-      setSelectedModel(previousSelection);
+      rollbackOptimisticModelSelection(activeSession.id, next, previous, previousSelection);
       showError(`Failed to update session model: ${error}`);
     });
-  }, [activeSession, selectedModel, session.isStreaming, setSelectedModel, showError]);
+  }, [activeSession, rollbackOptimisticModelSelection, selectedModel, session.isStreaming, setSelectedModel, showError]);
 
   const closeSessionDrawer = useCallback(() => {
     setSessionDrawerOpen(false);
