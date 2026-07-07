@@ -472,7 +472,10 @@ impl ModelRegistry {
         ]
         .into_iter()
         .map(|(id, name, description)| {
-            let effort = id.trim_start_matches("reasoning-");
+            let effort = match id {
+                "reasoning-extra-high" => "xhigh",
+                _ => id.trim_start_matches("reasoning-"),
+            };
             ModelVariantDefinition {
                 id,
                 name,
@@ -874,7 +877,7 @@ mod tests {
             resolved.additional_params,
             Some(json!({
                 "reasoning": {
-                    "effort": "extra-high"
+                    "effort": "xhigh"
                 }
             }))
         );
