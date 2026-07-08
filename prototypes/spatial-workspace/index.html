@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gospel — Spatial Workspace Prototype</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Phosphor Icons for precise, quiet icons -->
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+</head>
+<body>
+  <div class="app-container layout-pairing" id="app">
+    
+    <!-- Top Bar -->
+    <header class="top-bar">
+      <div class="top-left">
+        <div class="workspace-switcher">
+          <i class="ph ph-folder-open"></i>
+          <span class="workspace-name">gospel-harness</span>
+          <i class="ph ph-caret-down text-muted"></i>
+        </div>
+        <div class="divider"></div>
+        <div class="session-title">Refactor code architecture</div>
+      </div>
+      
+      <div class="top-center">
+        <!-- Layout Toggle Controls -->
+        <div class="layout-controls">
+          <button class="layout-btn" data-layout="layout-focus" title="Focus Mode">
+            <i class="ph ph-frame-corners"></i>
+            <span>Focus</span>
+          </button>
+          <button class="layout-btn active" data-layout="layout-pairing" title="Pairing Mode">
+            <i class="ph ph-columns"></i>
+            <span>Pair</span>
+          </button>
+          <button class="layout-btn" data-layout="layout-review" title="Review Mode">
+            <i class="ph ph-git-diff"></i>
+            <span>Review</span>
+          </button>
+          <button class="layout-btn" data-layout="layout-pipeline" title="PR Pipeline">
+            <i class="ph ph-git-pull-request"></i>
+            <span>Pipeline</span>
+          </button>
+        </div>
+      </div>
+      
+      <div class="top-right">
+        <div class="workspace-title">
+          <i class="ph-fill ph-circles-four"></i>
+          <span>gospel-harness</span>
+        </div>
+        
+        <!-- Minimalist Agent Compute Graph -->
+        <div class="agent-compute-graph active" title="Gospel is running">
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+        </div>
+
+        <div class="model-selector" title="Select Provider and Variant">
+          <i class="ph-fill ph-cpu text-muted"></i>
+          <div class="model-details">
+            <span class="model-name">Claude 3.5</span>
+            <span class="model-variant">sonnet-20241022</span>
+          </div>
+          <i class="ph ph-caret-down text-muted" style="margin-left: 4px;"></i>
+        </div>
+        <button class="icon-btn"><i class="ph ph-dots-three"></i></button>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="workspace">
+      
+      <!-- Chat / Agent Panel -->
+      <section class="panel chat-panel">
+        <div class="chat-header">
+          <span class="heading-sm">Agent Session</span>
+          <button class="icon-btn"><i class="ph ph-clock-counter-clockwise"></i></button>
+        </div>
+        
+        <div class="chat-stream">
+          <div class="chat-stream-inner">
+            <!-- User Message -->
+          <div class="message user-message">
+            <div class="message-header">
+              <span class="avatar-badge">USR</span>
+              <span class="time">2:04 AM</span>
+            </div>
+            <div class="message-body">
+              <p>Let's completely refactor the UI layout engine. We need to support fluid spatial views (focus, pairing, review) instead of just static panels. Write the layout transitions in CSS grid and update the main App component.</p>
+            </div>
+          </div>
+          
+          <!-- Agent Message (Plan) -->
+          <div class="message agent-message">
+            <div class="message-header">
+              <span class="avatar-badge system">SYS</span>
+              <span class="time">2:05 AM</span>
+            </div>
+            <div class="message-body">
+              <p>I understand. We're moving from static panels to a fluid spatial layout using CSS Grid. Here is my plan:</p>
+              
+              <div class="execution-graph">
+                <div class="graph-header">
+                  <span class="heading-sm" style="font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary);">Execution Graph</span>
+                  <span class="avatar-badge system text-success" style="border-color: var(--status-success);">RUNNING</span>
+                </div>
+                <div class="node-tree">
+                  <!-- Completed Node -->
+                  <div class="node completed">
+                    <div class="node-connector"></div>
+                    <div class="node-marker"><i class="ph-fill ph-check-circle text-success"></i></div>
+                    <div class="node-content">
+                      <span class="node-title">Analyze layout constraints</span>
+                      <span class="node-meta">0.8s • 2 files read</span>
+                    </div>
+                  </div>
+                  
+                  <!-- Active Node -->
+                  <div class="node active">
+                    <div class="node-connector"></div>
+                    <div class="node-marker"><div class="spinner"></div></div>
+                    <div class="node-content">
+                      <div class="node-header">
+                        <span class="node-title">Draft CSS Grid transitions</span>
+                        <div class="node-actions">
+                          <button class="icon-btn small" title="Pause"><i class="ph ph-pause"></i></button>
+                        </div>
+                      </div>
+                      <div class="node-trace">
+                        <div class="trace-line">> updating styles.css</div>
+                        <div class="trace-line">> running formatter...</div>
+                        <div class="trace-line blink">_</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Pending Node -->
+                  <div class="node pending">
+                    <div class="node-marker"><i class="ph-fill ph-circle text-muted"></i></div>
+                    <div class="node-content">
+                      <div class="node-header">
+                        <span class="node-title">Refactor App.tsx state management</span>
+                        <div class="node-actions">
+                          <button class="icon-btn small" title="Edit"><i class="ph ph-pencil-simple"></i></button>
+                          <button class="icon-btn small" title="Cancel"><i class="ph ph-x"></i></button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Card -->
+          <div class="action-card expanded">
+            <div class="action-summary">
+              <div class="action-icon edit"><i class="ph ph-pencil-simple"></i></div>
+              <span class="action-title">Editing styles/layout.css</span>
+              <button class="icon-btn toggle-btn"><i class="ph ph-caret-up"></i></button>
+            </div>
+            <div class="action-details">
+              <div class="code-block">
+<pre><code><span class="keyword">.workspace</span> {
+  <span class="property">display</span>: grid;
+  <span class="property">transition</span>: grid-template-columns 400ms <span class="string">ease-out-quart</span>;
+}
+
+<span class="comment">/* The new pairing mode */</span>
+<span class="keyword">.layout-pairing</span> <span class="keyword">.workspace</span> {
+  <span class="property">grid-template-columns</span>: 400px 1fr;
+}</code></pre>
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <!-- Chat Input -->
+        <div class="chat-input-wrapper">
+          <div class="chat-input-container">
+            <div class="agent-memory-bar active-compute">
+              <div class="memory-toggle">
+                <!-- Idle State -->
+                <div class="idle-state">
+                  <i class="ph-fill ph-files"></i>
+                  <span>4 files mapped in context</span>
+                  <i class="ph ph-caret-down text-muted" style="margin-left: auto;"></i>
+                </div>
+                
+                <!-- Compute State -->
+                <div class="compute-state">
+                  <div class="sparkline">
+                    <div class="bar"></div>
+                    <div class="bar"></div>
+                    <div class="bar"></div>
+                    <div class="bar"></div>
+                  </div>
+                  <div class="telemetry-stream">
+                    <span class="telemetry-action">sys.read_file(src/styles.css)</span>
+                  </div>
+                  <button class="icon-btn small stop-btn" style="margin-left: auto;" title="Stop Generation"><i class="ph-fill ph-stop"></i></button>
+                </div>
+              </div>
+            </div>
+            <div class="chat-input-inner">
+              <textarea placeholder="Ask Gospel or type a command..."></textarea>
+              <div class="input-actions">
+                <button class="tool-btn"><i class="ph ph-paperclip"></i></button>
+                <button class="send-btn"><i class="ph-fill ph-paper-plane-right"></i></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PR Pipeline Panel -->
+      <section class="panel pipeline-panel">
+        <div class="panel-header">
+          <span class="heading-sm">PR Checks</span>
+          <div class="panel-actions">
+            <button class="icon-btn"><i class="ph ph-arrows-out-simple"></i></button>
+          </div>
+        </div>
+        
+        <div class="pipeline-content">
+          <!-- Architecture Agent -->
+          <div class="agent-card">
+            <div class="agent-header">
+              <span class="avatar-badge system" style="color: var(--agent-cyan)">ARC</span>
+              <span class="agent-name">Architecture</span>
+              <span class="agent-status text-success"><i class="ph-fill ph-check-circle"></i> Passed</span>
+            </div>
+            <div class="agent-findings">
+              <p>Structure follows MVC patterns. No circular dependencies detected in the proposed graph changes.</p>
+            </div>
+          </div>
+
+          <!-- Bug Hunter Agent -->
+          <div class="agent-card">
+            <div class="agent-header">
+              <span class="avatar-badge system" style="color: var(--agent-amber)">BUG</span>
+              <span class="agent-name">Bug Hunter</span>
+              <span class="agent-status text-warning"><i class="ph-fill ph-warning"></i> 1 Warning</span>
+            </div>
+            <div class="agent-findings">
+              <div class="finding-item warning">
+                <span class="finding-line">App.tsx:12</span> Possible race condition in state update if transition fails.
+              </div>
+            </div>
+          </div>
+
+          <!-- Security Agent -->
+          <div class="agent-card active-card error">
+            <div class="agent-header">
+              <span class="avatar-badge system" style="color: var(--agent-rose)">SEC</span>
+              <span class="agent-name">Security</span>
+              <span class="agent-status text-error"><i class="ph-fill ph-x-circle"></i> 1 Critical</span>
+            </div>
+            <div class="agent-findings">
+              <div class="finding-item error">
+                <span class="finding-line">layout.css:42</span> CSS injection vulnerability. Unsanitized variable input detected.
+              </div>
+              <button class="text-btn outline" style="margin-top: 12px; width: 100%; justify-content: center; background: var(--surface-overlay);"><i class="ph ph-wrench"></i> Auto-Fix Issue</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Environment Panel -->
+      <section class="panel environment-panel">
+        <div class="panel-header">
+          <div class="file-tabs">
+            <div class="tab active">
+              <i class="ph-fill ph-browser text-accent-structure"></i>
+              <span>Live Preview</span>
+            </div>
+            <div class="tab">
+              <i class="ph-fill ph-terminal text-accent-action"></i>
+              <span>Build Logs</span>
+            </div>
+          </div>
+          <div class="panel-actions">
+            <button class="icon-btn" title="Reload Preview"><i class="ph ph-arrow-clockwise"></i></button>
+            <button class="icon-btn" title="Open in Browser"><i class="ph ph-arrow-square-out"></i></button>
+          </div>
+        </div>
+        
+        <div class="environment-content">
+          <!-- Fake App Preview -->
+          <div class="preview-area">
+             <div class="preview-placeholder">
+               <span style="font-family: var(--font-mono); color: var(--text-muted); font-size: 13px;">[Waiting for connection on localhost:3000...]</span>
+             </div>
+          </div>
+
+          <!-- Terminal -->
+          <div class="terminal-area">
+            <div class="term-header">
+              <span class="text-muted" style="font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;">Terminal — zsh</span>
+            </div>
+            <div class="terminal-content">
+              <div class="term-line"><span class="term-prompt">➜</span> <span class="term-dir">gospel-harness</span> <span class="term-cmd">npm run dev</span></div>
+              <div class="term-line">> gospel-harness@1.0.0 dev</div>
+              <div class="term-line">> vite</div>
+              <br>
+              <div class="term-line text-success">  VITE v5.0.0  ready in 240 ms</div>
+              <br>
+              <div class="term-line">  ➜  Local:   <span class="text-accent-action">http://localhost:3000/</span></div>
+              <div class="term-line">  ➜  Network: use --host to expose</div>
+              <br>
+              <div class="term-line text-muted">[2:05:12 AM] file changed: src/styles/layout.css</div>
+              <div class="term-line text-success">[2:05:12 AM] hmr update /src/styles/layout.css</div>
+              <div class="term-line text-muted">[2:05:15 AM] file changed: src/App.tsx</div>
+              <div class="term-line text-success">[2:05:15 AM] hmr update /src/App.tsx</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>

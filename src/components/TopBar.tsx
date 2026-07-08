@@ -1,40 +1,55 @@
 import { useState, useRef, useEffect, type RefObject } from "react";
-import { Hammer, Lock } from "lucide-react";
+import {
+  Columns2,
+  Cpu,
+  Frame,
+  GitPullRequest,
+  Hammer,
+  Lock,
+  Shield,
+} from "lucide-react";
 import type { Workspace, AgentStatus, SessionMode } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
+
+export type WorkspaceLayoutMode = "focus" | "pairing" | "review" | "pipeline";
 
 interface TopBarProps {
   workspace: Workspace;
   sessionTitle: string;
   sessionMode: SessionMode;
+  workspaceLayout?: WorkspaceLayoutMode;
   model: string;
   status: AgentStatus;
   onWorkspaceSwitch: () => void;
   onSessionModeChange: (mode: SessionMode) => Promise<void>;
+  onWorkspaceLayoutChange?: (mode: WorkspaceLayoutMode) => void;
   onToggleSessions: () => void;
-  onOpenReview: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
-  reviewOpen?: boolean;
   sessionToggleRef?: RefObject<HTMLButtonElement>;
-  reviewToggleRef?: RefObject<HTMLButtonElement>;
 }
+
+const LAYOUT_OPTIONS = [
+  { value: "focus", label: "Focus", Icon: Frame },
+  { value: "pairing", label: "Pair", Icon: Columns2 },
+  { value: "review", label: "Review", Icon: Shield },
+  { value: "pipeline", label: "Pipeline", Icon: GitPullRequest },
+] as const;
 
 export function TopBar({
   workspace,
   sessionTitle,
   sessionMode,
+  workspaceLayout = "pairing",
   model,
   status,
   onWorkspaceSwitch,
   onSessionModeChange,
+  onWorkspaceLayoutChange,
   onToggleSessions,
-  onOpenReview,
   onOpenSettings,
   sessionsOpen,
-  reviewOpen = false,
   sessionToggleRef,
-  reviewToggleRef,
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(sessionTitle);
@@ -62,12 +77,10 @@ export function TopBar({
   const sessionToggleClass = sessionsOpen
     ? "bg-surface-overlay text-accent-structure"
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
-  const reviewToggleClass = reviewOpen
-    ? "bg-surface-overlay text-accent-action"
-    : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
+  const computeActive = status === "thinking" || status === "acting";
 
   return (
-    <header className="app-topbar flex items-center justify-between px-4 bg-surface-base shrink-0">
+    <header className="app-topbar spatial-topbar px-4 bg-surface-base shrink-0">
       <div className="topbar-primary flex items-center gap-2 min-w-0">
         <button
           ref={sessionToggleRef}
@@ -147,32 +160,41 @@ export function TopBar({
           </button>
         </div>
       </div>
+      <div className="topbar-layout-controls" role="group" aria-label="Workspace layout">
+        {LAYOUT_OPTIONS.map(({ value, label, Icon }) => {
+          const active = workspaceLayout === value;
+          return (
+            <button
+              type="button"
+              className={`topbar-layout-button ${active ? "is-active" : ""}`}
+              key={value}
+              onClick={() => onWorkspaceLayoutChange?.(value)}
+              aria-pressed={active}
+              title={`${label} layout`}
+            >
+              <Icon aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          );
+        })}
+      </div>
       <div className="topbar-actions flex items-center gap-3 shrink-0">
-        <span className="topbar-model-badge font-mono text-caption tracking-[0.02em] py-0.5 px-2 rounded-sm bg-surface-overlay text-text-muted whitespace-nowrap">
+        <div
+          className={`topbar-compute-graph ${computeActive ? "is-active" : ""}`}
+          title={computeActive ? "Gospel is running" : "Gospel is idle"}
+          aria-hidden="true"
+        >
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+        <span className="topbar-model-badge inline-flex items-center gap-1.5 font-mono text-caption tracking-[0.02em] py-0.5 px-2 rounded-sm bg-surface-overlay text-text-muted whitespace-nowrap">
+          <Cpu className="size-3 text-text-muted" aria-hidden="true" />
           {model}
         </span>
         <StatusIndicator status={status} />
-        <button
-          ref={reviewToggleRef}
-          className={`hit-target w-8 h-8 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${reviewToggleClass}`}
-          aria-label="Open security review"
-          aria-pressed={reviewOpen}
-          title="Security review"
-          onClick={onOpenReview}
-        >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            aria-hidden="true"
-          >
-            <path d="M8 2 13 4v3.4c0 3.1-1.9 5.2-5 6.6-3.1-1.4-5-3.5-5-6.6V4l5-2Z" strokeLinejoin="round" />
-            <path d="m5.7 8.1 1.4 1.4 3.2-3.1" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
         <button
           className="hit-target w-8 h-8 flex items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
           aria-label="Settings"

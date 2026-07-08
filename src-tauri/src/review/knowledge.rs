@@ -1,3 +1,193 @@
+pub const BUG_PATTERNS: &str = r##"
+[
+  {
+    "id": "bug/off-by-one",
+    "description": "Loop or index boundary error that processes one too many or too few elements",
+    "category": "boundary",
+    "severity": "Medium",
+    "pattern": "Mismatched inclusive/exclusive bounds, length plus one, or skipped final element.",
+    "bad_example": "for i in 0..items.len() + 1 { items[i] }",
+    "good_example": "for item in items { process(item) }",
+    "remediation": "Verify bounds against empty, single-item, and boundary-sized inputs."
+  },
+  {
+    "id": "bug/error-swallowing",
+    "description": "Error is ignored or replaced by a misleading success state",
+    "category": "error-handling",
+    "severity": "High",
+    "pattern": "Result, exception, or rejected promise is discarded on a path where callers rely on success/failure.",
+    "bad_example": "let _ = save_config(); Ok(())",
+    "good_example": "save_config()?; Ok(())",
+    "remediation": "Propagate, handle, or surface the error with enough context for callers to react."
+  },
+  {
+    "id": "bug/state-invariant",
+    "description": "State transition violates an invariant expected by later code",
+    "category": "state",
+    "severity": "High",
+    "pattern": "A flag, enum variant, cache, or persisted record can enter a combination later code treats as impossible.",
+    "bad_example": "status = Done while output_path remains None",
+    "good_example": "construct Done only with a validated output_path",
+    "remediation": "Encode the invariant in the type or guard the transition with explicit validation."
+  },
+  {
+    "id": "bug/race-condition",
+    "description": "Concurrent path can observe or write stale shared state",
+    "category": "concurrency",
+    "severity": "High",
+    "pattern": "A read-modify-write sequence crosses an await, thread boundary, or unlocked shared mutable structure.",
+    "bad_example": "let n = counter.get(); await_work().await; counter.set(n + 1)",
+    "good_example": "counter.fetch_add(1, Ordering::Relaxed)",
+    "remediation": "Use atomic operations, transactions, or hold the correct lock for the full critical section."
+  },
+  {
+    "id": "bug/resource-leak",
+    "description": "File, process, listener, subscription, or task is not cleaned up",
+    "category": "lifecycle",
+    "severity": "Medium",
+    "pattern": "Creation path lacks a matching cleanup on success, failure, cancellation, or unmount.",
+    "bad_example": "addEventListener('resize', handler) without removeEventListener",
+    "good_example": "return () => removeEventListener('resize', handler)",
+    "remediation": "Tie resource lifetime to scope with RAII, finally/defer, or effect cleanup."
+  }
+]
+"##;
+
+pub const ARCHITECTURE_PATTERNS: &str = r##"
+[
+  {
+    "id": "architecture/dependency-direction",
+    "description": "Lower-level module imports or depends on a higher-level feature module",
+    "category": "layering",
+    "severity": "Medium",
+    "pattern": "Core/domain/shared code reaches upward into UI, commands, concrete providers, or feature orchestration.",
+    "bad_example": "domain imports crate::ui::ReviewPanelState",
+    "good_example": "ui adapts domain ReviewResult into ReviewPanelState",
+    "remediation": "Invert the dependency or move the shared abstraction to the lower layer."
+  },
+  {
+    "id": "architecture/abstraction-leak",
+    "description": "Module interface exposes implementation details callers should not know",
+    "category": "interface",
+    "severity": "Medium",
+    "pattern": "Callers must know storage schema, provider quirks, lock ordering, or internal state transitions to use the module correctly.",
+    "bad_example": "caller must pass retry_count and provider-specific timeout knobs to every call",
+    "good_example": "module owns retry policy behind a small request interface",
+    "remediation": "Move the detail behind the module interface or create an adapter at the seam where variation exists."
+  },
+  {
+    "id": "architecture/shallow-pass-through",
+    "description": "New module adds an interface nearly as complex as its implementation",
+    "category": "depth",
+    "severity": "Low",
+    "pattern": "A wrapper simply forwards parameters and errors without hiding complexity or creating locality.",
+    "bad_example": "five wrapper methods each call identically named methods on another type",
+    "good_example": "one purpose-built operation hides sequencing, retries, and validation",
+    "remediation": "Delete the wrapper or deepen it by moving repeated caller knowledge behind the interface."
+  },
+  {
+    "id": "architecture/global-state",
+    "description": "Hidden global state couples unrelated flows and makes tests order-dependent",
+    "category": "state",
+    "severity": "Medium",
+    "pattern": "Mutable singleton or process-global cache affects behavior without an explicit dependency.",
+    "bad_example": "function reads GLOBAL_CONFIG directly",
+    "good_example": "function receives Config or an adapter that owns config lookup",
+    "remediation": "Pass the dependency through the module interface or isolate the global behind a narrow adapter."
+  }
+]
+"##;
+
+pub const PERFORMANCE_PATTERNS: &str = r##"
+[
+  {
+    "id": "performance/quadratic-loop",
+    "description": "Nested scan creates avoidable quadratic complexity",
+    "category": "algorithmic-complexity",
+    "severity": "Medium",
+    "pattern": "For each item, code scans the full collection to find a match or count.",
+    "bad_example": "items.map(|x| items.iter().find(|y| y.id == x.parent_id))",
+    "good_example": "let by_id = items.iter().map(|x| (x.id, x)).collect::<HashMap<_, _>>()",
+    "remediation": "Pre-index by the lookup key or use a linear merge when ordering allows it."
+  },
+  {
+    "id": "performance/redundant-io",
+    "description": "Same file, network, database, or process call is repeated unnecessarily",
+    "category": "io",
+    "severity": "Medium",
+    "pattern": "A deterministic expensive call occurs inside a loop or repeated render path without caching or batching.",
+    "bad_example": "for id in ids { fetch_user(id).await }",
+    "good_example": "fetch_users(ids).await",
+    "remediation": "Batch, cache, or hoist repeated work out of the loop while preserving freshness semantics."
+  },
+  {
+    "id": "performance/blocking-async",
+    "description": "Blocking operation runs on an async executor path",
+    "category": "async",
+    "severity": "High",
+    "pattern": "std::fs, thread sleep, synchronous process or network call appears in async request/command handling.",
+    "bad_example": "std::fs::read_to_string(path) inside async fn",
+    "good_example": "tokio::fs::read_to_string(path).await",
+    "remediation": "Use async APIs or move blocking work to a blocking task pool."
+  },
+  {
+    "id": "performance/unbounded-growth",
+    "description": "Collection, log, cache, or task list can grow without a bound",
+    "category": "memory",
+    "severity": "Medium",
+    "pattern": "Long-lived state appends per event/session/request without retention, eviction, or backpressure.",
+    "bad_example": "events.push(event) forever",
+    "good_example": "events.push(event); events.truncate_to_recent(MAX_EVENTS)",
+    "remediation": "Add retention limits, eviction policy, pagination, or bounded channels."
+  }
+]
+"##;
+
+pub const STYLE_RULES: &str = r##"
+[
+  {
+    "id": "style/domain-naming",
+    "description": "Name conflicts with established domain vocabulary or hides intent",
+    "category": "naming",
+    "severity": "Low",
+    "pattern": "New identifiers use generic terms where CONTEXT.md or neighboring code has precise vocabulary.",
+    "bad_example": "data, thing, manager for a ReviewResult or SessionTurn",
+    "good_example": "review_result, session_turn, active_workspace",
+    "remediation": "Use the project's domain terms consistently."
+  },
+  {
+    "id": "style/over-complex-expression",
+    "description": "Expression is hard to read because it combines unrelated decisions",
+    "category": "clarity",
+    "severity": "Low",
+    "pattern": "Long chained conditionals or nested expressions mix validation, transformation, and side effects.",
+    "bad_example": "if a && (b.map(...).unwrap_or(false) || c().await?) { ... }",
+    "good_example": "let has_access = ...; if has_access { ... }",
+    "remediation": "Extract named intermediate values or a focused helper."
+  },
+  {
+    "id": "style/dead-redundant-code",
+    "description": "Code is unreachable, duplicated, or redundant with surrounding logic",
+    "category": "maintainability",
+    "severity": "Low",
+    "pattern": "Branch repeats the same outcome, unreachable match arm, unused helper, or redundant annotation.",
+    "bad_example": "if ok { return true } else { return true }",
+    "good_example": "return true",
+    "remediation": "Remove the redundant branch or consolidate duplicate logic."
+  },
+  {
+    "id": "style/public-interface-docs",
+    "description": "Public interface lacks required context for safe use",
+    "category": "documentation",
+    "severity": "Info",
+    "pattern": "Exported type or command has non-obvious invariants, error modes, or ordering requirements that are undocumented.",
+    "bad_example": "pub fn apply(path: PathBuf) with hidden workspace-safety assumptions",
+    "good_example": "docs state path containment and error behavior",
+    "remediation": "Document invariants and error modes at the public interface."
+  }
+]
+"##;
+
 pub const SAST_RULES: &str = r##"
 [
   {

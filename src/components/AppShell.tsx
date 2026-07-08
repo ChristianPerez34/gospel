@@ -4,6 +4,7 @@ import { TopBar } from "./TopBar";
 import { ChatView } from "./ChatView";
 import { InputBar } from "./InputBar";
 import { SessionDrawer } from "./SessionDrawer";
+import { WorkspaceStage } from "./WorkspaceStage";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { SettingsModal } from "./SettingsModal";
 import { ReviewPanel } from "./ReviewPanel";
@@ -22,9 +23,10 @@ import {
   type Session,
 } from "../types";
 import { noModelCopy } from "../modelAvailabilityCopy";
+import type { WorkspaceLayoutMode } from "./TopBar";
 
 type SettingsTab = "general" | "models" | "data";
-type TrappedSurface = "sessions" | "review" | null;
+type TrappedSurface = "sessions" | null;
 
 interface BackendSessionRecord {
   id: string;
@@ -103,10 +105,9 @@ export function AppShell() {
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
-  const [reviewOpen, setReviewOpen] = useState(false);
+  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayoutMode>("pairing");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
-  const reviewToggleRef = useRef<HTMLButtonElement>(null);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
   const commandPaletteOpenRef = useRef(false);
   const chatColumnRef = useRef<HTMLDivElement>(null);
@@ -114,9 +115,7 @@ export function AppShell() {
 
   const trappedSurface: TrappedSurface = sessionDrawerOpen
     ? "sessions"
-    : reviewOpen
-      ? "review"
-      : null;
+    : null;
 
   const openSettings = useCallback((tab: SettingsTab = "models") => {
     setSettingsInitialTab(tab);
@@ -662,16 +661,12 @@ export function AppShell() {
     setSessionDrawerOpen(false);
   }, []);
 
-  const closeReviewPanel = useCallback(() => {
-    setReviewOpen(false);
-  }, []);
-
   const toggleSessionDrawer = useCallback(() => {
     setSessionDrawerOpen((open) => !open);
   }, []);
 
-  const toggleReviewPanel = useCallback(() => {
-    setReviewOpen((open) => !open);
+  const handleWorkspaceLayoutChange = useCallback((mode: WorkspaceLayoutMode) => {
+    setWorkspaceLayout(mode);
   }, []);
 
   useEffect(() => {
@@ -708,27 +703,30 @@ export function AppShell() {
   }, []);
 
   return (
-    <div className="app-shell" data-theme={resolvedTheme} data-theme-preference={themePreference}>
+    <div
+      className="app-shell"
+      data-theme={resolvedTheme}
+      data-theme-preference={themePreference}
+      data-workspace-layout={workspaceLayout}
+    >
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
         sessionMode={session.activeSessionMode}
+        workspaceLayout={workspaceLayout}
         onSessionModeChange={session.handleSessionModeChange}
+        onWorkspaceLayoutChange={handleWorkspaceLayoutChange}
         model={currentModelName}
         status={session.status}
         onWorkspaceSwitch={() => setWorkspaceSwitcherOpen(true)}
         onToggleSessions={toggleSessionDrawer}
-        onOpenReview={toggleReviewPanel}
         onOpenSettings={openSettings}
         sessionsOpen={sessionDrawerOpen}
-        reviewOpen={reviewOpen}
         sessionToggleRef={sessionToggleRef}
-        reviewToggleRef={reviewToggleRef}
       />
       <div className="app-layout" data-session-drawer-open={sessionDrawerOpen ? "true" : "false"}>
         <div
           className="app-workspace"
-          data-review-open={reviewOpen ? "true" : "false"}
         >
           <div
             className="chat-column"
@@ -756,18 +754,26 @@ export function AppShell() {
               workspacePath={activeWorkspace?.path}
             />
           </div>
+          <WorkspaceStage
+            workspaceName={activeWorkspace?.name ?? "No workspace"}
+            workspacePath={activeWorkspace?.path}
+            sessionTitle={sessionTitle}
+            sessionMode={session.activeSessionMode}
+            status={session.status}
+            messageCount={session.messages.length}
+            reviewOpen={workspaceLayout === "review" || workspaceLayout === "pipeline"}
+          />
           <ReviewPanel
-            open={reviewOpen}
+            open={workspaceLayout === "review" || workspaceLayout === "pipeline"}
             provider={selectedModel?.provider}
             model={selectedModel?.model}
             workspacePath={activeWorkspace?.path}
             canSendTurn={!session.isStreaming}
-            onClose={closeReviewPanel}
+            onClose={() => setWorkspaceLayout("pairing")}
             onError={showError}
             onSuccess={showSuccess}
             onFixFinding={(prompt) => session.handleSend(prompt)}
-            triggerRef={reviewToggleRef}
-            trapPaused={modalSurfaceOpen || trappedSurface !== "review"}
+            trapPaused={modalSurfaceOpen}
           />
         </div>
       </div>
@@ -880,7 +886,7 @@ export function AppShell() {
         onOpenSettings={openSettings}
         onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
         onToggleSessions={toggleSessionDrawer}
-        onToggleReview={toggleReviewPanel}
+        onSwitchToReview={() => handleWorkspaceLayoutChange("review")}
         onSelectModel={(modelId) => {
           applyModelSelection(modelId);
         }}

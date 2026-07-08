@@ -1,43 +1,37 @@
-# Goal
+# Plan
 
-Complete the architecture-review handoff by selecting a deepening candidate, designing the interface, applying the focused implementation, and recording verification.
+## Goal
 
-# Steps
+Implement Phase 1 of the Gospel shell/git/GitHub CLI agent tools: a safe command executor, a classification engine, and three rig tools (`run_shell_command`, `run_git_command`, `run_github_cli_command`) gated by one-time user approval for mutating/destructive commands.
 
-- [x] Read `/tmp/gospel_architecture_review_handoff.md`.
-- [x] Check the referenced HTML report and live source state.
-- [x] Select the strongest available candidate from the handoff.
-- [x] Apply codebase-design vocabulary and deletion test to the candidate.
-- [x] Implement the deepened module interfaces and update callers.
-- [x] Run targeted and full Rust verification.
+## Steps
 
-# Evidence / Verification
+- [x] Read the handoff and explore the codebase for integration points.
+- [x] Create/update `.gospel/PLAN.md` with the shell tools Phase 1 plan.
+- [x] Implement `src-tauri/src/shell_tools.rs` with `CommandSafety`, `CommandPolicy`, `CommandExecutor`, `CommandApproval`, and the three tool structs.
+- [x] Add unit tests for the command classifier and safety checks.
+- [x] Wire the tools into `llm.rs` system preamble and `stream_completion` tool builder.
+- [x] Wire `command_approval` through the `lib.rs` Tauri adapter (mirrors the existing `ExternalPathApproval` pattern; `session_turn.rs` does not need changes because approval is provided by the Tauri-side `SessionTurnLlm` adapter).
+- [x] Implement `TauriCommandApproval` using `tauri_plugin_dialog`.
+- [x] Update `AGENTS.md` to document the new tools and policy.
+- [x] Verify with `cargo test --manifest-path src-tauri/Cargo.toml` and `bun run build`.
 
-- `/tmp/architecture-review-1740645440.html` was not present, so candidate selection used the handoff's ranked recommendation plus live source inspection.
-- Selected module: JSON canonicalization for stable tool-call loop hashing.
-- Dependency category: in-process. The module is pure `serde_json::Value` computation, with no I/O and no adapter.
-- Interface selected: `canonical_json_string(&serde_json::Value) -> String`.
-- Rejected alternatives:
-  - Moving `sort_json_keys` unchanged: shallow; callers still own serialization and fallback behavior.
-  - Exposing sorted `serde_json::Value`: more flexible than current callers need, increasing interface knowledge.
-  - Trait/adapter seam: unjustified; there is no second adapter and the dependency is pure in-process logic.
-- Deletion test: deleting the new module would put recursive object-key ordering and canonical serialization back into LLM loop-detection code. The module earns its keep by concentrating that behavior behind one small interface.
-- Secondary module: UTF-8-safe text truncation.
-- Secondary interface selected: `truncate_text_bytes(&str, usize) -> (String, bool)`.
-- Secondary deletion test: deleting the module would return generic truncation logic to `workspace_tools.rs` while `conversation.rs` and `llm.rs` would again depend on a workspace-tools module for unrelated text behavior.
-- Domain alignment: no `CONTEXT.md` update needed. This is an implementation utility and does not introduce or rename a Gospel domain term.
-- Verification passed:
-  - `cargo test --manifest-path src-tauri/Cargo.toml utils`
-  - `cargo test --manifest-path src-tauri/Cargo.toml conversation::tests`
-  - `cargo test --manifest-path src-tauri/Cargo.toml workspace_tools::tests::source_edit_diff_preview_reports_line_truncation`
-  - `cargo test --manifest-path src-tauri/Cargo.toml llm::tests`
-  - `cargo test --manifest-path src-tauri/Cargo.toml` (228 library tests, 1 keychain integration test, doc tests with 1 ignored doctest)
+## Evidence / Verification
 
-# Open Questions / Risks
+- `cargo test --manifest-path src-tauri/Cargo.toml shell_tools` — 21 tests passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml llm::tests` — 14 tests passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml session_turn::tests` — 21 tests passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — 273 library tests + 1 keychain integration test + 1 ignored doctest passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml` — clean, no warnings.
+- `bun run build` — Vite frontend build succeeded.
 
-- The handoff's secondary `truncate_text_bytes` location was stale: live code had the function in `workspace_tools.rs`, imported by `conversation.rs` and `llm.rs`. It has been moved to the text utility module.
-- The missing HTML report means the original visual comparison artifact could not be rechecked.
+## Open Questions / Risks
 
-# Next Action
+- Tauri dialog is async via callback; approval timeout set to 60 seconds.
+- Classification engine is conservative: read-only allowlists are small, mutating/destructive commands require explicit approval.
+- Workspace path escaping detection relies on canonicalization of absolute paths and treats any `..` in arguments as requiring approval; legitimate external paths still require approval rather than being hard-blocked.
+- `session_turn.rs` was not modified because the `CommandApproval` adapter is supplied by the Tauri-side `SessionTurnLlm` implementation, matching the existing `ExternalPathApproval` pattern.
 
-Ready for review.
+## Next Action
+
+Ready for review. Future phases can add `.gospel/shell-policy.json` overrides, CI-wait polling, and additional command allowlists/denylists.
