@@ -1,6 +1,6 @@
 use super::{run_review, NoopReviewProgressEmitter, ReviewConfig, ReviewFocus, ReviewResult};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::task::JoinSet;
@@ -38,9 +38,11 @@ pub async fn run_multi_focus_review(
         return Err("At least one review focus is required.".to_string());
     }
 
+    let unique_focuses: BTreeSet<ReviewFocus> = focuses.iter().copied().collect();
+
     let mut join_set = JoinSet::new();
 
-    for &focus in focuses {
+    for &focus in &unique_focuses {
         let config = ReviewConfig {
             provider: provider.clone(),
             model: model.clone(),

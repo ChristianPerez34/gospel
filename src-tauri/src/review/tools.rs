@@ -188,6 +188,7 @@ impl Tool for RunMultiReviewTool {
                             "type": "string",
                             "enum": ["Security", "BugHunt", "Architecture", "Performance", "Style"]
                         },
+                        "minItems": 1,
                         "description": "Optional subset of focuses. Defaults to all focuses."
                     }
                 },

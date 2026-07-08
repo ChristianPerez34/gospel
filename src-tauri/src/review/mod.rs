@@ -265,6 +265,7 @@ fn all_detector_failures_error(
     model: &str,
     mode: &ReviewMode,
     scope: &str,
+    focus: ReviewFocus,
     failures: &[DetectorFailure],
 ) -> String {
     let total = failures.len();
@@ -276,8 +277,9 @@ fn all_detector_failures_error(
 
     let mut lines = Vec::with_capacity(failures.len() + 4);
     lines.push(format!(
-        "All {total} detector invocations failed for {mode} security review ({provider}/{model}).",
-        mode = mode_label(mode)
+        "All {total} detector invocations failed for {mode} {focus} review ({provider}/{model}).",
+        mode = mode_label(mode),
+        focus = focus
     ));
     lines.push(format!(
         "Failures: {timeouts} timeout(s), {provider_errors} provider error(s)."
@@ -857,7 +859,7 @@ async fn run_full_scan_review(
 
     if !failures.is_empty() && failures.len() == batches.len() {
         let mode = ReviewMode::FullScan;
-        let message = all_detector_failures_error(provider, model, &mode, "scan batch", &failures);
+        let message = all_detector_failures_error(provider, model, &mode, "scan batch", focus, &failures);
         tracing::error!(
             provider = provider,
             model = model,
@@ -1098,7 +1100,7 @@ async fn run_diff_review(
     }
 
     if !failures.is_empty() && failures.len() == chunks.len() {
-        let message = all_detector_failures_error(provider, model, &mode, "diff chunk", &failures);
+        let message = all_detector_failures_error(provider, model, &mode, "diff chunk", focus, &failures);
         tracing::error!(
             provider = provider,
             model = model,
@@ -2368,6 +2370,7 @@ Binary files a/icon.png and b/icon.png differ
             "gpt-5.5",
             &ReviewMode::PullRequest { pr_number: 34 },
             "diff chunk",
+            ReviewFocus::Security,
             &failures,
         );
 
@@ -2400,11 +2403,12 @@ Binary files a/icon.png and b/icon.png differ
             "gpt-5.5",
             &ReviewMode::PullRequest { pr_number: 42 },
             "diff chunk",
+            ReviewFocus::Security,
             &failures,
         );
 
         assert!(message.contains("All 3 detector invocations failed"));
-        assert!(message.contains("pr security review"));
+        assert!(message.contains("pr Security review"));
         assert!(message.contains("chatgpt/gpt-5.5"));
         assert!(message.contains("Failures: 1 timeout(s), 2 provider error(s)."));
         assert!(message.contains("diff chunk 1: [timeout] agent timed out"));
@@ -2423,6 +2427,7 @@ Binary files a/icon.png and b/icon.png differ
             "gpt-4o",
             &ReviewMode::Local,
             "diff chunk",
+            ReviewFocus::Performance,
             &failures,
         );
 

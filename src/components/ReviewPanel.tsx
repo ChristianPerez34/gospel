@@ -330,6 +330,9 @@ export function ReviewPanel({
   const reviewForComment = (comment: ReviewComment) =>
     multiResult?.results.find((review) => review.focus === comment.focus) ?? result;
 
+  const outcomeKey = (review: ReviewResult | null, comment: ReviewComment) =>
+    `${review?.run_id ?? "single"}:${comment.comment_id}`;
+
   const recordOutcome = async (comment: ReviewComment, outcome: ReviewOutcome) => {
     const sourceReview = reviewForComment(comment);
     if (!sourceReview) return;
@@ -342,7 +345,7 @@ export function ReviewPanel({
       });
       setOutcomes((current) => ({
         ...current,
-        [comment.comment_id]: outcome,
+        [outcomeKey(sourceReview, comment)]: outcome,
       }));
       onSuccess?.(outcome === "accepted" ? "Finding accepted." : "Finding rejected.");
     } catch (err) {
@@ -624,7 +627,8 @@ export function ReviewPanel({
         {(result || multiResult) && !loading && visibleComments.length > 0 && (
           <ol className="m-0 grid list-none gap-3 p-0">
             {visibleComments.map((comment, index) => {
-              const outcome = outcomes[comment.comment_id];
+              const sourceReview = reviewForComment(comment);
+              const outcome = outcomes[outcomeKey(sourceReview, comment)];
               return (
                 <li
                   key={comment.comment_id || `${comment.file}-${comment.line_start}-${index}`}
