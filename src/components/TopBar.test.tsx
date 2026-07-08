@@ -21,7 +21,6 @@ function renderTopBar(overrides: Partial<ComponentProps<typeof TopBar>> = {}) {
       onWorkspaceSwitch={vi.fn()}
       onSessionModeChange={vi.fn().mockResolvedValue(undefined)}
       onToggleSessions={vi.fn()}
-      onOpenReview={vi.fn()}
       onOpenSettings={vi.fn()}
       sessionsOpen={false}
       {...overrides}

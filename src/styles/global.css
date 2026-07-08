@@ -166,9 +166,9 @@ body {
   line-height: 1.5;
   color: var(--text-primary);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0) 180px),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 80px),
-    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 80px),
+    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 2%, transparent), transparent 180px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 1.5%, transparent) 0 1px, transparent 1px 80px),
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 1.2%, transparent) 0 1px, transparent 1px 80px),
     var(--surface-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -239,16 +239,16 @@ summary,
   height: 100vh;
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.024), transparent 120px),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 96px),
-    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 96px),
+    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 2.5%, transparent), transparent 120px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 1.8%, transparent) 0 1px, transparent 1px 96px),
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 1.2%, transparent) 0 1px, transparent 1px 96px),
     var(--surface-base);
   color: var(--text-primary);
 }
 
 .app-layout {
   position: relative;
-  display: flex;
+  display: grid;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -257,33 +257,458 @@ summary,
 
 .app-workspace {
   position: relative;
-  display: flex;
+  display: grid;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  transition: margin-left var(--duration-normal) var(--ease-out-quart);
+  grid-template-columns: var(--spatial-chat-width) var(--spatial-stage-width) var(--spatial-review-width);
+  width: 100%;
+  transition:
+    grid-template-columns var(--duration-slow) var(--ease-out-quart),
+    margin-left var(--duration-normal) var(--ease-out-quart);
+  --spatial-chat-width: minmax(380px, 0.9fr);
+  --spatial-stage-width: minmax(440px, 1.1fr);
+  --spatial-review-width: 0px;
+}
+
+.app-shell[data-workspace-layout="focus"] .app-workspace {
+  --spatial-chat-width: minmax(0, 1fr);
+  --spatial-stage-width: 0px;
+  --spatial-review-width: 0px;
+}
+
+.app-shell[data-workspace-layout="review"] .app-workspace {
+  --spatial-chat-width: minmax(380px, 0.9fr);
+  --spatial-stage-width: 0px;
+  --spatial-review-width: minmax(440px, 1.1fr);
+}
+
+.app-shell[data-workspace-layout="pipeline"] .app-workspace {
+  --spatial-chat-width: 0px;
+  --spatial-stage-width: minmax(460px, 1fr);
+  --spatial-review-width: minmax(380px, 500px);
 }
 
 .chat-column {
   display: flex;
-  flex: 1;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid color-mix(in srgb, var(--surface-line) 70%, transparent);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 96px),
-    color-mix(in srgb, var(--surface-base) 92%, var(--surface-elevated) 8%);
+    radial-gradient(ellipse 60% 42% at 50% 0%, color-mix(in srgb, var(--accent-action) 6%, transparent), transparent),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 1.5%, transparent) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 1.5%, transparent) 0 1px, transparent 1px 64px),
+    var(--surface-base);
+  transition:
+    opacity var(--duration-normal) var(--ease-out-quart),
+    filter var(--duration-normal) var(--ease-out-quart);
+}
+
+.app-shell[data-workspace-layout="pipeline"] .chat-column,
+.app-shell[data-workspace-layout="review"] .workspace-stage-shell,
+.app-shell[data-workspace-layout="focus"] .workspace-stage-shell {
+  pointer-events: none;
+  opacity: 0;
+  filter: blur(2px);
 }
 
 .app-topbar {
   height: var(--topbar-height);
-  border-bottom: 1px solid color-mix(in srgb, var(--surface-overlay) 70%, var(--text-muted) 12%);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
-    color-mix(in srgb, var(--surface-base) 82%, var(--surface-elevated) 18%);
+  border-bottom: 1px solid var(--surface-overlay);
+  background: color-mix(in srgb, var(--surface-elevated) 90%, transparent);
+  backdrop-filter: blur(12px);
   box-shadow:
-    inset 0 -1px 0 rgba(0, 0, 0, 0.46),
-    0 1px 0 rgba(255, 255, 255, 0.025);
+    0 4px 20px -8px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+
+.spatial-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.topbar-primary {
+  justify-self: start;
+}
+
+.topbar-actions {
+  justify-self: end;
+}
+
+.topbar-layout-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  justify-self: center;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--surface-line) 74%, transparent);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent),
+    color-mix(in srgb, var(--surface-sunken) 72%, var(--surface-elevated) 28%);
+  padding: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 8px 24px -18px rgba(0, 0, 0, 0.7);
+}
+
+.topbar-layout-button {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: calc(var(--radius-md) - 2px);
+  color: var(--text-muted);
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-body-sm);
+  font-weight: 500;
+  transition:
+    background-color var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart),
+    box-shadow var(--duration-fast) var(--ease-out-quart);
+}
+
+.topbar-layout-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.topbar-layout-button:hover,
+.topbar-layout-button.is-active {
+  background: color-mix(in srgb, var(--surface-overlay) 82%, var(--accent-structure) 10%);
+  color: var(--text-primary);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.topbar-compute-graph {
+  display: inline-flex;
+  height: 16px;
+  align-items: end;
+  gap: 2px;
+  opacity: 0.5;
+}
+
+.topbar-compute-graph span {
+  width: 3px;
+  border-radius: 1px;
+  background: var(--text-muted);
+  transform-origin: bottom;
+}
+
+.topbar-compute-graph span:nth-child(1) { height: 6px; }
+.topbar-compute-graph span:nth-child(2) { height: 12px; }
+.topbar-compute-graph span:nth-child(3) { height: 8px; }
+.topbar-compute-graph span:nth-child(4) { height: 14px; }
+.topbar-compute-graph span:nth-child(5) { height: 10px; }
+
+.topbar-compute-graph.is-active {
+  opacity: 1;
+}
+
+.topbar-compute-graph.is-active span {
+  background: var(--status-success);
+  animation: equalize 0.9s ease-in-out infinite alternate;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--status-success) 42%, transparent);
+}
+
+.topbar-compute-graph.is-active span:nth-child(2) { animation-delay: 120ms; }
+.topbar-compute-graph.is-active span:nth-child(3) { animation-delay: 240ms; }
+.topbar-compute-graph.is-active span:nth-child(4) { animation-delay: 80ms; }
+.topbar-compute-graph.is-active span:nth-child(5) { animation-delay: 180ms; }
+
+.workspace-stage-shell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid color-mix(in srgb, var(--surface-line) 70%, transparent);
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 0%, color-mix(in srgb, var(--accent-structure) 8%, transparent), transparent 64%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-elevated) 50%, transparent), transparent 40%),
+    var(--surface-base);
+  transition:
+    opacity var(--duration-normal) var(--ease-out-quart),
+    filter var(--duration-normal) var(--ease-out-quart);
+}
+
+.workspace-stage-header {
+  display: flex;
+  min-height: 40px;
+  align-items: stretch;
+  justify-content: space-between;
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-line) 72%, transparent);
+  background: color-mix(in srgb, var(--surface-elevated) 86%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.workspace-stage-tabs {
+  display: flex;
+  min-width: 0;
+}
+
+.workspace-stage-tab {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  border-right: 1px solid color-mix(in srgb, var(--surface-line) 70%, transparent);
+  color: var(--text-muted);
+  padding: 0 var(--space-4);
+  font-size: var(--font-size-body-sm);
+  transition:
+    background-color var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.workspace-stage-tab svg {
+  width: 14px;
+  height: 14px;
+}
+
+.workspace-stage-tab:hover,
+.workspace-stage-tab.is-active {
+  background: color-mix(in srgb, var(--surface-base) 60%, var(--surface-elevated) 40%);
+  color: var(--text-primary);
+}
+
+.workspace-stage-tab.is-active {
+  box-shadow: inset 0 2px 0 var(--accent-action);
+}
+
+.workspace-stage-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+}
+
+.stage-icon-button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition:
+    background-color var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.stage-icon-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.stage-icon-button:hover {
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+}
+
+.workspace-stage-content {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr) minmax(180px, 30vh);
+  overflow: hidden;
+}
+
+.workspace-stage-preview {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  overflow: hidden;
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-line) 72%, transparent);
+  background:
+    linear-gradient(180deg, transparent, color-mix(in srgb, var(--surface-sunken) 32%, transparent)),
+    var(--surface-base);
+}
+
+.stage-grid-mark {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(color-mix(in srgb, var(--text-primary) 2.8%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 2.4%, transparent) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 72% 66% at 50% 45%, #000 0%, transparent 76%);
+  opacity: 0.68;
+}
+
+.stage-status-panel {
+  position: relative;
+  display: grid;
+  width: min(560px, calc(100% - 48px));
+  gap: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--surface-line) 78%, transparent);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--surface-elevated) 78%, transparent);
+  padding: var(--space-5);
+  backdrop-filter: blur(18px);
+  box-shadow:
+    0 24px 80px -42px rgba(0, 0, 0, 0.95),
+    0 0 34px -26px color-mix(in srgb, var(--accent-structure) 65%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.stage-status-kicker {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--surface-line) 72%, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--surface-base) 70%, transparent);
+  color: var(--text-muted);
+  padding: 4px var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+.stage-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--text-muted);
+}
+
+.stage-status-dot.is-active {
+  background: var(--accent-action);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-action) 58%, transparent);
+}
+
+.stage-status-dot.is-success {
+  background: var(--status-success);
+}
+
+.stage-status-dot.is-error {
+  background: var(--status-error);
+}
+
+.stage-status-panel h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: clamp(22px, 3vw, 34px);
+  font-weight: 500;
+  line-height: 1.05;
+  text-wrap: balance;
+}
+
+.stage-status-panel p {
+  margin: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-body-sm);
+  overflow-wrap: anywhere;
+}
+
+.stage-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.stage-stat {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  border: 1px solid color-mix(in srgb, var(--surface-line) 72%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-sunken) 54%, transparent);
+  padding: var(--space-3);
+}
+
+.stage-stat span {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  text-transform: uppercase;
+}
+
+.stage-stat strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--font-size-body-sm);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-terminal-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--surface-sunken);
+}
+
+.workspace-terminal-title {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: var(--space-2);
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-line) 70%, transparent);
+  color: var(--text-muted);
+  padding: 0 var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.workspace-terminal-title svg {
+  width: 13px;
+  height: 13px;
+}
+
+.workspace-terminal-lines {
+  display: grid;
+  gap: var(--space-2);
+  overflow: auto;
+  padding: var(--space-4);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-mono);
+}
+
+.workspace-terminal-lines div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.workspace-terminal-lines svg {
+  width: 13px;
+  height: 13px;
+  color: var(--accent-structure);
+}
+
+.term-prompt {
+  color: var(--accent-action);
+}
+
+.term-dir {
+  color: var(--agent-cyan);
+}
+
+.term-muted {
+  color: var(--text-muted);
+}
+
+.term-success {
+  color: var(--status-success);
+}
+
+.term-error {
+  color: var(--status-error);
 }
 
 .session-scrim {
@@ -305,11 +730,10 @@ summary,
   width: var(--sidebar-width);
   max-width: 100vw;
   flex-direction: column;
-  border-right: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0)),
-    var(--surface-elevated);
-  box-shadow: 14px 0 36px rgba(0, 0, 0, 0.28);
+  border-right: 1px solid var(--surface-overlay);
+  background: color-mix(in srgb, var(--surface-elevated) 95%, transparent);
+  backdrop-filter: blur(16px);
+  box-shadow: 20px 0 40px -15px rgba(0, 0, 0, 0.5);
   transform: translateX(-100%);
   transition: transform var(--duration-normal) var(--ease-out-quart);
 }
@@ -610,7 +1034,7 @@ summary,
 
 .workspace-switcher-dialog {
   position: absolute;
-  top: calc(var(--titlebar-height) + var(--topbar-height));
+  top: calc(var(--titlebar-height) + var(--topbar-height) + 4px);
   left: var(--space-4);
   z-index: var(--z-dialog);
   display: flex;
@@ -618,12 +1042,14 @@ summary,
   max-height: 400px;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  border: 1px solid var(--accent-structure);
   border-radius: var(--radius-md);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
-    var(--surface-elevated);
-  box-shadow: var(--shadow-floating);
+  background: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
+  backdrop-filter: blur(16px);
+  box-shadow:
+    var(--shadow-floating),
+    0 0 25px -10px color-mix(in srgb, var(--accent-structure) 25%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .workspace-row {
@@ -655,19 +1081,14 @@ summary,
 }
 
 .review-panel {
-  position: absolute;
-  inset: 0 0 0 auto;
-  z-index: var(--z-panels);
   display: flex;
-  width: min(100%, 560px);
-  max-width: 560px;
+  min-width: 0;
+  min-height: 0;
   flex-direction: column;
-  border-left: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  border-left: 1px solid color-mix(in srgb, var(--surface-line) 74%, transparent);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
-    var(--surface-elevated);
-  box-shadow: -18px 0 42px rgba(0, 0, 0, 0.32);
-  animation: fadeSlideIn var(--duration-normal) var(--ease-out-quart);
+    radial-gradient(ellipse 90% 40% at 50% 0%, color-mix(in srgb, var(--status-error) 5%, transparent), transparent 70%),
+    color-mix(in srgb, var(--surface-elevated) 95%, transparent);
 }
 
 .command-palette-scrim {
@@ -689,14 +1110,14 @@ summary,
   max-height: min(620px, 72vh);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--surface-overlay) 70%, var(--text-muted) 18%);
+  border: 1px solid var(--accent-structure);
   border-radius: var(--radius-lg);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)),
-    var(--surface-elevated);
+  background: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
+  backdrop-filter: blur(20px);
   box-shadow:
     var(--shadow-dialog),
-    inset 0 1px 0 rgba(255, 255, 255, 0.055);
+    0 0 30px -10px color-mix(in srgb, var(--accent-structure) 30%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
   transform: translateX(-50%);
   animation: palette-enter var(--duration-normal) var(--ease-out-quart);
 }
@@ -819,13 +1240,20 @@ summary,
 
 .chat-empty-state > div {
   max-width: min(560px, calc(100vw - 48px));
-  padding: var(--space-5);
-  border: 1px solid color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
+  padding: var(--space-6);
+  border: 1px solid var(--surface-overlay);
   border-radius: var(--radius-lg);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
-    color-mix(in srgb, var(--surface-elevated) 82%, var(--surface-base) 18%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 3%, transparent), transparent),
+    color-mix(in srgb, var(--surface-elevated) 85%, transparent);
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 10px 40px -10px rgba(0, 0, 0, 0.4),
+    0 0 0 1px color-mix(in srgb, var(--accent-action) 12%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent);
+  text-align: center;
+  position: relative;
+  overflow: hidden;
 }
 
 .agent-turn {
@@ -854,6 +1282,75 @@ summary,
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/* Revamped Continuous Console Log Layout */
+.message-block {
+  align-self: flex-start !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+/* Make user messages look like terminal prompt executions */
+.message-block:has(.message-body-user) {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  margin-bottom: var(--space-2);
+}
+
+.message-block:has(.message-body-user) .message-body-user {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  font-family: var(--font-mono) !important;
+  font-size: var(--font-size-mono-lg) !important;
+  color: var(--text-primary) !important;
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: var(--space-1) !important;
+}
+
+/* Prepend a green command prompt prefix */
+.message-block:has(.message-body-user) .message-body-user::before {
+  content: "❯";
+  color: var(--accent-action);
+  font-weight: bold;
+  font-family: var(--font-mono);
+  margin-right: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* User header details (avatar, name, time) - make it look like a prompt status bar */
+.message-block:has(.message-body-user) > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--text-muted);
+}
+
+.message-block:has(.message-body-user) .user-avatar {
+  display: none !important; /* Hide user avatar for shell prompt look */
+}
+
+/* Make agent text blocks and messages look like a compilation execution frame */
+.message-body-agent,
+.agent-text-block {
+  background: color-mix(in srgb, var(--surface-elevated) 78%, var(--surface-base) 22%) !important;
+  border: 1px solid var(--surface-overlay) !important;
+  border-left: 3px solid var(--accent-structure) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow:
+    0 4px 16px -4px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
+  padding: var(--space-4) !important;
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
 .message-body,
 .agent-text-block,
 .review-summary,
@@ -864,18 +1361,32 @@ summary,
     0 1px 0 rgba(0, 0, 0, 0.22);
 }
 
-.message-body-user {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0)),
-    color-mix(in srgb, var(--surface-overlay) 82%, var(--surface-elevated) 18%);
-  border: 1px solid color-mix(in srgb, var(--surface-overlay) 72%, var(--text-muted) 16%);
+.agent-turn {
+  max-width: 100% !important;
+  width: 100% !important;
 }
 
-.message-body-agent,
-.agent-text-block {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0)),
-    color-mix(in srgb, var(--surface-base) 82%, var(--surface-elevated) 18%);
+.agent-turn .agent-avatar {
+  display: none !important;
+}
+
+.agent-turn > div:first-child {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  margin-bottom: var(--space-1);
+}
+
+.agent-text-block,
+.tool-timeline,
+.agent-error-card,
+.message-actions {
+  margin-left: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.agent-turn::before {
+  display: none !important;
 }
 
 .message-actions button {
@@ -893,40 +1404,85 @@ summary,
   position: relative;
 }
 
-/* Vertical connector threading each activity step's status dot together.
- * The line runs from this step's dot down to the next step's dot, so it stays
- * continuous whether a step is collapsed or expanded. */
-.activity-step::before {
-  content: "";
-  position: absolute;
-  left: 16px;
-  top: 18px;
-  bottom: calc(-1 * (var(--space-2) + 18px));
-  width: 1px;
-  background: color-mix(in srgb, var(--surface-overlay) 82%, var(--text-muted) 14%);
-}
-
-.activity-step:last-child::before {
-  display: none;
-}
-
-.activity-step-dot {
+/* Creative Terminal Frame Variant for Activity Steps */
+.activity-step {
   position: relative;
-  z-index: 1;
-  box-shadow: 0 0 0 3px var(--surface-base);
+  margin-bottom: var(--space-3);
+}
+
+/* Hide vertical connector line */
+.activity-step::before {
+  display: none !important;
+}
+
+.activity-step-trigger {
+  background: color-mix(in srgb, var(--surface-elevated) 90%, var(--surface-base) 10%) !important;
+  border: 1px solid var(--surface-overlay) !important;
+  border-radius: var(--radius-md) !important;
+  padding: var(--space-2) var(--space-3) !important;
+  min-height: 38px !important;
+  display: flex !important;
+  align-items: center !important;
+  position: relative;
+  transition: border-radius var(--duration-fast) var(--ease-out-quart);
+}
+
+.activity-step-trigger[aria-expanded="true"] {
+  border-radius: var(--radius-md) var(--radius-md) 0 0 !important;
+}
+
+/* Add macOS red/yellow/green window controls */
+.activity-step-trigger::before {
+  content: "";
+  display: inline-block;
+  width: 32px;
+  height: 8px;
+  background: radial-gradient(circle, var(--status-error) 2.5px, transparent 3.5px),
+              radial-gradient(circle, var(--status-warning) 2.5px, transparent 3.5px),
+              radial-gradient(circle, var(--status-success) 2.5px, transparent 3.5px);
+  background-size: 8px 8px;
+  background-position: 0px 0%, 10px 0%, 20px 0%;
+  background-repeat: no-repeat;
+  margin-right: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* Hide old status dot */
+.activity-step-dot {
+  display: none !important;
 }
 
 .activity-step-body {
-  background: color-mix(in srgb, var(--surface-elevated) 62%, var(--surface-base) 38%);
-  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 12%);
+  background: var(--code-block-background) !important;
+  border: 1px solid var(--surface-overlay) !important;
+  border-top: none !important;
+  border-left: 2px solid var(--accent-action) !important;
+  border-radius: 0 0 var(--radius-md) var(--radius-md) !important;
+  padding: var(--space-3) !important;
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.4) !important;
+  margin-top: 0 !important;
+  margin-left: 0 !important;
+}
+
+.activity-step[data-type="file"] .activity-step-body {
+  border-left-color: var(--accent-action) !important;
+}
+.activity-step[data-type="terminal"] .activity-step-body {
+  border-left-color: var(--accent-data) !important;
+}
+.activity-step[data-type="diff"] .activity-step-body {
+  border-left-color: var(--accent-structure) !important;
+}
+.activity-step[data-type="search"] .activity-step-body {
+  border-left-color: var(--accent-signal) !important;
 }
 
 .activity-step-body pre,
 .review-finding pre {
-  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 12%);
+  border: 1px solid var(--surface-overlay) !important;
   background:
-    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 24px),
-    var(--code-block-background);
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 1.5%, transparent) 0 1px, transparent 1px 24px),
+    var(--code-block-background) !important;
 }
 
 .input-bar {
@@ -955,9 +1511,10 @@ summary,
 }
 
 .composer-deck:focus-within {
-  border-color: color-mix(in srgb, var(--accent-action) 58%, var(--surface-overlay));
+  border-color: var(--accent-action);
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent-action) 13%, transparent),
+    0 0 20px -3px color-mix(in srgb, var(--accent-action) 25%, transparent),
+    0 0 0 1px var(--accent-action),
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
@@ -994,6 +1551,8 @@ summary,
   border: 1px solid transparent;
   background: transparent;
   box-shadow: none;
+  font-family: var(--font-mono) !important;
+  font-size: var(--font-size-mono-lg) !important;
 }
 
 .composer-input:focus {
@@ -1021,7 +1580,7 @@ summary,
   background: color-mix(in srgb, var(--surface-elevated) 72%, var(--surface-base) 28%);
 }
 
-@media (min-width: 1280px) {
+@media (min-width: 1000px) {
   .session-scrim {
     display: none;
   }
@@ -1033,13 +1592,22 @@ summary,
   .review-panel {
     position: relative;
     inset: auto;
-    flex: 0 0 var(--panel-width);
-    width: var(--panel-width);
-    max-width: var(--panel-width);
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    box-shadow: none;
   }
 }
 
-@media (max-width: 1279px) {
+@media (max-width: 999px) {
+  .app-workspace {
+    display: flex;
+  }
+
+  .workspace-stage-shell {
+    display: none;
+  }
+
   .review-panel {
     position: fixed;
     top: calc(var(--titlebar-height) + var(--topbar-height));
@@ -1065,6 +1633,8 @@ summary,
   .topbar-workspace-text,
   .topbar-session-title,
   .topbar-divider,
+  .topbar-layout-controls,
+  .topbar-compute-graph,
   .topbar-model-badge,
   .topbar-status-label {
     display: none;

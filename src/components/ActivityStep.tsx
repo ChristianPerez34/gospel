@@ -288,7 +288,7 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
   const ariaLabel = ariaLabelParts.join(" ");
 
   return (
-    <li className={classNames("activity-step relative", className)}>
+    <li className={classNames("activity-step relative", className)} data-type={card.type}>
       <button
         type="button"
         className="activity-step-trigger grid min-h-9 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-sm py-1.5 pl-3 pr-2 text-left text-body-sm text-text-secondary transition-colors duration-150 ease-out-quart hover:bg-surface-overlay focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent-action disabled:cursor-default motion-reduce:transition-none"
