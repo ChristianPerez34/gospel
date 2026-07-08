@@ -14,6 +14,7 @@ mod review;
 pub mod session_mode;
 pub mod session_store;
 mod session_turn;
+mod shell_tools;
 pub mod skills;
 mod text_utils;
 pub mod trace;
@@ -59,6 +60,7 @@ use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
     SessionRecord, SessionStore, SessionStoreState,
 };
+use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest};
 use skills::SkillSummary;
 use std::{
     collections::HashMap,
@@ -118,6 +120,44 @@ impl ExternalPathApproval for TauriExternalPathApproval {
             app.dialog()
                 .message(message)
                 .title("Allow external file access?")
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Allow".to_string(),
+                    "Deny".to_string(),
+                ))
+                .show(move |approved| {
+                    let _ = sender.send(approved);
+                });
+
+            matches!(
+                tokio::time::timeout(Duration::from_secs(60), receiver).await,
+                Ok(Ok(true))
+            )
+        })
+    }
+}
+
+#[derive(Clone)]
+struct TauriCommandApproval {
+    app: tauri::AppHandle,
+}
+
+impl CommandApproval for TauriCommandApproval {
+    fn request_approval<'a>(
+        &'a self,
+        request: CommandApprovalRequest,
+    ) -> CommandApprovalFuture<'a> {
+        let app = self.app.clone();
+
+        Box::pin(async move {
+            let message = format!(
+                "The agent wants to run the following command using `{}`:\n\n{}\n\n{}\n\nAllow this one-time execution?",
+                request.tool_name, request.command_label, request.reason
+            );
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+
+            app.dialog()
+                .message(message)
+                .title("Allow mutating command?")
                 .buttons(MessageDialogButtons::OkCancelCustom(
                     "Allow".to_string(),
                     "Deny".to_string(),
@@ -1004,6 +1044,9 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 Arc::new(TauriExternalPathApproval {
                     app: self.app.clone(),
                 });
+            let command_approval: Arc<dyn CommandApproval> = Arc::new(TauriCommandApproval {
+                app: self.app.clone(),
+            });
 
             llm::stream_completion(
                 request.provider,
@@ -1016,6 +1059,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.delegate_api_key,
                 request.workspace,
                 Some(external_path_approval),
+                Some(command_approval),
                 request.chat_history,
                 request.matched_skills_section,
                 request.invoked_skill_section,

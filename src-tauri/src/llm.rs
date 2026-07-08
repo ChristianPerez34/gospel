@@ -172,6 +172,10 @@ use crate::review::tools::{
     REVIEW_TOOLS_SYSTEM_PROMPT,
 };
 use crate::session_mode::session_mode_allows_source_edit;
+use crate::shell_tools::{
+    create_run_git_command_tool, create_run_github_cli_command_tool, create_run_shell_command_tool,
+    CommandApproval, SHELL_TOOLS_SYSTEM_PROMPT,
+};
 use crate::text_utils::truncate_text_bytes;
 use crate::workspace_tools::{
     build_base_workspace_tools_with_external_approval, create_context_search_tool,
@@ -518,6 +522,7 @@ fn build_system_preamble(
 
     if workspace.is_some() {
         sections.push(workspace_tools_system_prompt(workspace.unwrap()));
+        sections.push(SHELL_TOOLS_SYSTEM_PROMPT.trim().to_string());
         if include_harness {
             sections.push(REVIEW_TOOLS_SYSTEM_PROMPT.trim().to_string());
             sections.push(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.trim().to_string());
@@ -562,6 +567,9 @@ fn registered_main_workspace_tool_names(workspace: &WorkspaceToolContext) -> Vec
         "run_review",
         "run_security_review",
         "record_review_outcome",
+        "run_shell_command",
+        "run_git_command",
+        "run_github_cli_command",
     ]);
     if workspace.corpus_available {
         names.extend([
@@ -821,6 +829,7 @@ pub async fn stream_completion<F>(
     delegate_api_key: &str,
     workspace: Option<WorkspaceToolContext>,
     external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
+    command_approval: Option<Arc<dyn CommandApproval>>,
     chat_history: Vec<Message>,
     matched_skills_section: Option<String>,
     invoked_skill_section: Option<String>,
@@ -910,12 +919,25 @@ where
                         ));
                 }
 
-                b = b.tool(DelegateExplorationTool {
-                    workspace: workspace_context.clone(),
-                    provider: delegate_provider.to_string(),
-                    model: delegate_model.to_string(),
-                    api_key: delegate_api_key.to_string(),
-                });
+                b = b
+                    .tool(create_run_shell_command_tool(
+                        workspace_context.workspace_path.clone(),
+                        command_approval.clone(),
+                    ))
+                    .tool(create_run_git_command_tool(
+                        workspace_context.workspace_path.clone(),
+                        command_approval.clone(),
+                    ))
+                    .tool(create_run_github_cli_command_tool(
+                        workspace_context.workspace_path.clone(),
+                        command_approval.clone(),
+                    ))
+                    .tool(DelegateExplorationTool {
+                        workspace: workspace_context.clone(),
+                        provider: delegate_provider.to_string(),
+                        model: delegate_model.to_string(),
+                        api_key: delegate_api_key.to_string(),
+                    });
                 if let Some(st) = skill_script_tool {
                     b = b.tool(st);
                 }
@@ -1170,6 +1192,7 @@ mod tests {
             "",
             None,
             None,
+            None,
             vec![],
             None,
             None,
@@ -1251,6 +1274,9 @@ mod tests {
         assert!(preamble.contains("delegate_exploration"));
         assert!(preamble.contains("Harness Control Area"));
         assert!(preamble.contains(".gospel/PLAN.md"));
+        assert!(preamble.contains("run_shell_command"));
+        assert!(preamble.contains("run_git_command"));
+        assert!(preamble.contains("run_github_cli_command"));
     }
 
     #[test]

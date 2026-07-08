@@ -19,3 +19,30 @@ Single-context layout — one `CONTEXT.md` and `docs/adr/` at the repo root. See
 ### Skill system
 
 Gospel discovers user-authored skills from the workspace and global data directory. See `docs/agents/skills.md` for the system overview, matcher spec, and slash command semantics. See `docs/agents/skills-frontmatter.md` for the SKILL.md schema and parser rules. See `docs/agents/skills-scripts.md` for script execution rules.
+
+## Shell, git, and GitHub CLI tools
+
+Gospel exposes three agent-facing tools for workspace command execution:
+
+- `run_shell_command`: Run a non-shell program with arguments in the active workspace.
+- `run_git_command`: Run a git command in the active workspace.
+- `run_github_cli_command`: Run a `gh` command in the active workspace.
+
+### Safety model
+
+- Read-only commands run directly.
+- Mutating or destructive commands require one-time user approval via a native Tauri dialog.
+- Hard-blocked commands always fail without approval:
+  - `rm -rf /` or `rm -rf /*`
+  - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`)
+  - `git push --force`, `git reset --hard`, `git clean -fd`
+  - `gh repo delete`
+  - Shell interpreters (`sh`, `bash`, `zsh`, `powershell`, etc.) invoked through `run_shell_command`
+- Workspace-escaping paths require approval.
+
+### Implementation notes
+
+- Core logic lives in `src-tauri/src/shell_tools.rs`.
+- Approval is provided by the `CommandApproval` trait; the Tauri implementation uses `tauri_plugin_dialog`.
+- Tools are registered in `src-tauri/src/llm.rs` and gated by the classifier in `CommandPolicy`.
+- Policy defaults are hard-coded for Phase 1; future phases may load per-project overrides from `.gospel/shell-policy.json`.
