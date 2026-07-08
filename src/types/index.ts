@@ -62,6 +62,17 @@ export interface ReviewResult {
   user_visible: boolean;
 }
 
+export interface MultiReviewResult {
+  results: ReviewResult[];
+  errors: Record<string, string>;
+  summary: string;
+  files_scanned: number;
+  total_findings: number;
+  total_suppressed: number;
+}
+
+export type ReviewFocusFilter = ReviewFocus | "All";
+
 export interface ReviewOutcomeOutput {
   success: boolean;
   message: string;

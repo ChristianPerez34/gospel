@@ -831,12 +831,7 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
     }
 }
 
-#[tauri::command]
-async fn gospel_review(
-    app: tauri::AppHandle,
-    app_config: tauri::State<'_, AppConfigState>,
-    config: review::ReviewConfig,
-) -> Result<review::ReviewResult, String> {
+fn active_review_workspace_path(app_config: &AppConfigState) -> Result<PathBuf, String> {
     let workspace = match &app_config.store {
         Some(store) => store
             .get_active_workspace()
@@ -851,16 +846,51 @@ async fn gospel_review(
     .ok_or_else(|| "No active workspace selected".to_string())?;
     let workspace_path = PathBuf::from(workspace.path);
     validate_active_workspace_path(&workspace_path)?;
+    Ok(workspace_path)
+}
 
-    let api_key = if ModelRegistry::is_oauth_provider(&config.provider) {
-        String::new()
+fn review_api_key(provider: &str) -> Result<String, String> {
+    if ModelRegistry::is_oauth_provider(provider) {
+        Ok(String::new())
     } else {
-        keychain::retrieve(&config.provider)
-            .map_err(|_| format!("API key not configured for {}", config.provider))?
-    };
+        keychain::retrieve(provider).map_err(|_| format!("API key not configured for {}", provider))
+    }
+}
 
+#[tauri::command]
+async fn gospel_review(
+    app: tauri::AppHandle,
+    app_config: tauri::State<'_, AppConfigState>,
+    config: review::ReviewConfig,
+) -> Result<review::ReviewResult, String> {
+    let workspace_path = active_review_workspace_path(&app_config)?;
+    let api_key = review_api_key(&config.provider)?;
     let emitter = TauriReviewProgressEmitter { app: &app };
     review::run_review(config, workspace_path, api_key, &emitter).await
+}
+
+#[tauri::command]
+async fn gospel_multi_review(
+    app_config: tauri::State<'_, AppConfigState>,
+    provider: String,
+    model: String,
+    mode: String,
+    pr_number: Option<u64>,
+    focuses: Option<Vec<review::ReviewFocus>>,
+) -> Result<review::multi::MultiReviewResult, String> {
+    let workspace_path = active_review_workspace_path(&app_config)?;
+    let api_key = review_api_key(&provider)?;
+    let focus_list = focuses.unwrap_or_else(|| review::multi::ALL_FOCUSES.to_vec());
+    review::multi::run_multi_focus_review(
+        provider,
+        model,
+        mode,
+        pr_number,
+        &focus_list,
+        workspace_path,
+        api_key,
+    )
+    .await
 }
 
 /// Tauri-backed [`review::ReviewProgressEmitter`] that forwards every event to
@@ -2656,6 +2686,7 @@ pub fn run() {
             export_conversation,
             test_connection,
             gospel_review,
+            gospel_multi_review,
             start_chatgpt_oauth,
             start_github_copilot_oauth,
             start_provider_oauth,

@@ -3,6 +3,7 @@ pub mod anti_pattern;
 pub mod config;
 pub mod detector;
 pub mod knowledge;
+pub mod multi;
 pub mod outcome;
 pub mod progress;
 pub mod signal;
@@ -430,12 +431,6 @@ pub async fn run_review(
 ) -> Result<ReviewResult, String> {
     let run_id = Uuid::new_v4().to_string();
     let mode = config.review_mode()?;
-    if config.focus != ReviewFocus::Security {
-        return Err(format!(
-            "{} review focus is not implemented yet. Phase 1 only wires the shared review schema.",
-            config.focus
-        ));
-    }
     ensure_provider_session(&config.provider)?;
     let workspace = WorkspaceToolContext {
         workspace_path,
@@ -468,8 +463,10 @@ pub async fn run_review(
                 &workspace,
                 config.focus,
                 ReviewMode::Local,
-                "You are reviewing local staged and unstaged changes for security vulnerabilities."
-                    .to_string(),
+                format!(
+                    "You are reviewing local staged and unstaged changes for {} findings.",
+                    config.focus
+                ),
                 diff,
             )
             .await
@@ -477,8 +474,8 @@ pub async fn run_review(
         ReviewMode::PullRequest { pr_number } => {
             let pr = get_pr_diff(&workspace.workspace_path, pr_number).await?;
             let context = format!(
-                "You are reviewing Pull Request #{} for security vulnerabilities.\n\nPR Title: {}\nPR Description: {}\n\nAnalyze the changes for security issues. Use read_file to examine surrounding context in the repository.",
-                pr_number, pr.title, pr.body
+                "You are reviewing Pull Request #{} for {} findings.\n\nPR Title: {}\nPR Description: {}\n\nAnalyze the changes for {} issues. Use read_file to examine surrounding context in the repository.",
+                pr_number, config.focus, pr.title, pr.body, config.focus
             );
             run_diff_review(
                 &run_id,
@@ -804,8 +801,11 @@ async fn run_full_scan_review(
                 status: ChunkStatus::Running,
             },
         ));
-        let prompt = detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()));
-        match detector::run_detector(provider, model, api_key, workspace, &prompt, None).await {
+        let prompt =
+            detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()), focus);
+        match detector::run_detector(provider, model, api_key, workspace, &prompt, focus, None)
+            .await
+        {
             Ok(output) => {
                 let mut parsed = parse_agent_review_output(&output, "Detector");
                 stamp_parsed_comments_focus(&mut parsed, focus);
@@ -1031,7 +1031,7 @@ async fn run_diff_review(
                 status: ChunkStatus::Running,
             },
         ));
-        let prompt = detector::build_diff_prompt(&review_context, chunk);
+        let prompt = detector::build_diff_prompt(&review_context, chunk, focus);
         let observer = DetectorToolObserver {
             run_id,
             chunk: chunk_number,
@@ -1043,6 +1043,7 @@ async fn run_diff_review(
             api_key,
             workspace,
             &prompt,
+            focus,
             Some(&observer),
         )
         .await
@@ -1166,7 +1167,7 @@ async fn validate_candidates(
         return Ok((
             Vec::new(),
             true,
-            Some("No security findings detected.".to_string()),
+            Some(format!("No {} findings detected.", focus)),
             Vec::new(),
         ));
     }
@@ -1178,35 +1179,35 @@ async fn validate_candidates(
             status: PhaseStatus::Running,
         },
     ));
-    let prompt = validator::build_validator_prompt(candidates)
+    let prompt = validator::build_validator_prompt(candidates, focus)
         .map_err(|e| format!("Failed to build validator prompt: {}", e))?;
-    let result = match validator::run_validator(provider, model, api_key, workspace, &prompt).await
-    {
-        Ok(output) => {
-            let mut parsed = parse_agent_review_output(&output, "Validator");
-            stamp_parsed_comments_focus(&mut parsed, focus);
-            Ok(review_validator_parse_result(
-                parsed,
-                candidates,
-                anti_pattern_store,
-            ))
-        }
-        Err(ReviewAgentError::Timeout) => Ok((
-            candidates.to_vec(),
-            false,
-            None,
-            vec!["Validator agent timed out".to_string()],
-        )),
-        Err(ReviewAgentError::Provider(error)) => Ok((
-            candidates.to_vec(),
-            false,
-            None,
-            vec![format!(
-                "Validator agent failed: {}",
-                sanitize_failure_detail(&error)
-            )],
-        )),
-    };
+    let result =
+        match validator::run_validator(provider, model, api_key, workspace, &prompt, focus).await {
+            Ok(output) => {
+                let mut parsed = parse_agent_review_output(&output, "Validator");
+                stamp_parsed_comments_focus(&mut parsed, focus);
+                Ok(review_validator_parse_result(
+                    parsed,
+                    candidates,
+                    anti_pattern_store,
+                ))
+            }
+            Err(ReviewAgentError::Timeout) => Ok((
+                candidates.to_vec(),
+                false,
+                None,
+                vec!["Validator agent timed out".to_string()],
+            )),
+            Err(ReviewAgentError::Provider(error)) => Ok((
+                candidates.to_vec(),
+                false,
+                None,
+                vec![format!(
+                    "Validator agent failed: {}",
+                    sanitize_failure_detail(&error)
+                )],
+            )),
+        };
     emitter.emit_progress(ReviewProgressEvent::new(
         run_id,
         ReviewPhase::Validator {
@@ -1248,12 +1249,12 @@ fn review_validator_parse_result(
 
 fn summarize_comments(comments: &[ReviewComment], validated: bool) -> String {
     if comments.is_empty() {
-        return "No security findings detected.".to_string();
+        return "No findings detected.".to_string();
     }
 
     let validation = if validated { "validated" } else { "candidate" };
     format!(
-        "Found {} {} security finding{}.",
+        "Found {} {} finding{}.",
         comments.len(),
         validation,
         if comments.len() == 1 { "" } else { "s" }

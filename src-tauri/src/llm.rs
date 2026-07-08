@@ -168,8 +168,8 @@ use crate::corpus::tools::{
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::review::tools::{
-    create_record_review_outcome_tool, create_run_review_tool, create_run_security_review_tool,
-    REVIEW_TOOLS_SYSTEM_PROMPT,
+    create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
+    create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
 };
 use crate::session_mode::session_mode_allows_source_edit;
 use crate::shell_tools::{
@@ -565,6 +565,7 @@ fn registered_main_workspace_tool_names(workspace: &WorkspaceToolContext) -> Vec
     names.extend([
         "write_harness_file",
         "run_review",
+        "run_multi_review",
         "run_security_review",
         "record_review_outcome",
         "run_shell_command",
@@ -882,6 +883,12 @@ where
                         workspace_context.workspace_path.clone(),
                     ))
                     .tool(create_run_review_tool(
+                        workspace_context.workspace_path.clone(),
+                        provider.to_string(),
+                        model.to_string(),
+                        api_key.to_string(),
+                    ))
+                    .tool(create_run_multi_review_tool(
                         workspace_context.workspace_path.clone(),
                         provider.to_string(),
                         model.to_string(),

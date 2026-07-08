@@ -1,18 +1,18 @@
-use super::{knowledge, AgentConfig, ReviewAgentError, ReviewComment};
+use super::{knowledge, AgentConfig, ReviewAgentError, ReviewComment, ReviewFocus};
 use crate::llm::{WorkspaceToolContext, AGENT_MAX_TURNS};
 use std::time::Duration;
 
 const VALIDATOR_TIMEOUT: Duration = Duration::from_secs(30);
 
-const VALIDATOR_PREAMBLE: &str = r#"
+const VALIDATOR_BASE_PREAMBLE: &str = r#"
 You are the Gospel Validator Agent.
 
-Validate detector candidates against CWE knowledge and the workspace source. Keep only findings that are concrete, exploitable, and supported by the supplied evidence or by live read_file context. Remove duplicates and downgrade severity when the evidence is weaker than the detector claimed.
+Validate detector candidates against the appropriate domain knowledge and the workspace source. Keep only findings that are concrete, actionable, and supported by the supplied evidence or by live read_file context. Remove duplicates and downgrade severity when the evidence is weaker than the detector claimed.
 
 Suggest a "signal_tier" for each retained finding:
-- "tier_1": critical, clearly exploitable issues such as Critical CWE-78 command injection, authentication bypass, secrets exposure, path traversal, SQL injection, unsafe deserialization, or SSRF.
-- "tier_2": important but less urgent issues such as Medium/High CSRF, information disclosure, weak crypto, missing rate limits, or input validation flaws with bounded impact.
-- "noise": non-actionable, speculative, style, formatting, docs, test-only, or maintainability comments that should not interrupt the user.
+- "tier_1": critical, high-confidence issues that should interrupt the user immediately.
+- "tier_2": important actionable issues with concrete impact.
+- "noise": non-actionable, speculative, formatting-only, personal preference, or low-value comments.
 - "unclassified": legacy or uncertain cases where the tier cannot be inferred.
 
 The backend applies deterministic guardrails after validation, so provide the best signal_tier but do not rely on it to override the concrete evidence.
@@ -49,11 +49,53 @@ Return only JSON shaped like this example:
 Preserve the ReviewComment fields exactly except when correcting severity, wording, or signal_tier. Return an empty comments array when no candidate is valid.
 "#;
 
-pub fn build_validator_prompt(candidates: &[ReviewComment]) -> Result<String, serde_json::Error> {
+pub fn preamble_for_focus(focus: ReviewFocus) -> String {
+    format!(
+        "{base}\n\nCurrent review focus: {focus}. {guidance}",
+        base = VALIDATOR_BASE_PREAMBLE,
+        guidance = focus_validation_guidance(focus),
+    )
+}
+
+fn focus_validation_guidance(focus: ReviewFocus) -> &'static str {
+    match focus {
+        ReviewFocus::Security => "Validate against CWE knowledge. Keep only findings with concrete exploit or exposure evidence.",
+        ReviewFocus::BugHunt => "Validate against correctness invariants. Keep only findings where the bug is reproducible with a concrete input, state sequence, or error path.",
+        ReviewFocus::Architecture => "Validate against module boundary, dependency direction, and interface-depth principles. Keep only findings where the violation is structural, not stylistic.",
+        ReviewFocus::Performance => "Validate against algorithmic, allocation, memory, and I/O complexity principles. Keep only findings with plausible measurable impact, not micro-optimizations.",
+        ReviewFocus::Style => "Validate against project conventions and language idiom. Keep only findings that improve clarity or maintainability, not personal preference.",
+    }
+}
+
+fn knowledge_for_focus(focus: ReviewFocus) -> &'static str {
+    match focus {
+        ReviewFocus::Security => knowledge::CWE_ENTRIES,
+        ReviewFocus::BugHunt => knowledge::BUG_PATTERNS,
+        ReviewFocus::Architecture => knowledge::ARCHITECTURE_PATTERNS,
+        ReviewFocus::Performance => knowledge::PERFORMANCE_PATTERNS,
+        ReviewFocus::Style => knowledge::STYLE_RULES,
+    }
+}
+
+fn knowledge_label_for_focus(focus: ReviewFocus) -> &'static str {
+    match focus {
+        ReviewFocus::Security => "CWE knowledge",
+        ReviewFocus::BugHunt => "Bug pattern knowledge",
+        ReviewFocus::Architecture => "Architecture knowledge",
+        ReviewFocus::Performance => "Performance knowledge",
+        ReviewFocus::Style => "Style knowledge",
+    }
+}
+
+pub fn build_validator_prompt(
+    candidates: &[ReviewComment],
+    focus: ReviewFocus,
+) -> Result<String, serde_json::Error> {
     let candidates_json = serde_json::to_string_pretty(candidates)?;
     Ok(format!(
-        "CWE knowledge:\n{cwe_entries}\n\nDetector candidates:\n{candidates_json}\n\nValidate each candidate. Use read_file only when you need source context to confirm or reject a candidate. Output only the JSON object.",
-        cwe_entries = knowledge::CWE_ENTRIES
+        "{knowledge_label}:\n{knowledge}\n\nDetector candidates:\n{candidates_json}\n\nValidate each candidate for the {focus} focus. Use read_file only when you need source context to confirm or reject a candidate. Output only the JSON object.",
+        knowledge_label = knowledge_label_for_focus(focus),
+        knowledge = knowledge_for_focus(focus),
     ))
 }
 
@@ -63,17 +105,46 @@ pub async fn run_validator(
     api_key: &str,
     workspace: &WorkspaceToolContext,
     prompt: &str,
+    focus: ReviewFocus,
 ) -> Result<String, ReviewAgentError> {
+    let preamble = preamble_for_focus(focus);
     super::run_workspace_agent(AgentConfig {
         provider,
         model,
         api_key,
         workspace,
-        preamble: VALIDATOR_PREAMBLE,
+        preamble: preamble.as_str(),
         prompt,
         timeout: VALIDATOR_TIMEOUT,
         max_turns: AGENT_MAX_TURNS,
         on_tool_event: None,
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validator_focus_guidance_covers_all_focuses() {
+        for focus in [
+            ReviewFocus::Security,
+            ReviewFocus::BugHunt,
+            ReviewFocus::Architecture,
+            ReviewFocus::Performance,
+            ReviewFocus::Style,
+        ] {
+            let preamble = preamble_for_focus(focus);
+            assert!(preamble.contains(&format!("Current review focus: {focus}")));
+        }
+    }
+
+    #[test]
+    fn build_validator_prompt_uses_focus_knowledge() {
+        let prompt = build_validator_prompt(&[], ReviewFocus::Architecture).unwrap();
+
+        assert!(prompt.contains("Architecture knowledge:"));
+        assert!(prompt.contains("architecture/dependency-direction"));
+    }
 }

@@ -1,6 +1,7 @@
 use super::outcome::{record_review_outcome, ReviewOutcome};
 use super::{
-    run_review, NoopReviewProgressEmitter, ReviewComment, ReviewConfig, ReviewFocus, ReviewResult,
+    multi, run_review, NoopReviewProgressEmitter, ReviewComment, ReviewConfig, ReviewFocus,
+    ReviewResult,
 };
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
@@ -14,9 +15,9 @@ use std::path::PathBuf;
 pub const REVIEW_TOOLS_SYSTEM_PROMPT: &str = r#"
 ## Review Tools
 
-Use `run_review` when the user asks to review local changes, a pull request, or the full workspace. Set `focus` to `Security` for security findings.
+Use `run_review` for a single-focus review (Security, BugHunt, Architecture, Performance, or Style) over local changes, a pull request, or the full workspace. Use `run_multi_review` to run all focuses in parallel for a comprehensive code review.
 
-`run_security_review` is a deprecated compatibility alias. It always runs the `Security` focus and must not be used for other focuses.
+`run_security_review` is a deprecated compatibility alias. Prefer `run_review` or `run_multi_review` for new review requests.
 
 When narrating review results:
 - Prefix each visible finding with its stable index, e.g. `[1]`, `[2]`.
@@ -41,6 +42,15 @@ pub struct RunSecurityReviewArgs {
     pr_number: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunMultiReviewArgs {
+    mode: String,
+    pr_number: Option<u64>,
+    #[serde(default)]
+    focuses: Option<Vec<ReviewFocus>>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RunReviewTool {
     workspace_root: PathBuf,
@@ -52,6 +62,15 @@ pub struct RunReviewTool {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RunSecurityReviewTool {
+    workspace_root: PathBuf,
+    provider: String,
+    model: String,
+    #[serde(skip_serializing, skip_deserializing)]
+    api_key: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RunMultiReviewTool {
     workspace_root: PathBuf,
     provider: String,
     model: String,
@@ -75,6 +94,18 @@ impl fmt::Debug for RunSecurityReviewTool {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RunSecurityReviewTool")
+            .field("workspace_root", &self.workspace_root)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &"REDACTED")
+            .finish()
+    }
+}
+
+impl fmt::Debug for RunMultiReviewTool {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RunMultiReviewTool")
             .field("workspace_root", &self.workspace_root)
             .field("provider", &self.provider)
             .field("model", &self.model)
@@ -125,6 +156,59 @@ impl Tool for RunReviewTool {
             args.focus,
         )
         .await
+    }
+}
+
+impl Tool for RunMultiReviewTool {
+    const NAME: &'static str = "run_multi_review";
+
+    type Error = WorkspaceToolError;
+    type Args = RunMultiReviewArgs;
+    type Output = multi::MultiReviewResult;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Run Gospel's code review pipeline across multiple focuses in parallel and return unified findings.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["local", "pr", "scan"],
+                        "description": "Review mode: local staged/unstaged changes, a GitHub pull request, or a full workspace scan."
+                    },
+                    "pr_number": {
+                        "type": "integer",
+                        "description": "Required when mode is pr."
+                    },
+                    "focuses": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["Security", "BugHunt", "Architecture", "Performance", "Style"]
+                        },
+                        "description": "Optional subset of focuses. Defaults to all focuses."
+                    }
+                },
+                "required": ["mode"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let focuses = args.focuses.unwrap_or_else(|| multi::ALL_FOCUSES.to_vec());
+        multi::run_multi_focus_review(
+            self.provider.clone(),
+            self.model.clone(),
+            args.mode,
+            args.pr_number,
+            &focuses,
+            self.workspace_root.clone(),
+            self.api_key.clone(),
+        )
+        .await
+        .map_err(WorkspaceToolError::Internal)
     }
 }
 
@@ -179,8 +263,8 @@ fn review_tool_parameters(include_focus: bool) -> serde_json::Value {
             "focus".to_string(),
             json!({
                 "type": "string",
-                "enum": ["Security"],
-                "description": "Review focus for this single invocation. Phase 1 accepts only Security."
+                "enum": ["Security", "BugHunt", "Architecture", "Performance", "Style"],
+                "description": "Review focus for this single invocation."
             }),
         );
     }
@@ -201,19 +285,6 @@ async fn run_review_tool(
     pr_number: Option<u64>,
     focus: ReviewFocus,
 ) -> Result<RunReviewOutput, WorkspaceToolError> {
-    if focus != ReviewFocus::Security {
-        return Ok(RunReviewOutput {
-            success: false,
-            message: format!(
-                "{} review focus is not available yet. Use Security for now.",
-                focus
-            ),
-            reason: Some("focus_not_available".to_string()),
-            review: None,
-            findings: Vec::new(),
-        });
-    }
-
     let config = ReviewConfig {
         provider,
         model,
@@ -365,6 +436,20 @@ pub fn create_run_review_tool(
     }
 }
 
+pub fn create_run_multi_review_tool(
+    workspace_root: PathBuf,
+    provider: String,
+    model: String,
+    api_key: String,
+) -> RunMultiReviewTool {
+    RunMultiReviewTool {
+        workspace_root,
+        provider,
+        model,
+        api_key,
+    }
+}
+
 pub fn create_record_review_outcome_tool(workspace_root: PathBuf) -> RecordReviewOutcomeTool {
     RecordReviewOutcomeTool { workspace_root }
 }
@@ -440,31 +525,37 @@ mod tests {
         assert!(canonical_parameters.to_string().contains("focus"));
         assert_eq!(
             canonical_parameters["properties"]["focus"]["enum"],
-            json!(["Security"])
+            json!([
+                "Security",
+                "BugHunt",
+                "Architecture",
+                "Performance",
+                "Style"
+            ])
         );
         assert!(!alias_parameters.to_string().contains("focus"));
     }
 
     #[tokio::test]
-    async fn run_review_tool_rejects_non_security_focus_before_dispatch() {
-        let output = run_review_tool(
+    async fn run_multi_review_tool_definition_exposes_all_focuses() {
+        let tool = create_run_multi_review_tool(
             PathBuf::from("/workspace"),
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
-            "local".to_string(),
-            None,
-            ReviewFocus::BugHunt,
-        )
-        .await
-        .unwrap();
+        );
 
-        assert!(!output.success);
-        assert_eq!(output.reason.as_deref(), Some("focus_not_available"));
-        assert!(output
-            .message
-            .contains("BugHunt review focus is not available"));
-        assert!(output.review.is_none());
-        assert!(output.findings.is_empty());
+        let parameters = tool.definition(String::new()).await.parameters;
+
+        assert_eq!(
+            parameters["properties"]["focuses"]["items"]["enum"],
+            json!([
+                "Security",
+                "BugHunt",
+                "Architecture",
+                "Performance",
+                "Style"
+            ])
+        );
     }
 }

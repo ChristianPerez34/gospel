@@ -4,7 +4,10 @@ import { normalize, resolve } from "@tauri-apps/api/path";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import type {
+  MultiReviewResult,
   ReviewComment,
+  ReviewFocus,
+  ReviewFocusFilter,
   ReviewOutcome,
   ReviewOutcomeOutput,
   ReviewResult,
@@ -39,6 +42,14 @@ const MODE_OPTIONS: Array<{ value: ReviewPanelMode; label: string }> = [
   { value: "local", label: "Local" },
   { value: "pr", label: "PR" },
   { value: "scan", label: "Scan" },
+];
+
+const FOCUS_OPTIONS: Array<{ value: ReviewFocus; label: string; className: string }> = [
+  { value: "Security", label: "Security", className: "border-status-error text-status-error" },
+  { value: "BugHunt", label: "Bug Hunt", className: "border-accent-data text-accent-data" },
+  { value: "Architecture", label: "Architecture", className: "border-accent-structure text-accent-structure" },
+  { value: "Performance", label: "Performance", className: "border-status-warning text-status-warning" },
+  { value: "Style", label: "Style", className: "border-text-muted text-text-secondary" },
 ];
 
 const SEVERITY_CLASS: Record<string, string> = {
@@ -101,6 +112,22 @@ async function absoluteFilePath(workspacePath: string | undefined, file: string)
 
 function isHidden(comment: ReviewComment) {
   return (comment.signal_tier as string) === "hidden";
+}
+
+function focusOption(focus: ReviewFocus) {
+  return FOCUS_OPTIONS.find((option) => option.value === focus);
+}
+
+function focusLabel(focus: ReviewFocus) {
+  return focusOption(focus)?.label ?? focus;
+}
+
+function FocusBadge({ focus }: { focus: ReviewFocus }) {
+  return (
+    <Badge className={focusOption(focus)?.className ?? "border-text-muted text-text-secondary"}>
+      {focusLabel(focus)}
+    </Badge>
+  );
 }
 
 function ThumbUpIcon() {
@@ -173,17 +200,33 @@ export function ReviewPanel({
   const panelRef = useRef<HTMLElement>(null);
   const [mode, setMode] = useState<ReviewPanelMode>("local");
   const [prNumber, setPrNumber] = useState("");
+  const [selectedFocus, setSelectedFocus] = useState<ReviewFocus>("Security");
+  const [focusFilter, setFocusFilter] = useState<ReviewFocusFilter>("All");
   const [result, setResult] = useState<ReviewResult | null>(null);
+  const [multiResult, setMultiResult] = useState<MultiReviewResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<Record<string, ReviewOutcome>>({});
   const reviewProgress = useReviewProgress();
 
-  const visibleComments = useMemo(
-    () => result?.comments.filter((comment) => !isHidden(comment)) ?? [],
-    [result],
-  );
-  const totalFindings = (result?.comments.length ?? 0) + (result?.suppressed_count ?? 0);
+  const visibleComments = useMemo(() => {
+    const comments = multiResult
+      ? multiResult.results.flatMap((review) => review.comments)
+      : result?.comments ?? [];
+    return comments.filter(
+      (comment) => !isHidden(comment) && (focusFilter === "All" || comment.focus === focusFilter),
+    );
+  }, [multiResult, result, focusFilter]);
+  const activeSummary = multiResult?.summary ?? result?.summary;
+  const totalFindings = multiResult
+    ? multiResult.total_findings + multiResult.total_suppressed
+    : (result?.comments.length ?? 0) + (result?.suppressed_count ?? 0);
+  const totalSuppressed = multiResult?.total_suppressed ?? result?.suppressed_count ?? 0;
+  const averageSnr = multiResult
+    ? multiResult.results.length > 0
+      ? multiResult.results.reduce((sum, review) => sum + review.snr_percent, 0) / multiResult.results.length
+      : 0
+    : result?.snr_percent ?? 0;
   const actionableCount = useMemo(
     () => visibleComments.filter(isActionableReviewFinding).length,
     [visibleComments],
@@ -227,11 +270,14 @@ export function ReviewPanel({
           model,
           mode,
           prNumber: mode === "pr" ? Number(prNumber) : null,
+          focus: selectedFocus,
         },
       });
       setResult(review);
+      setMultiResult(null);
+      setFocusFilter("All");
       setOutcomes({});
-      onSuccess?.("Security review complete.");
+      onSuccess?.(`${focusLabel(selectedFocus)} review complete.`);
     } catch (err) {
       const message = String(err);
       setError(message);
@@ -241,12 +287,56 @@ export function ReviewPanel({
     }
   };
 
+  const runMultiReview = async () => {
+    if (!provider || !model || !workspacePath) {
+      const message = "Select a workspace and model before running a review.";
+      setError(message);
+      onError?.(message);
+      return;
+    }
+
+    if (mode === "pr" && !Number(prNumber)) {
+      const message = "Enter a PR number.";
+      setError(message);
+      onError?.(message);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    reviewProgress.reset();
+    try {
+      const review = await invoke<MultiReviewResult>("gospel_multi_review", {
+        provider,
+        model,
+        mode,
+        prNumber: mode === "pr" ? Number(prNumber) : null,
+        focuses: FOCUS_OPTIONS.map((option) => option.value),
+      });
+      setMultiResult(review);
+      setResult(null);
+      setFocusFilter("All");
+      setOutcomes({});
+      onSuccess?.("Multi-focus review complete.");
+    } catch (err) {
+      const message = String(err);
+      setError(message);
+      onError?.(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const reviewForComment = (comment: ReviewComment) =>
+    multiResult?.results.find((review) => review.focus === comment.focus) ?? result;
+
   const recordOutcome = async (comment: ReviewComment, outcome: ReviewOutcome) => {
-    if (!result) return;
+    const sourceReview = reviewForComment(comment);
+    if (!sourceReview) return;
 
     try {
       await invoke<ReviewOutcomeOutput>("gospel_record_review_outcome", {
-        runId: result.run_id,
+        runId: sourceReview.run_id,
         commentId: comment.comment_id,
         outcome,
       });
@@ -280,11 +370,12 @@ export function ReviewPanel({
   };
 
   const copyFindingPrompt = async (comment: ReviewComment, index: number) => {
-    if (!result) return;
+    const sourceReview = reviewForComment(comment);
+    if (!sourceReview) return;
 
     const prompt = buildExternalAgentFindingPrompt({
       comment,
-      review: result,
+      review: sourceReview,
       index: index + 1,
       workspacePath,
     });
@@ -303,11 +394,12 @@ export function ReviewPanel({
   };
 
   const fixFinding = async (comment: ReviewComment, index: number) => {
-    if (!result || !onFixFinding) return;
+    const sourceReview = reviewForComment(comment);
+    if (!sourceReview || !onFixFinding) return;
 
     const prompt = buildGospelFixFindingPrompt({
       comment,
-      review: result,
+      review: sourceReview,
       index: index + 1,
       workspacePath,
     });
@@ -328,16 +420,16 @@ export function ReviewPanel({
       ref={panelRef}
       role="dialog"
       aria-modal="true"
-      aria-label="Security review"
+      aria-label="Code review"
       tabIndex={-1}
     >
       <header className="flex min-h-[52px] items-center justify-between border-b border-surface-overlay px-4">
         <div className="min-w-0">
           <h2 className="m-0 truncate text-heading-sm font-medium text-text-primary">
-            Security review
+            Code review
           </h2>
           <p className="m-0 truncate font-mono text-caption text-text-muted">
-            {result?.run_id ?? workspacePath ?? "No workspace"}
+            {result?.run_id ?? (multiResult ? "multi-focus" : workspacePath) ?? "No workspace"}
           </p>
         </div>
         <Button
@@ -385,26 +477,50 @@ export function ReviewPanel({
               aria-label="Pull request number"
             />
           )}
-          <Button
-            variant="default"
-            size="sm"
-            className="ml-auto font-mono font-semibold"
-            onClick={runReview}
-            disabled={!canRun}
+          <select
+            className="h-11 rounded-sm border border-surface-overlay bg-surface-base px-2 font-mono text-caption text-text-primary"
+            value={selectedFocus}
+            onChange={(event) => setSelectedFocus(event.target.value as ReviewFocus)}
+            aria-label="Review focus"
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M8 2 13 4v3.5c0 3-1.9 5.2-5 6.5-3.1-1.3-5-3.5-5-6.5V4l5-2Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-              <path d="m5.7 8.2 1.4 1.4 3.2-3.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            {loading ? "Running" : "Run"}
-          </Button>
+            {FOCUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button
+              variant="default"
+              size="sm"
+              className="font-mono font-semibold"
+              onClick={runReview}
+              disabled={!canRun}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 2 13 4v3.5c0 3-1.9 5.2-5 6.5-3.1-1.3-5-3.5-5-6.5V4l5-2Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                <path d="m5.7 8.2 1.4 1.4 3.2-3.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {loading ? "Running" : "Run"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="font-mono font-semibold"
+              onClick={runMultiReview}
+              disabled={!canRun}
+            >
+              Run All
+            </Button>
+          </div>
         </div>
 
-        {result && (
+        {(result || multiResult) && (
           <div className="review-summary grid gap-2 rounded-md border border-surface-overlay bg-surface-base p-3">
             <div className="flex flex-wrap items-center gap-2">
+              {result && <FocusBadge focus={result.focus} />}
               <Badge className="border-accent-action text-accent-action">
-                {formatPercent(result.snr_percent)} SNR
+                {formatPercent(averageSnr)} SNR
               </Badge>
               <Badge className="border-text-muted text-text-secondary">
                 {totalFindings} total
@@ -416,10 +532,50 @@ export function ReviewPanel({
                 {actionableCount} actionable
               </Badge>
               <Badge className="border-text-muted text-text-muted">
-                {result.suppressed_count} suppressed
+                {totalSuppressed} suppressed
               </Badge>
+              {multiResult && Object.keys(multiResult.errors).length > 0 && (
+                <Badge className="border-status-warning text-status-warning">
+                  {Object.keys(multiResult.errors).length} failed
+                </Badge>
+              )}
             </div>
-            <p className="m-0 text-body-sm text-text-secondary">{result.summary}</p>
+            <p className="m-0 text-body-sm text-text-secondary">{activeSummary}</p>
+          </div>
+        )}
+
+        {multiResult && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className={`min-h-8 rounded-sm border px-3 font-mono text-caption transition-colors ${
+                focusFilter === "All"
+                  ? "border-accent-action bg-surface-overlay text-accent-action"
+                  : "border-surface-overlay text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
+              }`}
+              onClick={() => setFocusFilter("All")}
+              aria-pressed={focusFilter === "All"}
+            >
+              All ({multiResult.results.reduce((sum, review) => sum + review.comments.length, 0)})
+            </button>
+            {FOCUS_OPTIONS.map((option) => {
+              const count = multiResult.results.find((review) => review.focus === option.value)?.comments.length ?? 0;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`min-h-8 rounded-sm border px-3 font-mono text-caption transition-colors ${
+                    focusFilter === option.value
+                      ? "border-accent-action bg-surface-overlay text-accent-action"
+                      : "border-surface-overlay text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
+                  }`}
+                  onClick={() => setFocusFilter(option.value)}
+                  aria-pressed={focusFilter === option.value}
+                >
+                  {option.label} ({count})
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -431,7 +587,7 @@ export function ReviewPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {!result && !loading && (
+        {!result && !multiResult && !loading && (
           <div className="grid h-full place-items-center text-center">
             <div className="max-w-[34ch]">
               <p className="m-0 text-body-sm text-text-secondary">
@@ -459,13 +615,13 @@ export function ReviewPanel({
           </div>
         )}
 
-        {result && !loading && visibleComments.length === 0 && (
+        {(result || multiResult) && !loading && visibleComments.length === 0 && (
           <div className="rounded-md border border-surface-overlay bg-surface-base p-4 text-body-sm text-text-secondary">
             No visible findings.
           </div>
         )}
 
-        {result && !loading && visibleComments.length > 0 && (
+        {(result || multiResult) && !loading && visibleComments.length > 0 && (
           <ol className="m-0 grid list-none gap-3 p-0">
             {visibleComments.map((comment, index) => {
               const outcome = outcomes[comment.comment_id];
@@ -479,6 +635,7 @@ export function ReviewPanel({
                       <span className="font-mono text-caption text-text-muted">
                         [{index + 1}]
                       </span>
+                      {multiResult && <FocusBadge focus={comment.focus} />}
                       <Badge className={SEVERITY_CLASS[comment.severity] ?? SEVERITY_CLASS.Info}>
                         {comment.severity}
                       </Badge>
