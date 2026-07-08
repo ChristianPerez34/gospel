@@ -100,6 +100,12 @@ impl CommandPolicy {
             return CommandSafety::Blocked("dangerous_command".to_string());
         }
 
+        if program_lower == "find" {
+            if let Some(safety) = classify_find_action(args) {
+                return safety;
+            }
+        }
+
         // Workspace-escaping paths require approval.
         if has_path_escape(args, workspace_root).is_some() {
             return CommandSafety::Mutating;
@@ -174,13 +180,13 @@ impl CommandPolicy {
         }
 
         if subcommand == "stash" {
-            return if args
-                .iter()
-                .any(|a| matches!(a.as_str(), "pop" | "drop" | "clear" | "apply"))
-            {
-                CommandSafety::Mutating
-            } else {
+            return if matches!(
+                args.get(1).map(|s| s.as_str()),
+                Some("list" | "show" | "-h" | "--help")
+            ) {
                 CommandSafety::ReadOnly
+            } else {
+                CommandSafety::Mutating
             };
         }
 
@@ -190,7 +196,13 @@ impl CommandPolicy {
                 .any(|a| a == "-d" || a == "--delete" || a == "-f" || a == "--force")
             {
                 CommandSafety::Destructive
-            } else if args.iter().any(|a| !a.starts_with('-')) {
+            } else if args
+                .iter()
+                .skip(1)
+                .any(|a| a == "-l" || a == "--list" || a.starts_with("-n"))
+            {
+                CommandSafety::ReadOnly
+            } else if args.iter().skip(1).any(|a| !a.starts_with('-')) {
                 // Creating a tag is mutating.
                 CommandSafety::Mutating
             } else {
@@ -276,12 +288,7 @@ impl CommandPolicy {
 
         if first == "api" {
             // `gh api` is read-only by default; mutating HTTP methods require approval.
-            return if args.iter().any(|a| {
-                matches!(
-                    a.to_ascii_uppercase().as_str(),
-                    "-XPOST" | "-XPUT" | "-XPATCH" | "-XDELETE"
-                )
-            }) {
+            return if gh_api_uses_mutating_method(args) {
                 CommandSafety::Mutating
             } else {
                 CommandSafety::ReadOnly
@@ -292,22 +299,46 @@ impl CommandPolicy {
         if matches!(
             first.as_str(),
             "pr" | "issue" | "run" | "release" | "repo" | "workflow"
+        ) && matches!(
+            second.as_deref(),
+            Some("list")
+                | Some("view")
+                | Some("status")
+                | Some("checks")
+                | Some("diff")
+                | Some("watch")
         ) {
-            if matches!(
-                second.as_deref(),
-                Some("list")
-                    | Some("view")
-                    | Some("status")
-                    | Some("checks")
-                    | Some("diff")
-                    | Some("watch")
-            ) {
-                return CommandSafety::ReadOnly;
-            }
+            return CommandSafety::ReadOnly;
         }
 
         CommandSafety::Mutating
     }
+}
+
+fn gh_api_uses_mutating_method(args: &[String]) -> bool {
+    args.iter().enumerate().any(|(i, arg)| {
+        if let Some(method) = arg.strip_prefix("-X") {
+            return http_method_is_mutating(method)
+                || (method.is_empty()
+                    && args
+                        .get(i + 1)
+                        .is_some_and(|method| http_method_is_mutating(method)));
+        }
+        if let Some(method) = arg.strip_prefix("--method=") {
+            return http_method_is_mutating(method);
+        }
+        arg == "--method"
+            && args
+                .get(i + 1)
+                .is_some_and(|method| http_method_is_mutating(method))
+    })
+}
+
+fn http_method_is_mutating(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "POST" | "PUT" | "PATCH" | "DELETE"
+    )
 }
 
 fn is_shell_interpreter(program: &str) -> bool {
@@ -370,6 +401,19 @@ fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
     }
 
     false
+}
+
+fn classify_find_action(args: &[String]) -> Option<CommandSafety> {
+    if args.iter().any(|a| a == "-delete") {
+        return Some(CommandSafety::Destructive);
+    }
+    if args
+        .iter()
+        .any(|a| a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir")
+    {
+        return Some(CommandSafety::Mutating);
+    }
+    None
 }
 
 fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
@@ -475,7 +519,7 @@ impl CommandExecutor {
     pub fn new(workspace_root: PathBuf, approval: Option<Arc<dyn CommandApproval>>) -> Self {
         Self {
             workspace_root,
-            policy: CommandPolicy::default(),
+            policy: CommandPolicy,
             approval,
         }
     }
@@ -1002,6 +1046,33 @@ mod tests {
     }
 
     #[test]
+    fn classify_shell_requires_approval_for_find_actions() {
+        let policy = CommandPolicy;
+        assert_eq!(
+            policy.classify_shell(
+                "find",
+                &[".".to_string(), "-delete".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Destructive
+        );
+        assert_eq!(
+            policy.classify_shell(
+                "find",
+                &[
+                    ".".to_string(),
+                    "-exec".to_string(),
+                    "rm".to_string(),
+                    "{}".to_string(),
+                    "+".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::Mutating
+        );
+    }
+
+    #[test]
     fn classify_shell_treats_unknown_as_mutating() {
         let policy = CommandPolicy;
         assert_eq!(
@@ -1067,6 +1138,64 @@ mod tests {
                 &workspace()
             ),
             CommandSafety::Mutating
+        );
+    }
+
+    #[test]
+    fn classify_git_treats_stash_writes_as_mutating() {
+        let policy = CommandPolicy;
+        for args in [
+            vec!["stash".to_string()],
+            vec!["stash".to_string(), "push".to_string()],
+            vec!["stash".to_string(), "save".to_string()],
+            vec![
+                "stash".to_string(),
+                "branch".to_string(),
+                "saved".to_string(),
+            ],
+        ] {
+            assert_eq!(
+                policy.classify_git(&args, &workspace()),
+                CommandSafety::Mutating
+            );
+        }
+        for args in [
+            vec!["stash".to_string(), "list".to_string()],
+            vec!["stash".to_string(), "show".to_string()],
+            vec!["stash".to_string(), "-h".to_string()],
+            vec!["stash".to_string(), "--help".to_string()],
+        ] {
+            assert_eq!(
+                policy.classify_git(&args, &workspace()),
+                CommandSafety::ReadOnly
+            );
+        }
+    }
+
+    #[test]
+    fn classify_git_allows_tag_listings() {
+        let policy = CommandPolicy;
+        for args in [
+            vec!["tag".to_string()],
+            vec!["tag".to_string(), "-l".to_string()],
+            vec!["tag".to_string(), "--list".to_string()],
+            vec!["tag".to_string(), "-l".to_string(), "v*".to_string()],
+        ] {
+            assert_eq!(
+                policy.classify_git(&args, &workspace()),
+                CommandSafety::ReadOnly
+            );
+        }
+        assert_eq!(
+            policy.classify_git(&["tag".to_string(), "v1.0.0".to_string()], &workspace()),
+            CommandSafety::Mutating
+        );
+        assert_eq!(
+            policy.classify_git(
+                &["tag".to_string(), "-d".to_string(), "v1.0.0".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Destructive
         );
     }
 
@@ -1147,17 +1276,35 @@ mod tests {
     #[test]
     fn classify_gh_treats_api_post_as_mutating() {
         let policy = CommandPolicy;
-        assert_eq!(
-            policy.classify_gh(
-                &[
-                    "api".to_string(),
-                    "-XPOST".to_string(),
-                    "repos/foo".to_string()
-                ],
-                &workspace()
-            ),
-            CommandSafety::Mutating
-        );
+        for args in [
+            vec![
+                "api".to_string(),
+                "-XPOST".to_string(),
+                "repos/foo".to_string(),
+            ],
+            vec![
+                "api".to_string(),
+                "-X".to_string(),
+                "POST".to_string(),
+                "repos/foo".to_string(),
+            ],
+            vec![
+                "api".to_string(),
+                "--method".to_string(),
+                "PATCH".to_string(),
+                "repos/foo".to_string(),
+            ],
+            vec![
+                "api".to_string(),
+                "--method=DELETE".to_string(),
+                "repos/foo".to_string(),
+            ],
+        ] {
+            assert_eq!(
+                policy.classify_gh(&args, &workspace()),
+                CommandSafety::Mutating
+            );
+        }
         assert_eq!(
             policy.classify_gh(&["api".to_string(), "repos/foo".to_string()], &workspace()),
             CommandSafety::ReadOnly
