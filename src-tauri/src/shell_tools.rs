@@ -174,6 +174,9 @@ impl CommandPolicy {
         if is_blocked_shell_pattern(&executable_lower, args) {
             return CommandSafety::Blocked("dangerous_command".to_string());
         }
+        if executable_lower == "env" {
+            return self.classify_env_shell_wrapper(args, workspace_root);
+        }
 
         let wrapped_safety = match executable_lower.as_str() {
             "git" => self.classify_git(args, workspace_root),
@@ -1279,6 +1282,14 @@ mod tests {
             policy.classify_shell(
                 "env",
                 &["-S".to_string(), "bash -c echo hi".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
+        assert!(matches!(
+            policy.classify_shell(
+                "env",
+                &["env".to_string(), "bash".to_string()],
                 &workspace()
             ),
             CommandSafety::Blocked(_)
