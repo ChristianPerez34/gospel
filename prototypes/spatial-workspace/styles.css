@@ -241,7 +241,7 @@ button {
   border-radius: 1px;
   animation: equalize 0.8s infinite ease-in-out alternate;
   transform-origin: bottom;
-  box-shadow: 0 0 4px rgba(var(--status-success), 0.5);
+  box-shadow: 0 0 4px oklch(0.72 0.19 155 / 0.5);
 }
 
 .agent-compute-graph .bar:nth-child(1) { height: 6px; animation-delay: 0.1s; }
@@ -249,15 +249,6 @@ button {
 .agent-compute-graph .bar:nth-child(3) { height: 8px; animation-delay: 0.2s; }
 .agent-compute-graph .bar:nth-child(4) { height: 12px; animation-delay: 0.6s; }
 .agent-compute-graph .bar:nth-child(5) { height: 10px; animation-delay: 0.3s; }
-
-.memory-toggle {
-  opacity: 0.5;
-  transition: opacity 200ms ease;
-}
-.memory-toggle.active {
-  opacity: 1;
-  color: var(--accent-action);
-}
 
 /* Fluid Workspace Grid */
 .workspace {
@@ -604,7 +595,7 @@ button {
   cursor: default;
 }
 
-.memory-toggle:not(.active-compute):hover {
+.agent-memory-bar:not(.active-compute) .memory-toggle:hover {
   background: var(--surface-elevated);
   border-color: var(--surface-overlay);
   color: var(--text-primary);

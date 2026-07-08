@@ -160,6 +160,8 @@
   --gospel-surface-base: oklch(0.98 0.003 260);
   --gospel-surface-elevated: oklch(1.00 0.002 260);
   --gospel-surface-overlay: oklch(0.95 0.004 260);
+  --gospel-surface-sunken: oklch(0.92 0.004 260);
+  --gospel-surface-line: oklch(0.88 0.004 260);
   --gospel-scrim: oklch(0.10 0.000 260 / 0.35);
 
   --gospel-text-primary: oklch(0.18 0.010 260);

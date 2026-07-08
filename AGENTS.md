@@ -34,8 +34,8 @@ Gospel exposes three agent-facing tools for workspace command execution:
 - Mutating or destructive commands require one-time user approval via a native Tauri dialog.
 - Hard-blocked commands always fail without approval:
   - `rm -rf /` or `rm -rf /*`
-  - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`)
-  - `git push --force`, `git reset --hard`, `git clean -fd`
+  - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
+  - `git push --force`, `git reset --hard`, `git clean`
   - `gh repo delete`
   - Shell interpreters (`sh`, `bash`, `zsh`, `powershell`, etc.) invoked through `run_shell_command`
 - Workspace-escaping paths require approval.

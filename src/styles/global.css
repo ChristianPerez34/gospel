@@ -470,10 +470,14 @@ summary,
   height: 14px;
 }
 
-.workspace-stage-tab:hover,
+.workspace-stage-tab:not(.is-disabled):hover,
 .workspace-stage-tab.is-active {
   background: color-mix(in srgb, var(--surface-base) 60%, var(--surface-elevated) 40%);
   color: var(--text-primary);
+}
+
+.workspace-stage-tab.is-disabled {
+  opacity: 0.65;
 }
 
 .workspace-stage-tab.is-active {
@@ -504,9 +508,14 @@ summary,
   height: 14px;
 }
 
-.stage-icon-button:hover {
+.stage-icon-button:not(:disabled):hover {
   background: var(--surface-overlay);
   color: var(--text-primary);
+}
+
+.stage-icon-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .workspace-stage-content {

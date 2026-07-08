@@ -3,8 +3,9 @@ use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::ffi::OsStr;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,8 +31,8 @@ You can run shell, git, and GitHub CLI commands in the active workspace.
 - Mutating or destructive commands require one-time user approval before execution.
 - The following are always blocked:
   - `rm -rf /` or `rm -rf /*`
-  - Any command containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`)
-  - `git push --force`, `git push -f`, `git reset --hard`, `git clean -fd`
+  - Any command containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
+  - `git push --force`, `git push -f`, `git reset --hard`, `git clean`
   - `gh repo delete`
 - Do not attempt to bypass these rules with encoded characters or indirect invocation.
 
@@ -78,10 +79,12 @@ impl CommandPolicy {
             return CommandSafety::Blocked("empty_program".to_string());
         }
 
-        let program_lower = program.to_ascii_lowercase();
+        let executable = executable_name(program);
+        let executable_lower = executable.to_ascii_lowercase();
+        let program_is_bare_name = executable == program;
 
         // Block shell interpreters to prevent shell-injection attacks.
-        if is_shell_interpreter(&program_lower) {
+        if is_shell_interpreter(&executable_lower) {
             return CommandSafety::Blocked("shell_interpreter".to_string());
         }
 
@@ -95,12 +98,34 @@ impl CommandPolicy {
             }
         }
 
+        if executable_lower == "env" {
+            return self.classify_env_shell_wrapper(args, workspace_root);
+        }
+
         // Hard-block known destructive patterns.
-        if is_blocked_shell_pattern(&program_lower, args) {
+        if is_blocked_shell_pattern(&executable_lower, args) {
             return CommandSafety::Blocked("dangerous_command".to_string());
         }
 
-        if program_lower == "find" {
+        if executable_lower == "git" {
+            let safety = self.classify_git(args, workspace_root);
+            return if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
+                safety
+            } else {
+                CommandSafety::Mutating
+            };
+        }
+
+        if executable_lower == "gh" {
+            let safety = self.classify_gh(args, workspace_root);
+            return if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
+                safety
+            } else {
+                CommandSafety::Mutating
+            };
+        }
+
+        if executable_lower == "find" {
             if let Some(safety) = classify_find_action(args) {
                 return safety;
             }
@@ -112,12 +137,54 @@ impl CommandPolicy {
         }
 
         // Small read-only allowlist runs directly.
-        if is_read_only_shell_program(&program_lower, args) {
+        if program_is_bare_name && is_read_only_shell_program(&executable_lower, args) {
             return CommandSafety::ReadOnly;
         }
 
         // Everything else is treated as mutating and requires approval.
         CommandSafety::Mutating
+    }
+
+    fn classify_env_shell_wrapper(&self, args: &[String], workspace_root: &Path) -> CommandSafety {
+        if let Some(split_args) = parse_env_split_args(args) {
+            let Some((program, wrapped_args)) = split_args.split_first() else {
+                return CommandSafety::Mutating;
+            };
+            return self.classify_wrapped_shell_command(program, wrapped_args, workspace_root);
+        }
+
+        let Some((program, wrapped_args)) = parse_env_wrapped_command(args) else {
+            return CommandSafety::Mutating;
+        };
+        self.classify_wrapped_shell_command(program, wrapped_args, workspace_root)
+    }
+
+    fn classify_wrapped_shell_command(
+        &self,
+        program: &str,
+        args: &[String],
+        workspace_root: &Path,
+    ) -> CommandSafety {
+        let executable = executable_name(program);
+        let executable_lower = executable.to_ascii_lowercase();
+
+        if is_shell_interpreter(&executable_lower) {
+            return CommandSafety::Blocked("shell_interpreter".to_string());
+        }
+        if is_blocked_shell_pattern(&executable_lower, args) {
+            return CommandSafety::Blocked("dangerous_command".to_string());
+        }
+
+        let wrapped_safety = match executable_lower.as_str() {
+            "git" => self.classify_git(args, workspace_root),
+            "gh" => self.classify_gh(args, workspace_root),
+            _ => CommandSafety::Mutating,
+        };
+        if matches!(wrapped_safety, CommandSafety::Blocked(_)) {
+            wrapped_safety
+        } else {
+            CommandSafety::Mutating
+        }
     }
 
     pub fn classify_git(&self, args: &[String], workspace_root: &Path) -> CommandSafety {
@@ -279,10 +346,10 @@ impl CommandPolicy {
         }
 
         if first == "auth" {
-            return if second.as_deref() == Some("status") || second.as_deref() == Some("token") {
-                CommandSafety::ReadOnly
-            } else {
-                CommandSafety::Mutating
+            return match second.as_deref() {
+                Some("status") => CommandSafety::ReadOnly,
+                Some("token") => CommandSafety::Blocked("gh_auth_token".to_string()),
+                _ => CommandSafety::Mutating,
             };
         }
 
@@ -316,22 +383,51 @@ impl CommandPolicy {
 }
 
 fn gh_api_uses_mutating_method(args: &[String]) -> bool {
-    args.iter().enumerate().any(|(i, arg)| {
+    let mut explicit_method: Option<String> = None;
+    let mut has_field_params = false;
+    let mut iter = args.iter().peekable();
+
+    while let Some(arg) = iter.next() {
+        if arg == "-X" || arg == "--method" {
+            if let Some(method) = iter.next() {
+                explicit_method = Some(method.to_string());
+            }
+            continue;
+        }
         if let Some(method) = arg.strip_prefix("-X") {
-            return http_method_is_mutating(method)
-                || (method.is_empty()
-                    && args
-                        .get(i + 1)
-                        .is_some_and(|method| http_method_is_mutating(method)));
+            explicit_method = Some(method.strip_prefix('=').unwrap_or(method).to_string());
+            continue;
         }
         if let Some(method) = arg.strip_prefix("--method=") {
-            return http_method_is_mutating(method);
+            explicit_method = Some(method.to_string());
+            continue;
         }
-        arg == "--method"
-            && args
-                .get(i + 1)
-                .is_some_and(|method| http_method_is_mutating(method))
-    })
+
+        if arg == "-f" || arg == "-F" || arg == "--field" || arg == "--raw-field" {
+            has_field_params = true;
+            let _ = iter.next();
+            continue;
+        }
+        if (arg.starts_with("-f") && arg.len() > 2)
+            || (arg.starts_with("-F") && arg.len() > 2)
+            || arg.starts_with("--field=")
+            || arg.starts_with("--raw-field=")
+        {
+            has_field_params = true;
+        }
+    }
+
+    if explicit_method
+        .as_deref()
+        .is_some_and(http_method_is_mutating)
+    {
+        return true;
+    }
+
+    has_field_params
+        && !explicit_method
+            .as_deref()
+            .is_some_and(http_method_is_read_only)
 }
 
 fn http_method_is_mutating(method: &str) -> bool {
@@ -339,6 +435,18 @@ fn http_method_is_mutating(method: &str) -> bool {
         method.to_ascii_uppercase().as_str(),
         "POST" | "PUT" | "PATCH" | "DELETE"
     )
+}
+
+fn http_method_is_read_only(method: &str) -> bool {
+    matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD")
+}
+
+fn executable_name(program: &str) -> &str {
+    program
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(program)
 }
 
 fn is_shell_interpreter(program: &str) -> bool {
@@ -355,6 +463,80 @@ fn is_shell_interpreter(program: &str) -> bool {
             | "powershell"
             | "pwsh"
     )
+}
+
+fn parse_env_wrapped_command(args: &[String]) -> Option<(&str, &[String])> {
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        if arg == "--" {
+            i += 1;
+            break;
+        }
+        if arg == "-u" || arg == "--unset" || arg == "-S" || arg == "--split-string" {
+            i += 2;
+            continue;
+        }
+        if arg.starts_with("--unset=") || arg.starts_with("--chdir=") {
+            i += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        if looks_like_env_assignment(arg) {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+
+    args.get(i)
+        .map(|program| (program.as_str(), &args[i + 1..]))
+}
+
+fn parse_env_split_args(args: &[String]) -> Option<Vec<String>> {
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        if arg == "--" {
+            return None;
+        }
+        if arg == "-u" || arg == "--unset" {
+            i += 2;
+            continue;
+        }
+        if arg == "-S" || arg == "--split-string" {
+            return args
+                .get(i + 1)
+                .map(|split| split.split_whitespace().map(str::to_string).collect());
+        }
+        if let Some(split) = arg.strip_prefix("--split-string=") {
+            return Some(split.split_whitespace().map(str::to_string).collect());
+        }
+        if arg.starts_with("--unset=") || arg.starts_with("--chdir=") {
+            i += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        if looks_like_env_assignment(arg) {
+            i += 1;
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
+fn looks_like_env_assignment(arg: &str) -> bool {
+    let Some((name, _value)) = arg.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+        && !name.as_bytes()[0].is_ascii_digit()
 }
 
 fn contains_shell_metacharacter(s: &str) -> bool {
@@ -462,25 +644,74 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
 }
 
 fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
+    let workspace_canonical = std::fs::canonicalize(workspace_root).ok()?;
+
     for arg in args {
         if arg.starts_with('-') {
             continue;
         }
         let path = PathBuf::from(arg);
-        if path.is_absolute() {
-            if let (Ok(canonical), Ok(workspace_canonical)) = (
-                std::fs::canonicalize(&path),
-                std::fs::canonicalize(workspace_root),
-            ) {
-                if !canonical.starts_with(&workspace_canonical) {
-                    return Some(format!("absolute path escapes workspace: {}", arg));
-                }
-            }
-        } else if arg.contains("..") {
+        if !path.is_absolute() && arg.contains("..") {
             return Some(format!("relative path may escape workspace: {}", arg));
+        }
+        let candidate = if path.is_absolute() {
+            path
+        } else {
+            workspace_canonical.join(path)
+        };
+        if candidate_escapes_workspace(&candidate, &workspace_canonical) {
+            return Some(format!("path escapes workspace: {}", arg));
         }
     }
     None
+}
+
+fn candidate_escapes_workspace(candidate: &Path, workspace_canonical: &Path) -> bool {
+    if let Ok(canonical) = std::fs::canonicalize(candidate) {
+        return !canonical.starts_with(workspace_canonical);
+    }
+
+    if candidate.is_absolute()
+        && !normalize_path_lexically(candidate).starts_with(workspace_canonical)
+    {
+        return true;
+    }
+
+    let mut existing_ancestor = candidate;
+    while !path_exists_or_is_symlink(existing_ancestor) {
+        let Some(parent) = existing_ancestor.parent() else {
+            return false;
+        };
+        if parent == existing_ancestor {
+            return false;
+        }
+        existing_ancestor = parent;
+    }
+
+    std::fs::canonicalize(existing_ancestor)
+        .is_ok_and(|canonical| !canonical.starts_with(workspace_canonical))
+}
+
+fn path_exists_or_is_symlink(path: &Path) -> bool {
+    path.exists() || std::fs::symlink_metadata(path).is_ok()
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Component::RootDir.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(OsStr::new(".."));
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
 }
 
 #[derive(Debug, Clone)]
@@ -530,9 +761,13 @@ impl CommandExecutor {
         args: Vec<String>,
         timeout_seconds: Option<u64>,
     ) -> Result<CommandOutput, ShellToolError> {
+        let classify_program = program.clone();
+        let classify_args = args.clone();
         let safety = self
-            .policy
-            .classify_shell(&program, &args, &self.workspace_root);
+            .classify_blocking(move |policy, workspace_root| {
+                policy.classify_shell(&classify_program, &classify_args, &workspace_root)
+            })
+            .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
@@ -545,7 +780,12 @@ impl CommandExecutor {
         args: Vec<String>,
         timeout_seconds: Option<u64>,
     ) -> Result<CommandOutput, ShellToolError> {
-        let safety = self.policy.classify_git(&args, &self.workspace_root);
+        let classify_args = args.clone();
+        let safety = self
+            .classify_blocking(move |policy, workspace_root| {
+                policy.classify_git(&classify_args, &workspace_root)
+            })
+            .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
@@ -558,12 +798,28 @@ impl CommandExecutor {
         args: Vec<String>,
         timeout_seconds: Option<u64>,
     ) -> Result<CommandOutput, ShellToolError> {
-        let safety = self.policy.classify_gh(&args, &self.workspace_root);
+        let classify_args = args.clone();
+        let safety = self
+            .classify_blocking(move |policy, workspace_root| {
+                policy.classify_gh(&classify_args, &workspace_root)
+            })
+            .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
         self.run_with_approval(RunGithubCliCommandTool::NAME, "gh", &args, safety, timeout)
             .await
+    }
+
+    async fn classify_blocking<F>(&self, classify: F) -> Result<CommandSafety, ShellToolError>
+    where
+        F: FnOnce(CommandPolicy, PathBuf) -> CommandSafety + Send + 'static,
+    {
+        let policy = self.policy.clone();
+        let workspace_root = self.workspace_root.clone();
+        tokio::task::spawn_blocking(move || classify(policy, workspace_root))
+            .await
+            .map_err(|e| ShellToolError::Execution(format!("classification failed: {}", e)))
     }
 
     async fn run_with_approval(
@@ -860,7 +1116,7 @@ impl Tool for RunGitCommandTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Run a git command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (push --force, reset --hard, clean -fd) are blocked.".to_string(),
+            description: "Run a git command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (push --force, reset --hard, clean) are blocked.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -994,6 +1250,36 @@ mod tests {
                 program
             );
         }
+        for program in ["/bin/bash", "/usr/bin/zsh"] {
+            assert!(
+                matches!(
+                    policy.classify_shell(program, &[], &workspace()),
+                    CommandSafety::Blocked(_)
+                ),
+                "{} should be blocked",
+                program
+            );
+        }
+        assert!(matches!(
+            policy.classify_shell("env", &["bash".to_string()], &workspace()),
+            CommandSafety::Blocked(_)
+        ));
+        assert!(matches!(
+            policy.classify_shell(
+                "env",
+                &["PATH=/bin".to_string(), "/usr/bin/zsh".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
+        assert!(matches!(
+            policy.classify_shell(
+                "env",
+                &["-S".to_string(), "bash -c echo hi".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
     }
 
     #[test]
@@ -1012,6 +1298,13 @@ mod tests {
 
         let safety =
             policy.classify_shell("rm", &["-rf".to_string(), "/*".to_string()], &workspace());
+        assert!(matches!(safety, CommandSafety::Blocked(_)));
+
+        let safety = policy.classify_shell(
+            "/bin/rm",
+            &["-rf".to_string(), "/".to_string()],
+            &workspace(),
+        );
         assert!(matches!(safety, CommandSafety::Blocked(_)));
     }
 
@@ -1073,6 +1366,51 @@ mod tests {
     }
 
     #[test]
+    fn classify_shell_preserves_git_and_gh_hard_blocks() {
+        let policy = CommandPolicy;
+        assert!(matches!(
+            policy.classify_shell(
+                "git",
+                &["push".to_string(), "--force".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
+        assert!(matches!(
+            policy.classify_shell(
+                "/usr/bin/git",
+                &["reset".to_string(), "--hard".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
+        assert!(matches!(
+            policy.classify_shell(
+                "gh",
+                &["repo".to_string(), "delete".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
+        assert!(matches!(
+            policy.classify_shell(
+                "env",
+                &["gh".to_string(), "repo".to_string(), "delete".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
+        assert!(matches!(
+            policy.classify_shell(
+                "env",
+                &["--split-string=gh repo delete".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Blocked(_)
+        ));
+    }
+
+    #[test]
     fn classify_shell_treats_unknown_as_mutating() {
         let policy = CommandPolicy;
         assert_eq!(
@@ -1089,6 +1427,34 @@ mod tests {
 
         let safety = policy.classify_shell("cat", &["../outside.txt".to_string()], &workspace());
         assert_eq!(safety, CommandSafety::Mutating);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_shell_requires_approval_for_symlink_path_escape() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret.txt"), "secret").expect("outside file");
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("outside-link"))
+            .expect("symlink");
+
+        let policy = CommandPolicy;
+        assert_eq!(
+            policy.classify_shell(
+                "cat",
+                &["outside-link/secret.txt".to_string()],
+                workspace.path()
+            ),
+            CommandSafety::Mutating
+        );
+        assert_eq!(
+            policy.classify_shell(
+                "cat",
+                &["outside-link/new-file.txt".to_string()],
+                workspace.path()
+            ),
+            CommandSafety::Mutating
+        );
     }
 
     #[test]
@@ -1271,6 +1637,14 @@ mod tests {
             policy.classify_gh(&["auth".to_string(), "status".to_string()], &workspace()),
             CommandSafety::ReadOnly
         );
+        assert!(matches!(
+            policy.classify_gh(&["auth".to_string(), "token".to_string()], &workspace()),
+            CommandSafety::Blocked(_)
+        ));
+        assert_eq!(
+            policy.classify_gh(&["auth".to_string(), "setup-git".to_string()], &workspace()),
+            CommandSafety::Mutating
+        );
     }
 
     #[test]
@@ -1299,6 +1673,28 @@ mod tests {
                 "--method=DELETE".to_string(),
                 "repos/foo".to_string(),
             ],
+            vec![
+                "api".to_string(),
+                "repos/foo/issues/1/comments".to_string(),
+                "-f".to_string(),
+                "body=hi".to_string(),
+            ],
+            vec![
+                "api".to_string(),
+                "repos/foo/issues/1/comments".to_string(),
+                "--field".to_string(),
+                "body=hi".to_string(),
+            ],
+            vec![
+                "api".to_string(),
+                "repos/foo/issues/1/comments".to_string(),
+                "-Fbody=hi".to_string(),
+            ],
+            vec![
+                "api".to_string(),
+                "repos/foo/issues/1/comments".to_string(),
+                "--raw-field=body=hi".to_string(),
+            ],
         ] {
             assert_eq!(
                 policy.classify_gh(&args, &workspace()),
@@ -1307,6 +1703,33 @@ mod tests {
         }
         assert_eq!(
             policy.classify_gh(&["api".to_string(), "repos/foo".to_string()], &workspace()),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_gh(
+                &[
+                    "api".to_string(),
+                    "-X".to_string(),
+                    "GET".to_string(),
+                    "search/issues".to_string(),
+                    "-f".to_string(),
+                    "q=repo:cli/cli is:open".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_gh(
+                &[
+                    "api".to_string(),
+                    "--method=HEAD".to_string(),
+                    "repos/foo".to_string(),
+                    "--field".to_string(),
+                    "probe=true".to_string()
+                ],
+                &workspace()
+            ),
             CommandSafety::ReadOnly
         );
     }

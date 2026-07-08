@@ -53,21 +53,21 @@ export function WorkspaceStage({
   return (
     <section className="workspace-stage-shell" aria-label="Workspace stage">
       <header className="workspace-stage-header">
-        <div className="workspace-stage-tabs" role="tablist" aria-label="Workspace surfaces">
-          <button className="workspace-stage-tab is-active" type="button" role="tab" aria-selected="true">
+        <div className="workspace-stage-tabs" aria-label="Workspace surfaces">
+          <div className="workspace-stage-tab is-active" aria-current="page">
             <FolderOpen aria-hidden="true" />
             <span>Live Workspace</span>
-          </button>
-          <button className="workspace-stage-tab" type="button" role="tab" aria-selected="false">
+          </div>
+          <div className="workspace-stage-tab is-disabled" aria-disabled="true">
             <Terminal aria-hidden="true" />
             <span>Run Log</span>
-          </button>
+          </div>
         </div>
         <div className="workspace-stage-actions">
-          <button className="stage-icon-button" type="button" aria-label="Refresh workspace view" title="Refresh">
+          <button className="stage-icon-button" type="button" disabled aria-label="Refresh workspace view" title="Refresh (coming soon)">
             <RefreshCw aria-hidden="true" />
           </button>
-          <button className="stage-icon-button" type="button" aria-label="Open workspace externally" title="Open externally">
+          <button className="stage-icon-button" type="button" disabled aria-label="Open workspace externally" title="Open externally (coming soon)">
             <ExternalLink aria-hidden="true" />
           </button>
         </div>
