@@ -472,7 +472,7 @@ fn parse_env_wrapped_command(args: &[String]) -> Option<(&str, &[String])> {
             i += 1;
             break;
         }
-        if arg == "-u" || arg == "--unset" || arg == "-S" || arg == "--split-string" {
+        if arg == "-u" || arg == "--unset" || arg == "-S" || arg == "--split-string" || arg == "-C" || arg == "--chdir" {
             i += 2;
             continue;
         }
@@ -501,7 +501,7 @@ fn parse_env_split_args(args: &[String]) -> Option<Vec<String>> {
         if arg == "--" {
             return None;
         }
-        if arg == "-u" || arg == "--unset" {
+        if arg == "-u" || arg == "--unset" || arg == "-C" || arg == "--chdir" {
             i += 2;
             continue;
         }
@@ -644,7 +644,10 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
 }
 
 fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
-    let workspace_canonical = std::fs::canonicalize(workspace_root).ok()?;
+    let workspace_canonical = match std::fs::canonicalize(workspace_root) {
+        Ok(c) => c,
+        Err(e) => return Some(format!("failed to canonicalize workspace root: {}", e)),
+    };
 
     for arg in args {
         if arg.starts_with('-') {

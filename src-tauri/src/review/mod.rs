@@ -949,7 +949,11 @@ fn truncate_tool_result(result: &str) -> String {
     if result.len() <= MAX_RESULT_SUMMARY {
         return result.to_string();
     }
-    format!("{}…", &result[..MAX_RESULT_SUMMARY])
+    let mut end = MAX_RESULT_SUMMARY;
+    while !result.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &result[..end])
 }
 
 async fn run_diff_review(

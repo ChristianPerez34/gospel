@@ -70,7 +70,8 @@ pub async fn run_multi_focus_review(
                 errors.insert(focus.to_string(), error);
             }
             Err(join_error) => {
-                errors.insert("unknown".to_string(), join_error.to_string());
+                let key = format!("unknown-{}", errors.len());
+                errors.insert(key, join_error.to_string());
             }
         }
     }
