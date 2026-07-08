@@ -2663,4 +2663,13 @@ Binary files a/icon.png and b/icon.png differ
         );
         assert!(json["phase"]["status"]["detail"].is_null());
     }
+
+    #[test]
+    fn shared_agent_max_turns_is_50() {
+        assert_eq!(
+            crate::llm::AGENT_MAX_TURNS,
+            50,
+            "Shared interactive-agent turn budget should be 50"
+        );
+    }
 }

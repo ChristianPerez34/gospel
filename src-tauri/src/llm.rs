@@ -185,7 +185,7 @@ use crate::workspace_tools::{
     READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 
-const AGENT_MAX_TURNS: usize = 50;
+pub(crate) const AGENT_MAX_TURNS: usize = 50;
 const EXPLORATION_TIMEOUT: Duration = Duration::from_secs(90);
 const EXPLORATION_REPORT_BYTES_CAP: usize = 32 * 1024;
 const DELEGATION_SYSTEM_PROMPT: &str = r#"

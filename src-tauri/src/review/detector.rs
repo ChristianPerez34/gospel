@@ -1,9 +1,8 @@
 use super::{knowledge, AgentConfig, FileDiff, ReviewAgentError, ToolEventObserver};
-use crate::llm::WorkspaceToolContext;
+use crate::llm::{WorkspaceToolContext, AGENT_MAX_TURNS};
 use std::time::Duration;
 
 const DETECTOR_TIMEOUT: Duration = Duration::from_secs(60);
-const DETECTOR_MAX_TURNS: usize = 10;
 
 const DETECTOR_PREAMBLE: &str = r#"
 You are the Gospel Detector Agent.
@@ -89,7 +88,7 @@ pub async fn run_detector(
         preamble: DETECTOR_PREAMBLE,
         prompt,
         timeout: DETECTOR_TIMEOUT,
-        max_turns: DETECTOR_MAX_TURNS,
+        max_turns: AGENT_MAX_TURNS,
         on_tool_event,
     })
     .await
