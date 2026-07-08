@@ -475,7 +475,13 @@ fn parse_env_wrapped_command(args: &[String]) -> Option<(&str, &[String])> {
             i += 1;
             break;
         }
-        if arg == "-u" || arg == "--unset" || arg == "-S" || arg == "--split-string" || arg == "-C" || arg == "--chdir" {
+        if arg == "-u"
+            || arg == "--unset"
+            || arg == "-S"
+            || arg == "--split-string"
+            || arg == "-C"
+            || arg == "--chdir"
+        {
             i += 2;
             continue;
         }
@@ -720,11 +726,18 @@ fn normalize_path_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandRisk {
+    Mutating,
+    Destructive,
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandApprovalRequest {
     pub tool_name: &'static str,
     pub command_label: String,
     pub reason: String,
+    pub risk: CommandRisk,
 }
 
 pub(crate) type CommandApprovalFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
@@ -975,9 +988,15 @@ impl CommandExecutor {
             return false;
         };
 
-        let reason = match safety {
-            CommandSafety::Destructive => "This command may destroy or overwrite data.".to_string(),
-            CommandSafety::Mutating => "This command may modify the workspace.".to_string(),
+        let (reason, risk) = match safety {
+            CommandSafety::Destructive => (
+                "This command may destroy or overwrite data.".to_string(),
+                CommandRisk::Destructive,
+            ),
+            CommandSafety::Mutating => (
+                "This command may modify the workspace.".to_string(),
+                CommandRisk::Mutating,
+            ),
             _ => return false,
         };
 
@@ -986,6 +1005,7 @@ impl CommandExecutor {
                 tool_name,
                 command_label: command_label.to_string(),
                 reason,
+                risk,
             })
             .await
     }
