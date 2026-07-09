@@ -1647,8 +1647,6 @@ summary,
     bottom: 0;
     left: 0;
     right: 0;
-    width: 100vw;
-    max-width: 100vw;
     height: auto;
   }
 
@@ -1729,6 +1727,8 @@ summary,
 
   .tool-timeline,
   .agent-text-block,
+  .agent-error-card,
+  .message-actions,
   .running-pill-wrap {
     width: calc(100% - var(--space-3)) !important;
     max-width: 100% !important;
