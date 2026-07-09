@@ -137,7 +137,21 @@ pub async fn run_multi_focus_review(
             Err(join_error) => {
                 completed += 1;
                 let key = format!("unknown-{}", errors.len());
-                errors.insert(key, join_error.to_string());
+                let error_str = join_error.to_string();
+                errors.insert(key.clone(), error_str.clone());
+                emitter.emit_progress(ReviewProgressEvent::new(
+                    &run_id,
+                    ReviewPhase::MultiFocus {
+                        focus: key,
+                        completed,
+                        total,
+                        findings: 0,
+                        suppressed: 0,
+                        status: MultiFocusStatus::Failed {
+                            detail: error_str,
+                        },
+                    },
+                ));
             }
         }
     }
