@@ -1,6 +1,7 @@
 #![recursion_limit = "2048"]
 
 mod app_config;
+pub mod approval_broker;
 pub mod context_search;
 mod conversation;
 pub mod corpus;
@@ -43,6 +44,9 @@ mod model_fetch {
 }
 
 use app_config::{AppConfigError, AppConfigState, AppConfigStore, Workspace};
+use approval_broker::{
+    ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalRequest, ApprovalResolution,
+};
 use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
 use corpus::commands::{
@@ -60,16 +64,16 @@ use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
     SessionRecord, SessionStore, SessionStoreState,
 };
-use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest};
+use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest, CommandRisk};
 use skills::SkillSummary;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::{Emitter, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use trace::TraceState;
 use workspace_tools::{
@@ -93,83 +97,115 @@ impl SkillCache {
     }
 }
 
-#[derive(Clone)]
-struct TauriExternalPathApproval {
+/// Tauri-managed state wrapping the single [`ApprovalBroker`] that owns every
+/// pending agent-action approval. The broker outlives any individual command
+/// or stream so the frontend can resolve requests issued during streaming.
+pub struct ApprovalBrokerState {
+    inner: Mutex<Option<Arc<ApprovalBroker>>>,
+}
+
+impl ApprovalBrokerState {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
+        }
+    }
+
+    /// Install the broker once the Tauri app handle is available (called from
+    /// the `setup` hook). Replaces any prior broker; in practice there is
+    /// only ever one because Tauri state is constructed once per process.
+    fn install(&self, broker: Arc<ApprovalBroker>) {
+        let mut guard = self.inner.lock().expect("approval broker state poisoned");
+        *guard = Some(broker);
+    }
+
+    /// Borrow the broker, returning an error if it has not been installed yet
+    /// (e.g. if a command fires before `setup` runs).
+    pub fn broker(&self) -> Result<Arc<ApprovalBroker>, String> {
+        self.inner
+            .lock()
+            .expect("approval broker state poisoned")
+            .clone()
+            .ok_or_else(|| "Approval broker is unavailable".to_string())
+    }
+}
+
+/// Tauri emitter that forwards broker events to the webview as
+/// `approval-requested` / `approval-resolved`. The broker is intentionally
+/// decoupled from Tauri; this adapter is the only place that knows about it.
+struct TauriApprovalEventEmitter {
     app: tauri::AppHandle,
 }
 
-impl ExternalPathApproval for TauriExternalPathApproval {
+impl ApprovalEventEmitter for TauriApprovalEventEmitter {
+    fn emit_requested(&self, request: &ApprovalRequest) {
+        if let Err(err) = self
+            .app
+            .emit(approval_broker::APPROVAL_REQUESTED_EVENT, request)
+        {
+            tracing::warn!(error = %err, "failed to emit approval-requested event");
+        }
+    }
+
+    fn emit_resolved(&self, resolution: &ApprovalResolution) {
+        if let Err(err) = self
+            .app
+            .emit(approval_broker::APPROVAL_RESOLVED_EVENT, resolution)
+        {
+            tracing::warn!(error = %err, "failed to emit approval-resolved event");
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BrokerExternalPathApproval {
+    broker: Arc<ApprovalBroker>,
+}
+
+impl ExternalPathApproval for BrokerExternalPathApproval {
     fn request_approval<'a>(
         &'a self,
         request: ExternalPathApprovalRequest,
     ) -> ExternalPathApprovalFuture<'a> {
-        let app = self.app.clone();
-
+        let broker = self.broker.clone();
+        let reason = match request.kind {
+            PathKind::File => "This file is outside the active workspace.",
+            PathKind::Directory => "This directory is outside the active workspace.",
+            PathKind::Symlink | PathKind::Other => "This path is outside the active workspace.",
+        };
         Box::pin(async move {
-            let kind_label = match request.kind {
-                PathKind::File => "file",
-                PathKind::Directory => "directory",
-                PathKind::Symlink | PathKind::Other => "path",
-            };
-            let message = format!(
-                "The agent wants to use `{}` on this external {} outside the active workspace:\n\n{}\n\nAllow this one-time access?",
-                request.tool_name, kind_label, request.path
-            );
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-
-            app.dialog()
-                .message(message)
-                .title("Allow external file access?")
-                .buttons(MessageDialogButtons::OkCancelCustom(
-                    "Allow".to_string(),
-                    "Deny".to_string(),
+            broker
+                .request(ApprovalRequest::external_path(
+                    request.tool_name,
+                    request.path,
+                    reason,
                 ))
-                .show(move |approved| {
-                    let _ = sender.send(approved);
-                });
-
-            matches!(
-                tokio::time::timeout(Duration::from_secs(60), receiver).await,
-                Ok(Ok(true))
-            )
+                .await
         })
     }
 }
 
 #[derive(Clone)]
-struct TauriCommandApproval {
-    app: tauri::AppHandle,
+struct BrokerCommandApproval {
+    broker: Arc<ApprovalBroker>,
 }
 
-impl CommandApproval for TauriCommandApproval {
+impl CommandApproval for BrokerCommandApproval {
     fn request_approval<'a>(
         &'a self,
         request: CommandApprovalRequest,
     ) -> CommandApprovalFuture<'a> {
-        let app = self.app.clone();
-
+        let broker = self.broker.clone();
         Box::pin(async move {
-            let message = format!(
-                "The agent wants to run the following command using `{}`:\n\n{}\n\n{}\n\nAllow this one-time execution?",
-                request.tool_name, request.command_label, request.reason
-            );
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-
-            app.dialog()
-                .message(message)
-                .title("Allow mutating command?")
-                .buttons(MessageDialogButtons::OkCancelCustom(
-                    "Allow".to_string(),
-                    "Deny".to_string(),
+            let destructive = matches!(request.risk, CommandRisk::Destructive);
+            broker
+                .request(ApprovalRequest::command(
+                    request.tool_name,
+                    request.command_label,
+                    request.reason,
+                    destructive,
                 ))
-                .show(move |approved| {
-                    let _ = sender.send(approved);
-                });
-
-            matches!(
-                tokio::time::timeout(Duration::from_secs(60), receiver).await,
-                Ok(Ok(true))
-            )
+                .await
         })
     }
 }
@@ -1070,12 +1106,17 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
     ) -> session_turn::SessionTurnFuture<'b, Result<llm::StreamCompletionResult, LlmError>> {
         let mut on_event = on_event;
         Box::pin(async move {
+            let broker = self
+                .app
+                .state::<ApprovalBrokerState>()
+                .broker()
+                .expect("approval broker is installed during app setup");
             let external_path_approval: Arc<dyn ExternalPathApproval> =
-                Arc::new(TauriExternalPathApproval {
-                    app: self.app.clone(),
+                Arc::new(BrokerExternalPathApproval {
+                    broker: broker.clone(),
                 });
-            let command_approval: Arc<dyn CommandApproval> = Arc::new(TauriCommandApproval {
-                app: self.app.clone(),
+            let command_approval: Arc<dyn CommandApproval> = Arc::new(BrokerCommandApproval {
+                broker: broker.clone(),
             });
 
             llm::stream_completion(
@@ -1586,6 +1627,16 @@ async fn pick_workspace_directory(app: tauri::AppHandle) -> Result<Option<String
         Some(path) => Ok(Some(path.to_string())),
         None => Ok(None),
     }
+}
+
+#[tauri::command]
+fn resolve_approval_request(
+    state: tauri::State<'_, ApprovalBrokerState>,
+    id: String,
+    decision: ApprovalDecision,
+) -> Result<bool, String> {
+    let broker = state.broker()?;
+    Ok(broker.resolve(&id, decision))
 }
 
 fn hydrate_workspace_session_counts(
@@ -2658,6 +2709,7 @@ pub fn run() {
         .manage(session_store_state)
         .manage(trace_state)
         .manage(SkillCache::new())
+        .manage(ApprovalBrokerState::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -2697,6 +2749,7 @@ pub fn run() {
             logout_github_copilot,
             logout_provider_oauth,
             pick_workspace_directory,
+            resolve_approval_request,
             list_workspaces,
             add_workspace,
             remove_workspace,
@@ -2742,6 +2795,11 @@ pub fn run() {
             gospel_record_review_outcome,
         ])
         .setup(|app| {
+            let emitter = Arc::new(TauriApprovalEventEmitter {
+                app: app.handle().clone(),
+            });
+            let broker = Arc::new(ApprovalBroker::new(emitter));
+            app.state::<ApprovalBrokerState>().install(broker);
             spawn_startup_corpus_auto_build(app.handle().clone());
             Ok(())
         })

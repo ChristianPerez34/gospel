@@ -14,26 +14,31 @@ import {
 } from "../toolActivityCards";
 import { MessageBlock } from "./MessageBlock";
 import { ActivityStep } from "./ActivityStep";
+import { ApprovalCard } from "./ApprovalCard";
 
 interface ChatViewProps {
   messages: Message[];
   workspacePath: string;
   isThinking: boolean;
   currentTurn?: CurrentTurn | null;
+  onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
 }
 
 interface AgentTurnBlockProps {
   message?: Message;
   currentTurn?: CurrentTurn;
   isThinking: boolean;
+  onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
 }
 
 type TextTurnBlock = Extract<TurnBlock, { kind: "text" }>;
 type ToolTurnBlock = Extract<TurnBlock, { kind: "tool" }>;
+type ApprovalTurnBlock = Extract<TurnBlock, { kind: "approval" }>;
+type ActivityTurnBlock = ToolTurnBlock | ApprovalTurnBlock;
 
 type TurnSegment =
   | { kind: "text"; block: TextTurnBlock }
-  | { kind: "tools"; blocks: ToolTurnBlock[] };
+  | { kind: "tools"; blocks: ActivityTurnBlock[] };
 
 const AUTO_FOLLOW_THRESHOLD_PX = 64;
 
@@ -47,12 +52,13 @@ function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
   };
 }
 
-/** Collapses consecutive tool blocks into one segment so they share a single
- * connected activity timeline, while preserving text/tool occurrence order. */
+/** Collapses consecutive tool and approval blocks into one segment so they
+ * share a single connected activity timeline, while preserving
+ * text/activity occurrence order. */
 function coalesceBlocks(blocks: TurnBlock[]): TurnSegment[] {
   const segments: TurnSegment[] = [];
   for (const block of blocks) {
-    if (block.kind === "tool") {
+    if (block.kind === "tool" || block.kind === "approval") {
       const last = segments[segments.length - 1];
       if (last?.kind === "tools") {
         last.blocks.push(block);
@@ -108,13 +114,27 @@ function RunningPill({
   );
 }
 
-function ToolTimeline({ blocks }: { blocks: ToolTurnBlock[] }) {
-  const steps = useMemo(
-    () => toolActivitiesToTimelineSteps(blocks.map(toolBlockToActivity)),
+function ToolTimeline({
+  blocks,
+  onResolveApproval,
+}: {
+  blocks: ActivityTurnBlock[];
+  onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
+}) {
+  const toolBlocks = useMemo(
+    () => blocks.filter((b): b is ToolTurnBlock => b.kind === "tool"),
     [blocks],
   );
+  const approvalBlocks = useMemo(
+    () => blocks.filter((b): b is ApprovalTurnBlock => b.kind === "approval"),
+    [blocks],
+  );
+  const steps = useMemo(
+    () => toolActivitiesToTimelineSteps(toolBlocks.map(toolBlockToActivity)),
+    [toolBlocks],
+  );
 
-  if (steps.length === 0) return null;
+  if (steps.length === 0 && approvalBlocks.length === 0) return null;
 
   return (
     <div
@@ -124,6 +144,13 @@ function ToolTimeline({ blocks }: { blocks: ToolTurnBlock[] }) {
       <ol className="m-0 flex list-none flex-col gap-2 p-0">
         {steps.map((step) => (
           <ActivityStep card={step} key={step.id} />
+        ))}
+        {approvalBlocks.map((block) => (
+          <ApprovalCard
+            key={block.id}
+            block={block}
+            onResolve={onResolveApproval}
+          />
         ))}
       </ol>
     </div>
@@ -178,7 +205,7 @@ function AgentActions() {
   );
 }
 
-function AgentTurnBlock({ message, currentTurn, isThinking }: AgentTurnBlockProps) {
+function AgentTurnBlock({ message, currentTurn, isThinking, onResolveApproval }: AgentTurnBlockProps) {
   const turnId = currentTurn?.id ?? message?.id ?? "agent-turn";
   const fallbackTimestampRef = useRef<Date | null>(null);
   if (!fallbackTimestampRef.current) {
@@ -218,7 +245,11 @@ function AgentTurnBlock({ message, currentTurn, isThinking }: AgentTurnBlockProp
         segment.kind === "text" ? (
           <AgentTextBlock block={segment.block} key={segment.block.id} />
         ) : (
-          <ToolTimeline blocks={segment.blocks} key={`tools-${segment.blocks[0].id}`} />
+          <ToolTimeline
+            blocks={segment.blocks}
+            key={`tools-${segment.blocks[0].id}`}
+            onResolveApproval={onResolveApproval}
+          />
         ),
       )}
       {message?.error && <ErrorBlock message={message.error} />}
@@ -232,6 +263,7 @@ export function ChatView({
   workspacePath,
   isThinking,
   currentTurn,
+  onResolveApproval,
 }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowRef = useRef(true);
@@ -308,6 +340,7 @@ export function ChatView({
                 key={turn.currentTurn.id}
                 currentTurn={turn.currentTurn}
                 isThinking={isThinking}
+                onResolveApproval={onResolveApproval}
               />
             );
           }
@@ -323,6 +356,7 @@ export function ChatView({
                   timestamp: new Date(0),
                 }}
                 isThinking={isThinking}
+                onResolveApproval={onResolveApproval}
               />
             );
           }
@@ -333,6 +367,7 @@ export function ChatView({
               key={msg.id}
               message={msg}
               isThinking={isThinking}
+              onResolveApproval={onResolveApproval}
             />
           ) : (
             <div key={msg.id} className="flex flex-col gap-1.5 animate-fade-slide-in-fast motion-reduce:animate-none">

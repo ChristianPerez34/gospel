@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AgentStatus,
+  ApprovalDecision,
+  ApprovalRequest,
+  ApprovalResolution,
   CurrentTurn,
   Message,
   TurnBlock,
@@ -21,6 +24,10 @@ interface UseChatStreamOptions {
   onOpenSettings?: () => void;
   onRetry?: () => void;
   onModelVariantWarning?: (warning: ModelVariantWarningPayload) => void;
+  /** Invoked when the frontend must resolve a pending approval (e.g. an
+   *  in-app card asks the backend to approve/deny). Resolves with the
+   *  backend's acknowledgement. */
+  onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<unknown>;
 }
 
 interface LlmDonePayloadObject {
@@ -254,6 +261,46 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             );
             optionsRef.current.onModelVariantWarning?.(event.payload);
           })),
+          track(listen<ApprovalRequest>("approval-requested", (event) => {
+            updateCurrentTurn((turn) => {
+              if (
+                turn.blocks.some(
+                  (b): b is Extract<TurnBlock, { kind: "approval" }> =>
+                    b.kind === "approval" && b.id === event.payload.id,
+                )
+              ) {
+                return turn;
+              }
+              return {
+                ...turn,
+                blocks: [
+                  ...turn.blocks,
+                  {
+                    kind: "approval",
+                    id: event.payload.id,
+                    toolName: event.payload.tool_name,
+                    approvalKind: event.payload.kind,
+                    title: event.payload.title,
+                    summary: event.payload.summary,
+                    reason: event.payload.reason,
+                    risk: event.payload.risk,
+                    status: "pending",
+                  },
+                ],
+              };
+            });
+          })),
+          track(listen<ApprovalResolution>("approval-resolved", (event) => {
+            const status = event.payload.outcome;
+            updateCurrentTurn((turn) => ({
+              ...turn,
+              blocks: turn.blocks.map((block) =>
+                block.kind === "approval" && block.id === event.payload.id
+                  ? { ...block, status }
+                  : block,
+              ),
+            }));
+          })),
         ]);
       } catch (error) {
         unlisteners.forEach((unlisten) => unlisten());
@@ -287,6 +334,20 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     });
   }, []);
 
+  const resolveApproval = useCallback(
+    async (id: string, decision: ApprovalDecision) => {
+      // Default to invoking the Tauri command if the consumer did not supply
+      // a custom resolver. This keeps the hook self-contained for simple
+      // chat views while letting callers swap in test fakes.
+      if (optionsRef.current.onResolveApproval) {
+        await optionsRef.current.onResolveApproval(id, decision);
+        return;
+      }
+      await invoke("resolve_approval_request", { id, decision });
+    },
+    [],
+  );
+
   const resetStream = useCallback(() => {
     clearCurrentTurn();
   }, [clearCurrentTurn]);
@@ -295,5 +356,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     currentTurn,
     startStream,
     resetStream,
+    resolveApproval,
   };
 }

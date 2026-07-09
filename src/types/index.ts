@@ -28,6 +28,31 @@ export type ReviewMode =
   | { type: "pull_request"; pr_number: number }
   | { type: "full_scan" };
 
+// ── In-app approval flow (one-time, no persistence) ──
+
+export type ApprovalKind = "command" | "external_path";
+
+export type ApprovalRisk = "mutating" | "destructive" | "external_access";
+
+export type ApprovalDecision = "approve" | "deny";
+
+export type ApprovalOutcome = "approved" | "denied" | "timed_out";
+
+export interface ApprovalRequest {
+  id: string;
+  kind: ApprovalKind;
+  tool_name: string;
+  title: string;
+  summary: string;
+  reason: string;
+  risk: ApprovalRisk;
+}
+
+export interface ApprovalResolution {
+  id: string;
+  outcome: ApprovalOutcome;
+}
+
 export interface ReviewComment {
   comment_id: string;
   file: string;
@@ -178,6 +203,20 @@ export type TurnBlock =
       arguments?: unknown;
       result?: string;
       status: "calling" | "completed";
+    }
+  | {
+      kind: "approval";
+      id: string;
+      toolName: string;
+      /** Why approval is needed: a mutating/destructive command or an
+       * external path read. Distinct from the `kind: "approval"`
+       * discriminator above. */
+      approvalKind: ApprovalKind;
+      title: string;
+      summary: string;
+      reason: string;
+      risk: ApprovalRisk;
+      status: "pending" | "approved" | "denied" | "timed_out";
     };
 
 export interface CurrentTurn {

@@ -60,6 +60,7 @@ export interface UseSessionManagerResult {
   handleNewSession: () => void;
   activeSessionMode: SessionMode;
   handleSessionModeChange: (mode: SessionMode) => Promise<void>;
+  resolveApproval: (id: string, decision: "approve" | "deny") => Promise<void>;
 }
 
 export function useSessionManager({
@@ -129,6 +130,7 @@ export function useSessionManager({
     currentTurn,
     startStream,
     resetStream,
+    resolveApproval,
   } = useChatStream({
     onMessages: setMessages,
     onStatusChange: setStatus,
@@ -413,5 +415,6 @@ export function useSessionManager({
     handleNewSession,
     activeSessionMode,
     handleSessionModeChange,
+    resolveApproval,
   };
 }
