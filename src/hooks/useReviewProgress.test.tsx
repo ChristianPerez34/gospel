@@ -109,4 +109,70 @@ describe("useReviewProgress", () => {
     });
     expect(result.current.pipeline.detector.status).toBe("idle");
   });
+
+  it("logs multi-focus start event so the UI leaves waiting state", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    expect(result.current.log).toHaveLength(0);
+
+    emitProgress({
+      type: "multiFocusStart",
+      total: 3,
+    });
+
+    await waitFor(() => {
+      expect(result.current.log).toHaveLength(1);
+    });
+    expect(result.current.log[0]?.text).toBe(
+      "Multi-focus review started (3 focuses)",
+    );
+    expect(result.current.pipeline.detector.status).toBe("active");
+  });
+
+  it("logs a singular multi-focus start when total is 1", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({
+      type: "multiFocusStart",
+      total: 1,
+    });
+
+    await waitFor(() => {
+      expect(result.current.log).toHaveLength(1);
+    });
+    expect(result.current.log[0]?.text).toBe("Multi-focus review started (1 focus)");
+  });
+
+  it("formats failed multi-focus event with focus name and detail", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({
+      type: "multiFocus",
+      focus: "Performance",
+      completed: 2,
+      total: 3,
+      findings: 0,
+      suppressed: 0,
+      status: { failed: { detail: "API key missing" } },
+    });
+
+    await waitFor(() => {
+      expect(result.current.log).toHaveLength(1);
+    });
+    const text = result.current.log[0]?.text;
+    expect(text).toBe("Performance failed [2/3]: API key missing");
+    expect(text).not.toContain("[object Object]");
+  });
 });

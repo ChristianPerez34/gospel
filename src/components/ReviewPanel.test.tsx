@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewPanel } from "./ReviewPanel";
-import type { ReviewComment, ReviewResult } from "../types";
+import type { ReviewComment, ReviewProgressEvent, ReviewResult } from "../types";
 
 const actionableComment: ReviewComment = {
   comment_id: "rc_1",
@@ -47,6 +48,10 @@ const reviewResult: ReviewResult = {
   user_visible: true,
 };
 
+type ReviewProgressListener = (event: { payload: ReviewProgressEvent }) => void;
+
+let progressListener: ReviewProgressListener | null = null;
+
 function renderOpenPanel(overrides: Partial<ComponentProps<typeof ReviewPanel>> = {}) {
   return render(
     <ReviewPanel
@@ -71,6 +76,11 @@ describe("ReviewPanel", () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === "gospel_review") return reviewResult;
       return undefined;
+    });
+    progressListener = null;
+    vi.mocked(listen).mockImplementation(async (_eventName, handler) => {
+      progressListener = handler as ReviewProgressListener;
+      return vi.fn();
     });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -140,5 +150,56 @@ describe("ReviewPanel", () => {
 
     expect(fixButton.disabled).toBe(true);
     expect(copyButton.disabled).toBe(false);
+  });
+
+  it("clears waiting message when multi-focus start event arrives before invoke resolves", async () => {
+    let resolveMulti: (value: unknown) => void = () => {};
+    const pendingMulti = new Promise((resolve) => {
+      resolveMulti = resolve;
+    });
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "gospel_review") return reviewResult;
+      if (cmd === "gospel_multi_review") return pendingMulti;
+      return undefined;
+    });
+
+    renderOpenPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run All" }));
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    // Before any progress event, the waiting message should be visible.
+    expect(screen.getByText("Waiting for review to start…")).toBeDefined();
+
+    act(() => {
+      progressListener?.({
+        payload: {
+          run_id: "multi-run-1",
+          phase: {
+            type: "multiFocusStart",
+            total: 3,
+          },
+          timestamp: 1783094400000,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Waiting for review to start…")).toBeNull();
+    });
+
+    // Clean up: resolve the pending promise so the test doesn't hang.
+    resolveMulti({
+      results: [reviewResult],
+      errors: {},
+      summary: "Security: 2 findings",
+      files_scanned: 2,
+      total_findings: 2,
+      total_suppressed: 0,
+    });
   });
 });

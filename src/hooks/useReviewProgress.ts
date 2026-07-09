@@ -66,6 +66,18 @@ function describe(phase: ReviewStagePhase): string {
       return `Review complete — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}, ${phase.suppressed} suppressed`;
     case "failed":
       return `Review failed: ${phase.detail}`;
+    case "multiFocusStart":
+      return `Multi-focus review started (${phase.total} focus${phase.total === 1 ? "" : "es"})`;
+    case "multiFocus": {
+      const progress = `${phase.completed}/${phase.total}`;
+      if (phase.status === "running") return `${phase.focus} running [${progress}]`;
+      if (phase.status === "done") {
+        const parts = [`${phase.focus} done — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}`];
+        if (phase.suppressed > 0) parts.push(`${phase.suppressed} suppressed`);
+        return parts.join(", ");
+      }
+      return `${phase.focus} failed [${progress}]: ${isPhaseFailed(phase.status) ? phase.status.failed.detail : "unknown"}`;
+    }
   }
 }
 
@@ -183,6 +195,14 @@ function reducePipeline(
       next.done = true;
       next.findings = phase.findings;
       next.suppressed = phase.suppressed;
+      break;
+    case "multiFocusStart":
+      next.detector = { ...prev.detector, status: "active" };
+      break;
+    case "multiFocus":
+      // Per-focus updates don't move the pipeline; MultiFocusStart already
+      // moved the detector into `active` and per-focus failures flow through
+      // the separate Failed phase.
       break;
     case "failed":
       next.failed = true;

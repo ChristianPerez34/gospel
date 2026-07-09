@@ -207,6 +207,7 @@ impl Tool for RunMultiReviewTool {
             &focuses,
             self.workspace_root.clone(),
             self.api_key.clone(),
+            &NoopReviewProgressEmitter,
         )
         .await
         .map_err(WorkspaceToolError::Internal)

@@ -10,6 +10,7 @@
 //! `AppHandle`-backed emitter lives in `lib.rs` (kept out of this module so
 //! `review/` stays decoupled from Tauri, exactly like `SessionTurnWorkspace`).
 
+use super::ReviewFocus;
 use serde::Serialize;
 
 /// One progress event on the `review-progress` stream, discriminated by
@@ -76,8 +77,37 @@ pub enum ReviewPhase {
     Finalize { status: PhaseStatus },
     /// Whole-run success. Emitted after `finalize_review_result` succeeds.
     Done { findings: usize, suppressed: usize },
+    /// Aggregate multi-focus review start handshake. Emitted once at the
+    /// beginning of a multi-review run so the frontend can render the
+    /// aggregate state before any per-focus event arrives. Distinct from
+    /// [`ReviewPhase::MultiFocus`] so per-focus payloads don't need an
+    /// empty-focus startup sentinel.
+    MultiFocusStart { total: usize },
+    /// Per-focus multi-focus review progress. Emitted per focus as child
+    /// jobs are dispatched and completed. The aggregate `run_id` is shared
+    /// with [`ReviewPhase::MultiFocusStart`] and any terminal phase.
+    MultiFocus {
+        focus: ReviewFocus,
+        completed: usize,
+        total: usize,
+        findings: usize,
+        suppressed: usize,
+        status: MultiFocusStatus,
+    },
     /// Whole-run failure. Emitted when `run_review` returns an error
     /// (e.g. all detector invocations failed).
+    Failed { detail: String },
+}
+
+/// Per-focus status inside [`ReviewPhase::MultiFocus`]. The aggregate
+/// multi-focus run-start handshake is [`ReviewPhase::MultiFocusStart`]
+/// rather than a `MultiFocus { status: Starting }` event, so per-focus
+/// events only need to carry per-focus state.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MultiFocusStatus {
+    Running,
+    Done,
     Failed { detail: String },
 }
 

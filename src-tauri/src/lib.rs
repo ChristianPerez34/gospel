@@ -907,6 +907,7 @@ async fn gospel_review(
 
 #[tauri::command]
 async fn gospel_multi_review(
+    app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
     provider: String,
     model: String,
@@ -917,6 +918,7 @@ async fn gospel_multi_review(
     let workspace_path = active_review_workspace_path(&app_config)?;
     let api_key = review_api_key(&provider)?;
     let focus_list = focuses.unwrap_or_else(|| review::multi::ALL_FOCUSES.to_vec());
+    let emitter = TauriReviewProgressEmitter { app: &app };
     review::multi::run_multi_focus_review(
         provider,
         model,
@@ -925,6 +927,7 @@ async fn gospel_multi_review(
         &focus_list,
         workspace_path,
         api_key,
+        &emitter,
     )
     .await
 }
