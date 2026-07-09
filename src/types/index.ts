@@ -126,11 +126,7 @@ export type ChunkStatus =
 
 export type PhaseStatus = "running" | "done" | { failed: PhaseFailure };
 
-export type MultiFocusStatus =
-  | "starting"
-  | "running"
-  | "done"
-  | { failed: PhaseFailure };
+export type MultiFocusStatus = "running" | "done" | { failed: PhaseFailure };
 
 export type ReviewPhase =
   | {
@@ -158,8 +154,13 @@ export type ReviewPhase =
   | { type: "done"; findings: number; suppressed: number }
   | { type: "failed"; detail: string }
   | {
+      /** Aggregate multi-focus run-start handshake. */
+      type: "multiFocusStart";
+      total: number;
+    }
+  | {
       type: "multiFocus";
-      focus: string;
+      focus: ReviewFocus;
       completed: number;
       total: number;
       findings: number;

@@ -9,7 +9,6 @@ import type {
   ReviewPhase,
   ReviewPipelineState,
   ReviewProgressEvent,
-  MultiFocusStatus,
 } from "../types";
 
 type ReviewStagePhase = Exclude<ReviewPhase, { type: "detectorTool" }>;
@@ -67,16 +66,17 @@ function describe(phase: ReviewStagePhase): string {
       return `Review complete — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}, ${phase.suppressed} suppressed`;
     case "failed":
       return `Review failed: ${phase.detail}`;
+    case "multiFocusStart":
+      return `Multi-focus review started (${phase.total} focus${phase.total === 1 ? "" : "es"})`;
     case "multiFocus": {
       const progress = `${phase.completed}/${phase.total}`;
-      if (phase.status === "starting") return "Multi-focus review started";
       if (phase.status === "running") return `${phase.focus} running [${progress}]`;
       if (phase.status === "done") {
         const parts = [`${phase.focus} done — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}`];
         if (phase.suppressed > 0) parts.push(`${phase.suppressed} suppressed`);
         return parts.join(", ");
       }
-      return `${phase.focus} failed [${progress}]: ${isMultiFocusFailed(phase.status) ? phase.status.failed.detail : "unknown"}`;
+      return `${phase.focus} failed [${progress}]: ${isPhaseFailed(phase.status) ? phase.status.failed.detail : "unknown"}`;
     }
   }
 }
@@ -119,12 +119,6 @@ function isChunkFailed(status: unknown): status is Extract<ChunkStatus, { failed
 }
 
 function isPhaseFailed(status: unknown): status is { failed: PhaseFailure } {
-  return hasObjectFailure(status, isPhaseFailure);
-}
-
-function isMultiFocusFailed(
-  status: unknown,
-): status is { failed: PhaseFailure } {
   return hasObjectFailure(status, isPhaseFailure);
 }
 
@@ -202,10 +196,13 @@ function reducePipeline(
       next.findings = phase.findings;
       next.suppressed = phase.suppressed;
       break;
+    case "multiFocusStart":
+      next.detector = { ...prev.detector, status: "active" };
+      break;
     case "multiFocus":
-      if (phase.status === "starting") {
-        next.detector = { ...prev.detector, status: "active" };
-      }
+      // Per-focus updates don't move the pipeline; MultiFocusStart already
+      // moved the detector into `active` and per-focus failures flow through
+      // the separate Failed phase.
       break;
     case "failed":
       next.failed = true;

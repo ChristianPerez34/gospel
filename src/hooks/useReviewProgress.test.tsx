@@ -120,20 +120,35 @@ describe("useReviewProgress", () => {
     expect(result.current.log).toHaveLength(0);
 
     emitProgress({
-      type: "multiFocus",
-      focus: "",
-      completed: 0,
+      type: "multiFocusStart",
       total: 3,
-      findings: 0,
-      suppressed: 0,
-      status: "starting",
     });
 
     await waitFor(() => {
       expect(result.current.log).toHaveLength(1);
     });
-    expect(result.current.log[0]?.text).toBe("Multi-focus review started");
+    expect(result.current.log[0]?.text).toBe(
+      "Multi-focus review started (3 focuses)",
+    );
     expect(result.current.pipeline.detector.status).toBe("active");
+  });
+
+  it("logs a singular multi-focus start when total is 1", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({
+      type: "multiFocusStart",
+      total: 1,
+    });
+
+    await waitFor(() => {
+      expect(result.current.log).toHaveLength(1);
+    });
+    expect(result.current.log[0]?.text).toBe("Multi-focus review started (1 focus)");
   });
 
   it("formats failed multi-focus event with focus name and detail", async () => {

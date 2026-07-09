@@ -859,7 +859,8 @@ async fn run_full_scan_review(
 
     if !failures.is_empty() && failures.len() == batches.len() {
         let mode = ReviewMode::FullScan;
-        let message = all_detector_failures_error(provider, model, &mode, "scan batch", focus, &failures);
+        let message =
+            all_detector_failures_error(provider, model, &mode, "scan batch", focus, &failures);
         tracing::error!(
             provider = provider,
             model = model,
@@ -1104,7 +1105,8 @@ async fn run_diff_review(
     }
 
     if !failures.is_empty() && failures.len() == chunks.len() {
-        let message = all_detector_failures_error(provider, model, &mode, "diff chunk", focus, &failures);
+        let message =
+            all_detector_failures_error(provider, model, &mode, "diff chunk", focus, &failures);
         tracing::error!(
             provider = provider,
             model = model,

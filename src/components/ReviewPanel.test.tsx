@@ -180,13 +180,8 @@ describe("ReviewPanel", () => {
         payload: {
           run_id: "multi-run-1",
           phase: {
-            type: "multiFocus",
-            focus: "",
-            completed: 0,
+            type: "multiFocusStart",
             total: 3,
-            findings: 0,
-            suppressed: 0,
-            status: "starting",
           },
           timestamp: 1783094400000,
         },
