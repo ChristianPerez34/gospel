@@ -127,10 +127,20 @@ mod model_lists {
         CODESTRAL_MAMBA,
     ];
 
-    pub const CHATGPT_MODELS: &[&str] =
-        &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
+    pub const CHATGPT_MODELS: &[&str] = &[
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+    ];
 
     pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -247,10 +257,20 @@ mod model_lists {
         "open-codestral-mamba",
     ];
 
-    pub const CHATGPT_MODELS: &[&str] =
-        &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
+    pub const CHATGPT_MODELS: &[&str] = &[
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+    ];
 
     pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -718,6 +738,9 @@ fn openai_reasoning_effort_supported(model: &str) -> bool {
 }
 
 fn chatgpt_reasoning_effort_supported(model: &str) -> bool {
+    if model == "gpt-5.6-luna" {
+        return false;
+    }
     ModelRegistry::is_chatgpt_subscription_model(model)
 }
 
