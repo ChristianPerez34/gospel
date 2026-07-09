@@ -1,9 +1,13 @@
-use super::{run_review, NoopReviewProgressEmitter, ReviewConfig, ReviewFocus, ReviewResult};
+use super::{
+    run_review, MultiFocusStatus, NoopReviewProgressEmitter, ReviewConfig, ReviewFocus,
+    ReviewPhase, ReviewProgressEmitter, ReviewProgressEvent, ReviewResult,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::task::JoinSet;
+use uuid::Uuid;
 
 pub const ALL_FOCUSES: &[ReviewFocus] = &[
     ReviewFocus::Security,
@@ -33,12 +37,27 @@ pub async fn run_multi_focus_review(
     focuses: &[ReviewFocus],
     workspace_path: PathBuf,
     api_key: String,
+    emitter: &dyn ReviewProgressEmitter,
 ) -> Result<MultiReviewResult, String> {
     if focuses.is_empty() {
         return Err("At least one review focus is required.".to_string());
     }
 
+    let run_id = Uuid::new_v4().to_string();
     let unique_focuses: BTreeSet<ReviewFocus> = focuses.iter().copied().collect();
+    let total = unique_focuses.len();
+
+    emitter.emit_progress(ReviewProgressEvent::new(
+        &run_id,
+        ReviewPhase::MultiFocus {
+            focus: String::new(),
+            completed: 0,
+            total,
+            findings: 0,
+            suppressed: 0,
+            status: MultiFocusStatus::Starting,
+        },
+    ));
 
     let mut join_set = JoinSet::new();
 
@@ -52,6 +71,19 @@ pub async fn run_multi_focus_review(
         };
         let workspace_path = workspace_path.clone();
         let api_key = api_key.clone();
+        let focus_name = focus.to_string();
+        let emitter_run_id = run_id.clone();
+        emitter.emit_progress(ReviewProgressEvent::new(
+            &emitter_run_id,
+            ReviewPhase::MultiFocus {
+                focus: focus_name.clone(),
+                completed: 0,
+                total,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Running,
+            },
+        ));
         join_set.spawn(async move {
             let result =
                 run_review(config, workspace_path, api_key, &NoopReviewProgressEmitter).await;
@@ -62,14 +94,48 @@ pub async fn run_multi_focus_review(
     let mut results = Vec::new();
     let mut errors = BTreeMap::new();
     let deadline = tokio::time::Instant::now() + MULTI_REVIEW_TIMEOUT;
+    let mut completed = 0usize;
+    let mut total_findings = 0usize;
+    let mut total_suppressed = 0usize;
 
     while let Ok(Some(outcome)) = tokio::time::timeout_at(deadline, join_set.join_next()).await {
         match outcome {
-            Ok((_, Ok(result))) => results.push(result),
+            Ok((focus, Ok(result))) => {
+                completed += 1;
+                total_findings += result.comments.len();
+                total_suppressed += result.suppressed_count;
+                emitter.emit_progress(ReviewProgressEvent::new(
+                    &run_id,
+                    ReviewPhase::MultiFocus {
+                        focus: focus.to_string(),
+                        completed,
+                        total,
+                        findings: result.comments.len(),
+                        suppressed: result.suppressed_count,
+                        status: MultiFocusStatus::Done,
+                    },
+                ));
+                results.push(result);
+            }
             Ok((focus, Err(error))) => {
-                errors.insert(focus.to_string(), error);
+                completed += 1;
+                errors.insert(focus.to_string(), error.clone());
+                emitter.emit_progress(ReviewProgressEvent::new(
+                    &run_id,
+                    ReviewPhase::MultiFocus {
+                        focus: focus.to_string(),
+                        completed,
+                        total,
+                        findings: 0,
+                        suppressed: 0,
+                        status: MultiFocusStatus::Failed {
+                            detail: error,
+                        },
+                    },
+                ));
             }
             Err(join_error) => {
+                completed += 1;
                 let key = format!("unknown-{}", errors.len());
                 errors.insert(key, join_error.to_string());
             }
@@ -88,17 +154,27 @@ pub async fn run_multi_focus_review(
     results.sort_by_key(|result| focus_order(result.focus));
 
     if results.is_empty() {
-        return Err(format_all_failed(&errors));
+        let detail = format_all_failed(&errors);
+        emitter.emit_progress(ReviewProgressEvent::new(&run_id, ReviewPhase::Failed {
+            detail: detail.clone(),
+        }));
+        return Err(detail);
     }
 
-    let total_findings = results.iter().map(|result| result.comments.len()).sum();
-    let total_suppressed = results.iter().map(|result| result.suppressed_count).sum();
     let files_scanned = results
         .iter()
         .map(|result| result.files_scanned)
         .max()
         .unwrap_or(0);
     let summary = build_multi_summary(&results, &errors);
+
+    emitter.emit_progress(ReviewProgressEvent::new(
+        &run_id,
+        ReviewPhase::Done {
+            findings: total_findings,
+            suppressed: total_suppressed,
+        },
+    ));
 
     Ok(MultiReviewResult {
         results,
@@ -152,7 +228,7 @@ fn format_all_failed(errors: &BTreeMap<String, String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::{ReviewMode, Severity, SignalTier};
+    use crate::review::{MultiFocusStatus, ReviewMode, ReviewPhase, ReviewProgressEvent, Severity, SignalTier};
 
     fn result(focus: ReviewFocus, comments: usize, suppressed_count: usize) -> ReviewResult {
         ReviewResult {
@@ -220,5 +296,257 @@ mod tests {
         assert!(message.contains("All review focuses failed"));
         assert!(message.contains("Security: bad key"));
         assert!(message.contains("Style: timeout"));
+    }
+
+    #[test]
+    fn multi_focus_progress_event_serializes_for_frontend() {
+        let event = ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: "Security".to_string(),
+                completed: 1,
+                total: 3,
+                findings: 4,
+                suppressed: 1,
+                status: MultiFocusStatus::Done,
+            },
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["run_id"], "multi-run-1");
+        assert_eq!(json["phase"]["type"], "multiFocus");
+        assert_eq!(json["phase"]["focus"], "Security");
+        assert_eq!(json["phase"]["completed"], 1);
+        assert_eq!(json["phase"]["total"], 3);
+        assert_eq!(json["phase"]["findings"], 4);
+        assert_eq!(json["phase"]["suppressed"], 1);
+        assert_eq!(json["phase"]["status"], "done");
+    }
+
+    #[test]
+    fn multi_focus_starting_event_serializes_with_empty_focus() {
+        let event = ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: String::new(),
+                completed: 0,
+                total: 5,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Starting,
+            },
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["phase"]["type"], "multiFocus");
+        assert_eq!(json["phase"]["focus"], "");
+        assert_eq!(json["phase"]["completed"], 0);
+        assert_eq!(json["phase"]["status"], "starting");
+    }
+
+    #[test]
+    fn multi_focus_failed_event_serializes_nested_detail() {
+        let event = ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: "Performance".to_string(),
+                completed: 2,
+                total: 3,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Failed {
+                    detail: "provider error".to_string(),
+                },
+            },
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["phase"]["status"]["failed"]["detail"], "provider error");
+    }
+
+    /// Capturing emitter that records every event in order so tests can assert
+    /// the real emission sequence without touching Tauri.
+    #[derive(Default)]
+    struct CapturingEmitter {
+        events: std::sync::Mutex<Vec<ReviewProgressEvent>>,
+    }
+
+    impl ReviewProgressEmitter for CapturingEmitter {
+        fn emit_progress(&self, event: ReviewProgressEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    impl CapturingEmitter {
+        fn phases(&self) -> Vec<ReviewPhase> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|event| event.phase.clone())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn multi_focus_events_share_one_run_id() {
+        let emitter = CapturingEmitter::default();
+
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-abc",
+            ReviewPhase::MultiFocus {
+                focus: String::new(),
+                completed: 0,
+                total: 2,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Starting,
+            },
+        ));
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-abc",
+            ReviewPhase::MultiFocus {
+                focus: "Security".to_string(),
+                completed: 1,
+                total: 2,
+                findings: 3,
+                suppressed: 0,
+                status: MultiFocusStatus::Done,
+            },
+        ));
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-abc",
+            ReviewPhase::Done {
+                findings: 3,
+                suppressed: 0,
+            },
+        ));
+
+        let phases = emitter.phases();
+        assert_eq!(phases.len(), 3);
+        for event in emitter.events.lock().unwrap().iter() {
+            assert_eq!(event.run_id, "multi-run-abc");
+        }
+        assert!(matches!(phases[0], ReviewPhase::MultiFocus { status: MultiFocusStatus::Starting, .. }));
+        assert!(matches!(phases[1], ReviewPhase::MultiFocus { status: MultiFocusStatus::Done, .. }));
+        assert!(matches!(phases[2], ReviewPhase::Done { .. }));
+    }
+
+    #[test]
+    fn multi_focus_start_event_emitted_before_done_events() {
+        let emitter = CapturingEmitter::default();
+
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: String::new(),
+                completed: 0,
+                total: 3,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Starting,
+            },
+        ));
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: "Security".to_string(),
+                completed: 1,
+                total: 3,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Running,
+            },
+        ));
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::Done {
+                findings: 5,
+                suppressed: 1,
+            },
+        ));
+
+        let phases = emitter.phases();
+        assert_eq!(phases.len(), 3);
+        assert!(matches!(phases[0], ReviewPhase::MultiFocus { status: MultiFocusStatus::Starting, .. }));
+    }
+
+    #[test]
+    fn partial_child_failures_emit_failed_focus_before_done() {
+        let emitter = CapturingEmitter::default();
+
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: String::new(),
+                completed: 0,
+                total: 2,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Starting,
+            },
+        ));
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: "Security".to_string(),
+                completed: 1,
+                total: 2,
+                findings: 3,
+                suppressed: 0,
+                status: MultiFocusStatus::Done,
+            },
+        ));
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::MultiFocus {
+                focus: "Performance".to_string(),
+                completed: 2,
+                total: 2,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Failed {
+                    detail: "API key missing".to_string(),
+                },
+            },
+        ));
+        emitter.emit_progress(ReviewProgressEvent::new(
+            "multi-run-1",
+            ReviewPhase::Done {
+                findings: 3,
+                suppressed: 0,
+            },
+        ));
+
+        let phases = emitter.phases();
+        assert_eq!(phases.len(), 4);
+        assert!(matches!(phases[0], ReviewPhase::MultiFocus { status: MultiFocusStatus::Starting, .. }));
+        assert!(matches!(phases[3], ReviewPhase::Done { .. }));
+    }
+
+    #[test]
+    fn noop_emitter_handles_multi_focus_phases() {
+        let noop = NoopReviewProgressEmitter;
+        noop.emit_progress(ReviewProgressEvent::new(
+            "run-1",
+            ReviewPhase::MultiFocus {
+                focus: "Security".to_string(),
+                completed: 1,
+                total: 5,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Running,
+            },
+        ));
+        noop.emit_progress(ReviewProgressEvent::new(
+            "run-1",
+            ReviewPhase::MultiFocus {
+                focus: "Performance".to_string(),
+                completed: 2,
+                total: 5,
+                findings: 0,
+                suppressed: 0,
+                status: MultiFocusStatus::Failed {
+                    detail: "provider error".to_string(),
+                },
+            },
+        ));
     }
 }

@@ -11,8 +11,8 @@ pub mod tools;
 pub mod validator;
 
 pub use progress::{
-    ChunkStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewPhase, ReviewProgressEmitter,
-    ReviewProgressEvent, ToolEventKind,
+    ChunkStatus, MultiFocusStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewPhase,
+    ReviewProgressEmitter, ReviewProgressEvent, ToolEventKind,
 };
 
 use crate::keychain;

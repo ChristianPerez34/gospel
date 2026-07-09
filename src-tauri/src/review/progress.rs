@@ -76,8 +76,30 @@ pub enum ReviewPhase {
     Finalize { status: PhaseStatus },
     /// Whole-run success. Emitted after `finalize_review_result` succeeds.
     Done { findings: usize, suppressed: usize },
+    /// Aggregate multi-focus review progress. Emitted once with
+    /// `Starting` when the multi-review run begins, then per focus with
+    /// `Running`/`Done`/`Failed` as child jobs are dispatched and
+    /// completed. The aggregate `run_id` is shared across all events.
+    MultiFocus {
+        focus: String,
+        completed: usize,
+        total: usize,
+        findings: usize,
+        suppressed: usize,
+        status: MultiFocusStatus,
+    },
     /// Whole-run failure. Emitted when `run_review` returns an error
     /// (e.g. all detector invocations failed).
+    Failed { detail: String },
+}
+
+/// Per-focus status inside [`ReviewPhase::MultiFocus`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MultiFocusStatus {
+    Starting,
+    Running,
+    Done,
     Failed { detail: String },
 }
 

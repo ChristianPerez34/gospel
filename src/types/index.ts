@@ -126,6 +126,12 @@ export type ChunkStatus =
 
 export type PhaseStatus = "running" | "done" | { failed: PhaseFailure };
 
+export type MultiFocusStatus =
+  | "starting"
+  | "running"
+  | "done"
+  | { failed: PhaseFailure };
+
 export type ReviewPhase =
   | {
       type: "detector";
@@ -150,7 +156,16 @@ export type ReviewPhase =
     }
   | { type: "finalize"; status: PhaseStatus }
   | { type: "done"; findings: number; suppressed: number }
-  | { type: "failed"; detail: string };
+  | { type: "failed"; detail: string }
+  | {
+      type: "multiFocus";
+      focus: string;
+      completed: number;
+      total: number;
+      findings: number;
+      suppressed: number;
+      status: MultiFocusStatus;
+    };
 
 export interface ReviewProgressEvent {
   run_id: string;
