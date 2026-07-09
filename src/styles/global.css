@@ -1722,7 +1722,7 @@ summary,
   .agent-error-card,
   .message-actions,
   .running-pill-wrap {
-    margin-left: var(--space-3) !important;
+    margin-left: var(--space-3);
   }
 
   .tool-timeline,
@@ -1730,8 +1730,8 @@ summary,
   .agent-error-card,
   .message-actions,
   .running-pill-wrap {
-    width: calc(100% - var(--space-3)) !important;
-    max-width: 100% !important;
+    width: calc(100% - var(--space-3));
+    max-width: 100%;
   }
 }
 
