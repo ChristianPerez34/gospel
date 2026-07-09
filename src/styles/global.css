@@ -1608,6 +1608,30 @@ summary,
   }
 }
 
+/* Collapse layout button labels to icon-only on medium screens */
+@media (max-width: 1199px) {
+  .topbar-layout-button span {
+    display: none;
+  }
+
+  .topbar-layout-button {
+    padding: 0 var(--space-2);
+  }
+
+  .topbar-compute-graph {
+    display: none;
+  }
+
+  .topbar-workspace-text {
+    max-width: 140px;
+  }
+
+  .topbar-session-title {
+    max-width: 180px;
+  }
+}
+
+/* Single-column workspace: hide layout controls and secondary topbar chrome */
 @media (max-width: 999px) {
   .app-workspace {
     display: flex;
@@ -1621,18 +1645,32 @@ summary,
     position: fixed;
     top: calc(var(--titlebar-height) + var(--topbar-height));
     bottom: 0;
+    left: 0;
+    right: 0;
     height: auto;
+  }
+
+  .spatial-topbar {
+    gap: var(--space-2);
+  }
+
+  .topbar-layout-controls,
+  .topbar-model-badge {
+    display: none;
+  }
+
+  .topbar-workspace-text {
+    max-width: 100px;
+  }
+
+  .topbar-session-title {
+    max-width: 140px;
   }
 }
 
 @media (max-width: 799px) {
   .session-drawer {
     width: 100vw;
-  }
-
-  .review-panel {
-    width: 100vw;
-    max-width: 100vw;
   }
 
   .app-topbar {
@@ -1642,9 +1680,6 @@ summary,
   .topbar-workspace-text,
   .topbar-session-title,
   .topbar-divider,
-  .topbar-layout-controls,
-  .topbar-compute-graph,
-  .topbar-model-badge,
   .topbar-status-label {
     display: none;
   }
@@ -1673,6 +1708,23 @@ summary,
   .command-palette {
     top: var(--space-4);
     max-height: calc(100vh - var(--space-8));
+  }
+
+  /* Reduce chat feed horizontal padding for narrow viewports */
+  .chat-feed {
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
+  }
+
+  /* Tighten agent block left margin so content isn't squeezed on small screens */
+  .agent-text-block,
+  .tool-timeline,
+  .agent-error-card,
+  .message-actions,
+  .running-pill-wrap {
+    margin-left: var(--space-3);
+    width: calc(100% - var(--space-3));
+    max-width: 100%;
   }
 }
 

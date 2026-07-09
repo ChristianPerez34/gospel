@@ -237,7 +237,7 @@ function AgentTurnBlock({ message, currentTurn, isThinking, onResolveApproval }:
     >
       <AgentHeader timestamp={timestamp} />
       {isLive && toolBlocks.some((block) => block.status === "calling") && (
-        <div className="ml-16 flex w-[calc(100%-3.25rem)] max-w-[960px] flex-col">
+        <div className="running-pill-wrap ml-16 flex w-[calc(100%-3.25rem)] max-w-[960px] flex-col">
           <RunningPill toolBlocks={toolBlocks} />
         </div>
       )}
