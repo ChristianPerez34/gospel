@@ -876,13 +876,21 @@ mod tests {
     #[test]
     fn chatgpt_reasoning_variants_decorate_all_models() {
         for model in CHATGPT_DISCOVERABLE_MODELS {
-            let model = ModelRegistry::model_info("chatgpt", model);
+            let info = ModelRegistry::model_info("chatgpt", model);
+
+            if *model == "gpt-5.6-luna" {
+                assert!(
+                    variant_ids(&info).is_empty(),
+                    "gpt-5.6-luna should not expose reasoning variants"
+                );
+                continue;
+            }
 
             assert_eq!(
-                variant_ids(&model),
+                variant_ids(&info),
                 expected_reasoning_variant_ids(),
                 "chatgpt model {} should expose reasoning variants",
-                model.model
+                info.model
             );
         }
     }
@@ -925,6 +933,11 @@ mod tests {
 
     #[test]
     fn test_chatgpt_subscription_models_include_current_codex_options() {
+        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.6-sol"));
+        assert!(ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.6-terra"
+        ));
+        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.6-luna"));
         assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.5"));
         assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4"));
         assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4-mini"));
@@ -955,7 +968,10 @@ mod tests {
     fn test_chatgpt_hardcoded_fallback_omits_tier_specific_models() {
         let models = ModelRegistry::models_for_provider("chatgpt");
 
-        assert_eq!(models.first(), Some(&"gpt-5.5"));
+        assert_eq!(models.first(), Some(&"gpt-5.6-sol"));
+        assert!(models.contains(&"gpt-5.6-sol"));
+        assert!(models.contains(&"gpt-5.6-terra"));
+        assert!(models.contains(&"gpt-5.6-luna"));
         assert!(models.contains(&"gpt-5.5"));
         assert!(models.contains(&"gpt-5.4"));
         assert!(models.contains(&"gpt-5.4-mini"));
