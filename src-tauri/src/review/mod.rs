@@ -45,6 +45,9 @@ const SCAN_FILE_BYTES_CAP: u64 = 256 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const UNPARSEABLE_REVIEW_JSON_WARNING: &str = "did not contain parseable review JSON";
 
+const MAX_OVERSIZED_FILES: usize = 20;
+const OVERSIZED_CONCURRENCY: usize = 5;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewConfig {
     pub provider: String,
@@ -691,19 +694,151 @@ async fn get_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<PrDiff, St
     let diff_fut = run_program(workspace_path, "gh", &diff_args);
     let meta_fut = run_program(workspace_path, "gh", &meta_args);
 
-    let (diff, metadata) = tokio::try_join!(
-        async { diff_fut.await.map_err(|e| pr_fetch_error(pr_number, e)) },
-        async { meta_fut.await.map_err(|e| pr_fetch_error(pr_number, e)) }
-    )?;
+    let (diff_res, metadata_res) = tokio::join!(
+        async { diff_fut.await },
+        async { meta_fut.await }
+    );
 
+    let metadata = metadata_res.map_err(|e| pr_fetch_error(pr_number, e))?;
     let metadata: PrMetadata = serde_json::from_str(&metadata)
         .map_err(|e| format!("Failed to parse PR metadata for #{}: {}", pr_number, e))?;
+
+    let diff = match diff_res {
+        Ok(d) => d,
+        Err(e) => {
+            if is_oversized_diff_error(&e) {
+                tracing::info!(
+                    "Oversized diff detected for PR #{}. Falling back to per-file API...",
+                    pr_number
+                );
+                match get_oversized_pr_diff(workspace_path, pr_number).await {
+                    Ok(fallback_diff) => fallback_diff,
+                    Err(fallback_err) => {
+                        return Err(format!(
+                            "PR diff too large and fallback failed. Original error: {}. Fallback error: {}",
+                            e, fallback_err
+                        ));
+                    }
+                }
+            } else {
+                return Err(pr_fetch_error(pr_number, e));
+            }
+        }
+    };
 
     Ok(PrDiff {
         title: metadata.title,
         body: metadata.body.unwrap_or_default(),
         diff,
     })
+}
+
+fn is_oversized_diff_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("406") || lower.contains("exceeded the maximum") || lower.contains("too large")
+}
+
+#[derive(Debug, Deserialize)]
+struct PrFileEntry {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrFilesList {
+    files: Vec<PrFileEntry>,
+}
+
+async fn get_oversized_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<String, String> {
+    let pr_arg = pr_number.to_string();
+    let list_args = ["pr", "view", &pr_arg, "--json", "files"];
+    let list_json = run_program(workspace_path, "gh", &list_args)
+        .await
+        .map_err(|e| format!("Failed to fetch PR file list: {}", e))?;
+
+    let file_list: PrFilesList = serde_json::from_str(&list_json)
+        .map_err(|e| format!("Failed to parse PR files list JSON: {}", e))?;
+
+    let files_to_fetch = if file_list.files.len() > MAX_OVERSIZED_FILES {
+        &file_list.files[..MAX_OVERSIZED_FILES]
+    } else {
+        &file_list.files[..]
+    };
+
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(OVERSIZED_CONCURRENCY));
+    let mut futures = Vec::new();
+
+    for file in files_to_fetch {
+        let path = file.path.clone();
+        let sem = semaphore.clone();
+        futures.push(async move {
+            let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
+            fetch_file_diff(workspace_path, pr_number, &path).await
+        });
+    }
+
+    let results = futures::future::join_all(futures).await;
+
+    let mut reconstructed = String::new();
+    for (file, res) in files_to_fetch.iter().zip(results) {
+        match res {
+            Ok(Some(patch)) => {
+                if !patch.trim().is_empty() {
+                    let chunk = reconstruct_diff(&file.path, &patch);
+                    reconstructed.push_str(&chunk);
+                }
+            }
+            Ok(None) => {
+                tracing::debug!("Skipping file {} as it has no patch field", file.path);
+            }
+            Err(e) => {
+                return Err(format!("Failed to fetch diff for {}: {}", file.path, e));
+            }
+        }
+    }
+
+    Ok(reconstructed)
+}
+
+async fn fetch_file_diff(
+    workspace_path: &Path,
+    pr_number: u64,
+    path: &str,
+) -> Result<Option<String>, String> {
+    let pr_arg = pr_number.to_string();
+    let url = format!("repos/:owner/:repo/pulls/{}/files?per_page=100", pr_arg);
+    
+    // Escape path for jq query string
+    let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+    let jq_query = format!(
+        ".[] | select(.filename == \"{}\") | .patch",
+        escaped_path
+    );
+    
+    let args = [
+        "api",
+        &url,
+        "--jq",
+        &jq_query,
+    ];
+    
+    let patch = run_program(workspace_path, "gh", &args).await?;
+    let trimmed = patch.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        Ok(None)
+    } else {
+        Ok(Some(patch))
+    }
+}
+
+fn reconstruct_diff(path: &str, patch: &str) -> String {
+    let mut chunk = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n");
+    if !patch.ends_with('\n') {
+        chunk.push_str(patch);
+        chunk.push('\n');
+    } else {
+        chunk.push_str(patch);
+    }
+    chunk
 }
 
 fn filter_rejected_comments(
@@ -1716,6 +1851,14 @@ fn pr_fetch_error(pr_number: u64, error: String) -> String {
         || lower.contains("no pull requests found")
     {
         format!("PR #{} not found in this repository", pr_number)
+    } else if lower.contains("406")
+        || lower.contains("exceeded the maximum")
+        || lower.contains("too large")
+    {
+        format!(
+            "PR #{} diff is too large. GitHub returns 406 for diffs over 20,000 lines.",
+            pr_number
+        )
     } else {
         format!("Failed to fetch PR: {}", error)
     }
@@ -2683,5 +2826,41 @@ Binary files a/icon.png and b/icon.png differ
             50,
             "Shared interactive-agent turn budget should be 50"
         );
+    }
+
+    #[test]
+    fn test_is_oversized_diff_error() {
+        assert!(is_oversized_diff_error("406 Not Acceptable"));
+        assert!(is_oversized_diff_error("diff exceeded the maximum allowed size"));
+        assert!(is_oversized_diff_error("the diff was too large to fetch"));
+        assert!(!is_oversized_diff_error("some other random error message"));
+    }
+
+    #[test]
+    fn test_reconstruct_diff_format() {
+        let path = "src/main.rs";
+        let patch = "@@ -1,3 +1,3 @@\n-hello\n+world";
+        let expected = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n-hello\n+world\n";
+        assert_eq!(reconstruct_diff(path, patch), expected);
+    }
+
+    #[test]
+    fn test_reconstruct_and_parse_diff() {
+        let path1 = "src/a.rs";
+        let patch1 = "@@ -1 +1 @@\n-old\n+new";
+        let path2 = "src/b.rs";
+        let patch2 = "@@ -10 +10,2 @@\n-delete\n+add1\n+add2";
+        
+        let diff1 = reconstruct_diff(path1, patch1);
+        let diff2 = reconstruct_diff(path2, patch2);
+        
+        let combined = format!("{}{}", diff1, diff2);
+        let parsed = parse_diff_by_file(&combined);
+        
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].file, "src/a.rs");
+        assert_eq!(parsed[1].file, "src/b.rs");
+        assert!(parsed[0].diff.contains("--- a/src/a.rs"));
+        assert!(parsed[1].diff.contains("+++ b/src/b.rs"));
     }
 }
