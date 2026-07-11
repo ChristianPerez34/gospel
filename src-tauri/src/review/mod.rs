@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::process::Command;
@@ -432,7 +433,7 @@ pub async fn run_review(
     config: ReviewConfig,
     workspace_path: PathBuf,
     api_key: String,
-    emitter: &dyn ReviewProgressEmitter,
+    emitter: Arc<dyn ReviewProgressEmitter>,
 ) -> Result<ReviewResult, String> {
     let run_id = Uuid::new_v4().to_string();
     let mode = config.review_mode()?;
@@ -442,11 +443,14 @@ pub async fn run_review(
         corpus_available: false,
         session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
     };
+    let emitter: &dyn ReviewProgressEmitter = &*emitter;
+    let focus = config.focus;
 
     // Run-start handshake so the frontend can key on run_id and render the
     // pipeline immediately, before chunking is known.
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         &run_id,
+        focus,
         ReviewPhase::Detector {
             chunk: 0,
             total_chunks: 0,
@@ -466,11 +470,11 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
-                config.focus,
+                focus,
                 ReviewMode::Local,
                 format!(
                     "You are reviewing local staged and unstaged changes for {} findings.",
-                    config.focus
+                    focus
                 ),
                 diff,
             )
@@ -480,7 +484,7 @@ pub async fn run_review(
             let pr = get_pr_diff(&workspace.workspace_path, pr_number).await?;
             let context = format!(
                 "You are reviewing Pull Request #{} for {} findings.\n\nPR Title: {}\nPR Description: {}\n\nAnalyze the changes for {} issues. Use read_file to examine surrounding context in the repository.",
-                pr_number, config.focus, pr.title, pr.body, config.focus
+                pr_number, focus, pr.title, pr.body, focus
             );
             run_diff_review(
                 &run_id,
@@ -489,7 +493,7 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
-                config.focus,
+                focus,
                 ReviewMode::PullRequest { pr_number },
                 context,
                 pr.diff,
@@ -504,7 +508,7 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
-                config.focus,
+                focus,
             )
             .await
         }
@@ -513,8 +517,9 @@ pub async fn run_review(
     let result = match outcome {
         Ok(result) => result,
         Err(detail) => {
-            emitter.emit_progress(ReviewProgressEvent::new(
+            emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                 &run_id,
+                focus,
                 ReviewPhase::Failed {
                     detail: progress_failure_detail(&detail),
                 },
@@ -532,8 +537,9 @@ pub async fn run_review(
         result,
     ) {
         Ok(finalized) => {
-            emitter.emit_progress(ReviewProgressEvent::new(
+            emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                 &run_id,
+                focus,
                 ReviewPhase::Done {
                     findings: finalized.comments.len(),
                     suppressed: finalized.suppressed_count,
@@ -542,8 +548,9 @@ pub async fn run_review(
             Ok(finalized)
         }
         Err(detail) => {
-            emitter.emit_progress(ReviewProgressEvent::new(
+            emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                 &run_id,
+                focus,
                 ReviewPhase::Failed {
                     detail: progress_failure_detail(&detail),
                 },
@@ -589,8 +596,9 @@ fn finalize_review_result(
     workspace_path: &Path,
     mut result: ReviewResult,
 ) -> Result<ReviewResult, String> {
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        result.focus,
         ReviewPhase::Finalize {
             status: PhaseStatus::Running,
         },
@@ -660,8 +668,9 @@ fn finalize_review_result(
             .push(format!("Failed to write review run index: {}", error));
     }
 
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        result.focus,
         ReviewPhase::Finalize {
             status: PhaseStatus::Done,
         },
@@ -928,8 +937,9 @@ async fn run_full_scan_review(
     for (index, batch) in batches.iter().enumerate() {
         let chunk_number = index + 1;
         let batch_files: Vec<String> = batch.iter().map(|file| file.path.clone()).collect();
-        emitter.emit_progress(ReviewProgressEvent::new(
+        emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             run_id,
+            focus,
             ReviewPhase::Detector {
                 chunk: chunk_number,
                 total_chunks,
@@ -940,7 +950,13 @@ async fn run_full_scan_review(
         ));
         let prompt =
             detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()), focus);
-        match detector::run_detector(provider, model, api_key, workspace, &prompt, focus, None)
+        let observer = DetectorToolObserver {
+            run_id,
+            chunk: chunk_number,
+            focus,
+            emitter,
+        };
+        match detector::run_detector(provider, model, api_key, workspace, &prompt, focus, Some(&observer))
             .await
         {
             Ok(output) => {
@@ -951,8 +967,9 @@ async fn run_full_scan_review(
                     parsed.comments,
                     &anti_pattern_store,
                 ));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -974,8 +991,9 @@ async fn run_full_scan_review(
                     "detector invocation failed"
                 );
                 warnings.push(failure.warning_line("scan batch"));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -1048,13 +1066,15 @@ async fn run_full_scan_review(
 struct DetectorToolObserver<'a> {
     run_id: &'a str,
     chunk: usize,
+    focus: ReviewFocus,
     emitter: &'a dyn ReviewProgressEmitter,
 }
 
 impl<'a> ToolEventObserver for DetectorToolObserver<'a> {
     fn on_tool_call(&self, name: &str, arguments: &serde_json::Value) {
-        self.emitter.emit_progress(ReviewProgressEvent::new(
+        self.emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             self.run_id,
+            self.focus,
             ReviewPhase::DetectorTool {
                 chunk: self.chunk,
                 tool_name: name.to_string(),
@@ -1067,8 +1087,9 @@ impl<'a> ToolEventObserver for DetectorToolObserver<'a> {
 
     fn on_tool_result(&self, name: &str, result: &str) {
         let summary = truncate_tool_result(result);
-        self.emitter.emit_progress(ReviewProgressEvent::new(
+        self.emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             self.run_id,
+            self.focus,
             ReviewPhase::DetectorTool {
                 chunk: self.chunk,
                 tool_name: name.to_string(),
@@ -1163,8 +1184,9 @@ async fn run_diff_review(
     for (index, chunk) in chunks.iter().enumerate() {
         let chunk_number = index + 1;
         let chunk_files: Vec<String> = chunk.iter().map(|file| file.file.clone()).collect();
-        emitter.emit_progress(ReviewProgressEvent::new(
+        emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             run_id,
+            focus,
             ReviewPhase::Detector {
                 chunk: chunk_number,
                 total_chunks,
@@ -1177,6 +1199,7 @@ async fn run_diff_review(
         let observer = DetectorToolObserver {
             run_id,
             chunk: chunk_number,
+            focus,
             emitter,
         };
         match detector::run_detector(
@@ -1198,8 +1221,9 @@ async fn run_diff_review(
                     parsed.comments,
                     &anti_pattern_store,
                 ));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -1221,8 +1245,9 @@ async fn run_diff_review(
                     "detector invocation failed"
                 );
                 warnings.push(failure.warning_line("diff chunk"));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -1300,8 +1325,9 @@ async fn validate_candidates(
     focus: ReviewFocus,
 ) -> Result<(Vec<ReviewComment>, bool, Option<String>, Vec<String>), String> {
     if candidates.is_empty() {
-        emitter.emit_progress(ReviewProgressEvent::new(
+        emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             run_id,
+            focus,
             ReviewPhase::Validator {
                 candidate_count: 0,
                 status: PhaseStatus::Done,
@@ -1315,8 +1341,9 @@ async fn validate_candidates(
         ));
     }
 
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        focus,
         ReviewPhase::Validator {
             candidate_count: candidates.len(),
             status: PhaseStatus::Running,
@@ -1351,8 +1378,9 @@ async fn validate_candidates(
                 )],
             )),
         };
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        focus,
         ReviewPhase::Validator {
             candidate_count: candidates.len(),
             status: PhaseStatus::Done,

@@ -21,6 +21,8 @@ import {
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useReviewProgress } from "../hooks/useReviewProgress";
 import { ReviewProgressView } from "./ReviewProgressView";
+import { FocusBadge } from "./FocusBadge";
+import { FOCUS_OPTIONS, focusLabel } from "../utils/focus";
 
 type ReviewPanelMode = "local" | "pr" | "scan";
 
@@ -42,14 +44,6 @@ const MODE_OPTIONS: Array<{ value: ReviewPanelMode; label: string }> = [
   { value: "local", label: "Local" },
   { value: "pr", label: "PR" },
   { value: "scan", label: "Scan" },
-];
-
-const FOCUS_OPTIONS: Array<{ value: ReviewFocus; label: string; className: string }> = [
-  { value: "Security", label: "Security", className: "border-status-error text-status-error" },
-  { value: "BugHunt", label: "Bug Hunt", className: "border-accent-data text-accent-data" },
-  { value: "Architecture", label: "Architecture", className: "border-accent-structure text-accent-structure" },
-  { value: "Performance", label: "Performance", className: "border-status-warning text-status-warning" },
-  { value: "Style", label: "Style", className: "border-text-muted text-text-secondary" },
 ];
 
 const SEVERITY_CLASS: Record<string, string> = {
@@ -114,20 +108,8 @@ function isHidden(comment: ReviewComment) {
   return (comment.signal_tier as string) === "hidden";
 }
 
-function focusOption(focus: ReviewFocus) {
-  return FOCUS_OPTIONS.find((option) => option.value === focus);
-}
-
-function focusLabel(focus: ReviewFocus) {
-  return focusOption(focus)?.label ?? focus;
-}
-
-function FocusBadge({ focus }: { focus: ReviewFocus }) {
-  return (
-    <Badge className={focusOption(focus)?.className ?? "border-text-muted text-text-secondary"}>
-      {focusLabel(focus)}
-    </Badge>
-  );
+function outcomeKey(review: ReviewResult | null, comment: ReviewComment) {
+  return `${review?.run_id ?? "single"}:${comment.comment_id}`;
 }
 
 function ThumbUpIcon() {
@@ -329,9 +311,6 @@ export function ReviewPanel({
 
   const reviewForComment = (comment: ReviewComment) =>
     multiResult?.results.find((review) => review.focus === comment.focus) ?? result;
-
-  const outcomeKey = (review: ReviewResult | null, comment: ReviewComment) =>
-    `${review?.run_id ?? "single"}:${comment.comment_id}`;
 
   const recordOutcome = async (comment: ReviewComment, outcome: ReviewOutcome) => {
     const sourceReview = reviewForComment(comment);
@@ -602,16 +581,16 @@ export function ReviewPanel({
 
         {loading && (
           <ReviewProgressView
-            pipeline={reviewProgress.pipeline}
+            perFocus={reviewProgress.perFocus}
             log={reviewProgress.log}
             variant="active"
           />
         )}
 
-        {!loading && (reviewProgress.pipeline.done || reviewProgress.pipeline.failed) && (
+        {!loading && (reviewProgress.done || reviewProgress.failed) && (
           <div className="mb-1">
             <ReviewProgressView
-              pipeline={reviewProgress.pipeline}
+              perFocus={reviewProgress.perFocus}
               log={reviewProgress.log}
               variant="collapsed"
             />

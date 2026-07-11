@@ -20,14 +20,25 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewProgressEvent {
     pub run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<ReviewFocus>,
     pub phase: ReviewPhase,
     pub timestamp: i64,
 }
 
 impl ReviewProgressEvent {
     pub fn new(run_id: &str, phase: ReviewPhase) -> Self {
+        Self::new_with_focus(run_id, None, phase)
+    }
+
+    pub fn new_with_focus(
+        run_id: &str,
+        focus: impl Into<Option<ReviewFocus>>,
+        phase: ReviewPhase,
+    ) -> Self {
         Self {
             run_id: run_id.to_string(),
+            focus: focus.into(),
             phase,
             timestamp: chrono::Utc::now().timestamp_millis(),
         }

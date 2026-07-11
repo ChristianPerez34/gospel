@@ -1,5 +1,7 @@
 #![recursion_limit = "2048"]
 
+use std::sync::Arc;
+
 mod app_config;
 pub mod approval_broker;
 pub mod context_search;
@@ -69,7 +71,7 @@ use skills::SkillSummary;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::Duration,
 };
 use tauri::{Emitter, Manager};
@@ -901,8 +903,8 @@ async fn gospel_review(
 ) -> Result<review::ReviewResult, String> {
     let workspace_path = active_review_workspace_path(&app_config)?;
     let api_key = review_api_key(&config.provider)?;
-    let emitter = TauriReviewProgressEmitter { app: &app };
-    review::run_review(config, workspace_path, api_key, &emitter).await
+    let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
+    review::run_review(config, workspace_path, api_key, emitter).await
 }
 
 #[tauri::command]
@@ -918,7 +920,7 @@ async fn gospel_multi_review(
     let workspace_path = active_review_workspace_path(&app_config)?;
     let api_key = review_api_key(&provider)?;
     let focus_list = focuses.unwrap_or_else(|| review::multi::ALL_FOCUSES.to_vec());
-    let emitter = TauriReviewProgressEmitter { app: &app };
+    let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
     review::multi::run_multi_focus_review(
         provider,
         model,
@@ -927,7 +929,7 @@ async fn gospel_multi_review(
         &focus_list,
         workspace_path,
         api_key,
-        &emitter,
+        emitter,
     )
     .await
 }
@@ -936,11 +938,11 @@ async fn gospel_multi_review(
 /// the `review-progress` webview event. Mirrors the
 /// `TauriSessionTurnAdapters` pattern: the trait lives in `review::progress`
 /// (decoupled from Tauri), the real impl lives here next to the command.
-struct TauriReviewProgressEmitter<'a, R: tauri::Runtime> {
-    app: &'a tauri::AppHandle<R>,
+struct TauriReviewProgressEmitter<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
 }
 
-impl<R: tauri::Runtime> review::ReviewProgressEmitter for TauriReviewProgressEmitter<'_, R> {
+impl<R: tauri::Runtime> review::ReviewProgressEmitter for TauriReviewProgressEmitter<R> {
     fn emit_progress(&self, event: review::ReviewProgressEvent) {
         if let Err(err) = self.app.emit("review-progress", event) {
             tracing::warn!(error = %err, "failed to emit review-progress event");

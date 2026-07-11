@@ -170,6 +170,7 @@ export type ReviewPhase =
 
 export interface ReviewProgressEvent {
   run_id: string;
+  focus?: ReviewFocus;
   phase: ReviewPhase;
   timestamp: number;
 }
@@ -199,6 +200,7 @@ export interface ReviewPipelineState {
 export interface ReviewActivityEntry {
   timestamp: number;
   phase: ReviewPhase["type"];
+  focus?: ReviewFocus;
   text: string;
 }
 
