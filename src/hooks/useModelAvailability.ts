@@ -34,6 +34,19 @@ export interface AvailableModel {
   variants?: AvailableModelVariant[];
 }
 
+const DEFAULT_STARTUP_MODEL = {
+  provider: "chatgpt",
+  model: "gpt-5.6-sol",
+} as const;
+
+export function defaultStartupModel(availableModels: AvailableModel[]): AvailableModel | undefined {
+  return availableModels.find(
+    (model) =>
+      model.provider.toLowerCase() === DEFAULT_STARTUP_MODEL.provider &&
+      model.model === DEFAULT_STARTUP_MODEL.model,
+  ) ?? availableModels[0];
+}
+
 function providerConfigFromAvailability(
   provider: ProviderAvailability,
   existing?: ProviderConfig,
@@ -154,7 +167,10 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
           return { provider: available.provider, model: available.model, variant };
         }
       }
-      return { provider: availableModels[0].provider, model: availableModels[0].model, variant: null };
+      const defaultModel = defaultStartupModel(availableModels);
+      return defaultModel
+        ? { provider: defaultModel.provider, model: defaultModel.model, variant: null }
+        : null;
     });
   }, [availableModels, providers]);
 
