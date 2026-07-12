@@ -96,19 +96,22 @@ export function useMcpServers(active: boolean) {
     }
   }, []);
 
-  const create = useCallback(async (request: CreateMcpServerRequest) => {
-    setLoading(true);
-    setError(null);
-    try {
-      await invoke<McpServer>("create_mcp_server", { request });
-      await reload();
-    } catch (e) {
-      setError(`Failed to create MCP server: ${e}`);
-      throw e;
-    } finally {
-      setLoading(false);
-    }
-  }, [reload]);
+  const create = useCallback(
+    async (request: CreateMcpServerRequest) => {
+      setLoading(true);
+      setError(null);
+      try {
+        await invoke<McpServer>("create_mcp_server", { request });
+        await reload();
+      } catch (e) {
+        setError(`Failed to create MCP server: ${e}`);
+        throw e;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [reload]
+  );
 
   const update = useCallback(async (id: string, request: UpdateMcpServerRequest) => {
     setSavingId(id);
@@ -152,27 +155,30 @@ export function useMcpServers(active: boolean) {
     }
   }, []);
 
-  const applyImport = useCallback(async (
-    token: string,
-    selectedExternalIds: string[],
-    overwriteExisting: boolean,
-  ): Promise<McpApplyImportResult | null> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await invoke<McpApplyImportResult>("apply_import_mcp_servers", {
-        request: { token, selectedExternalIds, overwriteExisting },
-      });
-      setImportPreview(null);
-      await reload();
-      return result;
-    } catch (e) {
-      setError(`Failed to apply MCP import: ${e}`);
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [reload]);
+  const applyImport = useCallback(
+    async (
+      token: string,
+      selectedExternalIds: string[],
+      overwriteExisting: boolean
+    ): Promise<McpApplyImportResult | null> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await invoke<McpApplyImportResult>("apply_import_mcp_servers", {
+          request: { token, selectedExternalIds, overwriteExisting },
+        });
+        setImportPreview(null);
+        await reload();
+        return result;
+      } catch (e) {
+        setError(`Failed to apply MCP import: ${e}`);
+        return null;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [reload]
+  );
 
   const builtInServers = servers.filter((server) => server.kind === "built_in");
   const customServers = servers.filter((server) => server.kind === "custom");

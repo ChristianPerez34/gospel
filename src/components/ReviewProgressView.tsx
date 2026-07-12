@@ -33,8 +33,7 @@ function formatClock(timestamp: number): string {
 
 function prefersReducedMotion(): boolean {
   return (
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
   );
 }
 
@@ -57,11 +56,7 @@ function connectorPercent(pipeline: ReviewPipelineState): number {
   return 0;
 }
 
-export function ReviewProgressView({
-  perFocus,
-  log,
-  variant = "active",
-}: ReviewProgressViewProps) {
+export function ReviewProgressView({ perFocus, log, variant = "active" }: ReviewProgressViewProps) {
   const feedRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll the feed to the latest entry. Respect reduced-motion.
@@ -131,9 +126,7 @@ function FocusPipeline({ progress }: { progress: FocusProgress }) {
 
   return (
     <div className="review-progress__focus grid gap-2" data-focus={focus}>
-      <div className="font-mono text-caption text-text-secondary">
-        {focusLabel(focus)}
-      </div>
+      <div className="font-mono text-caption text-text-secondary">{focusLabel(focus)}</div>
       <div className="review-progress__pipeline-row">
         <div className="review-progress__connector" aria-hidden="true" />
         <div

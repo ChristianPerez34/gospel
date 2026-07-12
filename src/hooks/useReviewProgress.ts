@@ -112,7 +112,7 @@ function isChunkDone(status: unknown): status is "done" {
 
 function hasObjectFailure<TFailure>(
   status: unknown,
-  isFailure: (value: unknown) => value is TFailure,
+  isFailure: (value: unknown) => value is TFailure
 ): status is { failed: TFailure } {
   return (
     typeof status === "object" &&
@@ -147,20 +147,14 @@ function isPhaseFailed(status: unknown): status is { failed: PhaseFailure } {
   return hasObjectFailure(status, isPhaseFailure);
 }
 
-function phaseStatusToNodeState(
-  status: unknown,
-  previous: ReviewNodeState,
-): ReviewNodeState {
+function phaseStatusToNodeState(status: unknown, previous: ReviewNodeState): ReviewNodeState {
   if (status === "running") return "active";
   if (status === "done") return "done";
   if (isPhaseFailed(status)) return "failed";
   return previous;
 }
 
-function reducePipeline(
-  prev: ReviewPipelineState,
-  phase: ReviewPhase,
-): ReviewPipelineState {
+function reducePipeline(prev: ReviewPipelineState, phase: ReviewPhase): ReviewPipelineState {
   const next: ReviewPipelineState = { ...prev, detector: { ...prev.detector } };
 
   switch (phase.type) {
@@ -234,7 +228,8 @@ function reducePipeline(
       } else if (isPhaseFailed(phase.status)) {
         next.failed = true;
         next.failureDetail = phase.status.failed.detail;
-        if (next.detector.status === "active") next.detector = { ...next.detector, status: "failed" };
+        if (next.detector.status === "active")
+          next.detector = { ...next.detector, status: "failed" };
         else if (next.validator === "active") next.validator = "failed";
         else if (next.finalize === "active") next.finalize = "failed";
         else next.detector = { ...next.detector, status: "failed" };
@@ -258,7 +253,7 @@ function reduceReviewState(
   prev: UseReviewProgressState,
   runId: string,
   phase: ReviewPhase,
-  focus?: ReviewFocus,
+  focus?: ReviewFocus
 ): UseReviewProgressState {
   const next: UseReviewProgressState = {
     ...prev,
@@ -330,8 +325,7 @@ export function useReviewProgress(): UseReviewProgress {
           setState((prev) => {
             const isAggregate = focus == null;
             const runChanged =
-              runIdRef.current === null ||
-              (isAggregate && runIdRef.current !== payload.run_id);
+              runIdRef.current === null || (isAggregate && runIdRef.current !== payload.run_id);
             if (runChanged) {
               runIdRef.current = payload.run_id;
             }

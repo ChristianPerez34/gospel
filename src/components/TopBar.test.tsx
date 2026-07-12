@@ -24,7 +24,7 @@ function renderTopBar(overrides: Partial<ComponentProps<typeof TopBar>> = {}) {
       onOpenSettings={vi.fn()}
       sessionsOpen={false}
       {...overrides}
-    />,
+    />
   );
 }
 

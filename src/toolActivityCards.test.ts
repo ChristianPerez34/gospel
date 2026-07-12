@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  toolActivitiesToActionCards,
-  toolActivitiesToTimelineSteps,
-} from "./toolActivityCards";
+import { toolActivitiesToActionCards, toolActivitiesToTimelineSteps } from "./toolActivityCards";
 import type { ActionCardSection, ToolCallActivity } from "./types";
 
 type RowsSection = Extract<ActionCardSection, { type: "rows" }>;
@@ -65,7 +62,7 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(cards[0]?.rawPayload).not.toContain("raw old snippet");
     expect(cards[0]?.rawPayload).not.toContain("raw new snippet");
     const diff = cards[0]?.sections?.find(
-      (section) => section.type === "text" && section.title === "Diff",
+      (section) => section.type === "text" && section.title === "Diff"
     );
     expect(diff).toMatchObject({
       content: "@@ src/lib.rs:10 @@\n-old\n+new",
@@ -135,7 +132,7 @@ describe("toolActivitiesToActionCards review tools", () => {
 
     expect(cards[0]?.summary).toBe("Code review");
     const reviewFields = cards[0]?.sections?.find(
-      (section) => section.type === "fields" && section.title === "Review",
+      (section) => section.type === "fields" && section.title === "Review"
     );
     expect(reviewFields).toMatchObject({
       fields: expect.arrayContaining([
@@ -146,7 +143,7 @@ describe("toolActivitiesToActionCards review tools", () => {
       ]),
     });
     const findings = cards[0]?.sections?.find(
-      (section) => section.type === "rows" && section.title === "Findings",
+      (section) => section.type === "rows" && section.title === "Findings"
     );
     expect(findings).toMatchObject({
       rows: [
@@ -224,7 +221,7 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(cards[0]?.summary).toBe("Security review");
     expect(cards[0]?.detail).toBe("Security, local");
     const reviewFields = cards[0]?.sections?.find(
-      (section) => section.type === "fields" && section.title === "Review",
+      (section) => section.type === "fields" && section.title === "Review"
     );
     expect(reviewFields).toMatchObject({
       fields: expect.arrayContaining([{ label: "Focus", value: "Security" }]),
@@ -372,32 +369,33 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(cards[0]?.summary).toBe("Delegate exploration");
     expect(cards[0]?.detail).toBe("Found one risky bootstrap path., Investigate startup flow");
 
-    const keyFilesSection = cards[0]?.sections?.find((section): section is RowsSection =>
-      isRowsSection(section) && section.title === "Key files",
+    const keyFilesSection = cards[0]?.sections?.find(
+      (section): section is RowsSection => isRowsSection(section) && section.title === "Key files"
     );
     expect(keyFilesSection?.rows?.map((row) => row.primary)).toEqual([
       "src/main.rs",
       "src/auth.rs",
     ]);
 
-    const findingsSection = cards[0]?.sections?.find((section): section is RowsSection =>
-      isRowsSection(section) && section.title === "Findings",
+    const findingsSection = cards[0]?.sections?.find(
+      (section): section is RowsSection => isRowsSection(section) && section.title === "Findings"
     );
     expect(findingsSection?.rows?.map((row) => row.primary)).toEqual([
       "Potential unauthenticated route",
       "Cookie not rotated",
     ]);
 
-    const nextReadsSection = cards[0]?.sections?.find((section): section is RowsSection =>
-      isRowsSection(section) && section.title === "Suggested next reads",
+    const nextReadsSection = cards[0]?.sections?.find(
+      (section): section is RowsSection =>
+        isRowsSection(section) && section.title === "Suggested next reads"
     );
     expect(nextReadsSection?.rows?.map((row) => row.primary)).toEqual([
       "Run security review",
       "Verify token claims",
     ]);
 
-    const toolSection = cards[0]?.sections?.find((section): section is RowsSection =>
-      isRowsSection(section) && section.title === "Tools used",
+    const toolSection = cards[0]?.sections?.find(
+      (section): section is RowsSection => isRowsSection(section) && section.title === "Tools used"
     );
     expect(toolSection?.rows?.map((row) => row.primary)).toEqual([
       "read_file",

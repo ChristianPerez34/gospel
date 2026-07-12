@@ -85,7 +85,7 @@ function renderPalette(overrides: Partial<ComponentProps<typeof CommandPalette>>
       onSelectModel={vi.fn()}
       onVariantChange={vi.fn()}
       {...overrides}
-    />,
+    />
   );
 }
 

@@ -20,7 +20,7 @@ const comment: ReviewComment = {
   title: "Unsanitized command",
   description: "User input reaches a shell command.",
   rationale: "Shell execution expands attacker-controlled text.",
-  evidence: "Command::new(\"sh\").arg(user_input)",
+  evidence: 'Command::new("sh").arg(user_input)',
   suggestion: "Use fixed command arguments.",
   verification_plan: "Run a payload test.",
   signal_tier: "tier_1",

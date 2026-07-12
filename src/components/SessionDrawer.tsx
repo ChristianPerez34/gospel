@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Archive, CheckSquare, Download, Lock, RotateCcw, Square, Trash2, Upload } from "lucide-react";
+import {
+  Archive,
+  CheckSquare,
+  Download,
+  Lock,
+  RotateCcw,
+  Square,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import type { ArchiveStats, Session } from "../types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 
@@ -104,7 +113,7 @@ export function SessionDrawer({
     ? Boolean(onRestoreArchivedSessions || onDeleteArchivedSessions || onExportArchivedSessions)
     : Boolean(onArchiveSessions);
   const workspaceOptions = Array.from(
-    new Set(visibleSessions.map((session) => session.workspaceId).filter(Boolean) as string[]),
+    new Set(visibleSessions.map((session) => session.workspaceId).filter(Boolean) as string[])
   );
   const filteredSessions = visibleSessions.filter((session) => {
     const normalizedSearch = search.toLowerCase();
@@ -112,8 +121,7 @@ export function SessionDrawer({
     const matchesSearch =
       session.title.toLowerCase().includes(normalizedSearch) ||
       modelLabel.toLowerCase().includes(normalizedSearch);
-    const matchesWorkspace =
-      workspaceFilter === "all" || session.workspaceId === workspaceFilter;
+    const matchesWorkspace = workspaceFilter === "all" || session.workspaceId === workspaceFilter;
     const rangeDays = dateRangeFilter === "all" ? null : Number(dateRangeFilter);
     const matchesDate =
       !showArchived ||
@@ -123,14 +131,13 @@ export function SessionDrawer({
   });
   const groups = groupByDate(filteredSessions);
   const groupEntries = Object.entries(groups).filter(([, items]) => items.length > 0);
-  const hasCrossWorkspaceSessions = new Set(
-    filteredSessions.map((session) => session.workspaceId).filter(Boolean),
-  ).size > 1;
+  const hasCrossWorkspaceSessions =
+    new Set(filteredSessions.map((session) => session.workspaceId).filter(Boolean)).size > 1;
   const selectedSessions = filteredSessions.filter((session) => selectedIds.has(session.id));
   const allVisibleSelected =
     filteredSessions.length > 0 && filteredSessions.every((session) => selectedIds.has(session.id));
   const activeWorkspaceSessions = sessions.filter((session) =>
-    activeWorkspaceId ? session.workspaceId === activeWorkspaceId : true,
+    activeWorkspaceId ? session.workspaceId === activeWorkspaceId : true
   );
 
   const getWorkspaceLabel = (session: Session) => {
@@ -207,7 +214,12 @@ export function SessionDrawer({
               fill="none"
             >
               <circle cx="5.5" cy="5.5" r="4" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M9 9L12.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path
+                d="M9 9L12.5 12.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
             </svg>
             <input
               className="h-11 flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
@@ -278,16 +290,18 @@ export function SessionDrawer({
                     ? `${archiveStats.archived_count} archived | ${archiveStats.expired_count} expired`
                     : `${archivedSessions.length} archived`}
                 </span>
-                {archiveStats && archiveStats.expired_count > 0 && onDeleteExpiredArchivedSessions && (
-                  <button
-                    type="button"
-                    className="session-management-button is-danger"
-                    disabled={archiveActionsDisabled}
-                    onClick={onDeleteExpiredArchivedSessions}
-                  >
-                    Delete expired
-                  </button>
-                )}
+                {archiveStats &&
+                  archiveStats.expired_count > 0 &&
+                  onDeleteExpiredArchivedSessions && (
+                    <button
+                      type="button"
+                      className="session-management-button is-danger"
+                      disabled={archiveActionsDisabled}
+                      onClick={onDeleteExpiredArchivedSessions}
+                    >
+                      Delete expired
+                    </button>
+                  )}
               </>
             )}
           </div>
@@ -423,7 +437,9 @@ export function SessionDrawer({
           )}
           {groupEntries.map(([label, items]) => (
             <div key={label} className="mb-2">
-              <div className="text-caption font-medium text-text-muted tracking-[0.02em] uppercase py-2 px-3">{label}</div>
+              <div className="text-caption font-medium text-text-muted tracking-[0.02em] uppercase py-2 px-3">
+                {label}
+              </div>
               {items.map((session) => {
                 const isActive = session.id === activeSessionId;
                 const title = session.title || "Untitled";
@@ -437,7 +453,9 @@ export function SessionDrawer({
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-caption text-text-muted">
-                          {session.variant ? `${session.model} · ${session.variant}` : session.model}
+                          {session.variant
+                            ? `${session.model} · ${session.variant}`
+                            : session.model}
                         </span>
                         {session.mode === "ReadOnly" && (
                           <span className="session-readonly-badge">
@@ -445,11 +463,13 @@ export function SessionDrawer({
                             Plan
                           </span>
                         )}
-                        {hasCrossWorkspaceSessions && workspaceNames && getWorkspaceLabel(session) && (
-                          <span className="max-w-40 truncate rounded-full border border-surface-overlay px-2 py-0.5 text-caption text-text-muted">
-                            {getWorkspaceLabel(session)}
-                          </span>
-                        )}
+                        {hasCrossWorkspaceSessions &&
+                          workspaceNames &&
+                          getWorkspaceLabel(session) && (
+                            <span className="max-w-40 truncate rounded-full border border-surface-overlay px-2 py-0.5 text-caption text-text-muted">
+                              {getWorkspaceLabel(session)}
+                            </span>
+                          )}
                         <time className="font-mono text-caption text-text-muted">
                           {session.timestamp.toLocaleTimeString([], {
                             hour: "2-digit",
@@ -461,10 +481,7 @@ export function SessionDrawer({
                   </>
                 );
                 return (
-                  <div
-                    key={session.id}
-                    className={`session-row ${isActive ? "is-active" : ""}`}
-                  >
+                  <div key={session.id} className={`session-row ${isActive ? "is-active" : ""}`}>
                     {selectionEnabled && (
                       <button
                         type="button"
@@ -473,7 +490,11 @@ export function SessionDrawer({
                         aria-pressed={isSelected}
                         onClick={() => toggleSelected(session)}
                       >
-                        {isSelected ? <CheckSquare aria-hidden="true" /> : <Square aria-hidden="true" />}
+                        {isSelected ? (
+                          <CheckSquare aria-hidden="true" />
+                        ) : (
+                          <Square aria-hidden="true" />
+                        )}
                       </button>
                     )}
                     {showArchived ? (
@@ -570,7 +591,12 @@ export function SessionDrawer({
           onClick={onNewSession}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 3V11M3 7H11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <path
+              d="M7 3V11M3 7H11"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
           </svg>
           New session
         </button>

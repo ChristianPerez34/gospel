@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 function pendingApproval(
-  overrides: Partial<Extract<TurnBlock, { kind: "approval" }>> = {},
+  overrides: Partial<Extract<TurnBlock, { kind: "approval" }>> = {}
 ): Extract<TurnBlock, { kind: "approval" }> {
   return {
     kind: "approval",
@@ -29,7 +29,7 @@ describe("ApprovalCard", () => {
     render(
       <ol>
         <ApprovalCard block={pendingApproval()} onResolve={vi.fn().mockResolvedValue(undefined)} />
-      </ol>,
+      </ol>
     );
 
     expect(screen.getByText("git push origin main")).toBeTruthy();
@@ -45,7 +45,7 @@ describe("ApprovalCard", () => {
     render(
       <ol>
         <ApprovalCard block={pendingApproval()} onResolve={onResolve} />
-      </ol>,
+      </ol>
     );
 
     fireEvent.click(screen.getByTestId("approval-allow-approval-1"));
@@ -58,7 +58,7 @@ describe("ApprovalCard", () => {
     render(
       <ol>
         <ApprovalCard block={pendingApproval()} onResolve={onResolve} />
-      </ol>,
+      </ol>
     );
     fireEvent.click(screen.getByTestId("approval-deny-approval-1"));
     expect(onResolve).toHaveBeenCalledWith("approval-1", "deny");
@@ -71,7 +71,7 @@ describe("ApprovalCard", () => {
           block={pendingApproval({ status: "approved" })}
           onResolve={vi.fn().mockResolvedValue(undefined)}
         />
-      </ol>,
+      </ol>
     );
 
     expect(screen.queryByText("Allow")).toBeNull();
@@ -86,7 +86,7 @@ describe("ApprovalCard", () => {
           block={pendingApproval({ risk: "destructive", id: "d-1" })}
           onResolve={vi.fn().mockResolvedValue(undefined)}
         />
-      </ol>,
+      </ol>
     );
     expect(screen.getByText("Destructive")).toBeTruthy();
 
@@ -102,7 +102,7 @@ describe("ApprovalCard", () => {
           })}
           onResolve={vi.fn().mockResolvedValue(undefined)}
         />
-      </ol>,
+      </ol>
     );
     expect(screen.getByText("External access")).toBeTruthy();
     expect(screen.getByText("/etc/passwd")).toBeTruthy();
@@ -112,7 +112,7 @@ describe("ApprovalCard", () => {
     render(
       <ol>
         <ApprovalCard block={pendingApproval()} />
-      </ol>,
+      </ol>
     );
     // Buttons exist but are disabled so the user can't click into a no-op.
     const allow = screen.getByTestId("approval-allow-approval-1") as HTMLButtonElement;

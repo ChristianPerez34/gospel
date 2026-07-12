@@ -75,7 +75,10 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
         >
           {RISK_LABEL[block.risk]}
         </span>
-        <span className="min-w-0 truncate font-mono text-body-sm text-text-primary" title={block.summary}>
+        <span
+          className="min-w-0 truncate font-mono text-body-sm text-text-primary"
+          title={block.summary}
+        >
           {block.summary}
         </span>
         <span
@@ -111,9 +114,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
           >
             Deny
           </Button>
-          <span className="font-mono text-caption text-text-muted">
-            Auto-denies in 60s
-          </span>
+          <span className="font-mono text-caption text-text-muted">Auto-denies in 60s</span>
         </div>
       )}
     </li>

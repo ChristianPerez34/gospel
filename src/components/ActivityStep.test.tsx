@@ -11,7 +11,7 @@ function renderStep(card: ActionCardType) {
   return render(
     <ol>
       <ActivityStep card={card} />
-    </ol>,
+    </ol>
   );
 }
 
@@ -47,9 +47,9 @@ function groupedReadCard(): ActionCardType {
     id: "tool-read-group",
     groupCount: 3,
     passes: [
-      single("pass-1", "from 1 to 40", "{\"path\":\"src/lib.rs\",\"bytes\":1}"),
-      single("pass-2", "from 41 to 80", "{\"path\":\"src/lib.rs\",\"bytes\":2}"),
-      single("pass-3", "from 81 to 120", "{\"path\":\"src/lib.rs\",\"bytes\":3}"),
+      single("pass-1", "from 1 to 40", '{"path":"src/lib.rs","bytes":1}'),
+      single("pass-2", "from 41 to 80", '{"path":"src/lib.rs","bytes":2}'),
+      single("pass-3", "from 81 to 120", '{"path":"src/lib.rs","bytes":3}'),
     ],
   };
 }
@@ -70,8 +70,8 @@ function diffCard(): ActionCardType {
         content: [
           "@@ src/lib.rs:1 @@",
           "  fn main() {",
-          "-    println!(\"old\");",
-          "+    println!(\"new\");",
+          '-    println!("old");',
+          '+    println!("new");',
           "  }",
         ].join("\n"),
         monospace: true,
@@ -91,10 +91,12 @@ describe("ActivityStep", () => {
     rerender(
       <ol>
         <ActivityStep card={readFileCard("completed")} />
-      </ol>,
+      </ol>
     );
 
-    expect(screen.getByRole("button", { name: /read file/i }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: /read file/i }).getAttribute("aria-expanded")).toBe(
+      "false"
+    );
     expect(screen.queryByText("file contents")).toBeNull();
   });
 

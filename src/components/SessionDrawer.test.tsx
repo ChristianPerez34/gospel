@@ -41,7 +41,7 @@ function renderDrawer(overrides: Partial<ComponentProps<typeof SessionDrawer>> =
       onNewSession={vi.fn()}
       onClose={vi.fn()}
       {...overrides}
-    />,
+    />
   );
 }
 
@@ -132,10 +132,10 @@ describe("SessionDrawer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Import archive/ }));
     fireEvent.change(screen.getByLabelText("Archive import JSON"), {
-      target: { value: "{\"version\":1,\"sessions\":[]}" },
+      target: { value: '{"version":1,"sessions":[]}' },
     });
     fireEvent.click(screen.getByRole("button", { name: "Import" }));
 
-    expect(onImportArchivedSessions).toHaveBeenCalledWith("{\"version\":1,\"sessions\":[]}");
+    expect(onImportArchivedSessions).toHaveBeenCalledWith('{"version":1,"sessions":[]}');
   });
 });

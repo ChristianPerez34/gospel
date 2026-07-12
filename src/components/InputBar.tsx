@@ -104,22 +104,19 @@ export function InputBar({
     };
   }, [modelOpen, variantOpen]);
 
-  const handleSlashSelect = useCallback(
-    (name: string) => {
-      selectedFromMenu.current = true;
-      setValue((current) => {
-        const lines = current.split("\n");
-        const firstLine = lines[0] ?? "";
-        const updatedFirstLine = firstLine.replace(/^\/[a-zA-Z0-9-]*/, `/${name}`);
-        return [updatedFirstLine, ...lines.slice(1)].join("\n");
-      });
-      setShowSlashMenu(false);
-      setSlashFilter("");
-      setUnknownSkill(null);
-      textareaRef.current?.focus();
-    },
-    []
-  );
+  const handleSlashSelect = useCallback((name: string) => {
+    selectedFromMenu.current = true;
+    setValue((current) => {
+      const lines = current.split("\n");
+      const firstLine = lines[0] ?? "";
+      const updatedFirstLine = firstLine.replace(/^\/[a-zA-Z0-9-]*/, `/${name}`);
+      return [updatedFirstLine, ...lines.slice(1)].join("\n");
+    });
+    setShowSlashMenu(false);
+    setSlashFilter("");
+    setUnknownSkill(null);
+    textareaRef.current?.focus();
+  }, []);
 
   const doSend = useCallback(
     (text: string) => {
@@ -218,9 +215,8 @@ export function InputBar({
         </div>
         {unknownSkill && (
           <div className="px-3 text-caption text-status-error">
-            Unknown skill:{" "}
-            <span className="font-mono">/{unknownSkill}</span>. Press Esc to
-            send anyway.
+            Unknown skill: <span className="font-mono">/{unknownSkill}</span>. Press Esc to send
+            anyway.
           </div>
         )}
         <div className="composer-deck min-h-[--input-min-height] rounded-lg p-2">
@@ -251,47 +247,65 @@ export function InputBar({
                   <ChevronDown className="size-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                 </Button>
                 {modelOpen && (
-                  <div className="model-menu absolute bottom-full left-0 mb-2 max-h-[240px] w-80 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)" role="listbox">
+                  <div
+                    className="model-menu absolute bottom-full left-0 mb-2 max-h-[240px] w-80 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)"
+                    role="listbox"
+                  >
                     {models.length === 0 ? (
                       <div className="flex flex-col gap-1 p-3 text-body-sm text-text-muted">
-                        <strong className="font-medium text-text-primary">{unavailableMessage}</strong>
+                        <strong className="font-medium text-text-primary">
+                          {unavailableMessage}
+                        </strong>
                         {unavailableDetail && <span>{unavailableDetail}</span>}
                         {onUnavailableAction && (
-                          <button className="hit-target self-start text-caption text-accent-action" type="button" onClick={onUnavailableAction}>
+                          <button
+                            className="hit-target self-start text-caption text-accent-action"
+                            type="button"
+                            onClick={onUnavailableAction}
+                          >
                             {unavailableActionLabel}
                           </button>
                         )}
                       </div>
-                    ) : models.map((m) => {
-                      const isActive = m.id === selectedModel;
-                      const isDisabled = m.configured === false;
-                      const baseClass = "flex min-h-11 w-full items-center justify-between gap-3 px-3 text-left transition-colors duration-150 ease-out-quart";
-                      const activeClass = isActive ? " bg-surface-overlay" : "";
-                      const disabledClass = isDisabled ? " opacity-40 cursor-not-allowed hover:bg-transparent" : " hover:bg-surface-overlay";
-                      return (
-                        <button
-                          key={m.id}
-                          className={`${baseClass}${activeClass}${disabledClass}`}
-                          role="option"
-                          aria-selected={isActive}
-                          disabled={isDisabled}
-                          onClick={() => {
-                            if (m.configured !== false) {
-                              onModelChange(m.id);
-                            }
-                            setModelOpen(false);
-                          }}
-                        >
-                          <span className="truncate text-body-sm text-text-primary">{m.name}</span>
-                          <span className="flex shrink-0 items-center gap-1 font-mono text-caption text-text-muted">
-                            {m.provider}
-                            {m.configured === false && (
-                              <span className="text-caption uppercase tracking-[0.03em] text-status-error">Not configured</span>
-                            )}
-                          </span>
-                        </button>
-                      );
-                    })}
+                    ) : (
+                      models.map((m) => {
+                        const isActive = m.id === selectedModel;
+                        const isDisabled = m.configured === false;
+                        const baseClass =
+                          "flex min-h-11 w-full items-center justify-between gap-3 px-3 text-left transition-colors duration-150 ease-out-quart";
+                        const activeClass = isActive ? " bg-surface-overlay" : "";
+                        const disabledClass = isDisabled
+                          ? " opacity-40 cursor-not-allowed hover:bg-transparent"
+                          : " hover:bg-surface-overlay";
+                        return (
+                          <button
+                            key={m.id}
+                            className={`${baseClass}${activeClass}${disabledClass}`}
+                            role="option"
+                            aria-selected={isActive}
+                            disabled={isDisabled}
+                            onClick={() => {
+                              if (m.configured !== false) {
+                                onModelChange(m.id);
+                              }
+                              setModelOpen(false);
+                            }}
+                          >
+                            <span className="truncate text-body-sm text-text-primary">
+                              {m.name}
+                            </span>
+                            <span className="flex shrink-0 items-center gap-1 font-mono text-caption text-text-muted">
+                              {m.provider}
+                              {m.configured === false && (
+                                <span className="text-caption uppercase tracking-[0.03em] text-status-error">
+                                  Not configured
+                                </span>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
                   </div>
                 )}
               </div>
@@ -321,7 +335,10 @@ export function InputBar({
                     <ChevronDown className="size-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                   </Button>
                   {variantOpen && (
-                    <div className="model-menu variant-menu absolute bottom-full right-0 mb-2 overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)" role="listbox">
+                    <div
+                      className="model-menu variant-menu absolute bottom-full right-0 mb-2 overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)"
+                      role="listbox"
+                    >
                       {[
                         {
                           id: null,
@@ -332,9 +349,12 @@ export function InputBar({
                       ].map((variant) => {
                         const isActive = selectedVariant === variant.id;
                         const isDisabled = currentModel?.configured === false;
-                        const baseClass = "variant-option flex w-full flex-col items-start gap-1 px-3 py-2.5 text-left transition-colors duration-150 ease-out-quart";
+                        const baseClass =
+                          "variant-option flex w-full flex-col items-start gap-1 px-3 py-2.5 text-left transition-colors duration-150 ease-out-quart";
                         const activeClass = isActive ? " bg-surface-overlay" : "";
-                        const disabledClass = isDisabled ? " opacity-40 cursor-not-allowed hover:bg-transparent" : " hover:bg-surface-overlay";
+                        const disabledClass = isDisabled
+                          ? " opacity-40 cursor-not-allowed hover:bg-transparent"
+                          : " hover:bg-surface-overlay";
                         return (
                           <button
                             type="button"
@@ -351,9 +371,13 @@ export function InputBar({
                             }}
                           >
                             <span className="flex w-full min-w-0 items-center justify-between gap-3">
-                              <span className="truncate text-body-sm font-medium text-text-primary">{variant.name}</span>
+                              <span className="truncate text-body-sm font-medium text-text-primary">
+                                {variant.name}
+                              </span>
                               {currentModel?.configured === false && (
-                                <span className="text-caption uppercase tracking-[0.03em] text-status-error">Not configured</span>
+                                <span className="text-caption uppercase tracking-[0.03em] text-status-error">
+                                  Not configured
+                                </span>
                               )}
                             </span>
                             <span className="max-w-[34ch] text-body-sm leading-snug text-text-muted">

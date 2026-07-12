@@ -13,7 +13,11 @@
     "version:bump:minor": "python3 scripts/bump-version.py minor",
     "version:bump:major": "python3 scripts/bump-version.py major",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format ."
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -32,6 +36,7 @@
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
     "@streamdown/code": "^1.1.1",
     "@tailwindcss/postcss": "^4.3.2",
     "@tauri-apps/cli": "^2",

@@ -61,11 +61,13 @@ describe("useReviewProgress", () => {
 
     await waitFor(() => {
       expect(result.current.log[result.current.log.length - 1]?.text).toBe(
-        "Detector chunk 1/1 failed (provider_error): model rejected tool-capable request",
+        "Detector chunk 1/1 failed (provider_error): model rejected tool-capable request"
       );
     });
     expect(result.current.pipeline.detector.status).toBe("failed");
-    expect(result.current.log[result.current.log.length - 1]?.text).not.toContain("[object Object]");
+    expect(result.current.log[result.current.log.length - 1]?.text).not.toContain(
+      "[object Object]"
+    );
   });
 
   it("reads nested phase failure details", async () => {
@@ -83,7 +85,7 @@ describe("useReviewProgress", () => {
 
     await waitFor(() => {
       expect(result.current.log[result.current.log.length - 1]?.text).toBe(
-        "Validator failed: validator provider failed",
+        "Validator failed: validator provider failed"
       );
     });
     expect(result.current.pipeline.validator).toBe("failed");
@@ -124,9 +126,7 @@ describe("useReviewProgress", () => {
     await waitFor(() => {
       expect(result.current.log).toHaveLength(1);
     });
-    expect(result.current.log[0]?.text).toBe(
-      "Multi-focus review started (3 focuses)",
-    );
+    expect(result.current.log[0]?.text).toBe("Multi-focus review started (3 focuses)");
     expect(result.current.pipeline.detector.status).toBe("active");
   });
 
@@ -162,7 +162,7 @@ describe("useReviewProgress", () => {
         suppressed: 0,
         status: { failed: { detail: "API key missing" } },
       },
-      "Performance",
+      "Performance"
     );
 
     await waitFor(() => {
@@ -182,13 +182,45 @@ describe("useReviewProgress", () => {
     });
 
     emitProgress({ type: "multiFocusStart", total: 2 });
-    emitProgress({ type: "multiFocus", focus: "Security", completed: 0, total: 2, findings: 0, suppressed: 0, status: "running" }, "Security");
-    emitProgress({ type: "detector", chunk: 1, totalChunks: 1, files: [], candidateCount: 2, status: "running" }, "Security");
+    emitProgress(
+      {
+        type: "multiFocus",
+        focus: "Security",
+        completed: 0,
+        total: 2,
+        findings: 0,
+        suppressed: 0,
+        status: "running",
+      },
+      "Security"
+    );
+    emitProgress(
+      {
+        type: "detector",
+        chunk: 1,
+        totalChunks: 1,
+        files: [],
+        candidateCount: 2,
+        status: "running",
+      },
+      "Security"
+    );
     emitProgress({ type: "validator", candidateCount: 2, status: "running" }, "Security");
     emitProgress({ type: "finalize", status: "running" }, "Security");
     emitProgress({ type: "done", findings: 2, suppressed: 0 }, "Security");
 
-    emitProgress({ type: "multiFocus", focus: "BugHunt", completed: 1, total: 2, findings: 1, suppressed: 0, status: "done" }, "BugHunt");
+    emitProgress(
+      {
+        type: "multiFocus",
+        focus: "BugHunt",
+        completed: 1,
+        total: 2,
+        findings: 1,
+        suppressed: 0,
+        status: "done",
+      },
+      "BugHunt"
+    );
 
     await waitFor(() => {
       expect(result.current.done).toBe(true);
@@ -211,12 +243,28 @@ describe("useReviewProgress", () => {
 
     emitProgress({ type: "multiFocusStart", total: 2 });
     emitProgress(
-      { type: "multiFocus", focus: "Security", completed: 1, total: 2, findings: 0, suppressed: 0, status: "done" },
-      "Security",
+      {
+        type: "multiFocus",
+        focus: "Security",
+        completed: 1,
+        total: 2,
+        findings: 0,
+        suppressed: 0,
+        status: "done",
+      },
+      "Security"
     );
     emitProgress(
-      { type: "multiFocus", focus: "BugHunt", completed: 1, total: 2, findings: 0, suppressed: 0, status: { failed: { detail: "timeout" } } },
-      "BugHunt",
+      {
+        type: "multiFocus",
+        focus: "BugHunt",
+        completed: 1,
+        total: 2,
+        findings: 0,
+        suppressed: 0,
+        status: { failed: { detail: "timeout" } },
+      },
+      "BugHunt"
     );
 
     await waitFor(() => {

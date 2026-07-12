@@ -60,7 +60,7 @@ export function useThemePreference() {
 
   const resolvedTheme = useMemo<ResolvedTheme>(
     () => (themePreference === "system" ? systemResolvedTheme : themePreference),
-    [systemResolvedTheme, themePreference],
+    [systemResolvedTheme, themePreference]
   );
 
   return {

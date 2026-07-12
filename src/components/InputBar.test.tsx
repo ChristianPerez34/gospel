@@ -48,7 +48,7 @@ function renderInputBar(overrides: Partial<ComponentProps<typeof InputBar>> = {}
       onVariantChange={vi.fn()}
       onSend={vi.fn()}
       {...overrides}
-    />,
+    />
   );
 }
 

@@ -35,9 +35,7 @@ const MAX_PREVIEW_ROWS = 6;
 const MAX_TEXT_PREVIEW_CHARS = 2400;
 
 function startCase(value: string) {
-  return value
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function formatValue(value: unknown) {
@@ -108,11 +106,7 @@ function byteSize(value: unknown) {
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function rowsSection(
-  title: string,
-  rows: ActionCardRow[],
-  emptyText?: string
-): ActionCardSection {
+function rowsSection(title: string, rows: ActionCardRow[], emptyText?: string): ActionCardSection {
   return { type: "rows", title, rows: rows.slice(0, MAX_PREVIEW_ROWS), emptyText };
 }
 
@@ -124,9 +118,7 @@ function fieldsSection(title: string, fields: Array<ActionCardField | undefined>
   };
 }
 
-function isRenderableSection(
-  section: ActionCardSection | undefined
-): section is ActionCardSection {
+function isRenderableSection(section: ActionCardSection | undefined): section is ActionCardSection {
   if (!section) return false;
   return section.type !== "fields" || section.fields.length > 0;
 }
@@ -137,9 +129,7 @@ function textSection(
   monospace = false
 ): ActionCardSection | undefined {
   const display = displayValue(content);
-  return display
-    ? { type: "text", title, content: truncateText(display), monospace }
-    : undefined;
+  return display ? { type: "text", title, content: truncateText(display), monospace } : undefined;
 }
 
 function rawPayload(activity: ToolCallActivity) {
@@ -175,12 +165,7 @@ function parsedResult(activity: ToolCallActivity) {
 function toolTarget(activity: ToolCallActivity): string | undefined {
   const args = parsedArguments(activity);
   const result = resultRecord(activity);
-  const candidate =
-    args?.path ??
-    args?.pattern ??
-    args?.glob ??
-    args?.identifier ??
-    result?.path;
+  const candidate = args?.path ?? args?.pattern ?? args?.glob ?? args?.identifier ?? result?.path;
   return displayValue(candidate);
 }
 
@@ -314,7 +299,10 @@ function listDirectoryCard(activity: ToolCallActivity): Partial<ActionCard> {
   ].filter(isRenderableSection);
 
   return {
-    detail: compactList([args?.path ?? "workspace", args?.depth ? `depth ${args.depth}` : undefined]),
+    detail: compactList([
+      args?.path ?? "workspace",
+      args?.depth ? `depth ${args.depth}` : undefined,
+    ]),
     sections,
   };
 }
@@ -326,7 +314,9 @@ function delegateExplorationCard(activity: ToolCallActivity): Partial<ActionCard
   const keyFiles = asArray(result?.key_files).map(displayValue).filter(Boolean) as string[];
   const findings = asArray(result?.findings).map(displayValue).filter(Boolean) as string[];
   const constraints = asArray(result?.constraints).map(displayValue).filter(Boolean) as string[];
-  const nextReads = asArray(result?.suggested_next_reads).map(displayValue).filter(Boolean) as string[];
+  const nextReads = asArray(result?.suggested_next_reads)
+    .map(displayValue)
+    .filter(Boolean) as string[];
 
   const sections = [
     fieldsSection("Investigation", [
@@ -544,29 +534,30 @@ function runReviewCard(activity: ToolCallActivity): Partial<ActionCard> {
     (activity.name === "run_security_review" ? "Security" : undefined);
   const findings = asArray(result?.findings);
   const comments = review?.comments ?? [];
-  const rows = findings.length > 0
-    ? findings.map((finding, fallbackIndex) => {
-        const item = asRecord(finding) ?? {};
-        const index = displayValue(item.index) ?? String(fallbackIndex + 1);
-        return {
-          primary: `[${index}] ${displayValue(item.title) ?? "Untitled finding"}`,
+  const rows =
+    findings.length > 0
+      ? findings.map((finding, fallbackIndex) => {
+          const item = asRecord(finding) ?? {};
+          const index = displayValue(item.index) ?? String(fallbackIndex + 1);
+          return {
+            primary: `[${index}] ${displayValue(item.title) ?? "Untitled finding"}`,
+            secondary: compactList([
+              item.file,
+              item.line_start ? `line ${item.line_start}` : undefined,
+              severityBadge(item as Partial<ReviewComment>),
+            ]),
+            meta: displayValue(item.comment_id),
+          };
+        })
+      : comments.map((comment, index) => ({
+          primary: `[${index + 1}] ${comment.title}`,
           secondary: compactList([
-            item.file,
-            item.line_start ? `line ${item.line_start}` : undefined,
-            severityBadge(item as Partial<ReviewComment>),
+            comment.file,
+            `line ${comment.line_start}`,
+            severityBadge(comment),
           ]),
-          meta: displayValue(item.comment_id),
-        };
-      })
-    : comments.map((comment, index) => ({
-        primary: `[${index + 1}] ${comment.title}`,
-        secondary: compactList([
-          comment.file,
-          `line ${comment.line_start}`,
-          severityBadge(comment),
-        ]),
-        meta: comment.comment_id,
-      }));
+          meta: comment.comment_id,
+        }));
 
   const totalFindings = review
     ? review.comments.length + review.suppressed_count
@@ -666,10 +657,7 @@ export function formatToolActivityLabel(
   return live && activity.status === "calling" ? `${label}...` : label;
 }
 
-export function summarizeLiveToolActivity(
-  activities: ToolCallActivity[],
-  isThinking: boolean
-) {
+export function summarizeLiveToolActivity(activities: ToolCallActivity[], isThinking: boolean) {
   const activeActivity = [...activities]
     .reverse()
     .find((activity) => activity.status === "calling");
@@ -685,9 +673,7 @@ export function summarizeLiveToolActivity(
   return isThinking ? "Thinking..." : null;
 }
 
-export function toolActivitiesToActionCards(
-  activities: ToolCallActivity[]
-): ActionCard[] {
+export function toolActivitiesToActionCards(activities: ToolCallActivity[]): ActionCard[] {
   return activities.map((activity) => {
     const formatter = TOOL_CARD_FORMATTERS[activity.name] ?? fallbackCard;
     const formatted = formatter(activity);
@@ -712,9 +698,7 @@ function groupKey(activity: ToolCallActivity, card: ActionCard): string | null {
 
 function mergeGroupedCards(cards: ActionCard[]): ActionCard {
   const first = cards[0];
-  const status = cards.some((card) => card.status === "calling")
-    ? "calling"
-    : "completed";
+  const status = cards.some((card) => card.status === "calling") ? "calling" : "completed";
   return {
     ...first,
     id: first.id,
@@ -728,9 +712,7 @@ function mergeGroupedCards(cards: ActionCard[]): ActionCard {
  * Builds the collapsed timeline steps for a run of tool activities, merging
  * consecutive calls to the same tool + target into a single grouped step.
  */
-export function toolActivitiesToTimelineSteps(
-  activities: ToolCallActivity[]
-): ActionCard[] {
+export function toolActivitiesToTimelineSteps(activities: ToolCallActivity[]): ActionCard[] {
   const cards = toolActivitiesToActionCards(activities);
   const steps: ActionCard[] = [];
 
@@ -743,9 +725,7 @@ export function toolActivitiesToTimelineSteps(
         end += 1;
       }
     }
-    steps.push(
-      end - index === 1 ? cards[index] : mergeGroupedCards(cards.slice(index, end))
-    );
+    steps.push(end - index === 1 ? cards[index] : mergeGroupedCards(cards.slice(index, end)));
     index = end;
   }
 
