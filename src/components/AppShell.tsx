@@ -641,6 +641,7 @@ export function AppShell() {
         model: match.model,
         variant: null,
       };
+      const previousSelection = selectedModel ?? next;
       setSelectedModel(next);
       selectedModelRef.current = next;
 
@@ -667,7 +668,6 @@ export function AppShell() {
 
       if (!activeSession.backendCreated) return;
 
-      const previousSelection = selectedModel ?? next;
       void invoke("update_session_model_selection", {
         sessionId: activeSession.id,
         provider: next.provider,

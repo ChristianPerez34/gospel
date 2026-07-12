@@ -143,8 +143,14 @@ Add a unit test suite to `src-tauri/src/llm.rs` tests module verifying:
 ## Done criteria
 
 - [x] `cargo test` runs and passes all Rust tests.
-- [x] New unit tests verifying LoopDetector success/failure behavior exist and pass.
+  - Verified: Run completed successfully.
+  - Test Results:
+    - `llm::tests::tool_result_failure_is_only_recorded_when_success_is_false` ... passed
+    - `llm::tests::successful_no_match_result_resets_failure_streak` ... passed
+    - `llm::tests::repeated_failed_blocked_results_warn_then_stop` ... passed
+- [x] New unit tests verifying LoopDetector success/failure behavior exist and pass (verified above).
 - [x] No files outside the in-scope list are modified, except the required plan status files.
+  - Audited Change Stack: `src-tauri/src/llm.rs` (in-scope), plus status files `plans/README.md` and `plans/003-fix-loop-detector-false-positive.md` (metadata/status updates). Exclusions are honored.
 
 ## STOP conditions
 
