@@ -1168,14 +1168,14 @@ fn record_tool_result_failure(
                 return None;
             }
 
-            parsed
-                .get("reason")
-                .and_then(|item| item.as_str())
-                .and_then(|reason| {
-                    loop_detector
-                        .record_failure(reason)
-                        .map(|status| (reason.to_string(), status))
-                })
+            let Some(reason) = parsed.get("reason").and_then(|item| item.as_str()) else {
+                loop_detector.reset_failure_streak();
+                return None;
+            };
+
+            loop_detector
+                .record_failure(reason)
+                .map(|status| (reason.to_string(), status))
         }
         Err(_) => {
             loop_detector.reset_failure_streak();
@@ -1425,6 +1425,25 @@ mod tests {
         assert_eq!(
             record_tool_result_failure(&mut detector, result),
             Some(("blocked".to_string(), LoopStatus::Stop))
+        );
+    }
+
+    #[test]
+    fn failed_result_without_reason_resets_deterministic_failure_streak() {
+        let mut detector = LoopDetector::new(AgentRole::Verification);
+
+        record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
+        assert_eq!(detector.failure_streak, 1);
+
+        assert_eq!(
+            record_tool_result_failure(&mut detector, r#"{"success":false,"error":"denied"}"#),
+            None
+        );
+        assert_eq!(detector.failure_streak, 0);
+
+        assert_eq!(
+            record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#),
+            Some(("blocked".to_string(), LoopStatus::Ok))
         );
     }
 }

@@ -322,6 +322,9 @@ export function useReviewProgress(): UseReviewProgress {
 
           setState((prev) => {
             const isAggregate = focus == null;
+            if (!isAggregate && runIdRef.current !== null && runIdRef.current !== payload.run_id) {
+              return prev;
+            }
             const runChanged =
               runIdRef.current === null || (isAggregate && runIdRef.current !== payload.run_id);
             if (runChanged) {

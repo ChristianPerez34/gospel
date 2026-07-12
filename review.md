@@ -1,4 +1,4 @@
-Great work on refining the responsive layout! The changes are solid and definitely improve the experience on smaller screens. 
+Great work on refining the responsive layout! The changes are solid and definitely improve the experience on smaller screens.
 
 Since I am the author of this PR, I am leaving a comment instead of an approval.
 

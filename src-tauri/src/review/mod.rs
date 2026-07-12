@@ -426,6 +426,12 @@ struct PrDiff {
     title: String,
     body: String,
     diff: String,
+    warnings: Vec<String>,
+}
+
+struct FetchedPrDiff {
+    diff: String,
+    warnings: Vec<String>,
 }
 
 pub async fn run_review(
@@ -476,6 +482,7 @@ pub async fn run_review(
                     focus
                 ),
                 diff,
+                Vec::new(),
             )
             .await
         }
@@ -496,6 +503,7 @@ pub async fn run_review(
                 ReviewMode::PullRequest { pr_number },
                 context,
                 pr.diff,
+                pr.warnings,
             )
             .await
         }
@@ -711,8 +719,11 @@ async fn get_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<PrDiff, St
     let metadata: PrMetadata = serde_json::from_str(&metadata)
         .map_err(|e| format!("Failed to parse PR metadata for #{}: {}", pr_number, e))?;
 
-    let diff = match diff_res {
-        Ok(d) => d,
+    let fetched = match diff_res {
+        Ok(diff) => FetchedPrDiff {
+            diff,
+            warnings: Vec::new(),
+        },
         Err(e) => {
             if is_oversized_diff_error(&e) {
                 tracing::info!(
@@ -737,7 +748,8 @@ async fn get_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<PrDiff, St
     Ok(PrDiff {
         title: metadata.title,
         body: metadata.body.unwrap_or_default(),
-        diff,
+        diff: fetched.diff,
+        warnings: fetched.warnings,
     })
 }
 
@@ -765,7 +777,10 @@ struct PrFilePatch {
     patch: Option<String>,
 }
 
-async fn get_oversized_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<String, String> {
+async fn get_oversized_pr_diff(
+    workspace_path: &Path,
+    pr_number: u64,
+) -> Result<FetchedPrDiff, String> {
     let pr_arg = pr_number.to_string();
     let list_args = ["pr", "view", &pr_arg, "--json", "files"];
     let list_json = run_program(workspace_path, "gh", &list_args)
@@ -812,13 +827,6 @@ async fn get_oversized_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<
         }
     }
 
-    if total_files > MAX_OVERSIZED_FILES {
-        reconstructed.push_str(&format!(
-            "\n{}\n",
-            partial_review_warning(MAX_OVERSIZED_FILES, total_files)
-        ));
-    }
-
     if !missing_patches.is_empty() {
         tracing::debug!(
             "No patch field for {} files: {:?}",
@@ -827,7 +835,17 @@ async fn get_oversized_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<
         );
     }
 
-    Ok(reconstructed)
+    Ok(FetchedPrDiff {
+        diff: reconstructed,
+        warnings: oversized_diff_warnings(MAX_OVERSIZED_FILES.min(total_files), total_files),
+    })
+}
+
+fn oversized_diff_warnings(reviewed: usize, total: usize) -> Vec<String> {
+    (reviewed < total)
+        .then(|| partial_review_warning(reviewed, total))
+        .into_iter()
+        .collect()
 }
 
 fn reconstruct_diff(path: &str, patch: &str) -> String {
@@ -1115,20 +1133,21 @@ async fn run_diff_review(
     mode: ReviewMode,
     review_context: String,
     diff: String,
+    initial_warnings: Vec<String>,
 ) -> Result<ReviewResult, String> {
     if diff.trim().is_empty() {
         return Ok(review_result(
             Vec::new(),
             "No changes found to review".to_string(),
             true,
-            Vec::new(),
+            initial_warnings,
             0,
             focus,
             mode,
         ));
     }
 
-    let mut warnings = Vec::new();
+    let mut warnings = initial_warnings;
     let file_diffs: Vec<FileDiff> = parse_diff_by_file(&diff)
         .into_iter()
         .filter(|file| !file.is_binary)
@@ -2861,18 +2880,55 @@ Binary files a/icon.png and b/icon.png differ
     }
 
     #[test]
+    fn oversized_diff_warning_is_structured_metadata() {
+        assert_eq!(
+            oversized_diff_warnings(20, 82),
+            vec!["Reviewed 20/82 files — partial review due to size"]
+        );
+        assert!(oversized_diff_warnings(20, 20).is_empty());
+    }
+
+    #[tokio::test]
+    async fn initial_warnings_propagate_to_review_result() {
+        let result = run_diff_review(
+            "run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            "key",
+            &WorkspaceToolContext {
+                workspace_path: std::env::current_dir().unwrap(),
+                corpus_available: false,
+                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+            },
+            ReviewFocus::Security,
+            ReviewMode::Local,
+            "Review".to_string(),
+            ""
+                .to_string(),
+            vec!["Reviewed 20/82 files — partial review due to size".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.warnings,
+            vec!["Reviewed 20/82 files — partial review due to size"]
+        );
+    }
+
+    #[test]
     fn test_reconstruct_and_parse_diff() {
         let path1 = "src/a.rs";
         let patch1 = "@@ -1 +1 @@\n-old\n+new";
         let path2 = "src/b.rs";
         let patch2 = "@@ -10 +10,2 @@\n-delete\n+add1\n+add2";
-        
+
         let diff1 = reconstruct_diff(path1, patch1);
         let diff2 = reconstruct_diff(path2, patch2);
-        
+
         let combined = format!("{}{}", diff1, diff2);
         let parsed = parse_diff_by_file(&combined);
-        
+
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].file, "src/a.rs");
         assert_eq!(parsed[1].file, "src/b.rs");

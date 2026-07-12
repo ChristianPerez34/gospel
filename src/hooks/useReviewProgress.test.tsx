@@ -8,7 +8,7 @@ type ReviewProgressListener = (event: { payload: ReviewProgressEvent }) => void;
 
 let progressListener: ReviewProgressListener | null = null;
 
-function emitProgress(phase: ReviewPhase, focus?: ReviewFocus) {
+function emitProgress(phase: ReviewPhase, focus?: ReviewFocus, runId = "run-1") {
   if (!progressListener) {
     throw new Error("review-progress listener was not registered");
   }
@@ -16,7 +16,7 @@ function emitProgress(phase: ReviewPhase, focus?: ReviewFocus) {
   act(() => {
     progressListener?.({
       payload: {
-        run_id: "run-1",
+        run_id: runId,
         focus,
         phase,
         timestamp: 1783094400000,
@@ -274,5 +274,34 @@ describe("useReviewProgress", () => {
     expect(result.current.done).toBe(false);
     expect(result.current.perFocus.BugHunt?.pipeline.failed).toBe(true);
     expect(result.current.perFocus.BugHunt?.pipeline.failureDetail).toBe("timeout");
+  });
+
+  it("ignores focused events from a different active run", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress(
+      {
+        type: "detector",
+        chunk: 1,
+        totalChunks: 2,
+        files: ["src/current.ts"],
+        candidateCount: 1,
+        status: "running",
+      },
+      "Security",
+      "current-run"
+    );
+    emitProgress({ type: "done", findings: 9, suppressed: 0 }, "Security", "stale-run");
+
+    await waitFor(() => {
+      expect(result.current.runId).toBe("current-run");
+    });
+    expect(result.current.done).toBe(false);
+    expect(result.current.perFocus.Security?.pipeline.findings).toBe(0);
+    expect(result.current.log).toHaveLength(1);
   });
 });
