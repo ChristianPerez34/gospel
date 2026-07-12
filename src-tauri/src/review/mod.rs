@@ -15,11 +15,12 @@ pub use progress::{
     ReviewProgressEmitter, ReviewProgressEvent, ToolEventKind,
 };
 
+use crate::harness_profile::{
+    resolve_harness_profile, AgentRole, HarnessProfileRequest, WorkspaceToolContext,
+};
 use crate::keychain;
-use crate::llm::WorkspaceToolContext;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
-use crate::workspace_tools::build_base_workspace_tools;
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
@@ -1969,10 +1970,9 @@ pub(crate) struct AgentConfig<'a> {
     pub model: &'a str,
     pub api_key: &'a str,
     pub workspace: &'a WorkspaceToolContext,
+    pub role: AgentRole,
     pub preamble: &'a str,
     pub prompt: &'a str,
-    pub timeout: Duration,
-    pub max_turns: usize,
     /// Optional observer invoked when the agent makes a tool call or receives
     /// a tool result while streaming. Used by the detector to surface
     /// "reading file X" progress to the review progress emitter.
@@ -2007,22 +2007,36 @@ pub(crate) async fn run_workspace_agent(
             config.provider
         )));
     }
+    let profile = resolve_harness_profile(HarnessProfileRequest {
+        role: config.role,
+        workspace: Some(config.workspace.clone()),
+        role_guidance: Some(config.preamble.to_string()),
+        matched_skills_section: None,
+        invoked_skill_section: None,
+        main_mechanisms: None,
+    })
+    .map_err(|error| ReviewAgentError::Provider(error.to_string()))?;
+    tracing::debug!(profile = ?profile.summary(), "resolved Review Harness Profile");
+    let profile_preamble = profile.preamble.unwrap_or_default();
+    let profile_tools = profile.tools;
+    let profile_guards = profile.guards;
+    let deadline = profile_guards
+        .deadline
+        .expect("Review Harness Profiles always have a deadline");
 
     macro_rules! run_from_client {
         ($client:expr, $model:expr) => {{
             let agent_builder = $client
                 .agent($model)
-                .preamble(config.preamble)
-                .default_max_turns(config.max_turns)
-                .tools(build_base_workspace_tools(
-                    config.workspace.workspace_path.clone(),
-                ));
+                .preamble(&profile_preamble)
+                .default_max_turns(profile_guards.max_turns)
+                .tools(profile_tools);
             let agent = agent_builder.build();
             let stream = agent
                 .stream_prompt(config.prompt)
-                .multi_turn(config.max_turns)
+                .multi_turn(profile_guards.max_turns)
                 .await;
-            consume_agent_stream(stream, config.timeout, config.on_tool_event).await
+            consume_agent_stream(stream, deadline, config.on_tool_event).await
         }};
     }
 
@@ -2852,15 +2866,6 @@ Binary files a/icon.png and b/icon.png differ
             "model rejected tool-capable request"
         );
         assert!(json["phase"]["status"]["detail"].is_null());
-    }
-
-    #[test]
-    fn shared_agent_max_turns_is_50() {
-        assert_eq!(
-            crate::llm::AGENT_MAX_TURNS,
-            50,
-            "Shared interactive-agent turn budget should be 50"
-        );
     }
 
     #[test]

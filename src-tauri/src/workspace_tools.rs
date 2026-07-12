@@ -28,13 +28,6 @@ You can inspect the active Gospel workspace with live tools.
 - Use `read_file` to verify exact code and content.
 - Use `source_edit` to apply one exact replacement to an existing safe UTF-8 source file after verifying the current contents.
 
-### Context Search
-
-- Use `context_search` for broad natural-language retrieval across source, docs, and project artifacts.
-- Context Search returns ranked results with path, line range, content type, snippet, and score.
-- **Always verify important claims with live workspace tools** (read_file, search_code) after using Context Search.
-- Use Context Search to find likely relevant areas, then use live tools to confirm details.
-
 ### Guidance
 
 - Live workspace tools are the source of truth for file contents.
@@ -56,18 +49,26 @@ You can inspect the active Gospel workspace with live tools.
 - Use `search_code` to find where text or symbols appear.
 - Use `read_file` to verify exact code and content.
 
-### Context Search
+### Read-Only Workspace Access
+
+- This Agent role does not provide workspace source mutation tools.
+- Do not claim to have edited workspace source files.
+"#;
+
+pub const READ_ONLY_SESSION_SYSTEM_PROMPT: &str = r#"
+## Read-Only Session
+
+- This Session does not provide workspace source mutation tools.
+- Harness control artifacts remain available through the Harness Control Area contract.
+"#;
+
+pub const CONTEXT_SEARCH_SYSTEM_PROMPT: &str = r#"
+## Context Search
 
 - Use `context_search` for broad natural-language retrieval across source, docs, and project artifacts.
 - Context Search returns ranked results with path, line range, content type, snippet, and score.
-- **Always verify important claims with live workspace tools** (read_file, search_code) after using Context Search.
+- **Always verify important claims with live workspace tools** (`read_file`, `search_code`) after using Context Search.
 - Use Context Search to find likely relevant areas, then use live tools to confirm details.
-
-### Read-Only Session
-
-- This Session does not provide workspace source mutation tools.
-- Do not claim to have edited workspace source files.
-- Harness control artifacts remain available through the Harness Control Area contract.
 "#;
 
 pub const HARNESS_CONTROL_AREA_SYSTEM_PROMPT: &str = r#"

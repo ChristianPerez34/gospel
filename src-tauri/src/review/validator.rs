@@ -1,8 +1,5 @@
 use super::{knowledge, AgentConfig, ReviewAgentError, ReviewComment, ReviewFocus};
-use crate::llm::{WorkspaceToolContext, AGENT_MAX_TURNS};
-use std::time::Duration;
-
-const VALIDATOR_TIMEOUT: Duration = Duration::from_secs(30);
+use crate::harness_profile::{AgentRole, WorkspaceToolContext};
 
 const VALIDATOR_BASE_PREAMBLE: &str = r#"
 You are the Gospel Validator Agent.
@@ -113,10 +110,9 @@ pub async fn run_validator(
         model,
         api_key,
         workspace,
+        role: AgentRole::ReviewValidator,
         preamble: preamble.as_str(),
         prompt,
-        timeout: VALIDATOR_TIMEOUT,
-        max_turns: AGENT_MAX_TURNS,
         on_tool_event: None,
     })
     .await

@@ -5,52 +5,25 @@ use rig::client::CompletionClient;
 use rig::completion::message::Message;
 use rig::completion::{CompletionModel, Prompt, ToolDefinition};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
-use rig::tool::Tool;
+use rig::tool::{Tool, ToolDyn};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use tokio::time::{timeout, Duration};
+use tokio::time::timeout;
 
-/// Role-specific thresholds for run guards.
-const MAIN_AGENT_LOOP_WARN: usize = 3;
-const MAIN_AGENT_LOOP_STOP: usize = 5;
-const EXPLORATION_AGENT_LOOP_WARN: usize = 3;
-const EXPLORATION_AGENT_LOOP_STOP: usize = 5;
-const VERIFICATION_AGENT_LOOP_WARN: usize = 2;
-const VERIFICATION_AGENT_LOOP_STOP: usize = 3;
-
-/// Agent roles for trace logging and guard behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum AgentRole {
-    Main,
-    Exploration,
-    Verification,
-}
-
-impl AgentRole {
-    fn warn_threshold(self) -> usize {
-        match self {
-            AgentRole::Main => MAIN_AGENT_LOOP_WARN,
-            AgentRole::Exploration => EXPLORATION_AGENT_LOOP_WARN,
-            AgentRole::Verification => VERIFICATION_AGENT_LOOP_WARN,
-        }
-    }
-
-    fn stop_threshold(self) -> usize {
-        match self {
-            AgentRole::Main => MAIN_AGENT_LOOP_STOP,
-            AgentRole::Exploration => EXPLORATION_AGENT_LOOP_STOP,
-            AgentRole::Verification => VERIFICATION_AGENT_LOOP_STOP,
-        }
-    }
-}
+#[cfg(test)]
+use crate::harness_profile::guards_for_role;
+use crate::harness_profile::{
+    resolve_harness_profile, AgentRole, HarnessProfileRequest, LoopGuardPolicy,
+    MainHarnessMechanisms, WorkspaceToolContext,
+};
 
 /// Deterministic failure reasons that should not be retried automatically.
 const DETERMINISTIC_FAILURE_REASONS: &[&str] = &[
@@ -82,14 +55,14 @@ struct LoopDetector {
 }
 
 impl LoopDetector {
-    fn new(role: AgentRole) -> Self {
+    fn new(policy: LoopGuardPolicy) -> Self {
         Self {
             last_call_hash: 0,
             consecutive_count: 0,
             last_failure_reason: String::new(),
             failure_streak: 0,
-            warn_threshold: role.warn_threshold(),
-            stop_threshold: role.stop_threshold(),
+            warn_threshold: policy.warning_threshold,
+            stop_threshold: policy.stop_threshold,
         }
     }
 
@@ -161,37 +134,13 @@ enum LoopStatus {
     Stop,
 }
 
-use crate::corpus::tools::{
-    create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
-    CORPUS_SYSTEM_PROMPT,
-};
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
-use crate::review::tools::{
-    create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
-    create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
-};
-use crate::session_mode::session_mode_allows_source_edit;
-use crate::shell_tools::{
-    create_run_git_command_tool, create_run_github_cli_command_tool, create_run_shell_command_tool,
-    CommandApproval, SHELL_TOOLS_SYSTEM_PROMPT,
-};
+use crate::shell_tools::CommandApproval;
 use crate::text_utils::truncate_text_bytes;
-use crate::workspace_tools::{
-    build_base_workspace_tools_with_external_approval, create_context_search_tool,
-    create_find_files_tool, create_read_file_tool, create_search_code_tool,
-    create_source_edit_tool, create_write_harness_file_tool, workspace_root_inventory,
-    ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
-    READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
-};
+use crate::workspace_tools::{workspace_root_inventory, ExternalPathApproval};
 
-pub(crate) const AGENT_MAX_TURNS: usize = 50;
-const EXPLORATION_TIMEOUT: Duration = Duration::from_secs(90);
 const EXPLORATION_REPORT_BYTES_CAP: usize = 32 * 1024;
-const DELEGATION_SYSTEM_PROMPT: &str = r#"
-Use `delegate_exploration` only for broad multi-file, architectural, or investigative tasks that would benefit from a focused report before you answer the user.
-Prefer direct file reads and targeted search for small or obvious tasks.
-"#;
 const EXPLORATION_AGENT_PROMPT: &str = r#"
 You are the Gospel Exploration Agent.
 
@@ -204,7 +153,7 @@ Investigate the active workspace and return a concise markdown report with exact
 ## Suggested Next Reads
 ## Tools Used
 
-Use `context_search` for broad workspace discovery to find relevant areas quickly.
+Use broad workspace retrieval for orientation when it is available.
 Verify important hits with live workspace tools (read_file, search_code) before making claims.
 Use corpus tools for fast structure when available, and live workspace tools for source-of-truth verification.
 Do not answer as the final user-facing assistant. Return findings only.
@@ -288,13 +237,6 @@ pub enum StreamEvent {
         variant: String,
         message: String,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkspaceToolContext {
-    pub workspace_path: PathBuf,
-    pub corpus_available: bool,
-    pub session_mode: String,
 }
 
 pub struct LlmService;
@@ -503,87 +445,6 @@ where
     }
 }
 
-fn build_system_preamble(
-    workspace: Option<&WorkspaceToolContext>,
-    allow_delegate: bool,
-    matched_skills_section: Option<String>,
-    invoked_skills_section: Option<String>,
-    include_harness: bool,
-) -> Option<String> {
-    let mut sections = Vec::new();
-
-    if let Some(ref invoked) = invoked_skills_section {
-        sections.push(invoked.clone());
-    }
-
-    if let Some(ref matched) = matched_skills_section {
-        sections.push(matched.clone());
-    }
-
-    if workspace.is_some() {
-        sections.push(workspace_tools_system_prompt(workspace.unwrap()));
-        sections.push(SHELL_TOOLS_SYSTEM_PROMPT.trim().to_string());
-        if include_harness {
-            sections.push(REVIEW_TOOLS_SYSTEM_PROMPT.trim().to_string());
-            sections.push(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.trim().to_string());
-        }
-    }
-
-    if workspace.map(|ctx| ctx.corpus_available).unwrap_or(false) {
-        sections.push(CORPUS_SYSTEM_PROMPT.trim().to_string());
-    }
-
-    if allow_delegate && workspace.is_some() {
-        sections.push(DELEGATION_SYSTEM_PROMPT.trim().to_string());
-    }
-
-    if sections.is_empty() {
-        None
-    } else {
-        Some(sections.join("\n\n"))
-    }
-}
-
-fn workspace_source_edits_enabled(workspace: &WorkspaceToolContext) -> bool {
-    session_mode_allows_source_edit(&workspace.session_mode)
-}
-
-fn workspace_tools_system_prompt(workspace: &WorkspaceToolContext) -> String {
-    if workspace_source_edits_enabled(workspace) {
-        WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string()
-    } else {
-        READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string()
-    }
-}
-
-#[cfg(test)]
-fn registered_main_workspace_tool_names(workspace: &WorkspaceToolContext) -> Vec<&'static str> {
-    let mut names = vec!["read_file", "search_code", "find_files", "list_directory"];
-    if workspace_source_edits_enabled(workspace) {
-        names.push("source_edit");
-    }
-    names.extend([
-        "write_harness_file",
-        "run_review",
-        "run_multi_review",
-        "run_security_review",
-        "record_review_outcome",
-        "run_shell_command",
-        "run_git_command",
-        "run_github_cli_command",
-    ]);
-    if workspace.corpus_available {
-        names.extend([
-            "corpus_summary",
-            "corpus_query",
-            "corpus_neighbors",
-            "context_search",
-        ]);
-    }
-    names.push("delegate_exploration");
-    names
-}
-
 #[derive(Debug, Default, Clone)]
 struct ParsedDelegateSections {
     summary: Option<String>,
@@ -742,47 +603,47 @@ async fn run_exploration_agent(
     let workspace_snapshot = workspace_root_inventory(&workspace.workspace_path, 40)
         .map(|inventory| format!("{}", inventory))
         .unwrap_or_else(|_| String::new());
-    let agent_preamble = format!(
-        "{}\n\n{}",
-        build_system_preamble(Some(workspace), false, None, None, false).unwrap_or_default(),
-        EXPLORATION_AGENT_PROMPT.trim()
-    );
+    let profile = resolve_harness_profile(HarnessProfileRequest {
+        role: AgentRole::Exploration,
+        workspace: Some(workspace.clone()),
+        role_guidance: Some(EXPLORATION_AGENT_PROMPT.to_string()),
+        matched_skills_section: None,
+        invoked_skill_section: None,
+        main_mechanisms: None,
+    })
+    .map_err(|error| LlmError::ProviderError(error.to_string()))?;
+    tracing::debug!(profile = ?profile.summary(), "resolved Exploration Harness Profile");
+    let agent_preamble = profile.preamble.unwrap_or_default();
+    let agent_tools = profile.tools;
+    let agent_guards = profile.guards;
+    let agent_deadline = agent_guards
+        .deadline
+        .expect("Exploration Harness Profiles always have a deadline");
     let prompt = build_exploration_prompt(&args, &workspace_snapshot);
 
     // Exploration agent uses tighter loop thresholds
-    let _loop_detector = Arc::new(Mutex::new(LoopDetector::new(AgentRole::Exploration)));
+    let _loop_detector = Arc::new(Mutex::new(LoopDetector::new(agent_guards.loop_guard)));
 
     macro_rules! exploration_from_client {
         ($client:expr, $model:expr) => {{
-            let mut builder = $client
+            let builder = $client
                 .agent($model)
                 .preamble(&agent_preamble)
-                .default_max_turns(AGENT_MAX_TURNS)
-                .tool(create_read_file_tool(workspace.workspace_path.clone()))
-                .tool(create_search_code_tool(workspace.workspace_path.clone()))
-                .tool(create_find_files_tool(workspace.workspace_path.clone()));
-
-            if workspace.corpus_available {
-                builder = builder
-                    .tool(create_corpus_summary_tool(workspace.workspace_path.clone()))
-                    .tool(create_corpus_query_tool(workspace.workspace_path.clone()))
-                    .tool(create_corpus_neighbors_tool(
-                        workspace.workspace_path.clone(),
-                    ))
-                    .tool(create_context_search_tool(workspace.workspace_path.clone()));
-            }
+                .default_max_turns(agent_guards.max_turns)
+                .tools(agent_tools);
 
             let agent = builder.build();
             let future = agent
                 .prompt(prompt)
                 .with_hook(hook.clone())
                 .extended_details();
-            let response = timeout(EXPLORATION_TIMEOUT, future)
+            let response = timeout(agent_deadline, future)
                 .await
                 .map_err(|_| {
-                    LlmError::ControlledStop(
-                        "Exploration Agent timed out after 90 seconds".to_string(),
-                    )
+                    LlmError::ControlledStop(format!(
+                        "Exploration Agent timed out after {} seconds",
+                        agent_deadline.as_secs()
+                    ))
                 })?
                 .map_err(|e| LlmError::ProviderError(e.to_string()))?;
 
@@ -861,107 +722,61 @@ where
             .iter()
             .map(estimate_message_tokens)
             .sum::<usize>();
+    let mut additional_tools: Vec<Box<dyn ToolDyn>> = Vec::new();
+    if let Some(workspace_context) = workspace.as_ref() {
+        additional_tools.push(Box::new(DelegateExplorationTool {
+            workspace: workspace_context.clone(),
+            provider: delegate_provider.to_string(),
+            model: delegate_model.to_string(),
+            api_key: delegate_api_key.to_string(),
+        }));
+    }
+    if let Some(tool) = skill_script_tool {
+        additional_tools.push(Box::new(tool));
+    }
+    let profile = resolve_harness_profile(HarnessProfileRequest {
+        role: AgentRole::Main,
+        workspace,
+        role_guidance: None,
+        matched_skills_section,
+        invoked_skill_section,
+        main_mechanisms: Some(MainHarnessMechanisms {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            api_key: api_key.to_string(),
+            external_path_approval,
+            command_approval,
+            additional_tools,
+        }),
+    })
+    .map_err(|error| LlmError::ProviderError(error.to_string()))?;
+    tracing::debug!(profile = ?profile.summary(), "resolved Main Harness Profile");
+    let profile_preamble = profile.preamble;
+    let profile_tools = profile.tools;
+    let profile_guards = profile.guards;
 
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
-            let mut builder = $client.agent($model).default_max_turns(AGENT_MAX_TURNS);
+            let mut builder = $client
+                .agent($model)
+                .default_max_turns(profile_guards.max_turns);
             if let Some(additional_params) = variant_resolution.additional_params.clone() {
                 builder = builder.additional_params(additional_params);
             }
-            let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true, matched_skills_section.clone(), invoked_skill_section.clone(), true) {
-                builder.preamble(&preamble)
+            let builder = if let Some(preamble) = profile_preamble.as_ref() {
+                builder.preamble(preamble)
             } else {
                 builder
             };
-            let agent = if let Some(workspace_context) = workspace.as_ref() {
-                let mut b = builder
-                    .tools(build_base_workspace_tools_with_external_approval(
-                        workspace_context.workspace_path.clone(),
-                        external_path_approval.clone(),
-                    ))
-                    .tool(create_write_harness_file_tool(
-                        workspace_context.workspace_path.clone(),
-                    ))
-                    .tool(create_run_review_tool(
-                        workspace_context.workspace_path.clone(),
-                        provider.to_string(),
-                        model.to_string(),
-                        api_key.to_string(),
-                    ))
-                    .tool(create_run_multi_review_tool(
-                        workspace_context.workspace_path.clone(),
-                        provider.to_string(),
-                        model.to_string(),
-                        api_key.to_string(),
-                    ))
-                    .tool(create_run_security_review_tool(
-                        workspace_context.workspace_path.clone(),
-                        provider.to_string(),
-                        model.to_string(),
-                        api_key.to_string(),
-                    ))
-                    .tool(create_record_review_outcome_tool(
-                        workspace_context.workspace_path.clone(),
-                    ));
-
-                if workspace_source_edits_enabled(workspace_context) {
-                    b = b.tool(create_source_edit_tool(
-                        workspace_context.workspace_path.clone(),
-                    ));
-                }
-
-                if workspace_context.corpus_available {
-                    b = b
-                        .tool(create_corpus_summary_tool(
-                            workspace_context.workspace_path.clone(),
-                        ))
-                        .tool(create_corpus_query_tool(
-                            workspace_context.workspace_path.clone(),
-                        ))
-                        .tool(create_corpus_neighbors_tool(
-                            workspace_context.workspace_path.clone(),
-                        ))
-                        .tool(create_context_search_tool(
-                            workspace_context.workspace_path.clone(),
-                        ));
-                }
-
-                b = b
-                    .tool(create_run_shell_command_tool(
-                        workspace_context.workspace_path.clone(),
-                        command_approval.clone(),
-                    ))
-                    .tool(create_run_git_command_tool(
-                        workspace_context.workspace_path.clone(),
-                        command_approval.clone(),
-                    ))
-                    .tool(create_run_github_cli_command_tool(
-                        workspace_context.workspace_path.clone(),
-                        command_approval.clone(),
-                    ))
-                    .tool(DelegateExplorationTool {
-                        workspace: workspace_context.clone(),
-                        provider: delegate_provider.to_string(),
-                        model: delegate_model.to_string(),
-                        api_key: delegate_api_key.to_string(),
-                    });
-                if let Some(st) = skill_script_tool {
-                    b = b.tool(st);
-                }
-                b.build()
-            } else if let Some(st) = skill_script_tool {
-                builder.tool(st).build()
-            } else {
-                builder.build()
-            };
+            let agent = builder.tools(profile_tools).build();
             let request = agent
                 .stream_chat(prompt, chat_history)
-                .multi_turn(AGENT_MAX_TURNS);
+                .multi_turn(profile_guards.max_turns);
             let mut stream = request.await;
 
             let mut tool_name_by_id: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
-            let mut loop_detector = LoopDetector::new(AgentRole::Main);
+            let mut loop_detector = LoopDetector::new(profile_guards.loop_guard);
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -1287,68 +1102,6 @@ mod tests {
     }
 
     #[test]
-    fn build_system_preamble_uses_live_tools_and_corpus_distinction() {
-        let preamble = build_system_preamble(
-            Some(&WorkspaceToolContext {
-                workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: true,
-                session_mode: "Build".to_string(),
-            }),
-            true,
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-
-        assert!(preamble.contains("Live Workspace Tools"));
-        assert!(preamble.contains("source-of-truth"));
-        assert!(preamble.contains("delegate_exploration"));
-        assert!(preamble.contains("Harness Control Area"));
-        assert!(preamble.contains(".gospel/PLAN.md"));
-        assert!(preamble.contains("run_shell_command"));
-        assert!(preamble.contains("run_git_command"));
-        assert!(preamble.contains("run_github_cli_command"));
-    }
-
-    #[test]
-    fn build_mode_workspace_tools_include_source_edit_and_harness_writer() {
-        let workspace = WorkspaceToolContext {
-            workspace_path: PathBuf::from("/tmp/workspace"),
-            corpus_available: false,
-            session_mode: "Build".to_string(),
-        };
-
-        let tools = registered_main_workspace_tool_names(&workspace);
-
-        assert!(tools.contains(&"source_edit"));
-        assert!(tools.contains(&"write_harness_file"));
-    }
-
-    #[test]
-    fn read_only_mode_workspace_tools_omit_source_edit_but_keep_harness_writer() {
-        let workspace = WorkspaceToolContext {
-            workspace_path: PathBuf::from("/tmp/workspace"),
-            corpus_available: false,
-            session_mode: "ReadOnly".to_string(),
-        };
-
-        let tools = registered_main_workspace_tool_names(&workspace);
-        let preamble = build_system_preamble(Some(&workspace), true, None, None, true).unwrap();
-
-        assert!(!tools.contains(&"source_edit"));
-        assert!(tools.contains(&"write_harness_file"));
-        assert!(!preamble.contains("Use `source_edit`"));
-        assert!(preamble.contains("Read-Only Session"));
-        assert!(preamble.contains(".gospel/PLAN.md"));
-    }
-
-    #[test]
-    fn build_system_preamble_is_empty_without_workspace_tools() {
-        assert!(build_system_preamble(None, true, None, None, true).is_none());
-    }
-
-    #[test]
     fn build_exploration_prompt_includes_optional_context() {
         let prompt = build_exploration_prompt(
             &DelegateExplorationArgs {
@@ -1380,7 +1133,7 @@ mod tests {
 
     #[test]
     fn tool_result_failure_is_only_recorded_when_success_is_false() {
-        let mut detector = LoopDetector::new(AgentRole::Verification);
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
 
         let successful =
             record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"blocked"}"#);
@@ -1395,7 +1148,7 @@ mod tests {
 
     #[test]
     fn successful_no_match_result_resets_failure_streak() {
-        let mut detector = LoopDetector::new(AgentRole::Verification);
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
 
         record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
         assert_eq!(detector.failure_streak, 1);
@@ -1411,7 +1164,7 @@ mod tests {
 
     #[test]
     fn repeated_failed_blocked_results_warn_then_stop() {
-        let mut detector = LoopDetector::new(AgentRole::Verification);
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
         let result = r#"{"success":false,"reason":"blocked"}"#;
 
         assert_eq!(
@@ -1430,7 +1183,7 @@ mod tests {
 
     #[test]
     fn failed_result_without_reason_resets_deterministic_failure_streak() {
-        let mut detector = LoopDetector::new(AgentRole::Verification);
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
 
         record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
         assert_eq!(detector.failure_streak, 1);

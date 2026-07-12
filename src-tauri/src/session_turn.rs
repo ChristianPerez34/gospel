@@ -1,4 +1,5 @@
-use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent, WorkspaceToolContext};
+use crate::harness_profile::WorkspaceToolContext;
+use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent};
 use crate::models::ModelRegistry;
 use crate::session_mode::SESSION_MODE_BUILD;
 use crate::session_store::SessionNote;

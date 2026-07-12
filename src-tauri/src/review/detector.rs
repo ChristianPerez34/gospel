@@ -1,8 +1,5 @@
 use super::{knowledge, AgentConfig, FileDiff, ReviewAgentError, ReviewFocus, ToolEventObserver};
-use crate::llm::{WorkspaceToolContext, AGENT_MAX_TURNS};
-use std::time::Duration;
-
-const DETECTOR_TIMEOUT: Duration = Duration::from_secs(60);
+use crate::harness_profile::{AgentRole, WorkspaceToolContext};
 
 const SECURITY_DETECTOR_PREAMBLE: &str = r#"
 You are the Gospel Security Detector Agent.
@@ -172,10 +169,9 @@ pub async fn run_detector(
         model,
         api_key,
         workspace,
+        role: AgentRole::ReviewDetector,
         preamble: preamble_for_focus(focus),
         prompt,
-        timeout: DETECTOR_TIMEOUT,
-        max_turns: AGENT_MAX_TURNS,
         on_tool_event,
     })
     .await
