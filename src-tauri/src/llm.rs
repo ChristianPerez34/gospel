@@ -1040,37 +1040,30 @@ where
                             }
 
                             // Check for repeated deterministic failures
-                            match serde_json::from_str::<serde_json::Value>(&result_summary) {
-                                Ok(parsed) => {
-                                    if let Some(reason) = parsed.get("reason").and_then(|r| r.as_str()) {
-                                        if let Some(status) = loop_detector.record_failure(reason) {
-                                            match status {
-                                                LoopStatus::Ok => {}
-                                                LoopStatus::Warning(count) => {
-                                                    on_event(StreamEvent::LoopWarning {
-                                                        count,
-                                                        tool_name: tool_name.clone(),
-                                                    });
-                                                }
-                                                LoopStatus::Stop => {
-                                                    let msg = format!(
-                                                        "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
-                                                        reason, loop_detector.failure_streak
-                                                    );
-                                                    on_event(StreamEvent::LoopStopped {
-                                                        count: loop_detector.failure_streak,
-                                                        tool_name: tool_name.clone(),
-                                                        message: msg.clone(),
-                                                    });
-                                                    return Err(LlmError::ControlledStop(msg));
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        loop_detector.reset_failure_streak();
+                            if let Some((reason, status)) =
+                                record_tool_result_failure(&mut loop_detector, &result_summary)
+                            {
+                                match status {
+                                    LoopStatus::Ok => {}
+                                    LoopStatus::Warning(count) => {
+                                        on_event(StreamEvent::LoopWarning {
+                                            count,
+                                            tool_name: tool_name.clone(),
+                                        });
+                                    }
+                                    LoopStatus::Stop => {
+                                        let msg = format!(
+                                            "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
+                                            reason, loop_detector.failure_streak
+                                        );
+                                        on_event(StreamEvent::LoopStopped {
+                                            count: loop_detector.failure_streak,
+                                            tool_name: tool_name.clone(),
+                                            message: msg.clone(),
+                                        });
+                                        return Err(LlmError::ControlledStop(msg));
                                     }
                                 }
-                                Err(_) => loop_detector.reset_failure_streak(),
                             }
 
                             on_event(StreamEvent::ToolResult {
@@ -1157,6 +1150,38 @@ fn source_edit_result_changed(result_summary: &str) -> bool {
             Some(success && changed)
         })
         .unwrap_or(false)
+}
+
+fn record_tool_result_failure(
+    loop_detector: &mut LoopDetector,
+    result_summary: &str,
+) -> Option<(String, LoopStatus)> {
+    match serde_json::from_str::<serde_json::Value>(result_summary) {
+        Ok(parsed) => {
+            let success = parsed
+                .get("success")
+                .and_then(|item| item.as_bool())
+                .unwrap_or(true);
+
+            if success {
+                loop_detector.reset_failure_streak();
+                return None;
+            }
+
+            parsed
+                .get("reason")
+                .and_then(|item| item.as_str())
+                .and_then(|reason| {
+                    loop_detector
+                        .record_failure(reason)
+                        .map(|status| (reason.to_string(), status))
+                })
+        }
+        Err(_) => {
+            loop_detector.reset_failure_streak();
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1351,5 +1376,55 @@ mod tests {
             r#"{"success":false,"changed":false,"reason":"blocked"}"#
         ));
         assert!(!source_edit_result_changed("not json"));
+    }
+
+    #[test]
+    fn tool_result_failure_is_only_recorded_when_success_is_false() {
+        let mut detector = LoopDetector::new(AgentRole::Verification);
+
+        let successful =
+            record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"blocked"}"#);
+        assert_eq!(successful, None);
+        assert_eq!(detector.failure_streak, 0);
+
+        let failed =
+            record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
+        assert_eq!(failed, Some(("blocked".to_string(), LoopStatus::Ok)));
+        assert_eq!(detector.failure_streak, 1);
+    }
+
+    #[test]
+    fn successful_no_match_result_resets_failure_streak() {
+        let mut detector = LoopDetector::new(AgentRole::Verification);
+
+        record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
+        assert_eq!(detector.failure_streak, 1);
+
+        let status =
+            record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"no_match"}"#);
+        assert_eq!(status, None);
+        assert_eq!(detector.failure_streak, 0);
+
+        record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"no_match"}"#);
+        assert_eq!(detector.failure_streak, 0);
+    }
+
+    #[test]
+    fn repeated_failed_blocked_results_warn_then_stop() {
+        let mut detector = LoopDetector::new(AgentRole::Verification);
+        let result = r#"{"success":false,"reason":"blocked"}"#;
+
+        assert_eq!(
+            record_tool_result_failure(&mut detector, result),
+            Some(("blocked".to_string(), LoopStatus::Ok))
+        );
+        assert_eq!(
+            record_tool_result_failure(&mut detector, result),
+            Some(("blocked".to_string(), LoopStatus::Warning(2)))
+        );
+        assert_eq!(
+            record_tool_result_failure(&mut detector, result),
+            Some(("blocked".to_string(), LoopStatus::Stop))
+        );
     }
 }
