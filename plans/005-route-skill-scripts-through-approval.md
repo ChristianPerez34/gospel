@@ -93,7 +93,7 @@ pub struct RunSkillScriptTool {
 **Verify**: Run `cargo check --manifest-path src-tauri/Cargo.toml` to check imports.
 
 ### Step 2: Request user approval in RunSkillScriptTool::call
-Modify `RunSkillScriptTool::call` in `src-tauri/src/skills.rs` to request approval prior to running the script. If the user denies approval, return a successful output containing a permission error.
+Modify `RunSkillScriptTool::call` in `src-tauri/src/skills.rs` to request approval prior to running the script. If the approval broker is unavailable or the user denies approval, fail closed by returning a successful tool response containing a permission error without executing the script.
 
 ```rust
         if let Some(approval) = &self.command_approval {
@@ -162,6 +162,7 @@ In `src-tauri/src/lib.rs` line 1142, extract `request.skill_script_tool`, inject
 Add unit tests in `src-tauri/src/skills.rs` verifying:
 1. When `command_approval` is configured and returns `true`, script execution completes successfully.
 2. When `command_approval` is configured and returns `false`, script execution is blocked and the returned output indicates it was denied.
+3. When `command_approval` is not configured, script execution is blocked rather than bypassing approval.
 
 **Verify**: Run `cargo test --manifest-path src-tauri/Cargo.toml` and confirm all 307+ tests pass.
 
@@ -169,6 +170,7 @@ Add unit tests in `src-tauri/src/skills.rs` verifying:
 
 - [x] `cargo test` runs and passes all tests.
 - [x] Script execution requests are successfully routed through `command_approval` when populated.
+- [x] Script execution fails closed when `command_approval` is unavailable.
 - [x] No files outside the in-scope list are modified, except the required plan status files.
 
 ## STOP conditions

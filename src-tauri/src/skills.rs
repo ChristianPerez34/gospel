@@ -202,30 +202,39 @@ impl Tool for RunSkillScriptTool {
             });
         }
 
-        if let Some(approval) = &self.command_approval {
-            let script_path = format!("{}/scripts/{}", args.skill, args.script);
-            let approved = approval
-                .request_approval(CommandApprovalRequest {
-                    tool_name: Self::NAME,
-                    command_label: format!(
-                        "Execute skill script '{}' for skill '{}'",
-                        args.script, args.skill
-                    ),
-                    reason: format!("Run script at {}", script_path),
-                    risk: CommandRisk::Mutating,
-                })
-                .await;
+        let Some(approval) = &self.command_approval else {
+            return Ok(RunSkillScriptOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: -1,
+                truncated: false,
+                error: Some("Execution denied: approval broker unavailable".to_string()),
+            });
+        };
 
-            if !approved {
-                return Ok(RunSkillScriptOutput {
-                    success: false,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    exit_code: -1,
-                    truncated: false,
-                    error: Some("Execution denied by user".to_string()),
-                });
-            }
+        let script_path = format!("{}/scripts/{}", args.skill, args.script);
+        let approved = approval
+            .request_approval(CommandApprovalRequest {
+                tool_name: Self::NAME,
+                command_label: format!(
+                    "Execute skill script '{}' for skill '{}'",
+                    args.script, args.skill
+                ),
+                reason: format!("Run script at {}", script_path),
+                risk: CommandRisk::Mutating,
+            })
+            .await;
+
+        if !approved {
+            return Ok(RunSkillScriptOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: -1,
+                truncated: false,
+                error: Some("Execution denied by user".to_string()),
+            });
         }
 
         match run_skill_script(skill, &args.script, self.workspace_path.as_deref()).await {
@@ -1575,5 +1584,47 @@ mod tests {
         assert_eq!(output.error.as_deref(), Some("Execution denied by user"));
         assert!(!marker.exists());
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_does_not_execute_without_approval_broker() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("executed");
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(
+            scripts_dir.join("write-marker"),
+            "#!/bin/bash\ntouch executed",
+        )
+        .unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["write-marker".to_string()];
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: None,
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "write-marker".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(
+            output.error.as_deref(),
+            Some("Execution denied: approval broker unavailable")
+        );
+        assert!(!marker.exists());
     }
 }
