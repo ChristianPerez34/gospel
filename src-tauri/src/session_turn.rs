@@ -437,6 +437,7 @@ pub fn skill_script_tool(
         Some(RunSkillScriptTool {
             available_skills: scriptable,
             workspace_path,
+            command_approval: None,
         })
     }
 }

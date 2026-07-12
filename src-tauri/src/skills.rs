@@ -1,3 +1,4 @@
+use crate::shell_tools::{CommandApproval, CommandApprovalRequest, CommandRisk};
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use tracing;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,10 +78,26 @@ pub struct RunSkillScriptArgs {
     pub script: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RunSkillScriptTool {
     pub available_skills: Vec<Skill>,
     pub workspace_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub command_approval: Option<Arc<dyn CommandApproval>>,
+}
+
+impl std::fmt::Debug for RunSkillScriptTool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RunSkillScriptTool")
+            .field("available_skills", &self.available_skills)
+            .field("workspace_path", &self.workspace_path)
+            .field(
+                "command_approval",
+                &self.command_approval.as_ref().map(|_| "<configured>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -183,6 +200,32 @@ impl Tool for RunSkillScriptTool {
                     skill.scripts.join(", ")
                 )),
             });
+        }
+
+        if let Some(approval) = &self.command_approval {
+            let script_path = format!("{}/scripts/{}", args.skill, args.script);
+            let approved = approval
+                .request_approval(CommandApprovalRequest {
+                    tool_name: Self::NAME,
+                    command_label: format!(
+                        "Execute skill script '{}' for skill '{}'",
+                        args.script, args.skill
+                    ),
+                    reason: format!("Run script at {}", script_path),
+                    risk: CommandRisk::Mutating,
+                })
+                .await;
+
+            if !approved {
+                return Ok(RunSkillScriptOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: -1,
+                    truncated: false,
+                    error: Some("Execution denied by user".to_string()),
+                });
+            }
         }
 
         match run_skill_script(skill, &args.script, self.workspace_path.as_deref()).await {
@@ -788,7 +831,24 @@ fn truncate_bytes_to_string(bytes: &[u8], max: usize) -> (String, bool) {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    struct RecordingApproval {
+        approved: bool,
+        requests: Arc<Mutex<Vec<CommandApprovalRequest>>>,
+    }
+
+    impl CommandApproval for RecordingApproval {
+        fn request_approval<'a>(
+            &'a self,
+            request: CommandApprovalRequest,
+        ) -> crate::shell_tools::CommandApprovalFuture<'a> {
+            self.requests.lock().unwrap().push(request);
+            let approved = self.approved;
+            Box::pin(async move { approved })
+        }
+    }
 
     fn write_skill(
         base: &Path,
@@ -1405,6 +1465,7 @@ mod tests {
         let tool = RunSkillScriptTool {
             available_skills: vec![],
             workspace_path: None,
+            command_approval: None,
         };
         let out = tool
             .call(RunSkillScriptArgs {
@@ -1424,9 +1485,95 @@ mod tests {
         let tool = RunSkillScriptTool {
             available_skills: vec![sk],
             workspace_path: None,
+            command_approval: None,
         };
         let def = tool.definition("".into()).await;
         assert_eq!(def.name, "run_skill_script");
         assert!(def.description.contains("with-scr: [do-it]"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_executes_after_approval() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(scripts_dir.join("hello"), "#!/bin/bash\necho approved").unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["hello".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: true,
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "hello".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("approved"));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].tool_name, "run_skill_script");
+        assert_eq!(requests[0].risk, CommandRisk::Mutating);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_does_not_execute_after_denial() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("executed");
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(
+            scripts_dir.join("write-marker"),
+            "#!/bin/bash\ntouch executed",
+        )
+        .unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["write-marker".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: false,
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "write-marker".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.error.as_deref(), Some("Execution denied by user"));
+        assert!(!marker.exists());
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 }

@@ -1123,6 +1123,10 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
             let command_approval: Arc<dyn CommandApproval> = Arc::new(BrokerCommandApproval {
                 broker: broker.clone(),
             });
+            let mut skill_script_tool = request.skill_script_tool;
+            if let Some(tool) = &mut skill_script_tool {
+                tool.command_approval = Some(command_approval.clone());
+            }
 
             llm::stream_completion(
                 request.provider,
@@ -1139,7 +1143,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.chat_history,
                 request.matched_skills_section,
                 request.invoked_skill_section,
-                request.skill_script_tool,
+                skill_script_tool,
                 move |event| on_event(session_turn::SessionTurnEvent::from(event)),
             )
             .await
