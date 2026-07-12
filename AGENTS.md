@@ -2,6 +2,18 @@
 
 This project uses [Bun](https://bun.sh/) as its package manager (`bun.lock` is present at the repo root). Prefer `bun` over `npm` for installing dependencies, running scripts, and executing project commands.
 
+## Running tests
+
+The frontend test suite uses [Vitest](https://vitest.dev). Always run it with:
+
+```bash
+bun run test
+```
+
+This executes `vitest run` (defined in `package.json`'s `test` script), which honors the Vitest-specific setup in `src/test/setup.ts` (`vi.mock`, `vi.mocked`, etc.).
+
+Do **not** use `bun test` to run the frontend suite. `bun test` invokes Bun's native test runner, which does not understand Vitest APIs like `vi.mock`/`vi.mocked` and will fail the Vitest-based tests. (`bun test` is only appropriate for Bun-native test files if any are added in the future.)
+
 ## Agent skills
 
 ### Issue tracker
