@@ -141,7 +141,7 @@ Add unit tests verifying:
     #[test]
     fn classify_shell_requires_approval_for_flag_style_path_escape() {
         let policy = CommandPolicy;
-        
+
         // Equal-sign flag escape
         let safety = policy.classify_shell("cat", &["--output=../outside.txt".to_string()], &workspace());
         assert_eq!(safety, CommandSafety::Mutating);
