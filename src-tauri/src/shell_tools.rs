@@ -659,20 +659,37 @@ fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
     };
 
     for arg in args {
+        let mut paths_to_check = Vec::new();
         if arg.starts_with('-') {
-            continue;
-        }
-        let path = PathBuf::from(arg);
-        if !path.is_absolute() && arg.contains("..") {
-            return Some(format!("relative path may escape workspace: {}", arg));
-        }
-        let candidate = if path.is_absolute() {
-            path
+            if let Some(position) = arg.find('=') {
+                paths_to_check.push(arg[position + 1..].to_string());
+            } else if !arg.starts_with("--") && arg.len() > 2 {
+                paths_to_check.push(arg[2..].to_string());
+            }
         } else {
-            workspace_canonical.join(path)
-        };
-        if candidate_escapes_workspace(&candidate, &workspace_canonical) {
-            return Some(format!("path escapes workspace: {}", arg));
+            paths_to_check.push(arg.clone());
+        }
+
+        for path_string in paths_to_check {
+            if path_string.is_empty() {
+                continue;
+            }
+
+            let path = PathBuf::from(&path_string);
+            if !path.is_absolute() && path_string.contains("..") {
+                return Some(format!(
+                    "relative path may escape workspace: {}",
+                    path_string
+                ));
+            }
+            let candidate = if path.is_absolute() {
+                path
+            } else {
+                workspace_canonical.join(&path)
+            };
+            if candidate_escapes_workspace(&candidate, &workspace_canonical) {
+                return Some(format!("path escapes workspace: {}", path_string));
+            }
         }
     }
     None
@@ -1461,6 +1478,34 @@ mod tests {
 
         let safety = policy.classify_shell("cat", &["../outside.txt".to_string()], &workspace());
         assert_eq!(safety, CommandSafety::Mutating);
+    }
+
+    #[test]
+    fn classify_shell_requires_approval_for_flag_style_path_escape() {
+        let policy = CommandPolicy;
+
+        let safety = policy.classify_shell(
+            "cat",
+            &["--output=../outside.txt".to_string()],
+            &workspace(),
+        );
+        assert_eq!(safety, CommandSafety::Mutating);
+
+        let safety =
+            policy.classify_shell("cat", &["--file=/etc/passwd".to_string()], &workspace());
+        assert_eq!(safety, CommandSafety::Mutating);
+
+        let safety = policy.classify_shell("cat", &["-o../outside.txt".to_string()], &workspace());
+        assert_eq!(safety, CommandSafety::Mutating);
+
+        let safety = policy.classify_shell("cat", &["--verbose".to_string()], &workspace());
+        assert_eq!(safety, CommandSafety::ReadOnly);
+
+        let safety = policy.classify_shell("cat", &["-v".to_string()], &workspace());
+        assert_eq!(safety, CommandSafety::ReadOnly);
+
+        let safety = policy.classify_shell("cat", &["--output=file.txt".to_string()], &workspace());
+        assert_eq!(safety, CommandSafety::ReadOnly);
     }
 
     #[cfg(unix)]
