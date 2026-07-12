@@ -667,13 +667,14 @@ export function AppShell() {
 
       if (!activeSession.backendCreated) return;
 
+      const previousSelection = selectedModel ?? next;
       void invoke("update_session_model_selection", {
         sessionId: activeSession.id,
         provider: next.provider,
         model: next.model,
         variant: next.variant,
       }).catch((error) => {
-        rollbackOptimisticModelSelection(activeSession.id, next, previous, previous);
+        rollbackOptimisticModelSelection(activeSession.id, next, previous, previousSelection);
         showError(`Failed to update session model: ${error}`);
       });
     },
@@ -681,6 +682,7 @@ export function AppShell() {
       activeSession,
       models,
       rollbackOptimisticModelSelection,
+      selectedModel,
       session.isStreaming,
       setSelectedModel,
       showError,

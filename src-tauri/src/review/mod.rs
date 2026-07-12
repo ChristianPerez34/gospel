@@ -47,7 +47,6 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const UNPARSEABLE_REVIEW_JSON_WARNING: &str = "did not contain parseable review JSON";
 
 const MAX_OVERSIZED_FILES: usize = 20;
-const OVERSIZED_CONCURRENCY: usize = 5;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewConfig {
@@ -757,6 +756,15 @@ struct PrFilesList {
     files: Vec<PrFileEntry>,
 }
 
+/// One entry from the GitHub PR files API. `patch` is optional because binary
+/// files and renames may not include one.
+#[derive(Debug, Deserialize)]
+struct PrFilePatch {
+    filename: String,
+    #[serde(default)]
+    patch: Option<String>,
+}
+
 async fn get_oversized_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<String, String> {
     let pr_arg = pr_number.to_string();
     let list_args = ["pr", "view", &pr_arg, "--json", "files"];
@@ -767,76 +775,59 @@ async fn get_oversized_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<
     let file_list: PrFilesList = serde_json::from_str(&list_json)
         .map_err(|e| format!("Failed to parse PR files list JSON: {}", e))?;
 
-    let files_to_fetch = if file_list.files.len() > MAX_OVERSIZED_FILES {
-        &file_list.files[..MAX_OVERSIZED_FILES]
+    let total_files = file_list.files.len();
+    let files_to_fetch: Vec<&PrFileEntry> = if total_files > MAX_OVERSIZED_FILES {
+        file_list.files[..MAX_OVERSIZED_FILES].iter().collect()
     } else {
-        &file_list.files[..]
+        file_list.files.iter().collect()
     };
 
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(OVERSIZED_CONCURRENCY));
-    let mut futures = Vec::new();
-
-    for file in files_to_fetch {
-        let path = file.path.clone();
-        let sem = semaphore.clone();
-        futures.push(async move {
-            let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
-            fetch_file_diff(workspace_path, pr_number, &path).await
-        });
-    }
-
-    let results = futures::future::join_all(futures).await;
+    // Fetch every patch in a single PR files API call instead of one request
+    // per file. The response includes `filename` and `patch`, which we match
+    // locally by path.
+    let patches_url = format!("repos/:owner/:repo/pulls/{}/files?per_page=100", pr_arg);
+    let patches_args = ["api", &patches_url];
+    let patches_json = run_program(workspace_path, "gh", &patches_args)
+        .await
+        .map_err(|e| format!("Failed to fetch PR files patches: {}", e))?;
+    let patches: Vec<PrFilePatch> = serde_json::from_str(&patches_json)
+        .map_err(|e| format!("Failed to parse PR files patches JSON: {}", e))?;
+    let patches_by_path: std::collections::HashMap<&str, &str> = patches
+        .iter()
+        .filter_map(|entry| entry.patch.as_deref().map(|p| (entry.filename.as_str(), p)))
+        .collect();
 
     let mut reconstructed = String::new();
-    for (file, res) in files_to_fetch.iter().zip(results) {
-        match res {
-            Ok(Some(patch)) => {
-                if !patch.trim().is_empty() {
-                    let chunk = reconstruct_diff(&file.path, &patch);
-                    reconstructed.push_str(&chunk);
-                }
+    let mut missing_patches = Vec::new();
+    for file in &files_to_fetch {
+        match patches_by_path.get(file.path.as_str()) {
+            Some(patch) => {
+                let chunk = reconstruct_diff(&file.path, patch);
+                reconstructed.push_str(&chunk);
             }
-            Ok(None) => {
+            None => {
                 tracing::debug!("Skipping file {} as it has no patch field", file.path);
-            }
-            Err(e) => {
-                return Err(format!("Failed to fetch diff for {}: {}", file.path, e));
+                missing_patches.push(file.path.clone());
             }
         }
     }
 
-    Ok(reconstructed)
-}
-
-async fn fetch_file_diff(
-    workspace_path: &Path,
-    pr_number: u64,
-    path: &str,
-) -> Result<Option<String>, String> {
-    let pr_arg = pr_number.to_string();
-    let url = format!("repos/:owner/:repo/pulls/{}/files?per_page=100", pr_arg);
-    
-    // Escape path for jq query string
-    let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
-    let jq_query = format!(
-        ".[] | select(.filename == \"{}\") | .patch",
-        escaped_path
-    );
-    
-    let args = [
-        "api",
-        &url,
-        "--jq",
-        &jq_query,
-    ];
-    
-    let patch = run_program(workspace_path, "gh", &args).await?;
-    let trimmed = patch.trim();
-    if trimmed.is_empty() || trimmed == "null" {
-        Ok(None)
-    } else {
-        Ok(Some(patch))
+    if total_files > MAX_OVERSIZED_FILES {
+        reconstructed.push_str(&format!(
+            "\n{}\n",
+            partial_review_warning(MAX_OVERSIZED_FILES, total_files)
+        ));
     }
+
+    if !missing_patches.is_empty() {
+        tracing::debug!(
+            "No patch field for {} files: {:?}",
+            missing_patches.len(),
+            missing_patches
+        );
+    }
+
+    Ok(reconstructed)
 }
 
 fn reconstruct_diff(path: &str, patch: &str) -> String {
@@ -1879,10 +1870,7 @@ fn pr_fetch_error(pr_number: u64, error: String) -> String {
         || lower.contains("no pull requests found")
     {
         format!("PR #{} not found in this repository", pr_number)
-    } else if lower.contains("406")
-        || lower.contains("exceeded the maximum")
-        || lower.contains("too large")
-    {
+    } else if is_oversized_diff_error(&error) {
         format!(
             "PR #{} diff is too large. GitHub returns 406 for diffs over 20,000 lines.",
             pr_number

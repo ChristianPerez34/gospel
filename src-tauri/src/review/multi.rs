@@ -363,8 +363,8 @@ fn format_all_failed(errors: &BTreeMap<String, String>) -> String {
 mod tests {
     use super::*;
     use crate::review::{
-        MultiFocusStatus, NoopReviewProgressEmitter, ReviewMode, ReviewPhase, ReviewProgressEvent,
-        Severity, SignalTier,
+        MultiFocusStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewMode, ReviewPhase,
+        ReviewProgressEvent, Severity, SignalTier,
     };
 
     fn result(focus: ReviewFocus, comments: usize, suppressed_count: usize) -> ReviewResult {
@@ -1049,5 +1049,50 @@ mod tests {
         .expect_err("empty focus list is rejected");
         assert!(error.contains("At least one review focus"));
         assert!(emitter.phases().is_empty());
+    }
+
+    #[test]
+    fn focus_emitter_suppresses_terminal_events_and_stamps_run_id_and_focus() {
+        let (emitter, emitter_dyn) = capturing_emitter_pair();
+        let focus_emitter = FocusEmitter {
+            parent: emitter_dyn,
+            run_id: "agg-run".to_string(),
+            focus: ReviewFocus::Security,
+        };
+
+        focus_emitter.emit_progress(ReviewProgressEvent::new(
+            "child-run",
+            ReviewPhase::Finalize {
+                status: PhaseStatus::Running,
+            },
+        ));
+        focus_emitter.emit_progress(ReviewProgressEvent::new(
+            "child-run",
+            ReviewPhase::Done {
+                findings: 1,
+                suppressed: 0,
+            },
+        ));
+        focus_emitter.emit_progress(ReviewProgressEvent::new(
+            "child-run",
+            ReviewPhase::Failed {
+                detail: "boom".to_string(),
+            },
+        ));
+
+        let events = emitter.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "Done and Failed must be suppressed");
+        assert_eq!(events[0].run_id, "agg-run", "aggregate run_id is stamped");
+        assert_eq!(
+            events[0].focus,
+            Some(ReviewFocus::Security),
+            "focus is stamped"
+        );
+        assert!(matches!(
+            events[0].phase,
+            ReviewPhase::Finalize {
+                status: PhaseStatus::Running
+            }
+        ));
     }
 }

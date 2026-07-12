@@ -275,13 +275,11 @@ function reduceReviewState(
     next.pipeline = reducePipeline(prev.pipeline, phase);
   }
 
+  const focusPipelines = Object.values(next.perFocus);
   next.done =
     next.pipeline.done ||
-    (Object.values(next.perFocus).length > 0 &&
-      Object.values(next.perFocus).every((progress) => progress.pipeline.done));
-  next.failed =
-    next.pipeline.failed ||
-    Object.values(next.perFocus).some((progress) => progress.pipeline.failed);
+    (focusPipelines.length > 0 && focusPipelines.every((progress) => progress.pipeline.done));
+  next.failed = next.pipeline.failed || focusPipelines.some((progress) => progress.pipeline.failed);
 
   return next;
 }
