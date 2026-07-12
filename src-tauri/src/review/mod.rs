@@ -16,7 +16,8 @@ pub use progress::{
 };
 
 use crate::harness_profile::{
-    resolve_harness_profile, AgentRole, HarnessProfileRequest, WorkspaceToolContext,
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
+    LoopDetector, LoopStatus,
 };
 use crate::keychain;
 use crate::models::ModelRegistry;
@@ -444,10 +445,10 @@ pub async fn run_review(
     let run_id = Uuid::new_v4().to_string();
     let mode = config.review_mode()?;
     ensure_provider_session(&config.provider)?;
-    let workspace = WorkspaceToolContext {
+    let workspace = ActiveWorkspaceContext {
         workspace_path,
         corpus_available: false,
-        session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+        session_mode: crate::session_mode::SessionMode::Build,
     };
     let emitter: &dyn ReviewProgressEmitter = &*emitter;
     let focus = config.focus;
@@ -911,7 +912,7 @@ async fn run_full_scan_review(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     focus: ReviewFocus,
 ) -> Result<ReviewResult, String> {
     let mut warnings = Vec::new();
@@ -1129,7 +1130,7 @@ async fn run_diff_review(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     focus: ReviewFocus,
     mode: ReviewMode,
     review_context: String,
@@ -1330,7 +1331,7 @@ async fn validate_candidates(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     candidates: &[ReviewComment],
     anti_pattern_store: &anti_pattern::AntiPatternStore,
     focus: ReviewFocus,
@@ -1969,7 +1970,7 @@ pub(crate) struct AgentConfig<'a> {
     pub provider: &'a str,
     pub model: &'a str,
     pub api_key: &'a str,
-    pub workspace: &'a WorkspaceToolContext,
+    pub workspace: &'a ActiveWorkspaceContext,
     pub role: AgentRole,
     pub preamble: &'a str,
     pub prompt: &'a str,
@@ -2013,7 +2014,7 @@ pub(crate) async fn run_workspace_agent(
         role_guidance: Some(config.preamble.to_string()),
         matched_skills_section: None,
         invoked_skill_section: None,
-        main_mechanisms: None,
+        main_tool_inputs: None,
     })
     .map_err(|error| ReviewAgentError::Provider(error.to_string()))?;
     tracing::debug!(profile = ?profile.summary(), "resolved Review Harness Profile");
@@ -2036,7 +2037,12 @@ pub(crate) async fn run_workspace_agent(
                 .stream_prompt(config.prompt)
                 .multi_turn(profile_guards.max_turns)
                 .await;
-            consume_agent_stream(stream, deadline, config.on_tool_event).await
+            timeout(
+                deadline,
+                consume_agent_stream(stream, profile_guards.loop_guard, config.on_tool_event),
+            )
+            .await
+            .map_err(|_| ReviewAgentError::Timeout)?
         }};
     }
 
@@ -2055,7 +2061,7 @@ pub(crate) async fn run_workspace_agent(
 /// surfaces as a timeout rather than hanging forever.
 async fn consume_agent_stream<R>(
     mut stream: rig::agent::StreamingResult<R>,
-    deadline: Duration,
+    loop_guard: crate::harness_profile::LoopGuardPolicy,
     on_tool_event: Option<&dyn ToolEventObserver>,
 ) -> Result<String, ReviewAgentError>
 where
@@ -2064,48 +2070,59 @@ where
     let mut tool_name_by_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     let mut final_output = String::new();
+    let mut loop_detector = LoopDetector::new(loop_guard);
 
-    loop {
-        let next = timeout(deadline, stream.next()).await;
-        match next {
-            Err(_) => return Err(ReviewAgentError::Timeout),
-            Ok(None) => break,
-            Ok(Some(item)) => match item {
-                Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
-                    StreamedAssistantContent::ToolCall {
-                        tool_call,
-                        internal_call_id,
-                    } => {
-                        tool_name_by_id
-                            .insert(internal_call_id.clone(), tool_call.function.name.clone());
-                        if let Some(observer) = on_tool_event {
-                            observer.on_tool_call(
-                                &tool_call.function.name,
-                                &tool_call.function.arguments,
-                            );
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
+                StreamedAssistantContent::ToolCall {
+                    tool_call,
+                    internal_call_id,
+                } => {
+                    match loop_detector
+                        .record_call(&tool_call.function.name, &tool_call.function.arguments)
+                    {
+                        LoopStatus::Stop => {
+                            return Err(ReviewAgentError::Provider(format!(
+                                "review agent stopped after a repeated '{}' tool-call loop",
+                                tool_call.function.name
+                            )))
                         }
+                        LoopStatus::Warning(count) => tracing::warn!(
+                            role = "review",
+                            count,
+                            tool_name = tool_call.function.name,
+                            "repeated tool-call warning"
+                        ),
+                        LoopStatus::Ok => {}
                     }
-                    StreamedAssistantContent::Text(_) => {}
-                    _ => {}
-                },
-                Ok(MultiTurnStreamItem::StreamUserItem(user_content)) => {
+                    tool_name_by_id
+                        .insert(internal_call_id.clone(), tool_call.function.name.clone());
                     if let Some(observer) = on_tool_event {
-                        if let Some((name, result_text)) =
-                            extract_tool_result(&user_content, &tool_name_by_id)
-                        {
-                            observer.on_tool_result(&name, &result_text);
-                        }
+                        observer
+                            .on_tool_call(&tool_call.function.name, &tool_call.function.arguments);
                     }
                 }
-                Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
-                    final_output = final_response.response().to_owned();
-                    break;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    return Err(ReviewAgentError::Provider(error.to_string()));
-                }
+                StreamedAssistantContent::Text(_) => {}
+                _ => {}
             },
+            Ok(MultiTurnStreamItem::StreamUserItem(user_content)) => {
+                if let Some(observer) = on_tool_event {
+                    if let Some((name, result_text)) =
+                        extract_tool_result(&user_content, &tool_name_by_id)
+                    {
+                        observer.on_tool_result(&name, &result_text);
+                    }
+                }
+            }
+            Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
+                final_output = final_response.response().to_owned();
+                break;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Err(ReviewAgentError::Provider(error.to_string()));
+            }
         }
     }
 
@@ -2901,10 +2918,10 @@ Binary files a/icon.png and b/icon.png differ
             "openai",
             "model",
             "key",
-            &WorkspaceToolContext {
+            &ActiveWorkspaceContext {
                 workspace_path: std::env::current_dir().unwrap(),
                 corpus_available: false,
-                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+                session_mode: crate::session_mode::SessionMode::Build,
             },
             ReviewFocus::Security,
             ReviewMode::Local,

@@ -6,7 +6,7 @@ use crate::review::tools::{
     create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
     create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
 };
-use crate::session_mode::session_mode_allows_source_edit;
+use crate::session_mode::SessionMode;
 use crate::shell_tools::CommandApproval;
 use crate::shell_tools::{
     create_run_git_command_tool, create_run_github_cli_command_tool, create_run_shell_command_tool,
@@ -21,6 +21,8 @@ use crate::workspace_tools::{
 };
 use rig::tool::ToolDyn;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -41,10 +43,10 @@ pub enum AgentRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceToolContext {
+pub struct ActiveWorkspaceContext {
     pub workspace_path: std::path::PathBuf,
     pub corpus_available: bool,
-    pub session_mode: String,
+    pub session_mode: SessionMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -61,6 +63,107 @@ pub struct HarnessRunGuards {
     pub loop_guard: LoopGuardPolicy,
 }
 
+const DETERMINISTIC_FAILURE_REASONS: &[&str] = &[
+    "blocked",
+    "path_escape",
+    "secret",
+    "not_found",
+    "invalid_query",
+    "binary",
+    "too_large",
+    "oversized",
+    "invalid_utf8",
+    "invalid_range",
+    "invalid_replacement",
+    "no_match",
+    "ambiguous_match",
+    "no_op",
+];
+
+#[derive(Debug)]
+pub(crate) struct LoopDetector {
+    last_call_hash: u64,
+    consecutive_count: usize,
+    last_failure_reason: String,
+    failure_streak: usize,
+    policy: LoopGuardPolicy,
+}
+
+impl LoopDetector {
+    pub(crate) fn new(policy: LoopGuardPolicy) -> Self {
+        Self {
+            last_call_hash: 0,
+            consecutive_count: 0,
+            last_failure_reason: String::new(),
+            failure_streak: 0,
+            policy,
+        }
+    }
+
+    pub(crate) fn record_call(&mut self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
+        let canonical = format!(
+            "{}:{}",
+            tool_name,
+            crate::json_utils::canonical_json_string(args)
+        );
+        let mut hasher = DefaultHasher::new();
+        canonical.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.consecutive_count = if hash == self.last_call_hash {
+            self.consecutive_count + 1
+        } else {
+            self.last_call_hash = hash;
+            1
+        };
+
+        self.status(self.consecutive_count)
+    }
+
+    pub(crate) fn record_failure(&mut self, reason: &str) -> Option<LoopStatus> {
+        if !DETERMINISTIC_FAILURE_REASONS.contains(&reason) {
+            self.reset_failure_streak();
+            return None;
+        }
+        self.failure_streak = if reason == self.last_failure_reason {
+            self.failure_streak + 1
+        } else {
+            self.last_failure_reason = reason.to_string();
+            1
+        };
+        Some(self.status(self.failure_streak))
+    }
+
+    pub(crate) fn consecutive_count(&self) -> usize {
+        self.consecutive_count
+    }
+
+    pub(crate) fn failure_streak(&self) -> usize {
+        self.failure_streak
+    }
+
+    fn status(&self, count: usize) -> LoopStatus {
+        if count >= self.policy.stop_threshold {
+            LoopStatus::Stop
+        } else if count >= self.policy.warning_threshold {
+            LoopStatus::Warning(count)
+        } else {
+            LoopStatus::Ok
+        }
+    }
+
+    pub(crate) fn reset_failure_streak(&mut self) {
+        self.last_failure_reason.clear();
+        self.failure_streak = 0;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LoopStatus {
+    Ok,
+    Warning(usize),
+    Stop,
+}
+
 fn serialize_optional_duration_seconds<S>(
     value: &Option<Duration>,
     serializer: S,
@@ -73,22 +176,44 @@ where
         .serialize(serializer)
 }
 
-pub struct MainHarnessMechanisms {
+pub enum MainToolContribution {
+    DelegateExploration(Box<dyn ToolDyn>),
+    RunSkillScript(Box<dyn ToolDyn>),
+}
+
+impl MainToolContribution {
+    fn into_tool(self) -> Result<Box<dyn ToolDyn>, HarnessProfileError> {
+        let (expected_name, tool) = match self {
+            Self::DelegateExploration(tool) => ("delegate_exploration", tool),
+            Self::RunSkillScript(tool) => ("run_skill_script", tool),
+        };
+        let actual_name = tool.name();
+        if actual_name != expected_name {
+            return Err(HarnessProfileError::MismatchedToolContribution {
+                expected: expected_name,
+                actual: actual_name,
+            });
+        }
+        Ok(tool)
+    }
+}
+
+pub struct MainToolInputs {
     pub provider: String,
     pub model: String,
     pub api_key: String,
     pub external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
     pub command_approval: Option<Arc<dyn CommandApproval>>,
-    pub additional_tools: Vec<Box<dyn ToolDyn>>,
+    pub contributions: Vec<MainToolContribution>,
 }
 
 pub struct HarnessProfileRequest {
     pub role: AgentRole,
-    pub workspace: Option<WorkspaceToolContext>,
+    pub workspace: Option<ActiveWorkspaceContext>,
     pub role_guidance: Option<String>,
     pub matched_skills_section: Option<String>,
     pub invoked_skill_section: Option<String>,
-    pub main_mechanisms: Option<MainHarnessMechanisms>,
+    pub main_tool_inputs: Option<MainToolInputs>,
 }
 
 pub struct HarnessProfile {
@@ -101,16 +226,16 @@ pub struct HarnessProfile {
 }
 
 impl HarnessProfile {
-    pub fn mechanism_names(&self) -> Vec<String> {
+    pub fn tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|tool| tool.name()).collect()
     }
 
     pub fn summary(&self) -> HarnessProfileSummary {
-        let mechanism_names = self.mechanism_names();
+        let tool_names = self.tool_names();
         HarnessProfileSummary {
             role: self.role,
-            source_edit_enabled: mechanism_names.iter().any(|name| name == "source_edit"),
-            mechanism_names,
+            source_edit_enabled: tool_names.iter().any(|name| name == "source_edit"),
+            tool_names,
             workspace_available: self.workspace_available,
             corpus_enabled: self.corpus_enabled,
             guards: self.guards,
@@ -121,7 +246,7 @@ impl HarnessProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HarnessProfileSummary {
     pub role: AgentRole,
-    pub mechanism_names: Vec<String>,
+    pub tool_names: Vec<String>,
     pub workspace_available: bool,
     pub source_edit_enabled: bool,
     pub corpus_enabled: bool,
@@ -132,23 +257,18 @@ pub struct HarnessProfileSummary {
 pub enum HarnessProfileError {
     #[error("{role:?} requires an active workspace")]
     WorkspaceRequired { role: AgentRole },
-    #[error("main workspace Harness Profile requires Main Harness Mechanisms")]
-    MainMechanismsRequired,
-    #[error("unexpected additional Main Harness Mechanism: {0}")]
-    UnexpectedAdditionalMechanism(String),
+    #[error("main workspace Harness Profile requires Main Tool Inputs")]
+    MainToolInputsRequired,
+    #[error("Main Tool Contribution expected {expected}, received {actual}")]
+    MismatchedToolContribution {
+        expected: &'static str,
+        actual: String,
+    },
 }
 
 pub fn resolve_harness_profile(
     request: HarnessProfileRequest,
 ) -> Result<HarnessProfile, HarnessProfileError> {
-    if let Some(mechanisms) = request.main_mechanisms.as_ref() {
-        for tool in &mechanisms.additional_tools {
-            let name = tool.name();
-            if !matches!(name.as_str(), "delegate_exploration" | "run_skill_script") {
-                return Err(HarnessProfileError::UnexpectedAdditionalMechanism(name));
-            }
-        }
-    }
     let guards = guards_for_role(request.role);
     let Some(workspace) = request.workspace else {
         if request.role != AgentRole::Main {
@@ -165,8 +285,15 @@ pub fn resolve_harness_profile(
                 &[],
             ),
             tools: request
-                .main_mechanisms
-                .map(|mechanisms| mechanisms.additional_tools)
+                .main_tool_inputs
+                .map(|inputs| {
+                    inputs
+                        .contributions
+                        .into_iter()
+                        .map(MainToolContribution::into_tool)
+                        .collect()
+                })
+                .transpose()?
                 .unwrap_or_default(),
             guards,
             workspace_available: false,
@@ -178,12 +305,7 @@ pub fn resolve_harness_profile(
         let workspace_path = workspace.workspace_path.clone();
         let mut tools = build_base_workspace_tools(workspace_path.clone());
         if workspace.corpus_available {
-            tools.push(Box::new(create_corpus_summary_tool(workspace_path.clone())));
-            tools.push(Box::new(create_corpus_query_tool(workspace_path.clone())));
-            tools.push(Box::new(create_corpus_neighbors_tool(
-                workspace_path.clone(),
-            )));
-            tools.push(Box::new(create_context_search_tool(workspace_path)));
+            append_corpus_tools(&mut tools, workspace_path);
         }
         let preamble = compose_preamble(
             request.role,
@@ -203,16 +325,16 @@ pub fn resolve_harness_profile(
         });
     }
 
-    let MainHarnessMechanisms {
+    let MainToolInputs {
         provider,
         model,
         api_key,
         external_path_approval,
         command_approval,
-        additional_tools,
+        contributions,
     } = request
-        .main_mechanisms
-        .ok_or(HarnessProfileError::MainMechanismsRequired)?;
+        .main_tool_inputs
+        .ok_or(HarnessProfileError::MainToolInputsRequired)?;
 
     let workspace_path = workspace.workspace_path.clone();
     let mut tools = build_base_workspace_tools_with_external_approval(
@@ -243,16 +365,11 @@ pub fn resolve_harness_profile(
     tools.push(Box::new(create_record_review_outcome_tool(
         workspace_path.clone(),
     )));
-    if session_mode_allows_source_edit(&workspace.session_mode) {
+    if workspace.session_mode.allows_source_edit() {
         tools.push(Box::new(create_source_edit_tool(workspace_path.clone())));
     }
     if workspace.corpus_available {
-        tools.push(Box::new(create_corpus_summary_tool(workspace_path.clone())));
-        tools.push(Box::new(create_corpus_query_tool(workspace_path.clone())));
-        tools.push(Box::new(create_corpus_neighbors_tool(
-            workspace_path.clone(),
-        )));
-        tools.push(Box::new(create_context_search_tool(workspace_path.clone())));
+        append_corpus_tools(&mut tools, workspace_path.clone());
     }
     tools.push(Box::new(create_run_shell_command_tool(
         workspace_path.clone(),
@@ -266,7 +383,12 @@ pub fn resolve_harness_profile(
         workspace_path,
         command_approval,
     )));
-    tools.extend(additional_tools);
+    tools.extend(
+        contributions
+            .into_iter()
+            .map(MainToolContribution::into_tool)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
 
     let preamble = compose_preamble(
         request.role,
@@ -287,13 +409,22 @@ pub fn resolve_harness_profile(
     })
 }
 
+fn append_corpus_tools(tools: &mut Vec<Box<dyn ToolDyn>>, workspace_path: std::path::PathBuf) {
+    tools.push(Box::new(create_corpus_summary_tool(workspace_path.clone())));
+    tools.push(Box::new(create_corpus_query_tool(workspace_path.clone())));
+    tools.push(Box::new(create_corpus_neighbors_tool(
+        workspace_path.clone(),
+    )));
+    tools.push(Box::new(create_context_search_tool(workspace_path)));
+}
+
 fn compose_preamble(
     role: AgentRole,
-    workspace: Option<&WorkspaceToolContext>,
+    workspace: Option<&ActiveWorkspaceContext>,
     role_guidance: Option<String>,
     matched_skills_section: Option<String>,
     invoked_skill_section: Option<String>,
-    mechanism_names: &[String],
+    tool_names: &[String],
 ) -> Option<String> {
     let mut sections = Vec::new();
     if role == AgentRole::Main {
@@ -302,17 +433,16 @@ fn compose_preamble(
     }
 
     if let Some(workspace) = workspace {
-        let workspace_guidance = if role == AgentRole::Main
-            && session_mode_allows_source_edit(&workspace.session_mode)
-        {
-            WORKSPACE_TOOLS_SYSTEM_PROMPT
-        } else {
-            READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT
-        };
+        let workspace_guidance =
+            if role == AgentRole::Main && workspace.session_mode.allows_source_edit() {
+                WORKSPACE_TOOLS_SYSTEM_PROMPT
+            } else {
+                READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT
+            };
         push_section(&mut sections, Some(workspace_guidance.to_string()));
 
         if role == AgentRole::Main {
-            if !session_mode_allows_source_edit(&workspace.session_mode) {
+            if !workspace.session_mode.allows_source_edit() {
                 push_section(
                     &mut sections,
                     Some(READ_ONLY_SESSION_SYSTEM_PROMPT.to_string()),
@@ -332,10 +462,7 @@ fn compose_preamble(
                 Some(CONTEXT_SEARCH_SYSTEM_PROMPT.to_string()),
             );
         }
-        if mechanism_names
-            .iter()
-            .any(|name| name == "delegate_exploration")
-        {
+        if tool_names.iter().any(|name| name == "delegate_exploration") {
             push_section(&mut sections, Some(DELEGATION_SYSTEM_PROMPT.to_string()));
         }
     }
@@ -404,190 +531,184 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_mode::{SESSION_MODE_BUILD, SESSION_MODE_READ_ONLY};
+    use crate::session_mode::SessionMode;
     use rig::agent::AgentBuilder;
     use rig::test_utils::MockCompletionModel;
     use std::path::PathBuf;
 
-    #[test]
-    fn main_build_profile_contains_real_workspace_and_mutation_mechanisms() {
-        let profile = resolve_harness_profile(HarnessProfileRequest {
-            role: AgentRole::Main,
-            workspace: Some(WorkspaceToolContext {
-                workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
-                session_mode: SESSION_MODE_BUILD.to_string(),
-            }),
-            role_guidance: None,
-            matched_skills_section: None,
-            invoked_skill_section: None,
-            main_mechanisms: Some(MainHarnessMechanisms {
-                provider: "openai".to_string(),
-                model: "gpt-test".to_string(),
-                api_key: "secret".to_string(),
-                external_path_approval: None,
-                command_approval: None,
-                additional_tools: vec![],
-            }),
-        })
-        .expect("profile");
+    fn main_tool_inputs() -> MainToolInputs {
+        MainToolInputs {
+            provider: "openai".to_string(),
+            model: "gpt-test".to_string(),
+            api_key: "sk-never-serialize".to_string(),
+            external_path_approval: None,
+            command_approval: None,
+            contributions: vec![],
+        }
+    }
 
-        assert_eq!(
-            profile.mechanism_names(),
-            vec![
-                "read_file",
-                "search_code",
-                "find_files",
-                "list_directory",
+    fn request(
+        role: AgentRole,
+        workspace_available: bool,
+        mode: SessionMode,
+        corpus_available: bool,
+    ) -> HarnessProfileRequest {
+        HarnessProfileRequest {
+            role,
+            workspace: workspace_available.then(|| ActiveWorkspaceContext {
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                corpus_available,
+                session_mode: mode,
+            }),
+            role_guidance: Some(format!("Guidance for {role:?}")),
+            matched_skills_section: (role == AgentRole::Main)
+                .then(|| "private matched Skill text".to_string()),
+            invoked_skill_section: None,
+            main_tool_inputs: (role == AgentRole::Main).then(main_tool_inputs),
+        }
+    }
+
+    fn expected_tool_names(
+        role: AgentRole,
+        workspace_available: bool,
+        mode: SessionMode,
+        corpus_available: bool,
+    ) -> Vec<String> {
+        if !workspace_available {
+            return vec![];
+        }
+        let mut names = vec!["read_file", "search_code", "find_files", "list_directory"];
+        if role == AgentRole::Main {
+            names.extend([
                 "write_harness_file",
                 "run_review",
                 "run_multi_review",
                 "run_security_review",
                 "record_review_outcome",
-                "source_edit",
+            ]);
+            if mode == SessionMode::Build {
+                names.push("source_edit");
+            }
+        }
+        if corpus_available {
+            names.extend([
+                "corpus_summary",
+                "corpus_query",
+                "corpus_neighbors",
+                "context_search",
+            ]);
+        }
+        if role == AgentRole::Main {
+            names.extend([
                 "run_shell_command",
                 "run_git_command",
                 "run_github_cli_command",
-            ]
-        );
+            ]);
+        }
+        names.into_iter().map(str::to_string).collect()
     }
 
     #[test]
-    fn main_read_only_profile_keeps_harness_control_but_removes_source_edit() {
-        let profile = resolve_harness_profile(HarnessProfileRequest {
-            role: AgentRole::Main,
-            workspace: Some(WorkspaceToolContext {
-                workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
-                session_mode: SESSION_MODE_READ_ONLY.to_string(),
-            }),
-            role_guidance: None,
-            matched_skills_section: None,
-            invoked_skill_section: None,
-            main_mechanisms: Some(MainHarnessMechanisms {
-                provider: "openai".to_string(),
-                model: "gpt-test".to_string(),
-                api_key: "secret".to_string(),
-                external_path_approval: None,
-                command_approval: None,
-                additional_tools: vec![],
-            }),
-        })
-        .expect("profile");
-
-        let names = profile.mechanism_names();
-        assert!(names.contains(&"write_harness_file".to_string()));
-        assert!(!names.contains(&"source_edit".to_string()));
-        let preamble = profile.preamble.expect("read-only preamble");
-        assert!(preamble.contains("Read-Only Session"));
-        assert!(preamble.contains("Harness Control Area"));
-        assert!(!preamble.contains("Use `source_edit`"));
-    }
-
-    #[test]
-    fn subordinate_profiles_are_read_only_and_add_corpus_mechanisms_coherently() {
-        for role in [
+    fn contract_matrix_covers_roles_workspace_modes_and_corpus() {
+        let roles = [
+            AgentRole::Main,
             AgentRole::Exploration,
             AgentRole::Verification,
             AgentRole::ReviewDetector,
             AgentRole::ReviewValidator,
-        ] {
-            let profile = resolve_harness_profile(HarnessProfileRequest {
-                role,
-                workspace: Some(WorkspaceToolContext {
-                    workspace_path: PathBuf::from("/tmp/workspace"),
-                    corpus_available: true,
-                    session_mode: SESSION_MODE_BUILD.to_string(),
-                }),
-                role_guidance: Some(format!("Guidance for {role:?}")),
-                matched_skills_section: None,
-                invoked_skill_section: None,
-                main_mechanisms: None,
-            })
-            .expect("subordinate profile");
+        ];
+        for role in roles {
+            for workspace_available in [false, true] {
+                for mode in [SessionMode::Build, SessionMode::ReadOnly] {
+                    for corpus_available in [false, true] {
+                        let result = resolve_harness_profile(request(
+                            role,
+                            workspace_available,
+                            mode,
+                            corpus_available,
+                        ));
+                        if !workspace_available && role != AgentRole::Main {
+                            assert_eq!(
+                                result.err(),
+                                Some(HarnessProfileError::WorkspaceRequired { role })
+                            );
+                            continue;
+                        }
 
-            assert_eq!(
-                profile.mechanism_names(),
-                vec![
-                    "read_file",
-                    "search_code",
-                    "find_files",
-                    "list_directory",
-                    "corpus_summary",
-                    "corpus_query",
-                    "corpus_neighbors",
-                    "context_search",
-                ]
-            );
-            let preamble = profile.preamble.as_deref().expect("subordinate preamble");
-            assert!(preamble.contains(&format!("Guidance for {role:?}")));
-            assert!(preamble.contains("Codebase Knowledge"));
-            assert!(!preamble.contains("Use `source_edit`"));
-            assert!(!preamble.contains("Harness control artifacts remain available"));
-            assert!(!profile
-                .mechanism_names()
-                .contains(&"write_harness_file".to_string()));
+                        let profile = result.expect("valid contract-matrix profile");
+                        let names = profile.tool_names();
+                        let summary = profile.summary();
+                        assert_eq!(
+                            names,
+                            expected_tool_names(role, workspace_available, mode, corpus_available,)
+                        );
+                        assert_eq!(summary.role, role);
+                        assert_eq!(summary.workspace_available, workspace_available);
+                        assert_eq!(summary.tool_names, names);
+                        assert_eq!(summary.guards, profile.guards);
+                        assert_eq!(
+                            summary.corpus_enabled,
+                            workspace_available && corpus_available
+                        );
+
+                        let source_edit_expected = workspace_available
+                            && role == AgentRole::Main
+                            && mode == SessionMode::Build;
+                        assert_eq!(
+                            names.contains(&"source_edit".to_string()),
+                            source_edit_expected
+                        );
+                        assert_eq!(summary.source_edit_enabled, source_edit_expected);
+                        assert_eq!(
+                            names.contains(&"write_harness_file".to_string()),
+                            workspace_available && role == AgentRole::Main
+                        );
+                        for mutating_name in ["source_edit", "write_harness_file"] {
+                            if role != AgentRole::Main {
+                                assert!(!names.contains(&mutating_name.to_string()));
+                            }
+                        }
+
+                        let corpus_expected = workspace_available && corpus_available;
+                        for corpus_name in [
+                            "corpus_summary",
+                            "corpus_query",
+                            "corpus_neighbors",
+                            "context_search",
+                        ] {
+                            assert_eq!(names.contains(&corpus_name.to_string()), corpus_expected);
+                        }
+                        let preamble = profile.preamble.unwrap_or_default();
+                        assert!(preamble.contains(&format!("Guidance for {role:?}")));
+                        assert_eq!(
+                            preamble.contains("private matched Skill text"),
+                            role == AgentRole::Main
+                        );
+                        assert_eq!(preamble.contains("Codebase Knowledge"), corpus_expected);
+                        assert_eq!(preamble.contains("`context_search`"), corpus_expected);
+                        assert_eq!(preamble.contains("Use `source_edit`"), source_edit_expected);
+                        if workspace_available && role == AgentRole::Main {
+                            assert!(preamble.contains("Harness Control Area"));
+                            assert!(preamble.contains("Shell, Git, and GitHub CLI Tools"));
+                            assert!(preamble.contains("Review Tools"));
+                            assert_eq!(
+                                preamble.contains("Read-Only Session"),
+                                mode == SessionMode::ReadOnly
+                            );
+                        } else {
+                            assert!(!preamble.contains("Harness Control Area"));
+                            assert!(!preamble.contains("Shell, Git, and GitHub CLI Tools"));
+                            assert!(!preamble.contains("Review Tools"));
+                            assert!(!preamble.contains("Read-Only Session"));
+                        }
+
+                        let serialized = serde_json::to_string(&summary).expect("summary JSON");
+                        assert!(!serialized.contains("sk-never-serialize"));
+                        assert!(!serialized.contains("private matched Skill text"));
+                    }
+                }
+            }
         }
-    }
-
-    #[test]
-    fn safe_summary_is_derived_from_real_mechanisms_without_sensitive_content() {
-        let profile = resolve_harness_profile(HarnessProfileRequest {
-            role: AgentRole::Main,
-            workspace: Some(WorkspaceToolContext {
-                workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
-                session_mode: SESSION_MODE_BUILD.to_string(),
-            }),
-            role_guidance: None,
-            matched_skills_section: Some("private matched Skill text".to_string()),
-            invoked_skill_section: None,
-            main_mechanisms: Some(MainHarnessMechanisms {
-                provider: "openai".to_string(),
-                model: "gpt-test".to_string(),
-                api_key: "sk-never-serialize".to_string(),
-                external_path_approval: None,
-                command_approval: None,
-                additional_tools: vec![],
-            }),
-        })
-        .expect("profile");
-
-        let summary = profile.summary();
-        assert_eq!(summary.role, AgentRole::Main);
-        assert!(summary.workspace_available);
-        assert!(summary.source_edit_enabled);
-        assert!(!summary.corpus_enabled);
-        assert_eq!(summary.mechanism_names, profile.mechanism_names());
-        let serialized = serde_json::to_string(&summary).expect("safe summary JSON");
-        assert!(!serialized.contains("sk-never-serialize"));
-        assert!(!serialized.contains("private matched Skill text"));
-    }
-
-    #[test]
-    fn steering_text_never_advertises_context_search_without_the_mechanism() {
-        let profile = resolve_harness_profile(HarnessProfileRequest {
-            role: AgentRole::Verification,
-            workspace: Some(WorkspaceToolContext {
-                workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
-                session_mode: SESSION_MODE_BUILD.to_string(),
-            }),
-            role_guidance: Some("Verify the response".to_string()),
-            matched_skills_section: None,
-            invoked_skill_section: None,
-            main_mechanisms: None,
-        })
-        .expect("profile");
-
-        assert!(!profile
-            .mechanism_names()
-            .contains(&"context_search".to_string()));
-        assert!(!profile
-            .preamble
-            .as_deref()
-            .expect("preamble")
-            .contains("`context_search`"));
     }
 
     #[test]
@@ -598,7 +719,7 @@ mod tests {
             role_guidance: None,
             matched_skills_section: Some("matched Skill guidance".to_string()),
             invoked_skill_section: None,
-            main_mechanisms: None,
+            main_tool_inputs: None,
         })
         .expect("unscoped Main profile");
         assert!(main.tools.is_empty());
@@ -616,12 +737,64 @@ mod tests {
                 role_guidance: None,
                 matched_skills_section: None,
                 invoked_skill_section: None,
-                main_mechanisms: None,
+                main_tool_inputs: None,
             })
             .err()
             .expect("missing workspace must fail");
             assert_eq!(error, HarnessProfileError::WorkspaceRequired { role });
         }
+    }
+
+    #[test]
+    fn scoped_main_requires_tool_inputs() {
+        let error = resolve_harness_profile(HarnessProfileRequest {
+            role: AgentRole::Main,
+            workspace: Some(ActiveWorkspaceContext {
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                corpus_available: false,
+                session_mode: SessionMode::ReadOnly,
+            }),
+            role_guidance: None,
+            matched_skills_section: None,
+            invoked_skill_section: None,
+            main_tool_inputs: None,
+        })
+        .err()
+        .expect("missing Main Tool Inputs must fail");
+
+        assert_eq!(error, HarnessProfileError::MainToolInputsRequired);
+    }
+
+    #[test]
+    fn closed_main_contributions_reject_a_mismatched_tool() {
+        let mut inputs = main_tool_inputs();
+        inputs
+            .contributions
+            .push(MainToolContribution::DelegateExploration(Box::new(
+                create_source_edit_tool(PathBuf::from("/tmp/workspace")),
+            )));
+        let error = resolve_harness_profile(HarnessProfileRequest {
+            role: AgentRole::Main,
+            workspace: Some(ActiveWorkspaceContext {
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                corpus_available: false,
+                session_mode: SessionMode::ReadOnly,
+            }),
+            role_guidance: None,
+            matched_skills_section: None,
+            invoked_skill_section: None,
+            main_tool_inputs: Some(inputs),
+        })
+        .err()
+        .expect("mismatched contribution must fail");
+
+        assert_eq!(
+            error,
+            HarnessProfileError::MismatchedToolContribution {
+                expected: "delegate_exploration",
+                actual: "source_edit".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -635,7 +808,9 @@ mod tests {
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
-            let guards = guards_for_role(role);
+            let profile = resolve_harness_profile(request(role, true, SessionMode::Build, false))
+                .expect("profile");
+            let guards = profile.guards;
             assert_eq!(guards.max_turns, max_turns);
             assert_eq!(
                 guards.deadline.map(|value| value.as_secs()),
@@ -650,15 +825,15 @@ mod tests {
     fn resolved_profile_can_be_consumed_by_the_real_rig_builder() {
         let profile = resolve_harness_profile(HarnessProfileRequest {
             role: AgentRole::Verification,
-            workspace: Some(WorkspaceToolContext {
+            workspace: Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
-                session_mode: SESSION_MODE_BUILD.to_string(),
+                session_mode: SessionMode::Build,
             }),
             role_guidance: Some("Verify".to_string()),
             matched_skills_section: None,
             invoked_skill_section: None,
-            main_mechanisms: None,
+            main_tool_inputs: None,
         })
         .expect("profile");
 
@@ -668,37 +843,5 @@ mod tests {
             .default_max_turns(profile.guards.max_turns)
             .tools(profile.tools)
             .build();
-    }
-
-    #[test]
-    fn additional_main_mechanisms_cannot_bypass_the_capability_ceiling() {
-        let error = resolve_harness_profile(HarnessProfileRequest {
-            role: AgentRole::Main,
-            workspace: Some(WorkspaceToolContext {
-                workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
-                session_mode: SESSION_MODE_READ_ONLY.to_string(),
-            }),
-            role_guidance: None,
-            matched_skills_section: None,
-            invoked_skill_section: None,
-            main_mechanisms: Some(MainHarnessMechanisms {
-                provider: "openai".to_string(),
-                model: "gpt-test".to_string(),
-                api_key: "secret".to_string(),
-                external_path_approval: None,
-                command_approval: None,
-                additional_tools: vec![Box::new(create_source_edit_tool(PathBuf::from(
-                    "/tmp/workspace",
-                )))],
-            }),
-        })
-        .err()
-        .expect("unexpected additional mechanism must fail");
-
-        assert_eq!(
-            error,
-            HarnessProfileError::UnexpectedAdditionalMechanism("source_edit".to_string())
-        );
     }
 }

@@ -1,5 +1,5 @@
 use super::{knowledge, AgentConfig, FileDiff, ReviewAgentError, ReviewFocus, ToolEventObserver};
-use crate::harness_profile::{AgentRole, WorkspaceToolContext};
+use crate::harness_profile::{ActiveWorkspaceContext, AgentRole};
 
 const SECURITY_DETECTOR_PREAMBLE: &str = r#"
 You are the Gospel Security Detector Agent.
@@ -159,7 +159,7 @@ pub async fn run_detector(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     prompt: &str,
     focus: ReviewFocus,
     on_tool_event: Option<&dyn ToolEventObserver>,

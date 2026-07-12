@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
 use crate::harness_profile::{
-    guards_for_role, resolve_harness_profile, AgentRole, HarnessProfileRequest,
-    WorkspaceToolContext,
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfile,
+    HarnessProfileRequest, LoopDetector, LoopStatus,
 };
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
@@ -64,7 +64,7 @@ pub async fn run_verification(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     response_to_verify: &str,
     user_prompt: &str,
 ) -> VerificationResult {
@@ -73,12 +73,25 @@ pub async fn run_verification(
     }
 
     let prompt = build_verification_prompt(workspace, response_to_verify, user_prompt);
-    let deadline = guards_for_role(AgentRole::Verification)
+    let profile = match resolve_harness_profile(HarnessProfileRequest {
+        role: AgentRole::Verification,
+        workspace: Some(workspace.clone()),
+        role_guidance: Some(VERIFICATION_SYSTEM_PROMPT.to_string()),
+        matched_skills_section: None,
+        invoked_skill_section: None,
+        main_tool_inputs: None,
+    }) {
+        Ok(profile) => profile,
+        Err(error) => return unavailable(&format!("Verification unavailable: {error}")),
+    };
+    tracing::debug!(profile = ?profile.summary(), "resolved Verification Harness Profile");
+    let deadline = profile
+        .guards
         .deadline
         .expect("Verification Harness Profiles always have a deadline");
     let output = match timeout(
         deadline,
-        run_verification_agent(provider, model, api_key, workspace, &prompt),
+        run_verification_agent(provider, model, api_key, profile, &prompt),
     )
     .await
     {
@@ -100,19 +113,9 @@ async fn run_verification_agent(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    profile: HarnessProfile,
     prompt: &str,
 ) -> Result<String, String> {
-    let profile = resolve_harness_profile(HarnessProfileRequest {
-        role: AgentRole::Verification,
-        workspace: Some(workspace.clone()),
-        role_guidance: Some(VERIFICATION_SYSTEM_PROMPT.to_string()),
-        matched_skills_section: None,
-        invoked_skill_section: None,
-        main_mechanisms: None,
-    })
-    .map_err(|error| error.to_string())?;
-    tracing::debug!(profile = ?profile.summary(), "resolved Verification Harness Profile");
     let preamble = profile.preamble.unwrap_or_default();
     let tools = profile.tools;
     let guards = profile.guards;
@@ -138,6 +141,7 @@ async fn run_verification_agent(
                 .multi_turn(guards.max_turns)
                 .await;
             let mut final_output = String::new();
+            let mut loop_detector = LoopDetector::new(guards.loop_guard);
             loop {
                 match timeout(deadline, stream.next()).await {
                     Err(_) => break Err("verification agent timed out".to_string()),
@@ -151,6 +155,26 @@ async fn run_verification_agent(
                             StreamedAssistantContent::Text(text),
                         )) => {
                             final_output.push_str(&text.text);
+                        }
+                        Ok(MultiTurnStreamItem::StreamAssistantItem(
+                            StreamedAssistantContent::ToolCall { tool_call, .. },
+                        )) => {
+                            match loop_detector.record_call(
+                                &tool_call.function.name,
+                                &tool_call.function.arguments,
+                            ) {
+                                LoopStatus::Stop => break Err(format!(
+                                    "verification agent stopped after a repeated '{}' tool-call loop",
+                                    tool_call.function.name
+                                )),
+                                LoopStatus::Warning(count) => tracing::warn!(
+                                    role = "verification",
+                                    count,
+                                    tool_name = tool_call.function.name,
+                                    "repeated tool-call warning"
+                                ),
+                                LoopStatus::Ok => {}
+                            }
                         }
                         Ok(_) => {}
                         Err(error) => break Err(error.to_string()),
@@ -170,7 +194,7 @@ async fn run_verification_agent(
 }
 
 fn build_verification_prompt(
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     response_to_verify: &str,
     user_prompt: &str,
 ) -> String {

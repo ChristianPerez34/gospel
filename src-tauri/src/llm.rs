@@ -5,13 +5,11 @@ use rig::client::CompletionClient;
 use rig::completion::message::Message;
 use rig::completion::{CompletionModel, Prompt, ToolDefinition};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
-use rig::tool::{Tool, ToolDyn};
+use rig::tool::Tool;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
-use std::hash::{Hash, Hasher};
 #[cfg(test)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -21,118 +19,9 @@ use tokio::time::timeout;
 #[cfg(test)]
 use crate::harness_profile::guards_for_role;
 use crate::harness_profile::{
-    resolve_harness_profile, AgentRole, HarnessProfileRequest, LoopGuardPolicy,
-    MainHarnessMechanisms, WorkspaceToolContext,
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
+    LoopDetector, LoopStatus, MainToolContribution, MainToolInputs,
 };
-
-/// Deterministic failure reasons that should not be retried automatically.
-const DETERMINISTIC_FAILURE_REASONS: &[&str] = &[
-    "blocked",
-    "path_escape",
-    "secret",
-    "not_found",
-    "invalid_query",
-    "binary",
-    "too_large",
-    "oversized",
-    "invalid_utf8",
-    "invalid_range",
-    "invalid_replacement",
-    "no_match",
-    "ambiguous_match",
-    "no_op",
-];
-
-/// Detects consecutive identical tool calls and repeated deterministic failures.
-#[derive(Debug)]
-struct LoopDetector {
-    last_call_hash: u64,
-    consecutive_count: usize,
-    last_failure_reason: String,
-    failure_streak: usize,
-    warn_threshold: usize,
-    stop_threshold: usize,
-}
-
-impl LoopDetector {
-    fn new(policy: LoopGuardPolicy) -> Self {
-        Self {
-            last_call_hash: 0,
-            consecutive_count: 0,
-            last_failure_reason: String::new(),
-            failure_streak: 0,
-            warn_threshold: policy.warning_threshold,
-            stop_threshold: policy.stop_threshold,
-        }
-    }
-
-    fn record_call(&mut self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
-        let canonical = format!(
-            "{}:{}",
-            tool_name,
-            crate::json_utils::canonical_json_string(args)
-        );
-        let mut hasher = DefaultHasher::new();
-        canonical.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        if hash == self.last_call_hash {
-            self.consecutive_count += 1;
-        } else {
-            self.last_call_hash = hash;
-            self.consecutive_count = 1;
-        }
-
-        if self.consecutive_count >= self.stop_threshold {
-            LoopStatus::Stop
-        } else if self.consecutive_count >= self.warn_threshold {
-            LoopStatus::Warning(self.consecutive_count)
-        } else {
-            LoopStatus::Ok
-        }
-    }
-
-    fn record_failure(&mut self, reason: &str) -> Option<LoopStatus> {
-        if !DETERMINISTIC_FAILURE_REASONS.contains(&reason) {
-            self.reset_failure_streak();
-            return None;
-        }
-
-        if reason == self.last_failure_reason {
-            self.failure_streak += 1;
-        } else {
-            self.last_failure_reason = reason.to_string();
-            self.failure_streak = 1;
-        }
-
-        if self.failure_streak >= self.stop_threshold {
-            Some(LoopStatus::Stop)
-        } else if self.failure_streak >= self.warn_threshold {
-            Some(LoopStatus::Warning(self.failure_streak))
-        } else {
-            Some(LoopStatus::Ok)
-        }
-    }
-
-    #[allow(dead_code)]
-    fn reset(&mut self) {
-        self.last_call_hash = 0;
-        self.consecutive_count = 0;
-        self.reset_failure_streak();
-    }
-
-    fn reset_failure_streak(&mut self) {
-        self.last_failure_reason.clear();
-        self.failure_streak = 0;
-    }
-}
-
-#[derive(Debug, PartialEq)]
-enum LoopStatus {
-    Ok,
-    Warning(usize),
-    Stop,
-}
 
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
@@ -309,7 +198,7 @@ struct DelegateExplorationOutput {
 
 #[derive(Clone, Deserialize)]
 struct DelegateExplorationTool {
-    workspace: WorkspaceToolContext,
+    workspace: ActiveWorkspaceContext,
     provider: String,
     model: String,
     #[serde(default)]
@@ -409,6 +298,7 @@ impl Tool for DelegateExplorationTool {
 #[derive(Clone)]
 struct ExplorationHook {
     tools: Arc<Mutex<Vec<String>>>,
+    loop_detector: Arc<Mutex<LoopDetector>>,
 }
 
 impl<M> PromptHook<M> for ExplorationHook
@@ -420,16 +310,34 @@ where
         tool_name: &str,
         _tool_call_id: Option<String>,
         _internal_call_id: &str,
-        _args: &str,
+        args: &str,
     ) -> impl Future<Output = ToolCallHookAction> + Send {
         let tool_name = tool_name.to_string();
         let tools = self.tools.clone();
+        let loop_detector = self.loop_detector.clone();
+        let args = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
         async move {
             let mut guard = tools.lock().unwrap();
             if !guard.iter().any(|name| name == &tool_name) {
-                guard.push(tool_name);
+                guard.push(tool_name.clone());
             }
-            ToolCallHookAction::cont()
+            drop(guard);
+            match loop_detector.lock().unwrap().record_call(&tool_name, &args) {
+                LoopStatus::Stop => ToolCallHookAction::terminate(format!(
+                    "Exploration Agent stopped after a repeated '{}' tool-call loop.",
+                    tool_name
+                )),
+                LoopStatus::Warning(count) => {
+                    tracing::warn!(
+                        role = "exploration",
+                        count,
+                        tool_name,
+                        "repeated tool-call warning"
+                    );
+                    ToolCallHookAction::cont()
+                }
+                LoopStatus::Ok => ToolCallHookAction::cont(),
+            }
         }
     }
 
@@ -439,9 +347,28 @@ where
         _tool_call_id: Option<String>,
         _internal_call_id: &str,
         _args: &str,
-        _result: &str,
+        result: &str,
     ) -> HookAction {
-        HookAction::cont()
+        let mut detector = self.loop_detector.lock().unwrap();
+        let Some((reason, status)) = record_tool_result_failure(&mut detector, result) else {
+            return HookAction::cont();
+        };
+        match status {
+            LoopStatus::Stop => HookAction::terminate(format!(
+                "Exploration Agent stopped after repeated deterministic '{}' failures.",
+                reason
+            )),
+            LoopStatus::Warning(count) => {
+                tracing::warn!(
+                    role = "exploration",
+                    count,
+                    reason,
+                    "repeated deterministic tool failure warning"
+                );
+                HookAction::cont()
+            }
+            LoopStatus::Ok => HookAction::cont(),
+        }
     }
 }
 
@@ -593,13 +520,9 @@ async fn run_exploration_agent(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     args: &DelegateExplorationArgs,
 ) -> Result<DelegateExplorationOutput, LlmError> {
-    let hook = ExplorationHook {
-        tools: Arc::new(Mutex::new(Vec::new())),
-    };
-    let tool_names = hook.tools.clone();
     let workspace_snapshot = workspace_root_inventory(&workspace.workspace_path, 40)
         .map(|inventory| format!("{}", inventory))
         .unwrap_or_else(|_| String::new());
@@ -609,7 +532,7 @@ async fn run_exploration_agent(
         role_guidance: Some(EXPLORATION_AGENT_PROMPT.to_string()),
         matched_skills_section: None,
         invoked_skill_section: None,
-        main_mechanisms: None,
+        main_tool_inputs: None,
     })
     .map_err(|error| LlmError::ProviderError(error.to_string()))?;
     tracing::debug!(profile = ?profile.summary(), "resolved Exploration Harness Profile");
@@ -619,10 +542,12 @@ async fn run_exploration_agent(
     let agent_deadline = agent_guards
         .deadline
         .expect("Exploration Harness Profiles always have a deadline");
+    let hook = ExplorationHook {
+        tools: Arc::new(Mutex::new(Vec::new())),
+        loop_detector: Arc::new(Mutex::new(LoopDetector::new(agent_guards.loop_guard))),
+    };
+    let tool_names = hook.tools.clone();
     let prompt = build_exploration_prompt(&args, &workspace_snapshot);
-
-    // Exploration agent uses tighter loop thresholds
-    let _loop_detector = Arc::new(Mutex::new(LoopDetector::new(agent_guards.loop_guard)));
 
     macro_rules! exploration_from_client {
         ($client:expr, $model:expr) => {{
@@ -689,7 +614,7 @@ pub async fn stream_completion<F>(
     delegate_provider: &str,
     delegate_model: &str,
     delegate_api_key: &str,
-    workspace: Option<WorkspaceToolContext>,
+    workspace: Option<ActiveWorkspaceContext>,
     external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
     command_approval: Option<Arc<dyn CommandApproval>>,
     chat_history: Vec<Message>,
@@ -722,17 +647,19 @@ where
             .iter()
             .map(estimate_message_tokens)
             .sum::<usize>();
-    let mut additional_tools: Vec<Box<dyn ToolDyn>> = Vec::new();
+    let mut contributions = Vec::new();
     if let Some(workspace_context) = workspace.as_ref() {
-        additional_tools.push(Box::new(DelegateExplorationTool {
-            workspace: workspace_context.clone(),
-            provider: delegate_provider.to_string(),
-            model: delegate_model.to_string(),
-            api_key: delegate_api_key.to_string(),
-        }));
+        contributions.push(MainToolContribution::DelegateExploration(Box::new(
+            DelegateExplorationTool {
+                workspace: workspace_context.clone(),
+                provider: delegate_provider.to_string(),
+                model: delegate_model.to_string(),
+                api_key: delegate_api_key.to_string(),
+            },
+        )));
     }
     if let Some(tool) = skill_script_tool {
-        additional_tools.push(Box::new(tool));
+        contributions.push(MainToolContribution::RunSkillScript(Box::new(tool)));
     }
     let profile = resolve_harness_profile(HarnessProfileRequest {
         role: AgentRole::Main,
@@ -740,13 +667,13 @@ where
         role_guidance: None,
         matched_skills_section,
         invoked_skill_section,
-        main_mechanisms: Some(MainHarnessMechanisms {
+        main_tool_inputs: Some(MainToolInputs {
             provider: provider.to_string(),
             model: model.to_string(),
             api_key: api_key.to_string(),
             external_path_approval,
             command_approval,
-            additional_tools,
+            contributions,
         }),
     })
     .map_err(|error| LlmError::ProviderError(error.to_string()))?;
@@ -808,10 +735,10 @@ where
                                 LoopStatus::Stop => {
                                     let msg = format!(
                                         "Agent stopped: repeated identical tool call '{}' detected {} times. This usually indicates the agent is stuck in a loop.",
-                                        tool_call.function.name, loop_detector.consecutive_count
+                                        tool_call.function.name, loop_detector.consecutive_count()
                                     );
                                     on_event(StreamEvent::LoopStopped {
-                                        count: loop_detector.consecutive_count,
+                                        count: loop_detector.consecutive_count(),
                                         tool_name: tool_call.function.name.clone(),
                                         message: msg.clone(),
                                     });
@@ -869,10 +796,10 @@ where
                                     LoopStatus::Stop => {
                                         let msg = format!(
                                             "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
-                                            reason, loop_detector.failure_streak
+                                            reason, loop_detector.failure_streak()
                                         );
                                         on_event(StreamEvent::LoopStopped {
-                                            count: loop_detector.failure_streak,
+                                            count: loop_detector.failure_streak(),
                                             tool_name: tool_name.clone(),
                                             message: msg.clone(),
                                         });
@@ -1005,10 +932,10 @@ mod tests {
 
     fn delegate_tool_for_test() -> DelegateExplorationTool {
         DelegateExplorationTool {
-            workspace: WorkspaceToolContext {
+            workspace: ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
-                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+                session_mode: crate::session_mode::SessionMode::Build,
             },
             provider: "openai".to_string(),
             model: "gpt-4o-mini".to_string(),
@@ -1138,12 +1065,12 @@ mod tests {
         let successful =
             record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"blocked"}"#);
         assert_eq!(successful, None);
-        assert_eq!(detector.failure_streak, 0);
+        assert_eq!(detector.failure_streak(), 0);
 
         let failed =
             record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
         assert_eq!(failed, Some(("blocked".to_string(), LoopStatus::Ok)));
-        assert_eq!(detector.failure_streak, 1);
+        assert_eq!(detector.failure_streak(), 1);
     }
 
     #[test]
@@ -1151,15 +1078,15 @@ mod tests {
         let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
 
         record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
-        assert_eq!(detector.failure_streak, 1);
+        assert_eq!(detector.failure_streak(), 1);
 
         let status =
             record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"no_match"}"#);
         assert_eq!(status, None);
-        assert_eq!(detector.failure_streak, 0);
+        assert_eq!(detector.failure_streak(), 0);
 
         record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"no_match"}"#);
-        assert_eq!(detector.failure_streak, 0);
+        assert_eq!(detector.failure_streak(), 0);
     }
 
     #[test]
@@ -1186,13 +1113,13 @@ mod tests {
         let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
 
         record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
-        assert_eq!(detector.failure_streak, 1);
+        assert_eq!(detector.failure_streak(), 1);
 
         assert_eq!(
             record_tool_result_failure(&mut detector, r#"{"success":false,"error":"denied"}"#),
             None
         );
-        assert_eq!(detector.failure_streak, 0);
+        assert_eq!(detector.failure_streak(), 0);
 
         assert_eq!(
             record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#),

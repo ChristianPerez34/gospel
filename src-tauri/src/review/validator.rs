@@ -1,5 +1,5 @@
 use super::{knowledge, AgentConfig, ReviewAgentError, ReviewComment, ReviewFocus};
-use crate::harness_profile::{AgentRole, WorkspaceToolContext};
+use crate::harness_profile::{ActiveWorkspaceContext, AgentRole};
 
 const VALIDATOR_BASE_PREAMBLE: &str = r#"
 You are the Gospel Validator Agent.
@@ -100,7 +100,7 @@ pub async fn run_validator(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     prompt: &str,
     focus: ReviewFocus,
 ) -> Result<String, ReviewAgentError> {
