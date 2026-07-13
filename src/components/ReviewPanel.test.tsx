@@ -20,7 +20,7 @@ const actionableComment: ReviewComment = {
   title: "Unsanitized command",
   description: "User input reaches a shell command.",
   rationale: "Shell execution expands attacker-controlled text.",
-  evidence: "Command::new(\"sh\").arg(user_input)",
+  evidence: 'Command::new("sh").arg(user_input)',
   suggestion: "Use fixed command arguments.",
   verification_plan: "Run a payload test.",
   signal_tier: "tier_1",
@@ -62,7 +62,7 @@ function renderOpenPanel(overrides: Partial<ComponentProps<typeof ReviewPanel>> 
       canSendTurn
       onClose={vi.fn()}
       {...overrides}
-    />,
+    />
   );
 }
 
@@ -146,7 +146,9 @@ describe("ReviewPanel", () => {
     await runReview();
 
     const fixButton = screen.getByRole("button", { name: /fix issue/i }) as HTMLButtonElement;
-    const copyButton = screen.getAllByRole("button", { name: /copy finding .* to agent/i })[0] as HTMLButtonElement;
+    const copyButton = screen.getAllByRole("button", {
+      name: /copy finding .* to agent/i,
+    })[0] as HTMLButtonElement;
 
     expect(fixButton.disabled).toBe(true);
     expect(copyButton.disabled).toBe(false);

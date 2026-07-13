@@ -21,6 +21,8 @@ import {
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useReviewProgress } from "../hooks/useReviewProgress";
 import { ReviewProgressView } from "./ReviewProgressView";
+import { FocusBadge } from "./FocusBadge";
+import { FOCUS_OPTIONS, focusLabel } from "../utils/focus";
 
 type ReviewPanelMode = "local" | "pr" | "scan";
 
@@ -42,14 +44,6 @@ const MODE_OPTIONS: Array<{ value: ReviewPanelMode; label: string }> = [
   { value: "local", label: "Local" },
   { value: "pr", label: "PR" },
   { value: "scan", label: "Scan" },
-];
-
-const FOCUS_OPTIONS: Array<{ value: ReviewFocus; label: string; className: string }> = [
-  { value: "Security", label: "Security", className: "border-status-error text-status-error" },
-  { value: "BugHunt", label: "Bug Hunt", className: "border-accent-data text-accent-data" },
-  { value: "Architecture", label: "Architecture", className: "border-accent-structure text-accent-structure" },
-  { value: "Performance", label: "Performance", className: "border-status-warning text-status-warning" },
-  { value: "Style", label: "Style", className: "border-text-muted text-text-secondary" },
 ];
 
 const SEVERITY_CLASS: Record<string, string> = {
@@ -114,20 +108,8 @@ function isHidden(comment: ReviewComment) {
   return (comment.signal_tier as string) === "hidden";
 }
 
-function focusOption(focus: ReviewFocus) {
-  return FOCUS_OPTIONS.find((option) => option.value === focus);
-}
-
-function focusLabel(focus: ReviewFocus) {
-  return focusOption(focus)?.label ?? focus;
-}
-
-function FocusBadge({ focus }: { focus: ReviewFocus }) {
-  return (
-    <Badge className={focusOption(focus)?.className ?? "border-text-muted text-text-secondary"}>
-      {focusLabel(focus)}
-    </Badge>
-  );
+function outcomeKey(review: ReviewResult | null, comment: ReviewComment) {
+  return `${review?.run_id ?? "single"}:${comment.comment_id}`;
 }
 
 function ThumbUpIcon() {
@@ -168,13 +150,7 @@ function ThumbDownIcon() {
   );
 }
 
-function Badge({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className: string;
-}) {
+function Badge({ children, className }: { children: ReactNode; className: string }) {
   return (
     <span
       className={`inline-flex h-5 items-center rounded-sm border px-1.5 font-mono text-caption ${className}`}
@@ -212,9 +188,9 @@ export function ReviewPanel({
   const visibleComments = useMemo(() => {
     const comments = multiResult
       ? multiResult.results.flatMap((review) => review.comments)
-      : result?.comments ?? [];
+      : (result?.comments ?? []);
     return comments.filter(
-      (comment) => !isHidden(comment) && (focusFilter === "All" || comment.focus === focusFilter),
+      (comment) => !isHidden(comment) && (focusFilter === "All" || comment.focus === focusFilter)
     );
   }, [multiResult, result, focusFilter]);
   const activeSummary = multiResult?.summary ?? result?.summary;
@@ -224,16 +200,19 @@ export function ReviewPanel({
   const totalSuppressed = multiResult?.total_suppressed ?? result?.suppressed_count ?? 0;
   const averageSnr = multiResult
     ? multiResult.results.length > 0
-      ? multiResult.results.reduce((sum, review) => sum + review.snr_percent, 0) / multiResult.results.length
+      ? multiResult.results.reduce((sum, review) => sum + review.snr_percent, 0) /
+        multiResult.results.length
       : 0
-    : result?.snr_percent ?? 0;
+    : (result?.snr_percent ?? 0);
   const actionableCount = useMemo(
     () => visibleComments.filter(isActionableReviewFinding).length,
-    [visibleComments],
+    [visibleComments]
   );
   const shownCount = visibleComments.length;
   const canRun = Boolean(provider && model && workspacePath && !loading);
-  const canFix = Boolean(provider && model && workspacePath && canSendTurn && !loading && onFixFinding);
+  const canFix = Boolean(
+    provider && model && workspacePath && canSendTurn && !loading && onFixFinding
+  );
 
   useFocusTrap({
     active: open && !trapPaused,
@@ -329,9 +308,6 @@ export function ReviewPanel({
 
   const reviewForComment = (comment: ReviewComment) =>
     multiResult?.results.find((review) => review.focus === comment.focus) ?? result;
-
-  const outcomeKey = (review: ReviewResult | null, comment: ReviewComment) =>
-    `${review?.run_id ?? "single"}:${comment.comment_id}`;
 
   const recordOutcome = async (comment: ReviewComment, outcome: ReviewOutcome) => {
     const sourceReview = reviewForComment(comment);
@@ -443,7 +419,12 @@ export function ReviewPanel({
           title="Close"
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            <path
+              d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
           </svg>
         </Button>
       </header>
@@ -501,8 +482,19 @@ export function ReviewPanel({
               disabled={!canRun}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M8 2 13 4v3.5c0 3-1.9 5.2-5 6.5-3.1-1.3-5-3.5-5-6.5V4l5-2Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-                <path d="m5.7 8.2 1.4 1.4 3.2-3.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                <path
+                  d="M8 2 13 4v3.5c0 3-1.9 5.2-5 6.5-3.1-1.3-5-3.5-5-6.5V4l5-2Z"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="m5.7 8.2 1.4 1.4 3.2-3.2"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
               </svg>
               {loading ? "Running" : "Run"}
             </Button>
@@ -525,12 +517,8 @@ export function ReviewPanel({
               <Badge className="border-accent-action text-accent-action">
                 {formatPercent(averageSnr)} SNR
               </Badge>
-              <Badge className="border-text-muted text-text-secondary">
-                {totalFindings} total
-              </Badge>
-              <Badge className="border-accent-signal text-accent-signal">
-                {shownCount} shown
-              </Badge>
+              <Badge className="border-text-muted text-text-secondary">{totalFindings} total</Badge>
+              <Badge className="border-accent-signal text-accent-signal">{shownCount} shown</Badge>
               <Badge className="border-accent-data text-accent-data">
                 {actionableCount} actionable
               </Badge>
@@ -562,7 +550,9 @@ export function ReviewPanel({
               All ({multiResult.results.reduce((sum, review) => sum + review.comments.length, 0)})
             </button>
             {FOCUS_OPTIONS.map((option) => {
-              const count = multiResult.results.find((review) => review.focus === option.value)?.comments.length ?? 0;
+              const count =
+                multiResult.results.find((review) => review.focus === option.value)?.comments
+                  .length ?? 0;
               return (
                 <button
                   key={option.value}
@@ -602,16 +592,16 @@ export function ReviewPanel({
 
         {loading && (
           <ReviewProgressView
-            pipeline={reviewProgress.pipeline}
+            perFocus={reviewProgress.perFocus}
             log={reviewProgress.log}
             variant="active"
           />
         )}
 
-        {!loading && (reviewProgress.pipeline.done || reviewProgress.pipeline.failed) && (
+        {!loading && (reviewProgress.done || reviewProgress.failed) && (
           <div className="mb-1">
             <ReviewProgressView
-              pipeline={reviewProgress.pipeline}
+              perFocus={reviewProgress.perFocus}
               log={reviewProgress.log}
               variant="collapsed"
             />
@@ -636,9 +626,7 @@ export function ReviewPanel({
                 >
                   <div className="grid gap-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-caption text-text-muted">
-                        [{index + 1}]
-                      </span>
+                      <span className="font-mono text-caption text-text-muted">[{index + 1}]</span>
                       {multiResult && <FocusBadge focus={comment.focus} />}
                       <Badge className={SEVERITY_CLASS[comment.severity] ?? SEVERITY_CLASS.Info}>
                         {comment.severity}
@@ -676,7 +664,11 @@ export function ReviewPanel({
                         <Button
                           variant={outcome === "accepted" ? "default" : "outline"}
                           size="icon"
-                          className={outcome === "accepted" ? "border-status-success text-status-success" : ""}
+                          className={
+                            outcome === "accepted"
+                              ? "border-status-success text-status-success"
+                              : ""
+                          }
                           title="Accept finding"
                           aria-label={`Accept finding ${index + 1}`}
                           onClick={() => void recordOutcome(comment, "accepted")}
@@ -686,7 +678,9 @@ export function ReviewPanel({
                         <Button
                           variant={outcome === "rejected" ? "default" : "outline"}
                           size="icon"
-                          className={outcome === "rejected" ? "border-status-error text-status-error" : ""}
+                          className={
+                            outcome === "rejected" ? "border-status-error text-status-error" : ""
+                          }
                           title="Reject finding"
                           aria-label={`Reject finding ${index + 1}`}
                           onClick={() => void recordOutcome(comment, "rejected")}

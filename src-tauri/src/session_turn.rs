@@ -1,6 +1,7 @@
-use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent, WorkspaceToolContext};
+use crate::harness_profile::ActiveWorkspaceContext;
+use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent};
 use crate::models::ModelRegistry;
-use crate::session_mode::SESSION_MODE_BUILD;
+use crate::session_mode::{SessionMode, SESSION_MODE_BUILD};
 use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
 use crate::trace;
@@ -118,7 +119,7 @@ pub struct SessionTurnStreamRequest<'a> {
     pub delegate_provider: &'a str,
     pub delegate_model: &'a str,
     pub delegate_api_key: &'a str,
-    pub workspace: Option<WorkspaceToolContext>,
+    pub workspace: Option<ActiveWorkspaceContext>,
     pub chat_history: Vec<Message>,
     pub matched_skills_section: Option<String>,
     pub invoked_skill_section: Option<String>,
@@ -196,7 +197,7 @@ pub async fn run_streaming_turn(
         SESSION_MODE_BUILD.to_string()
     };
     if let Some(context) = workspace_context.as_mut() {
-        context.session_mode = session_mode;
+        context.session_mode = SessionMode::from_stored(&session_mode);
     }
     let resolved_model_variant = ModelRegistry::resolve_model_variant(
         &request.provider,
@@ -437,6 +438,7 @@ pub fn skill_script_tool(
         Some(RunSkillScriptTool {
             available_skills: scriptable,
             workspace_path,
+            command_approval: None,
         })
     }
 }
@@ -835,7 +837,7 @@ pub struct VerificationJobRequest {
     pub provider: String,
     pub model: String,
     pub api_key: String,
-    pub workspace: WorkspaceToolContext,
+    pub workspace: ActiveWorkspaceContext,
     pub response_to_verify: String,
     pub user_prompt: String,
     pub session_id: Option<String>,
@@ -856,7 +858,7 @@ pub fn verification_job_request(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: Option<&WorkspaceToolContext>,
+    workspace: Option<&ActiveWorkspaceContext>,
     response_to_verify: &str,
     user_prompt: &str,
     session_id: Option<&str>,
@@ -994,7 +996,7 @@ pub enum ActiveWorkspaceProbe {
 pub struct ResolvedActiveWorkspaceContext {
     pub workspace_id: Option<String>,
     pub workspace_path: Option<PathBuf>,
-    pub tool_context: Option<WorkspaceToolContext>,
+    pub tool_context: Option<ActiveWorkspaceContext>,
     pub corpus_failure_reason: Option<String>,
 }
 
@@ -1017,10 +1019,10 @@ pub fn resolve_active_workspace_context(
         ActiveWorkspaceProbe::CorpusAvailable { selection } => ResolvedActiveWorkspaceContext {
             workspace_id: Some(selection.id),
             workspace_path: Some(selection.path.clone()),
-            tool_context: Some(WorkspaceToolContext {
+            tool_context: Some(ActiveWorkspaceContext {
                 workspace_path: selection.path,
                 corpus_available: true,
-                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+                session_mode: SessionMode::Build,
             }),
             corpus_failure_reason: None,
         },
@@ -1028,10 +1030,10 @@ pub fn resolve_active_workspace_context(
             ResolvedActiveWorkspaceContext {
                 workspace_id: Some(selection.id),
                 workspace_path: Some(selection.path.clone()),
-                tool_context: Some(WorkspaceToolContext {
+                tool_context: Some(ActiveWorkspaceContext {
                     workspace_path: selection.path,
                     corpus_available: false,
-                    session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+                    session_mode: SessionMode::Build,
                 }),
                 corpus_failure_reason: Some(reason),
             }
@@ -1171,7 +1173,7 @@ mod tests {
         delegate_provider: String,
         delegate_model: String,
         delegate_api_key: String,
-        workspace: Option<WorkspaceToolContext>,
+        workspace: Option<ActiveWorkspaceContext>,
         chat_history: Vec<Message>,
         matched_skills_section: Option<String>,
         invoked_skill_section: Option<String>,
@@ -1851,10 +1853,10 @@ mod tests {
 
     #[test]
     fn verification_job_requires_high_risk_response_and_workspace() {
-        let workspace = WorkspaceToolContext {
+        let workspace = ActiveWorkspaceContext {
             workspace_path: PathBuf::from("/tmp/workspace"),
             corpus_available: true,
-            session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+            session_mode: SessionMode::Build,
         };
 
         assert!(verification_job_request(
@@ -2055,10 +2057,10 @@ mod tests {
         assert!(!stream_request.skill_script_available);
         assert_eq!(
             stream_request.workspace,
-            Some(WorkspaceToolContext {
+            Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: true,
-                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+                session_mode: SessionMode::Build,
             })
         );
         drop(stream_requests);

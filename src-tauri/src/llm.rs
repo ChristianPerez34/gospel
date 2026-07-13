@@ -9,189 +9,27 @@ use rig::tool::Tool;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
-use std::hash::{Hash, Hasher};
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use tokio::time::{timeout, Duration};
+use tokio::time::timeout;
 
-/// Role-specific thresholds for run guards.
-const MAIN_AGENT_LOOP_WARN: usize = 3;
-const MAIN_AGENT_LOOP_STOP: usize = 5;
-const EXPLORATION_AGENT_LOOP_WARN: usize = 3;
-const EXPLORATION_AGENT_LOOP_STOP: usize = 5;
-const VERIFICATION_AGENT_LOOP_WARN: usize = 2;
-const VERIFICATION_AGENT_LOOP_STOP: usize = 3;
-
-/// Agent roles for trace logging and guard behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum AgentRole {
-    Main,
-    Exploration,
-    Verification,
-}
-
-impl AgentRole {
-    fn warn_threshold(self) -> usize {
-        match self {
-            AgentRole::Main => MAIN_AGENT_LOOP_WARN,
-            AgentRole::Exploration => EXPLORATION_AGENT_LOOP_WARN,
-            AgentRole::Verification => VERIFICATION_AGENT_LOOP_WARN,
-        }
-    }
-
-    fn stop_threshold(self) -> usize {
-        match self {
-            AgentRole::Main => MAIN_AGENT_LOOP_STOP,
-            AgentRole::Exploration => EXPLORATION_AGENT_LOOP_STOP,
-            AgentRole::Verification => VERIFICATION_AGENT_LOOP_STOP,
-        }
-    }
-}
-
-/// Deterministic failure reasons that should not be retried automatically.
-const DETERMINISTIC_FAILURE_REASONS: &[&str] = &[
-    "blocked",
-    "path_escape",
-    "secret",
-    "not_found",
-    "invalid_query",
-    "binary",
-    "too_large",
-    "oversized",
-    "invalid_utf8",
-    "invalid_range",
-    "invalid_replacement",
-    "no_match",
-    "ambiguous_match",
-    "no_op",
-];
-
-/// Detects consecutive identical tool calls and repeated deterministic failures.
-#[derive(Debug)]
-struct LoopDetector {
-    last_call_hash: u64,
-    consecutive_count: usize,
-    last_failure_reason: String,
-    failure_streak: usize,
-    warn_threshold: usize,
-    stop_threshold: usize,
-}
-
-impl LoopDetector {
-    fn new(role: AgentRole) -> Self {
-        Self {
-            last_call_hash: 0,
-            consecutive_count: 0,
-            last_failure_reason: String::new(),
-            failure_streak: 0,
-            warn_threshold: role.warn_threshold(),
-            stop_threshold: role.stop_threshold(),
-        }
-    }
-
-    fn record_call(&mut self, tool_name: &str, args: &serde_json::Value) -> LoopStatus {
-        let canonical = format!(
-            "{}:{}",
-            tool_name,
-            crate::json_utils::canonical_json_string(args)
-        );
-        let mut hasher = DefaultHasher::new();
-        canonical.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        if hash == self.last_call_hash {
-            self.consecutive_count += 1;
-        } else {
-            self.last_call_hash = hash;
-            self.consecutive_count = 1;
-        }
-
-        if self.consecutive_count >= self.stop_threshold {
-            LoopStatus::Stop
-        } else if self.consecutive_count >= self.warn_threshold {
-            LoopStatus::Warning(self.consecutive_count)
-        } else {
-            LoopStatus::Ok
-        }
-    }
-
-    fn record_failure(&mut self, reason: &str) -> Option<LoopStatus> {
-        if !DETERMINISTIC_FAILURE_REASONS.contains(&reason) {
-            self.reset_failure_streak();
-            return None;
-        }
-
-        if reason == self.last_failure_reason {
-            self.failure_streak += 1;
-        } else {
-            self.last_failure_reason = reason.to_string();
-            self.failure_streak = 1;
-        }
-
-        if self.failure_streak >= self.stop_threshold {
-            Some(LoopStatus::Stop)
-        } else if self.failure_streak >= self.warn_threshold {
-            Some(LoopStatus::Warning(self.failure_streak))
-        } else {
-            Some(LoopStatus::Ok)
-        }
-    }
-
-    #[allow(dead_code)]
-    fn reset(&mut self) {
-        self.last_call_hash = 0;
-        self.consecutive_count = 0;
-        self.reset_failure_streak();
-    }
-
-    fn reset_failure_streak(&mut self) {
-        self.last_failure_reason.clear();
-        self.failure_streak = 0;
-    }
-}
-
-#[derive(Debug, PartialEq)]
-enum LoopStatus {
-    Ok,
-    Warning(usize),
-    Stop,
-}
-
-use crate::corpus::tools::{
-    create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
-    CORPUS_SYSTEM_PROMPT,
+#[cfg(test)]
+use crate::harness_profile::guards_for_role;
+use crate::harness_profile::{
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
+    LoopDetector, LoopStatus, MainToolContribution, MainToolInputs,
 };
+
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
-use crate::review::tools::{
-    create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
-    create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
-};
-use crate::session_mode::session_mode_allows_source_edit;
-use crate::shell_tools::{
-    create_run_git_command_tool, create_run_github_cli_command_tool, create_run_shell_command_tool,
-    CommandApproval, SHELL_TOOLS_SYSTEM_PROMPT,
-};
+use crate::shell_tools::CommandApproval;
 use crate::text_utils::truncate_text_bytes;
-use crate::workspace_tools::{
-    build_base_workspace_tools_with_external_approval, create_context_search_tool,
-    create_find_files_tool, create_read_file_tool, create_search_code_tool,
-    create_source_edit_tool, create_write_harness_file_tool, workspace_root_inventory,
-    ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
-    READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
-};
+use crate::workspace_tools::{workspace_root_inventory, ExternalPathApproval};
 
-pub(crate) const AGENT_MAX_TURNS: usize = 50;
-const EXPLORATION_TIMEOUT: Duration = Duration::from_secs(90);
 const EXPLORATION_REPORT_BYTES_CAP: usize = 32 * 1024;
-const DELEGATION_SYSTEM_PROMPT: &str = r#"
-Use `delegate_exploration` only for broad multi-file, architectural, or investigative tasks that would benefit from a focused report before you answer the user.
-Prefer direct file reads and targeted search for small or obvious tasks.
-"#;
 const EXPLORATION_AGENT_PROMPT: &str = r#"
 You are the Gospel Exploration Agent.
 
@@ -204,7 +42,7 @@ Investigate the active workspace and return a concise markdown report with exact
 ## Suggested Next Reads
 ## Tools Used
 
-Use `context_search` for broad workspace discovery to find relevant areas quickly.
+Use broad workspace retrieval for orientation when it is available.
 Verify important hits with live workspace tools (read_file, search_code) before making claims.
 Use corpus tools for fast structure when available, and live workspace tools for source-of-truth verification.
 Do not answer as the final user-facing assistant. Return findings only.
@@ -290,13 +128,6 @@ pub enum StreamEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkspaceToolContext {
-    pub workspace_path: PathBuf,
-    pub corpus_available: bool,
-    pub session_mode: String,
-}
-
 pub struct LlmService;
 
 fn validate_api_key(provider: &str, api_key: &str) -> Result<(), LlmError> {
@@ -367,7 +198,7 @@ struct DelegateExplorationOutput {
 
 #[derive(Clone, Deserialize)]
 struct DelegateExplorationTool {
-    workspace: WorkspaceToolContext,
+    workspace: ActiveWorkspaceContext,
     provider: String,
     model: String,
     #[serde(default)]
@@ -467,6 +298,7 @@ impl Tool for DelegateExplorationTool {
 #[derive(Clone)]
 struct ExplorationHook {
     tools: Arc<Mutex<Vec<String>>>,
+    loop_detector: Arc<Mutex<LoopDetector>>,
 }
 
 impl<M> PromptHook<M> for ExplorationHook
@@ -478,16 +310,34 @@ where
         tool_name: &str,
         _tool_call_id: Option<String>,
         _internal_call_id: &str,
-        _args: &str,
+        args: &str,
     ) -> impl Future<Output = ToolCallHookAction> + Send {
         let tool_name = tool_name.to_string();
         let tools = self.tools.clone();
+        let loop_detector = self.loop_detector.clone();
+        let args = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
         async move {
             let mut guard = tools.lock().unwrap();
             if !guard.iter().any(|name| name == &tool_name) {
-                guard.push(tool_name);
+                guard.push(tool_name.clone());
             }
-            ToolCallHookAction::cont()
+            drop(guard);
+            match loop_detector.lock().unwrap().record_call(&tool_name, &args) {
+                LoopStatus::Stop => ToolCallHookAction::terminate(format!(
+                    "Exploration Agent stopped after a repeated '{}' tool-call loop.",
+                    tool_name
+                )),
+                LoopStatus::Warning(count) => {
+                    tracing::warn!(
+                        role = "exploration",
+                        count,
+                        tool_name,
+                        "repeated tool-call warning"
+                    );
+                    ToolCallHookAction::cont()
+                }
+                LoopStatus::Ok => ToolCallHookAction::cont(),
+            }
         }
     }
 
@@ -497,91 +347,29 @@ where
         _tool_call_id: Option<String>,
         _internal_call_id: &str,
         _args: &str,
-        _result: &str,
+        result: &str,
     ) -> HookAction {
-        HookAction::cont()
-    }
-}
-
-fn build_system_preamble(
-    workspace: Option<&WorkspaceToolContext>,
-    allow_delegate: bool,
-    matched_skills_section: Option<String>,
-    invoked_skills_section: Option<String>,
-    include_harness: bool,
-) -> Option<String> {
-    let mut sections = Vec::new();
-
-    if let Some(ref invoked) = invoked_skills_section {
-        sections.push(invoked.clone());
-    }
-
-    if let Some(ref matched) = matched_skills_section {
-        sections.push(matched.clone());
-    }
-
-    if workspace.is_some() {
-        sections.push(workspace_tools_system_prompt(workspace.unwrap()));
-        sections.push(SHELL_TOOLS_SYSTEM_PROMPT.trim().to_string());
-        if include_harness {
-            sections.push(REVIEW_TOOLS_SYSTEM_PROMPT.trim().to_string());
-            sections.push(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.trim().to_string());
+        let mut detector = self.loop_detector.lock().unwrap();
+        let Some((reason, status)) = record_tool_result_failure(&mut detector, result) else {
+            return HookAction::cont();
+        };
+        match status {
+            LoopStatus::Stop => HookAction::terminate(format!(
+                "Exploration Agent stopped after repeated deterministic '{}' failures.",
+                reason
+            )),
+            LoopStatus::Warning(count) => {
+                tracing::warn!(
+                    role = "exploration",
+                    count,
+                    reason,
+                    "repeated deterministic tool failure warning"
+                );
+                HookAction::cont()
+            }
+            LoopStatus::Ok => HookAction::cont(),
         }
     }
-
-    if workspace.map(|ctx| ctx.corpus_available).unwrap_or(false) {
-        sections.push(CORPUS_SYSTEM_PROMPT.trim().to_string());
-    }
-
-    if allow_delegate && workspace.is_some() {
-        sections.push(DELEGATION_SYSTEM_PROMPT.trim().to_string());
-    }
-
-    if sections.is_empty() {
-        None
-    } else {
-        Some(sections.join("\n\n"))
-    }
-}
-
-fn workspace_source_edits_enabled(workspace: &WorkspaceToolContext) -> bool {
-    session_mode_allows_source_edit(&workspace.session_mode)
-}
-
-fn workspace_tools_system_prompt(workspace: &WorkspaceToolContext) -> String {
-    if workspace_source_edits_enabled(workspace) {
-        WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string()
-    } else {
-        READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string()
-    }
-}
-
-#[cfg(test)]
-fn registered_main_workspace_tool_names(workspace: &WorkspaceToolContext) -> Vec<&'static str> {
-    let mut names = vec!["read_file", "search_code", "find_files", "list_directory"];
-    if workspace_source_edits_enabled(workspace) {
-        names.push("source_edit");
-    }
-    names.extend([
-        "write_harness_file",
-        "run_review",
-        "run_multi_review",
-        "run_security_review",
-        "record_review_outcome",
-        "run_shell_command",
-        "run_git_command",
-        "run_github_cli_command",
-    ]);
-    if workspace.corpus_available {
-        names.extend([
-            "corpus_summary",
-            "corpus_query",
-            "corpus_neighbors",
-            "context_search",
-        ]);
-    }
-    names.push("delegate_exploration");
-    names
 }
 
 #[derive(Debug, Default, Clone)]
@@ -732,57 +520,55 @@ async fn run_exploration_agent(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     args: &DelegateExplorationArgs,
 ) -> Result<DelegateExplorationOutput, LlmError> {
-    let hook = ExplorationHook {
-        tools: Arc::new(Mutex::new(Vec::new())),
-    };
-    let tool_names = hook.tools.clone();
     let workspace_snapshot = workspace_root_inventory(&workspace.workspace_path, 40)
         .map(|inventory| format!("{}", inventory))
         .unwrap_or_else(|_| String::new());
-    let agent_preamble = format!(
-        "{}\n\n{}",
-        build_system_preamble(Some(workspace), false, None, None, false).unwrap_or_default(),
-        EXPLORATION_AGENT_PROMPT.trim()
-    );
+    let profile = resolve_harness_profile(HarnessProfileRequest {
+        role: AgentRole::Exploration,
+        workspace: Some(workspace.clone()),
+        role_guidance: Some(EXPLORATION_AGENT_PROMPT.to_string()),
+        matched_skills_section: None,
+        invoked_skill_section: None,
+        main_tool_inputs: None,
+    })
+    .map_err(|error| LlmError::ProviderError(error.to_string()))?;
+    tracing::debug!(profile = ?profile.summary(), "resolved Exploration Harness Profile");
+    let agent_preamble = profile.preamble.unwrap_or_default();
+    let agent_tools = profile.tools;
+    let agent_guards = profile.guards;
+    let agent_deadline = agent_guards
+        .deadline
+        .expect("Exploration Harness Profiles always have a deadline");
+    let hook = ExplorationHook {
+        tools: Arc::new(Mutex::new(Vec::new())),
+        loop_detector: Arc::new(Mutex::new(LoopDetector::new(agent_guards.loop_guard))),
+    };
+    let tool_names = hook.tools.clone();
     let prompt = build_exploration_prompt(&args, &workspace_snapshot);
-
-    // Exploration agent uses tighter loop thresholds
-    let _loop_detector = Arc::new(Mutex::new(LoopDetector::new(AgentRole::Exploration)));
 
     macro_rules! exploration_from_client {
         ($client:expr, $model:expr) => {{
-            let mut builder = $client
+            let builder = $client
                 .agent($model)
                 .preamble(&agent_preamble)
-                .default_max_turns(AGENT_MAX_TURNS)
-                .tool(create_read_file_tool(workspace.workspace_path.clone()))
-                .tool(create_search_code_tool(workspace.workspace_path.clone()))
-                .tool(create_find_files_tool(workspace.workspace_path.clone()));
-
-            if workspace.corpus_available {
-                builder = builder
-                    .tool(create_corpus_summary_tool(workspace.workspace_path.clone()))
-                    .tool(create_corpus_query_tool(workspace.workspace_path.clone()))
-                    .tool(create_corpus_neighbors_tool(
-                        workspace.workspace_path.clone(),
-                    ))
-                    .tool(create_context_search_tool(workspace.workspace_path.clone()));
-            }
+                .default_max_turns(agent_guards.max_turns)
+                .tools(agent_tools);
 
             let agent = builder.build();
             let future = agent
                 .prompt(prompt)
                 .with_hook(hook.clone())
                 .extended_details();
-            let response = timeout(EXPLORATION_TIMEOUT, future)
+            let response = timeout(agent_deadline, future)
                 .await
                 .map_err(|_| {
-                    LlmError::ControlledStop(
-                        "Exploration Agent timed out after 90 seconds".to_string(),
-                    )
+                    LlmError::ControlledStop(format!(
+                        "Exploration Agent timed out after {} seconds",
+                        agent_deadline.as_secs()
+                    ))
                 })?
                 .map_err(|e| LlmError::ProviderError(e.to_string()))?;
 
@@ -828,7 +614,7 @@ pub async fn stream_completion<F>(
     delegate_provider: &str,
     delegate_model: &str,
     delegate_api_key: &str,
-    workspace: Option<WorkspaceToolContext>,
+    workspace: Option<ActiveWorkspaceContext>,
     external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
     command_approval: Option<Arc<dyn CommandApproval>>,
     chat_history: Vec<Message>,
@@ -861,107 +647,63 @@ where
             .iter()
             .map(estimate_message_tokens)
             .sum::<usize>();
+    let mut contributions = Vec::new();
+    if let Some(workspace_context) = workspace.as_ref() {
+        contributions.push(MainToolContribution::DelegateExploration(Box::new(
+            DelegateExplorationTool {
+                workspace: workspace_context.clone(),
+                provider: delegate_provider.to_string(),
+                model: delegate_model.to_string(),
+                api_key: delegate_api_key.to_string(),
+            },
+        )));
+    }
+    if let Some(tool) = skill_script_tool {
+        contributions.push(MainToolContribution::RunSkillScript(Box::new(tool)));
+    }
+    let profile = resolve_harness_profile(HarnessProfileRequest {
+        role: AgentRole::Main,
+        workspace,
+        role_guidance: None,
+        matched_skills_section,
+        invoked_skill_section,
+        main_tool_inputs: Some(MainToolInputs {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            api_key: api_key.to_string(),
+            external_path_approval,
+            command_approval,
+            contributions,
+        }),
+    })
+    .map_err(|error| LlmError::ProviderError(error.to_string()))?;
+    tracing::debug!(profile = ?profile.summary(), "resolved Main Harness Profile");
+    let profile_preamble = profile.preamble;
+    let profile_tools = profile.tools;
+    let profile_guards = profile.guards;
 
     macro_rules! stream_from_client {
         ($client:expr, $model:expr) => {{
-            let mut builder = $client.agent($model).default_max_turns(AGENT_MAX_TURNS);
+            let mut builder = $client
+                .agent($model)
+                .default_max_turns(profile_guards.max_turns);
             if let Some(additional_params) = variant_resolution.additional_params.clone() {
                 builder = builder.additional_params(additional_params);
             }
-            let builder = if let Some(preamble) = build_system_preamble(workspace.as_ref(), true, matched_skills_section.clone(), invoked_skill_section.clone(), true) {
-                builder.preamble(&preamble)
+            let builder = if let Some(preamble) = profile_preamble.as_ref() {
+                builder.preamble(preamble)
             } else {
                 builder
             };
-            let agent = if let Some(workspace_context) = workspace.as_ref() {
-                let mut b = builder
-                    .tools(build_base_workspace_tools_with_external_approval(
-                        workspace_context.workspace_path.clone(),
-                        external_path_approval.clone(),
-                    ))
-                    .tool(create_write_harness_file_tool(
-                        workspace_context.workspace_path.clone(),
-                    ))
-                    .tool(create_run_review_tool(
-                        workspace_context.workspace_path.clone(),
-                        provider.to_string(),
-                        model.to_string(),
-                        api_key.to_string(),
-                    ))
-                    .tool(create_run_multi_review_tool(
-                        workspace_context.workspace_path.clone(),
-                        provider.to_string(),
-                        model.to_string(),
-                        api_key.to_string(),
-                    ))
-                    .tool(create_run_security_review_tool(
-                        workspace_context.workspace_path.clone(),
-                        provider.to_string(),
-                        model.to_string(),
-                        api_key.to_string(),
-                    ))
-                    .tool(create_record_review_outcome_tool(
-                        workspace_context.workspace_path.clone(),
-                    ));
-
-                if workspace_source_edits_enabled(workspace_context) {
-                    b = b.tool(create_source_edit_tool(
-                        workspace_context.workspace_path.clone(),
-                    ));
-                }
-
-                if workspace_context.corpus_available {
-                    b = b
-                        .tool(create_corpus_summary_tool(
-                            workspace_context.workspace_path.clone(),
-                        ))
-                        .tool(create_corpus_query_tool(
-                            workspace_context.workspace_path.clone(),
-                        ))
-                        .tool(create_corpus_neighbors_tool(
-                            workspace_context.workspace_path.clone(),
-                        ))
-                        .tool(create_context_search_tool(
-                            workspace_context.workspace_path.clone(),
-                        ));
-                }
-
-                b = b
-                    .tool(create_run_shell_command_tool(
-                        workspace_context.workspace_path.clone(),
-                        command_approval.clone(),
-                    ))
-                    .tool(create_run_git_command_tool(
-                        workspace_context.workspace_path.clone(),
-                        command_approval.clone(),
-                    ))
-                    .tool(create_run_github_cli_command_tool(
-                        workspace_context.workspace_path.clone(),
-                        command_approval.clone(),
-                    ))
-                    .tool(DelegateExplorationTool {
-                        workspace: workspace_context.clone(),
-                        provider: delegate_provider.to_string(),
-                        model: delegate_model.to_string(),
-                        api_key: delegate_api_key.to_string(),
-                    });
-                if let Some(st) = skill_script_tool {
-                    b = b.tool(st);
-                }
-                b.build()
-            } else if let Some(st) = skill_script_tool {
-                builder.tool(st).build()
-            } else {
-                builder.build()
-            };
+            let agent = builder.tools(profile_tools).build();
             let request = agent
                 .stream_chat(prompt, chat_history)
-                .multi_turn(AGENT_MAX_TURNS);
+                .multi_turn(profile_guards.max_turns);
             let mut stream = request.await;
 
             let mut tool_name_by_id: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
-            let mut loop_detector = LoopDetector::new(AgentRole::Main);
+            let mut loop_detector = LoopDetector::new(profile_guards.loop_guard);
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -993,10 +735,10 @@ where
                                 LoopStatus::Stop => {
                                     let msg = format!(
                                         "Agent stopped: repeated identical tool call '{}' detected {} times. This usually indicates the agent is stuck in a loop.",
-                                        tool_call.function.name, loop_detector.consecutive_count
+                                        tool_call.function.name, loop_detector.consecutive_count()
                                     );
                                     on_event(StreamEvent::LoopStopped {
-                                        count: loop_detector.consecutive_count,
+                                        count: loop_detector.consecutive_count(),
                                         tool_name: tool_call.function.name.clone(),
                                         message: msg.clone(),
                                     });
@@ -1040,37 +782,30 @@ where
                             }
 
                             // Check for repeated deterministic failures
-                            match serde_json::from_str::<serde_json::Value>(&result_summary) {
-                                Ok(parsed) => {
-                                    if let Some(reason) = parsed.get("reason").and_then(|r| r.as_str()) {
-                                        if let Some(status) = loop_detector.record_failure(reason) {
-                                            match status {
-                                                LoopStatus::Ok => {}
-                                                LoopStatus::Warning(count) => {
-                                                    on_event(StreamEvent::LoopWarning {
-                                                        count,
-                                                        tool_name: tool_name.clone(),
-                                                    });
-                                                }
-                                                LoopStatus::Stop => {
-                                                    let msg = format!(
-                                                        "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
-                                                        reason, loop_detector.failure_streak
-                                                    );
-                                                    on_event(StreamEvent::LoopStopped {
-                                                        count: loop_detector.failure_streak,
-                                                        tool_name: tool_name.clone(),
-                                                        message: msg.clone(),
-                                                    });
-                                                    return Err(LlmError::ControlledStop(msg));
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        loop_detector.reset_failure_streak();
+                            if let Some((reason, status)) =
+                                record_tool_result_failure(&mut loop_detector, &result_summary)
+                            {
+                                match status {
+                                    LoopStatus::Ok => {}
+                                    LoopStatus::Warning(count) => {
+                                        on_event(StreamEvent::LoopWarning {
+                                            count,
+                                            tool_name: tool_name.clone(),
+                                        });
+                                    }
+                                    LoopStatus::Stop => {
+                                        let msg = format!(
+                                            "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
+                                            reason, loop_detector.failure_streak()
+                                        );
+                                        on_event(StreamEvent::LoopStopped {
+                                            count: loop_detector.failure_streak(),
+                                            tool_name: tool_name.clone(),
+                                            message: msg.clone(),
+                                        });
+                                        return Err(LlmError::ControlledStop(msg));
                                     }
                                 }
-                                Err(_) => loop_detector.reset_failure_streak(),
                             }
 
                             on_event(StreamEvent::ToolResult {
@@ -1159,16 +894,48 @@ fn source_edit_result_changed(result_summary: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn record_tool_result_failure(
+    loop_detector: &mut LoopDetector,
+    result_summary: &str,
+) -> Option<(String, LoopStatus)> {
+    match serde_json::from_str::<serde_json::Value>(result_summary) {
+        Ok(parsed) => {
+            let success = parsed
+                .get("success")
+                .and_then(|item| item.as_bool())
+                .unwrap_or(true);
+
+            if success {
+                loop_detector.reset_failure_streak();
+                return None;
+            }
+
+            let Some(reason) = parsed.get("reason").and_then(|item| item.as_str()) else {
+                loop_detector.reset_failure_streak();
+                return None;
+            };
+
+            loop_detector
+                .record_failure(reason)
+                .map(|status| (reason.to_string(), status))
+        }
+        Err(_) => {
+            loop_detector.reset_failure_streak();
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn delegate_tool_for_test() -> DelegateExplorationTool {
         DelegateExplorationTool {
-            workspace: WorkspaceToolContext {
+            workspace: ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
-                session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+                session_mode: crate::session_mode::SessionMode::Build,
             },
             provider: "openai".to_string(),
             model: "gpt-4o-mini".to_string(),
@@ -1262,68 +1029,6 @@ mod tests {
     }
 
     #[test]
-    fn build_system_preamble_uses_live_tools_and_corpus_distinction() {
-        let preamble = build_system_preamble(
-            Some(&WorkspaceToolContext {
-                workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: true,
-                session_mode: "Build".to_string(),
-            }),
-            true,
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-
-        assert!(preamble.contains("Live Workspace Tools"));
-        assert!(preamble.contains("source-of-truth"));
-        assert!(preamble.contains("delegate_exploration"));
-        assert!(preamble.contains("Harness Control Area"));
-        assert!(preamble.contains(".gospel/PLAN.md"));
-        assert!(preamble.contains("run_shell_command"));
-        assert!(preamble.contains("run_git_command"));
-        assert!(preamble.contains("run_github_cli_command"));
-    }
-
-    #[test]
-    fn build_mode_workspace_tools_include_source_edit_and_harness_writer() {
-        let workspace = WorkspaceToolContext {
-            workspace_path: PathBuf::from("/tmp/workspace"),
-            corpus_available: false,
-            session_mode: "Build".to_string(),
-        };
-
-        let tools = registered_main_workspace_tool_names(&workspace);
-
-        assert!(tools.contains(&"source_edit"));
-        assert!(tools.contains(&"write_harness_file"));
-    }
-
-    #[test]
-    fn read_only_mode_workspace_tools_omit_source_edit_but_keep_harness_writer() {
-        let workspace = WorkspaceToolContext {
-            workspace_path: PathBuf::from("/tmp/workspace"),
-            corpus_available: false,
-            session_mode: "ReadOnly".to_string(),
-        };
-
-        let tools = registered_main_workspace_tool_names(&workspace);
-        let preamble = build_system_preamble(Some(&workspace), true, None, None, true).unwrap();
-
-        assert!(!tools.contains(&"source_edit"));
-        assert!(tools.contains(&"write_harness_file"));
-        assert!(!preamble.contains("Use `source_edit`"));
-        assert!(preamble.contains("Read-Only Session"));
-        assert!(preamble.contains(".gospel/PLAN.md"));
-    }
-
-    #[test]
-    fn build_system_preamble_is_empty_without_workspace_tools() {
-        assert!(build_system_preamble(None, true, None, None, true).is_none());
-    }
-
-    #[test]
     fn build_exploration_prompt_includes_optional_context() {
         let prompt = build_exploration_prompt(
             &DelegateExplorationArgs {
@@ -1351,5 +1056,74 @@ mod tests {
             r#"{"success":false,"changed":false,"reason":"blocked"}"#
         ));
         assert!(!source_edit_result_changed("not json"));
+    }
+
+    #[test]
+    fn tool_result_failure_is_only_recorded_when_success_is_false() {
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
+
+        let successful =
+            record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"blocked"}"#);
+        assert_eq!(successful, None);
+        assert_eq!(detector.failure_streak(), 0);
+
+        let failed =
+            record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
+        assert_eq!(failed, Some(("blocked".to_string(), LoopStatus::Ok)));
+        assert_eq!(detector.failure_streak(), 1);
+    }
+
+    #[test]
+    fn successful_no_match_result_resets_failure_streak() {
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
+
+        record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
+        assert_eq!(detector.failure_streak(), 1);
+
+        let status =
+            record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"no_match"}"#);
+        assert_eq!(status, None);
+        assert_eq!(detector.failure_streak(), 0);
+
+        record_tool_result_failure(&mut detector, r#"{"success":true,"reason":"no_match"}"#);
+        assert_eq!(detector.failure_streak(), 0);
+    }
+
+    #[test]
+    fn repeated_failed_blocked_results_warn_then_stop() {
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
+        let result = r#"{"success":false,"reason":"blocked"}"#;
+
+        assert_eq!(
+            record_tool_result_failure(&mut detector, result),
+            Some(("blocked".to_string(), LoopStatus::Ok))
+        );
+        assert_eq!(
+            record_tool_result_failure(&mut detector, result),
+            Some(("blocked".to_string(), LoopStatus::Warning(2)))
+        );
+        assert_eq!(
+            record_tool_result_failure(&mut detector, result),
+            Some(("blocked".to_string(), LoopStatus::Stop))
+        );
+    }
+
+    #[test]
+    fn failed_result_without_reason_resets_deterministic_failure_streak() {
+        let mut detector = LoopDetector::new(guards_for_role(AgentRole::Verification).loop_guard);
+
+        record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#);
+        assert_eq!(detector.failure_streak(), 1);
+
+        assert_eq!(
+            record_tool_result_failure(&mut detector, r#"{"success":false,"error":"denied"}"#),
+            None
+        );
+        assert_eq!(detector.failure_streak(), 0);
+
+        assert_eq!(
+            record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#),
+            Some(("blocked".to_string(), LoopStatus::Ok))
+        );
     }
 }

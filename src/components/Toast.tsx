@@ -38,7 +38,8 @@ export function Toast({ toast, onDismiss }: ToastProps) {
   const hasSecondaryAction = Boolean(toast.secondaryAction);
 
   useEffect(() => {
-    const shouldAutoDismiss = toast.autoDismissMs && toast.autoDismissMs > 0 && !hasAction && !hasSecondaryAction;
+    const shouldAutoDismiss =
+      toast.autoDismissMs && toast.autoDismissMs > 0 && !hasAction && !hasSecondaryAction;
     if (shouldAutoDismiss) {
       const timer = setTimeout(() => onDismiss(toast.id), toast.autoDismissMs);
       return () => clearTimeout(timer);
@@ -59,12 +60,28 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         {toast.type === "error" && (
           <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
             <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
-            <line x1="7" y1="4" x2="7" y2="7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            <line
+              x1="7"
+              y1="4"
+              x2="7"
+              y2="7.5"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+            />
             <circle cx="7" cy="10" r="0.6" />
           </svg>
         )}
         {toast.type === "success" && (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          >
             <path d="M3 7L6 10L11 4" />
           </svg>
         )}
@@ -72,7 +89,15 @@ export function Toast({ toast, onDismiss }: ToastProps) {
           <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
             <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
             <circle cx="7" cy="4.5" r="0.6" />
-            <line x1="7" y1="6.5" x2="7" y2="10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            <line
+              x1="7"
+              y1="6.5"
+              x2="7"
+              y2="10"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+            />
           </svg>
         )}
       </div>
@@ -82,7 +107,10 @@ export function Toast({ toast, onDismiss }: ToastProps) {
           <Button
             variant="secondary"
             size="xs"
-            onClick={(e) => { e.stopPropagation(); toast.action!.onClick(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              toast.action!.onClick();
+            }}
           >
             {toast.action.label}
           </Button>
@@ -91,7 +119,10 @@ export function Toast({ toast, onDismiss }: ToastProps) {
           <Button
             variant="outline"
             size="xs"
-            onClick={(e) => { e.stopPropagation(); toast.secondaryAction!.onClick(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              toast.secondaryAction!.onClick();
+            }}
           >
             {toast.secondaryAction.label}
           </Button>
@@ -133,28 +164,42 @@ export function useToasts() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const showError = useCallback((message: string, actions?: ToastData["action"] | { primary: ToastData["action"]; secondary: ToastData["action"] }) => {
-    const toastData: Omit<ToastData, "id"> = {
-      type: "error",
-      message,
-      autoDismissMs: 5000,
-    };
-    if (actions && "primary" in actions) {
-      toastData.action = actions.primary;
-      toastData.secondaryAction = actions.secondary;
-    } else if (actions) {
-      toastData.action = actions;
-    }
-    addToast(toastData);
-  }, [addToast]);
+  const showError = useCallback(
+    (
+      message: string,
+      actions?:
+        | ToastData["action"]
+        | { primary: ToastData["action"]; secondary: ToastData["action"] }
+    ) => {
+      const toastData: Omit<ToastData, "id"> = {
+        type: "error",
+        message,
+        autoDismissMs: 5000,
+      };
+      if (actions && "primary" in actions) {
+        toastData.action = actions.primary;
+        toastData.secondaryAction = actions.secondary;
+      } else if (actions) {
+        toastData.action = actions;
+      }
+      addToast(toastData);
+    },
+    [addToast]
+  );
 
-  const showSuccess = useCallback((message: string) => {
-    addToast({ type: "success", message, autoDismissMs: 3000 });
-  }, [addToast]);
+  const showSuccess = useCallback(
+    (message: string) => {
+      addToast({ type: "success", message, autoDismissMs: 3000 });
+    },
+    [addToast]
+  );
 
-  const showInfo = useCallback((message: string) => {
-    addToast({ type: "info", message, autoDismissMs: 4000 });
-  }, [addToast]);
+  const showInfo = useCallback(
+    (message: string) => {
+      addToast({ type: "info", message, autoDismissMs: 4000 });
+    },
+    [addToast]
+  );
 
   return { toasts, dismissToast, addToast, showError, showSuccess, showInfo };
 }

@@ -16,12 +16,7 @@ export type SignalTier = "tier_1" | "tier_2" | "noise" | "unclassified";
 
 export type ReviewOutcome = "accepted" | "rejected";
 
-export type ReviewFocus =
-  | "Security"
-  | "BugHunt"
-  | "Architecture"
-  | "Performance"
-  | "Style";
+export type ReviewFocus = "Security" | "BugHunt" | "Architecture" | "Performance" | "Style";
 
 export type ReviewMode =
   | { type: "local" }
@@ -118,11 +113,7 @@ export interface PhaseFailure {
   detail: string;
 }
 
-export type ChunkStatus =
-  | "starting"
-  | "running"
-  | "done"
-  | { failed: ChunkFailure };
+export type ChunkStatus = "starting" | "running" | "done" | { failed: ChunkFailure };
 
 export type PhaseStatus = "running" | "done" | { failed: PhaseFailure };
 
@@ -146,9 +137,7 @@ export type ReviewPhase =
       type: "detectorTool";
       chunk: number;
       toolName: string;
-      event:
-        | { call: { arguments: unknown } }
-        | { result: { summary: string } };
+      event: { call: { arguments: unknown } } | { result: { summary: string } };
     }
   | { type: "finalize"; status: PhaseStatus }
   | { type: "done"; findings: number; suppressed: number }
@@ -170,6 +159,7 @@ export type ReviewPhase =
 
 export interface ReviewProgressEvent {
   run_id: string;
+  focus?: ReviewFocus;
   phase: ReviewPhase;
   timestamp: number;
 }
@@ -199,6 +189,7 @@ export interface ReviewPipelineState {
 export interface ReviewActivityEntry {
   timestamp: number;
   phase: ReviewPhase["type"];
+  focus?: ReviewFocus;
   text: string;
 }
 

@@ -45,9 +45,7 @@ interface BackendArchivedSessionRecord extends BackendSessionRecord {
 }
 
 function sortSessionsByTimestamp(items: Session[]): Session[] {
-  return [...items].sort(
-    (left, right) => right.timestamp.getTime() - left.timestamp.getTime(),
-  );
+  return [...items].sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime());
 }
 
 function mergeLoadedSessions(loadedSessions: Session[], existingSessions: Session[]): Session[] {
@@ -90,7 +88,7 @@ type ModelSelectionSnapshot = {
 
 function sameModelSelection(
   current: ModelSelectionSnapshot | null | undefined,
-  expected: ModelSelectionSnapshot,
+  expected: ModelSelectionSnapshot
 ): boolean {
   if (!current) return false;
   return (
@@ -113,16 +111,21 @@ export function AppShell() {
   const chatColumnRef = useRef<HTMLDivElement>(null);
   const { themePreference, resolvedTheme, setThemePreference } = useThemePreference();
 
-  const trappedSurface: TrappedSurface = sessionDrawerOpen
-    ? "sessions"
-    : null;
+  const trappedSurface: TrappedSurface = sessionDrawerOpen ? "sessions" : null;
 
   const openSettings = useCallback((tab: SettingsTab = "models") => {
     setSettingsInitialTab(tab);
     setSettingsOpen(true);
   }, []);
 
-  const { workspaces, activeWorkspace, addWorkspace, removeWorkspace, switchWorkspace, loading: workspacesLoading } = useWorkspaces();
+  const {
+    workspaces,
+    activeWorkspace,
+    addWorkspace,
+    removeWorkspace,
+    switchWorkspace,
+    loading: workspacesLoading,
+  } = useWorkspaces();
   const { toasts, dismissToast, showError, showSuccess } = useToasts();
   const {
     models,
@@ -145,19 +148,25 @@ export function AppShell() {
   const [workspaceArchivePolicy, setWorkspaceArchivePolicy] = useState<ArchivePolicy | null>(null);
   const [archiveStats, setArchiveStats] = useState<ArchiveStats | null>(null);
   const [archivePolicySaving, setArchivePolicySaving] = useState(false);
-  const handleModelVariantFallback = useCallback((warning: ModelVariantWarningPayload) => {
-    if (warning.kind !== "missing") return;
-    setSelectedModel((current) => {
-      if (!current || !sameModelSelection(current, {
-        provider: warning.provider,
-        model: warning.model,
-        variant: warning.variant,
-      })) {
-        return current;
-      }
-      return { provider: current.provider, model: current.model, variant: null };
-    });
-  }, [setSelectedModel]);
+  const handleModelVariantFallback = useCallback(
+    (warning: ModelVariantWarningPayload) => {
+      if (warning.kind !== "missing") return;
+      setSelectedModel((current) => {
+        if (
+          !current ||
+          !sameModelSelection(current, {
+            provider: warning.provider,
+            model: warning.model,
+            variant: warning.variant,
+          })
+        ) {
+          return current;
+        }
+        return { provider: current.provider, model: current.model, variant: null };
+      });
+    },
+    [setSelectedModel]
+  );
 
   const session = useSessionManager({
     models,
@@ -196,22 +205,25 @@ export function AppShell() {
     }));
   }, []);
 
-  const mapBackendArchivedSessions = useCallback((backendSessions: BackendArchivedSessionRecord[]): Session[] => {
-    return backendSessions.map((session) => ({
-      id: session.id,
-      title: session.title,
-      provider: session.provider,
-      model: session.model,
-      variant: session.variant ?? null,
-      mode: normalizeSessionMode(session.mode),
-      timestamp: new Date(session.archived_at),
-      messages: [],
-      status: "archived" as const,
-      backendCreated: true,
-      workspaceId: session.workspace_id ?? undefined,
-      archivedAt: new Date(session.archived_at),
-    }));
-  }, []);
+  const mapBackendArchivedSessions = useCallback(
+    (backendSessions: BackendArchivedSessionRecord[]): Session[] => {
+      return backendSessions.map((session) => ({
+        id: session.id,
+        title: session.title,
+        provider: session.provider,
+        model: session.model,
+        variant: session.variant ?? null,
+        mode: normalizeSessionMode(session.mode),
+        timestamp: new Date(session.archived_at),
+        messages: [],
+        status: "archived" as const,
+        backendCreated: true,
+        workspaceId: session.workspace_id ?? undefined,
+        archivedAt: new Date(session.archived_at),
+      }));
+    },
+    []
+  );
 
   const loadArchiveMeta = useCallback(async (workspaceId?: string) => {
     const [globalPolicy, scopedPolicy, stats] = await Promise.all([
@@ -242,20 +254,22 @@ export function AppShell() {
 
       const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
         Promise.all(
-          ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id })),
+          ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id }))
         ),
         Promise.all(
           ids.map((id) =>
-            invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id }),
-          ),
+            invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id })
+          )
         ),
       ]);
 
       if (cancelled) return;
 
-      const flattened = workspaceSessions.flatMap((backendSessions) => mapBackendSessions(backendSessions));
+      const flattened = workspaceSessions.flatMap((backendSessions) =>
+        mapBackendSessions(backendSessions)
+      );
       const flattenedArchived = workspaceArchivedSessions.flatMap((backendSessions) =>
-        mapBackendArchivedSessions(backendSessions),
+        mapBackendArchivedSessions(backendSessions)
       );
       setSessions((prev) => {
         return mergeLoadedSessions(flattened, prev);
@@ -273,7 +287,13 @@ export function AppShell() {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkspace?.id, loadArchiveMeta, mapBackendArchivedSessions, mapBackendSessions, workspaces]);
+  }, [
+    activeWorkspace?.id,
+    loadArchiveMeta,
+    mapBackendArchivedSessions,
+    mapBackendSessions,
+    workspaces,
+  ]);
 
   const reloadArchiveData = useCallback(async () => {
     const ids = workspaces.map((item) => item.id);
@@ -285,20 +305,18 @@ export function AppShell() {
 
     const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
       Promise.all(
-        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id })),
+        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id }))
       ),
       Promise.all(
         ids.map((id) =>
-          invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id }),
-        ),
+          invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id })
+        )
       ),
     ]);
-    setSessions((prev) =>
-      mergeLoadedSessions(workspaceSessions.flatMap(mapBackendSessions), prev),
+    setSessions((prev) => mergeLoadedSessions(workspaceSessions.flatMap(mapBackendSessions), prev));
+    setArchivedSessions(
+      sortSessionsByTimestamp(workspaceArchivedSessions.flatMap(mapBackendArchivedSessions))
     );
-    setArchivedSessions(sortSessionsByTimestamp(
-      workspaceArchivedSessions.flatMap(mapBackendArchivedSessions),
-    ));
     await loadArchiveMeta(activeWorkspace?.id);
   }, [
     activeWorkspace?.id,
@@ -321,7 +339,7 @@ export function AppShell() {
       }
       return switched;
     },
-    [activeWorkspace?.id, showError, switchWorkspace],
+    [activeWorkspace?.id, showError, switchWorkspace]
   );
 
   const handleArchiveSessions = useCallback(
@@ -340,18 +358,14 @@ export function AppShell() {
           session.handleNewSession();
         }
         await reloadArchiveData();
-        showSuccess(targets.length === 1 ? "Session archived." : `${targets.length} sessions archived.`);
+        showSuccess(
+          targets.length === 1 ? "Session archived." : `${targets.length} sessions archived.`
+        );
       } catch (e) {
         showError(`Failed to archive session: ${e}`);
       }
     },
-    [
-      ensureSessionWorkspaceActive,
-      reloadArchiveData,
-      session,
-      showError,
-      showSuccess,
-    ],
+    [ensureSessionWorkspaceActive, reloadArchiveData, session, showError, showSuccess]
   );
 
   const handleRestoreArchivedSessions = useCallback(
@@ -367,18 +381,23 @@ export function AppShell() {
           });
         }
         await reloadArchiveData();
-        showSuccess(targets.length === 1 ? "Session restored." : `${targets.length} sessions restored.`);
+        showSuccess(
+          targets.length === 1 ? "Session restored." : `${targets.length} sessions restored.`
+        );
       } catch (e) {
         showError(`Failed to restore session: ${e}`);
       }
     },
-    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess],
+    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess]
   );
 
   const handleDeleteArchivedSessions = useCallback(
     async (targets: Session[]) => {
       if (session.isStreaming || targets.length === 0) return;
-      const label = targets.length === 1 ? `"${targets[0]?.title || "Untitled"}"` : `${targets.length} sessions`;
+      const label =
+        targets.length === 1
+          ? `"${targets[0]?.title || "Untitled"}"`
+          : `${targets.length} sessions`;
       if (!window.confirm(`Delete archived ${label} permanently?`)) return;
 
       try {
@@ -390,12 +409,16 @@ export function AppShell() {
           });
         }
         await reloadArchiveData();
-        showSuccess(targets.length === 1 ? "Archived session deleted." : `${targets.length} archived sessions deleted.`);
+        showSuccess(
+          targets.length === 1
+            ? "Archived session deleted."
+            : `${targets.length} archived sessions deleted.`
+        );
       } catch (e) {
         showError(`Failed to delete archived session: ${e}`);
       }
     },
-    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess],
+    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess]
   );
 
   const handleExportArchivedSessions = useCallback(
@@ -410,7 +433,7 @@ export function AppShell() {
           exportedPayloads.push(
             await invoke<string>("export_archived_sessions", {
               sessionIds: group.map((item) => item.id),
-            }),
+            })
           );
         }
         const clipboardPayload =
@@ -420,18 +443,24 @@ export function AppShell() {
                 {
                   version: 1,
                   exported_at: new Date().toISOString(),
-                  sessions: exportedPayloads.flatMap((payload) => JSON.parse(payload).sessions ?? []),
+                  sessions: exportedPayloads.flatMap(
+                    (payload) => JSON.parse(payload).sessions ?? []
+                  ),
                 },
                 null,
-                2,
+                2
               );
         await navigator.clipboard.writeText(clipboardPayload);
-        showSuccess(targets.length === 1 ? "Archive export copied." : `${targets.length} archive exports copied.`);
+        showSuccess(
+          targets.length === 1
+            ? "Archive export copied."
+            : `${targets.length} archive exports copied.`
+        );
       } catch (e) {
         showError(`Failed to export archive: ${e}`);
       }
     },
-    [ensureSessionWorkspaceActive, showError, showSuccess],
+    [ensureSessionWorkspaceActive, showError, showSuccess]
   );
 
   const handleImportArchivedSessions = useCallback(
@@ -449,12 +478,15 @@ export function AppShell() {
         showError(`Failed to import archive: ${e}`);
       }
     },
-    [activeWorkspace?.id, reloadArchiveData, showError, showSuccess],
+    [activeWorkspace?.id, reloadArchiveData, showError, showSuccess]
   );
 
   const handleDeleteExpiredArchivedSessions = useCallback(async () => {
     if (!archiveStats || archiveStats.expired_count === 0) return;
-    if (!window.confirm(`Delete ${archiveStats.expired_count} expired archived sessions permanently?`)) return;
+    if (
+      !window.confirm(`Delete ${archiveStats.expired_count} expired archived sessions permanently?`)
+    )
+      return;
 
     try {
       await invoke<number>("delete_expired_archived_sessions", {
@@ -484,7 +516,7 @@ export function AppShell() {
         setArchivePolicySaving(false);
       }
     },
-    [reloadArchiveData, showError, showSuccess],
+    [reloadArchiveData, showError, showSuccess]
   );
 
   const handleClearWorkspaceArchivePolicy = useCallback(async () => {
@@ -528,13 +560,18 @@ export function AppShell() {
   activeSessionRef.current = activeSession;
   selectedModelRef.current = selectedModel;
   const sessionTitle = activeSession?.title || "New session";
-  const selectedModelId = selectedModel ? modelOptionId(selectedModel.provider, selectedModel.model) : "";
-  const currentModelName = models.find(
-    (model) =>
-      selectedModel &&
-      model.model === selectedModel.model &&
-      model.provider.toLowerCase() === selectedModel.provider.toLowerCase(),
-  )?.name || selectedModel?.model || "No model";
+  const selectedModelId = selectedModel
+    ? modelOptionId(selectedModel.provider, selectedModel.model)
+    : "";
+  const currentModelName =
+    models.find(
+      (model) =>
+        selectedModel &&
+        model.model === selectedModel.model &&
+        model.provider.toLowerCase() === selectedModel.provider.toLowerCase()
+    )?.name ||
+    selectedModel?.model ||
+    "No model";
   const noModels = noModelCopy(availabilitySnapshot);
   const surfaceTrapOpen = trappedSurface !== null;
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
@@ -546,116 +583,153 @@ export function AppShell() {
       model: activeSessionModel,
       variant: activeSessionVariant,
     });
-  }, [activeSessionId, activeSessionProvider, activeSessionModel, activeSessionVariant, setSelectedModel]);
+  }, [
+    activeSessionId,
+    activeSessionProvider,
+    activeSessionModel,
+    activeSessionVariant,
+    setSelectedModel,
+  ]);
 
-  const rollbackOptimisticModelSelection = useCallback((
-    sessionId: string,
-    optimistic: ModelSelectionSnapshot,
-    previous: ModelSelectionSnapshot,
-    previousSelection: ModelSelectionSnapshot,
-  ) => {
-    const latestActiveSession = activeSessionRef.current;
-    if (
-      latestActiveSession?.id !== sessionId ||
-      !sameModelSelection(latestActiveSession, optimistic) ||
-      !sameModelSelection(selectedModelRef.current, optimistic)
-    ) {
-      return;
-    }
+  const rollbackOptimisticModelSelection = useCallback(
+    (
+      sessionId: string,
+      optimistic: ModelSelectionSnapshot,
+      previous: ModelSelectionSnapshot,
+      previousSelection: ModelSelectionSnapshot
+    ) => {
+      const latestActiveSession = activeSessionRef.current;
+      if (
+        latestActiveSession?.id !== sessionId ||
+        !sameModelSelection(latestActiveSession, optimistic) ||
+        !sameModelSelection(selectedModelRef.current, optimistic)
+      ) {
+        return;
+      }
 
-    setSessions((prev) =>
-      prev.map((item) =>
-        item.id === sessionId && sameModelSelection(item, optimistic)
-          ? { ...item, provider: previous.provider, model: previous.model, variant: previous.variant ?? null }
-          : item,
-      ),
-    );
-    setSelectedModel((current) =>
-      sameModelSelection(current, optimistic)
-        ? {
-            provider: previousSelection.provider,
-            model: previousSelection.model,
-            variant: previousSelection.variant ?? null,
-          }
-        : current,
-    );
-  }, [setSelectedModel, setSessions]);
+      setSessions((prev) =>
+        prev.map((item) =>
+          item.id === sessionId && sameModelSelection(item, optimistic)
+            ? {
+                ...item,
+                provider: previous.provider,
+                model: previous.model,
+                variant: previous.variant ?? null,
+              }
+            : item
+        )
+      );
+      setSelectedModel((current) =>
+        sameModelSelection(current, optimistic)
+          ? {
+              provider: previousSelection.provider,
+              model: previousSelection.model,
+              variant: previousSelection.variant ?? null,
+            }
+          : current
+      );
+    },
+    [setSelectedModel, setSessions]
+  );
 
-  const applyModelSelection = useCallback((modelId: string) => {
-    const match = models.find((m) => m.id === modelId);
-    if (!match) return;
-    const next = {
-      provider: match.provider,
-      model: match.model,
-      variant: null,
-    };
-    setSelectedModel(next);
-    selectedModelRef.current = next;
+  const applyModelSelection = useCallback(
+    (modelId: string) => {
+      const match = models.find((m) => m.id === modelId);
+      if (!match) return;
+      const next = {
+        provider: match.provider,
+        model: match.model,
+        variant: null,
+      };
+      const previousSelection = selectedModel ?? next;
+      setSelectedModel(next);
+      selectedModelRef.current = next;
 
-    if (!activeSession || session.isStreaming) return;
+      if (!activeSession || session.isStreaming) return;
 
-    const previous = {
-      provider: activeSession.provider,
-      model: activeSession.model,
-      variant: activeSession.variant ?? null,
-    };
-    setSessions((prev) =>
-      prev.map((item) =>
-        item.id === activeSession.id
-          ? { ...item, provider: next.provider, model: next.model, variant: next.variant }
-          : item,
-      ),
-    );
-    activeSessionRef.current = { ...activeSession, provider: next.provider, model: next.model, variant: next.variant };
+      const previous = {
+        provider: activeSession.provider,
+        model: activeSession.model,
+        variant: activeSession.variant ?? null,
+      };
+      setSessions((prev) =>
+        prev.map((item) =>
+          item.id === activeSession.id
+            ? { ...item, provider: next.provider, model: next.model, variant: next.variant }
+            : item
+        )
+      );
+      activeSessionRef.current = {
+        ...activeSession,
+        provider: next.provider,
+        model: next.model,
+        variant: next.variant,
+      };
 
-    if (!activeSession.backendCreated) return;
+      if (!activeSession.backendCreated) return;
 
-    void invoke("update_session_model_selection", {
-      sessionId: activeSession.id,
-      provider: next.provider,
-      model: next.model,
-      variant: next.variant,
-    }).catch((error) => {
-      rollbackOptimisticModelSelection(activeSession.id, next, previous, previous);
-      showError(`Failed to update session model: ${error}`);
-    });
-  }, [activeSession, models, rollbackOptimisticModelSelection, session.isStreaming, setSelectedModel, showError]);
+      void invoke("update_session_model_selection", {
+        sessionId: activeSession.id,
+        provider: next.provider,
+        model: next.model,
+        variant: next.variant,
+      }).catch((error) => {
+        rollbackOptimisticModelSelection(activeSession.id, next, previous, previousSelection);
+        showError(`Failed to update session model: ${error}`);
+      });
+    },
+    [
+      activeSession,
+      models,
+      rollbackOptimisticModelSelection,
+      selectedModel,
+      session.isStreaming,
+      setSelectedModel,
+      showError,
+    ]
+  );
 
-  const applyVariantSelection = useCallback((variant: string | null) => {
-    if (!selectedModel) return;
-    const next = { ...selectedModel, variant };
-    const previousSelection = selectedModel;
-    setSelectedModel(next);
-    selectedModelRef.current = next;
+  const applyVariantSelection = useCallback(
+    (variant: string | null) => {
+      if (!selectedModel) return;
+      const next = { ...selectedModel, variant };
+      const previousSelection = selectedModel;
+      setSelectedModel(next);
+      selectedModelRef.current = next;
 
-    if (!activeSession || session.isStreaming) return;
+      if (!activeSession || session.isStreaming) return;
 
-    const previous = {
-      provider: activeSession.provider,
-      model: activeSession.model,
-      variant: activeSession.variant ?? null,
-    };
-    setSessions((prev) =>
-      prev.map((item) =>
-        item.id === activeSession.id
-          ? { ...item, variant }
-          : item,
-      ),
-    );
-    activeSessionRef.current = { ...activeSession, variant };
+      const previous = {
+        provider: activeSession.provider,
+        model: activeSession.model,
+        variant: activeSession.variant ?? null,
+      };
+      setSessions((prev) =>
+        prev.map((item) => (item.id === activeSession.id ? { ...item, variant } : item))
+      );
+      activeSessionRef.current = { ...activeSession, variant };
 
-    if (!activeSession.backendCreated) return;
+      if (!activeSession.backendCreated) return;
 
-    void invoke("update_session_model_selection", {
-      sessionId: activeSession.id,
-      provider: selectedModel.provider,
-      model: selectedModel.model,
-      variant,
-    }).catch((error) => {
-      rollbackOptimisticModelSelection(activeSession.id, next, previous, previousSelection);
-      showError(`Failed to update session model: ${error}`);
-    });
-  }, [activeSession, rollbackOptimisticModelSelection, selectedModel, session.isStreaming, setSelectedModel, showError]);
+      void invoke("update_session_model_selection", {
+        sessionId: activeSession.id,
+        provider: selectedModel.provider,
+        model: selectedModel.model,
+        variant,
+      }).catch((error) => {
+        rollbackOptimisticModelSelection(activeSession.id, next, previous, previousSelection);
+        showError(`Failed to update session model: ${error}`);
+      });
+    },
+    [
+      activeSession,
+      rollbackOptimisticModelSelection,
+      selectedModel,
+      session.isStreaming,
+      setSelectedModel,
+      showError,
+    ]
+  );
 
   const closeSessionDrawer = useCallback(() => {
     setSessionDrawerOpen(false);
@@ -725,9 +799,7 @@ export function AppShell() {
         sessionToggleRef={sessionToggleRef}
       />
       <div className="app-layout" data-session-drawer-open={sessionDrawerOpen ? "true" : "false"}>
-        <div
-          className="app-workspace"
-        >
+        <div className="app-workspace">
           <div
             className="chat-column"
             ref={chatColumnRef}
@@ -778,54 +850,56 @@ export function AppShell() {
           />
         </div>
       </div>
-        <SessionDrawer
-          sessions={allSessions}
-          archivedSessions={archivedSessions}
-          activeSessionId={session.activeSessionId ?? undefined}
-          workspaceNames={workspaceNames}
-          activeWorkspaceId={activeWorkspace?.id}
-          showArchived={showArchivedSessions}
-          onShowArchivedChange={setShowArchivedSessions}
-          archiveStats={archiveStats}
-          onSelect={(s) => {
-            if (session.isStreaming) return;
-            void session.handleSessionSelect(s);
-            closeSessionDrawer();
-          }}
-          onArchiveSessions={(items) => {
-            void handleArchiveSessions(items);
-          }}
-          onRestoreArchivedSessions={(items) => {
-            void handleRestoreArchivedSessions(items);
-          }}
-          onDeleteArchivedSessions={(items) => {
-            void handleDeleteArchivedSessions(items);
-          }}
-          onExportArchivedSessions={(items) => {
-            void handleExportArchivedSessions(items);
-          }}
-          onImportArchivedSessions={(payload) => {
-            void handleImportArchivedSessions(payload);
-          }}
-          onDeleteExpiredArchivedSessions={() => {
-            void handleDeleteExpiredArchivedSessions();
-          }}
-          archiveActionsDisabled={session.isStreaming}
-          onNewSession={() => {
-            if (session.isStreaming) return;
-            session.handleNewSession();
-            closeSessionDrawer();
-          }}
-          onClose={closeSessionDrawer}
-          open={sessionDrawerOpen}
-          triggerRef={sessionToggleRef}
-          trapPaused={modalSurfaceOpen || trappedSurface !== "sessions"}
-        />
+      <SessionDrawer
+        sessions={allSessions}
+        archivedSessions={archivedSessions}
+        activeSessionId={session.activeSessionId ?? undefined}
+        workspaceNames={workspaceNames}
+        activeWorkspaceId={activeWorkspace?.id}
+        showArchived={showArchivedSessions}
+        onShowArchivedChange={setShowArchivedSessions}
+        archiveStats={archiveStats}
+        onSelect={(s) => {
+          if (session.isStreaming) return;
+          void session.handleSessionSelect(s);
+          closeSessionDrawer();
+        }}
+        onArchiveSessions={(items) => {
+          void handleArchiveSessions(items);
+        }}
+        onRestoreArchivedSessions={(items) => {
+          void handleRestoreArchivedSessions(items);
+        }}
+        onDeleteArchivedSessions={(items) => {
+          void handleDeleteArchivedSessions(items);
+        }}
+        onExportArchivedSessions={(items) => {
+          void handleExportArchivedSessions(items);
+        }}
+        onImportArchivedSessions={(payload) => {
+          void handleImportArchivedSessions(payload);
+        }}
+        onDeleteExpiredArchivedSessions={() => {
+          void handleDeleteExpiredArchivedSessions();
+        }}
+        archiveActionsDisabled={session.isStreaming}
+        onNewSession={() => {
+          if (session.isStreaming) return;
+          session.handleNewSession();
+          closeSessionDrawer();
+        }}
+        onClose={closeSessionDrawer}
+        open={sessionDrawerOpen}
+        triggerRef={sessionToggleRef}
+        trapPaused={modalSurfaceOpen || trappedSurface !== "sessions"}
+      />
       {workspaceSwitcherOpen && (
         <WorkspaceSwitcher
           workspaces={workspaces}
           activeWorkspaceId={activeWorkspace?.id ?? ""}
-          onSelect={(ws) => { void switchWorkspace(ws.id); }}
+          onSelect={(ws) => {
+            void switchWorkspace(ws.id);
+          }}
           onAdd={() => {
             void (async () => {
               try {
@@ -833,7 +907,9 @@ export function AppShell() {
                 if (path) {
                   const result = await addWorkspace(path);
                   if (!result) {
-                    showError("Failed to add workspace. It may already exist or the path is invalid.");
+                    showError(
+                      "Failed to add workspace. It may already exist or the path is invalid."
+                    );
                   }
                 }
               } catch (e) {
@@ -841,7 +917,9 @@ export function AppShell() {
               }
             })();
           }}
-          onRemove={(id) => { void removeWorkspace(id); }}
+          onRemove={(id) => {
+            void removeWorkspace(id);
+          }}
           onClose={() => setWorkspaceSwitcherOpen(false)}
           loading={workspacesLoading}
           trapPaused={commandPaletteOpen || settingsOpen}

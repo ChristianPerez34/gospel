@@ -1,6 +1,6 @@
 use super::{
-    run_review, MultiFocusStatus, NoopReviewProgressEmitter, ReviewConfig, ReviewFocus,
-    ReviewPhase, ReviewProgressEmitter, ReviewProgressEvent, ReviewResult,
+    run_review, MultiFocusStatus, ReviewConfig, ReviewFocus, ReviewPhase, ReviewProgressEmitter,
+    ReviewProgressEvent, ReviewResult,
 };
 use futures::FutureExt;
 use serde::Serialize;
@@ -23,6 +23,29 @@ pub const ALL_FOCUSES: &[ReviewFocus] = &[
 
 const MULTI_REVIEW_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Wraps a child `run_review` emitter and forwards its non-terminal progress
+/// events to the parent multi-focus emitter. The aggregate `run_id` and the
+/// focus are stamped on every event so the frontend can key them to the right
+/// per-focus pipeline. Child `Done`/`Failed` events are suppressed because
+/// `run_multi_focus_review` emits the terminal `MultiFocus` phases.
+struct FocusEmitter {
+    parent: Arc<dyn ReviewProgressEmitter>,
+    run_id: String,
+    focus: ReviewFocus,
+}
+
+impl ReviewProgressEmitter for FocusEmitter {
+    fn emit_progress(&self, event: ReviewProgressEvent) {
+        if matches!(event.phase, ReviewPhase::Done { .. } | ReviewPhase::Failed { .. }) {
+            return;
+        }
+        let mut event = event;
+        event.run_id = self.run_id.clone();
+        event.focus = Some(self.focus);
+        self.parent.emit_progress(event);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MultiReviewResult {
     pub results: Vec<ReviewResult>,
@@ -44,6 +67,7 @@ type ChildReviewFn = Arc<
             ReviewConfig,
             PathBuf,
             String,
+            Arc<dyn ReviewProgressEmitter>,
         ) -> Pin<Box<dyn Future<Output = Result<ReviewResult, String>> + Send>>
         + Send
         + Sync,
@@ -57,10 +81,10 @@ pub async fn run_multi_focus_review(
     focuses: &[ReviewFocus],
     workspace_path: PathBuf,
     api_key: String,
-    emitter: &dyn ReviewProgressEmitter,
+    emitter: Arc<dyn ReviewProgressEmitter>,
 ) -> Result<MultiReviewResult, String> {
-    let child: ChildReviewFn = Arc::new(|config, path, key| {
-        Box::pin(run_review(config, path, key, &NoopReviewProgressEmitter))
+    let child: ChildReviewFn = Arc::new(|config, path, key, emitter| {
+        Box::pin(run_review(config, path, key, emitter))
     });
     run_multi_focus_review_with_child(
         provider,
@@ -85,7 +109,7 @@ pub(crate) async fn run_multi_focus_review_with_child(
     focuses: &[ReviewFocus],
     workspace_path: PathBuf,
     api_key: String,
-    emitter: &dyn ReviewProgressEmitter,
+    emitter: Arc<dyn ReviewProgressEmitter>,
     timeout_duration: Duration,
     child: ChildReviewFn,
 ) -> Result<MultiReviewResult, String> {
@@ -97,8 +121,9 @@ pub(crate) async fn run_multi_focus_review_with_child(
     let unique_focuses: BTreeSet<ReviewFocus> = focuses.iter().copied().collect();
     let total = unique_focuses.len();
     let mut pending: BTreeSet<ReviewFocus> = unique_focuses.clone();
+    let emitter_ref: &dyn ReviewProgressEmitter = &*emitter;
 
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter_ref.emit_progress(ReviewProgressEvent::new(
         &run_id,
         ReviewPhase::MultiFocusStart { total },
     ));
@@ -116,8 +141,14 @@ pub(crate) async fn run_multi_focus_review_with_child(
         let workspace_path = workspace_path.clone();
         let api_key = api_key.clone();
         let child = Arc::clone(&child);
-        emitter.emit_progress(ReviewProgressEvent::new(
+        let focus_emitter: Arc<dyn ReviewProgressEmitter> = Arc::new(FocusEmitter {
+            parent: Arc::clone(&emitter),
+            run_id: run_id.clone(),
+            focus,
+        });
+        emitter_ref.emit_progress(ReviewProgressEvent::new_with_focus(
             &run_id,
+            focus,
             ReviewPhase::MultiFocus {
                 focus,
                 completed: 0,
@@ -131,9 +162,14 @@ pub(crate) async fn run_multi_focus_review_with_child(
             // Catch panics so the focus identity survives a child crash. Without
             // this, a panicking child surfaces as a join error with no focus
             // and the real focus is left showing as "running" forever.
-            let outcome = std::panic::AssertUnwindSafe(child(config, workspace_path, api_key))
-                .catch_unwind()
-                .await;
+            let outcome = std::panic::AssertUnwindSafe(child(
+                config,
+                workspace_path,
+                api_key,
+                Arc::clone(&focus_emitter),
+            ))
+            .catch_unwind()
+            .await;
             let result = match outcome {
                 Ok(Ok(review)) => Ok(review),
                 Ok(Err(error)) => Err(error),
@@ -157,8 +193,9 @@ pub(crate) async fn run_multi_focus_review_with_child(
                 completed += 1;
                 total_findings += result.comments.len();
                 total_suppressed += result.suppressed_count;
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter_ref.emit_progress(ReviewProgressEvent::new_with_focus(
                     &run_id,
+                    focus,
                     ReviewPhase::MultiFocus {
                         focus,
                         completed,
@@ -174,8 +211,9 @@ pub(crate) async fn run_multi_focus_review_with_child(
                 pending.remove(&focus);
                 completed += 1;
                 errors.insert(focus.to_string(), error.clone());
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter_ref.emit_progress(ReviewProgressEvent::new_with_focus(
                     &run_id,
+                    focus,
                     ReviewPhase::MultiFocus {
                         focus,
                         completed,
@@ -213,8 +251,9 @@ pub(crate) async fn run_multi_focus_review_with_child(
         for focus in still_pending {
             let detail = "Multi-focus review timed out.".to_string();
             errors.insert(focus.to_string(), detail.clone());
-            emitter.emit_progress(ReviewProgressEvent::new(
+            emitter_ref.emit_progress(ReviewProgressEvent::new_with_focus(
                 &run_id,
+                focus,
                 ReviewPhase::MultiFocus {
                     focus,
                     completed,
@@ -237,7 +276,7 @@ pub(crate) async fn run_multi_focus_review_with_child(
 
     if results.is_empty() {
         let detail = format_all_failed(&errors);
-        emitter.emit_progress(ReviewProgressEvent::new(
+        emitter_ref.emit_progress(ReviewProgressEvent::new(
             &run_id,
             ReviewPhase::Failed {
                 detail: detail.clone(),
@@ -253,7 +292,7 @@ pub(crate) async fn run_multi_focus_review_with_child(
         .unwrap_or(0);
     let summary = build_multi_summary(&results, &errors);
 
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter_ref.emit_progress(ReviewProgressEvent::new(
         &run_id,
         ReviewPhase::Done {
             findings: total_findings,
@@ -324,7 +363,8 @@ fn format_all_failed(errors: &BTreeMap<String, String>) -> String {
 mod tests {
     use super::*;
     use crate::review::{
-        MultiFocusStatus, ReviewMode, ReviewPhase, ReviewProgressEvent, Severity, SignalTier,
+        MultiFocusStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewMode, ReviewPhase,
+        ReviewProgressEvent, Severity, SignalTier,
     };
 
     fn result(focus: ReviewFocus, comments: usize, suppressed_count: usize) -> ReviewResult {
@@ -373,7 +413,7 @@ mod tests {
     }
 
     fn make_stub(plan: BTreeMap<ReviewFocus, StubAction>) -> ChildReviewFn {
-        Arc::new(move |config, _path, _key| {
+        Arc::new(move |config, _path, _key, _emitter| {
             let focus = config.focus;
             let action = plan
                 .get(&focus)
@@ -394,10 +434,11 @@ mod tests {
     }
 
     /// Capturing emitter that records every event in order so tests can assert
-    /// the real emission sequence without touching Tauri.
+    /// the real emission sequence without touching Tauri. The `events` buffer is
+    /// `Arc` so a concrete and a trait-object handle can share the same buffer.
     #[derive(Default)]
     struct CapturingEmitter {
-        events: std::sync::Mutex<Vec<ReviewProgressEvent>>,
+        events: Arc<std::sync::Mutex<Vec<ReviewProgressEvent>>>,
     }
 
     impl ReviewProgressEmitter for CapturingEmitter {
@@ -424,6 +465,15 @@ mod tests {
                 .map(|event| event.run_id.clone())
                 .collect()
         }
+    }
+
+    fn capturing_emitter_pair() -> (Arc<CapturingEmitter>, Arc<dyn ReviewProgressEmitter>) {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let concrete = Arc::new(CapturingEmitter {
+            events: Arc::clone(&events),
+        });
+        let dynamic: Arc<dyn ReviewProgressEmitter> = Arc::new(CapturingEmitter { events });
+        (concrete, dynamic)
     }
 
     #[test]
@@ -700,7 +750,7 @@ mod tests {
                 StubAction::Ok(result(ReviewFocus::BugHunt, 1, 1)),
             ),
         ]);
-        let emitter = CapturingEmitter::default();
+        let (emitter, emitter_dyn) = capturing_emitter_pair();
 
         let outcome = run_multi_focus_review_with_child(
             "openai".to_string(),
@@ -710,7 +760,7 @@ mod tests {
             &focuses_vec(&[ReviewFocus::Security, ReviewFocus::BugHunt]),
             PathBuf::from("/tmp"),
             "key".to_string(),
-            &emitter,
+            emitter_dyn,
             Duration::from_secs(5),
             make_stub(plan),
         )
@@ -750,7 +800,7 @@ mod tests {
                 StubAction::Err("provider key missing".to_string()),
             ),
         ]);
-        let emitter = CapturingEmitter::default();
+        let (emitter, emitter_dyn) = capturing_emitter_pair();
 
         let outcome = run_multi_focus_review_with_child(
             "openai".to_string(),
@@ -760,7 +810,7 @@ mod tests {
             &focuses_vec(&[ReviewFocus::Security, ReviewFocus::Performance]),
             PathBuf::from("/tmp"),
             "key".to_string(),
-            &emitter,
+            emitter_dyn,
             Duration::from_secs(5),
             make_stub(plan),
         )
@@ -808,7 +858,7 @@ mod tests {
                 StubAction::Sleep(Duration::from_millis(500)),
             ),
         ]);
-        let emitter = CapturingEmitter::default();
+        let (emitter, emitter_dyn) = capturing_emitter_pair();
 
         let outcome = run_multi_focus_review_with_child(
             "openai".to_string(),
@@ -818,7 +868,7 @@ mod tests {
             &focuses_vec(&[ReviewFocus::Security, ReviewFocus::Performance]),
             PathBuf::from("/tmp"),
             "key".to_string(),
-            &emitter,
+            emitter_dyn,
             Duration::from_millis(50),
             make_stub(plan),
         )
@@ -885,7 +935,7 @@ mod tests {
                 StubAction::Sleep(Duration::from_millis(500)),
             ),
         ]);
-        let emitter = CapturingEmitter::default();
+        let (emitter, emitter_dyn) = capturing_emitter_pair();
 
         let error = run_multi_focus_review_with_child(
             "openai".to_string(),
@@ -895,7 +945,7 @@ mod tests {
             &ALL_FOCUSES.to_vec(),
             PathBuf::from("/tmp"),
             "key".to_string(),
-            &emitter,
+            emitter_dyn,
             Duration::from_millis(20),
             make_stub(plan),
         )
@@ -942,7 +992,7 @@ mod tests {
                 StubAction::Ok(result(ReviewFocus::BugHunt, 1, 0)),
             ),
         ]);
-        let emitter = CapturingEmitter::default();
+        let (_emitter, emitter_dyn) = capturing_emitter_pair();
 
         let outcome = run_multi_focus_review_with_child(
             "openai".to_string(),
@@ -952,7 +1002,7 @@ mod tests {
             &focuses_vec(&[ReviewFocus::Security, ReviewFocus::BugHunt]),
             PathBuf::from("/tmp"),
             "key".to_string(),
-            &emitter,
+            emitter_dyn,
             Duration::from_secs(5),
             make_stub(plan),
         )
@@ -982,7 +1032,7 @@ mod tests {
 
     #[tokio::test]
     async fn runner_rejects_empty_focus_list_without_emitting_events() {
-        let emitter = CapturingEmitter::default();
+        let (emitter, emitter_dyn) = capturing_emitter_pair();
         let error = run_multi_focus_review_with_child(
             "openai".to_string(),
             "gpt-test".to_string(),
@@ -991,7 +1041,7 @@ mod tests {
             &[],
             PathBuf::from("/tmp"),
             "key".to_string(),
-            &emitter,
+            emitter_dyn,
             Duration::from_secs(1),
             make_stub(BTreeMap::new()),
         )
@@ -999,5 +1049,50 @@ mod tests {
         .expect_err("empty focus list is rejected");
         assert!(error.contains("At least one review focus"));
         assert!(emitter.phases().is_empty());
+    }
+
+    #[test]
+    fn focus_emitter_suppresses_terminal_events_and_stamps_run_id_and_focus() {
+        let (emitter, emitter_dyn) = capturing_emitter_pair();
+        let focus_emitter = FocusEmitter {
+            parent: emitter_dyn,
+            run_id: "agg-run".to_string(),
+            focus: ReviewFocus::Security,
+        };
+
+        focus_emitter.emit_progress(ReviewProgressEvent::new(
+            "child-run",
+            ReviewPhase::Finalize {
+                status: PhaseStatus::Running,
+            },
+        ));
+        focus_emitter.emit_progress(ReviewProgressEvent::new(
+            "child-run",
+            ReviewPhase::Done {
+                findings: 1,
+                suppressed: 0,
+            },
+        ));
+        focus_emitter.emit_progress(ReviewProgressEvent::new(
+            "child-run",
+            ReviewPhase::Failed {
+                detail: "boom".to_string(),
+            },
+        ));
+
+        let events = emitter.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "Done and Failed must be suppressed");
+        assert_eq!(events[0].run_id, "agg-run", "aggregate run_id is stamped");
+        assert_eq!(
+            events[0].focus,
+            Some(ReviewFocus::Security),
+            "focus is stamped"
+        );
+        assert!(matches!(
+            events[0].phase,
+            ReviewPhase::Finalize {
+                status: PhaseStatus::Running
+            }
+        ));
     }
 }

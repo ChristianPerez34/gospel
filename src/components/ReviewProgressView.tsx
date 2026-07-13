@@ -1,18 +1,17 @@
 import { useEffect, useRef } from "react";
 import type {
   ReviewActivityEntry,
+  ReviewFocus,
   ReviewNodeState,
   ReviewPipelineState,
 } from "../types";
+import { FocusProgress } from "../hooks/useReviewProgress";
+import { FocusBadge } from "./FocusBadge";
+import { focusLabel, FOCUS_ORDER } from "../utils/focus";
 
 interface ReviewProgressViewProps {
-  pipeline: ReviewPipelineState;
+  perFocus: Partial<Record<ReviewFocus, FocusProgress>>;
   log: ReviewActivityEntry[];
-  /**
-   * `active` — full pipeline + chunk bar + live feed (shown while running).
-   * `collapsed` — a native `<details>` activity log shown above the findings
-   *   list after the review completes.
-   */
   variant?: "active" | "collapsed";
 }
 
@@ -34,8 +33,7 @@ function formatClock(timestamp: number): string {
 
 function prefersReducedMotion(): boolean {
   return (
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
   );
 }
 
@@ -58,11 +56,7 @@ function connectorPercent(pipeline: ReviewPipelineState): number {
   return 0;
 }
 
-export function ReviewProgressView({
-  pipeline,
-  log,
-  variant = "active",
-}: ReviewProgressViewProps) {
+export function ReviewProgressView({ perFocus, log, variant = "active" }: ReviewProgressViewProps) {
   const feedRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll the feed to the latest entry. Respect reduced-motion.
@@ -85,6 +79,22 @@ export function ReviewProgressView({
       </details>
     );
   }
+
+  const sortedFocuses = FOCUS_ORDER.filter((focus) => focus in perFocus);
+
+  return (
+    <div className="review-progress grid gap-3" role="status" aria-live="polite">
+      {sortedFocuses.map((focus) => {
+        const progress = perFocus[focus];
+        return progress ? <FocusPipeline key={focus} progress={progress} /> : null;
+      })}
+      <ActivityFeed log={log} feedRef={feedRef} />
+    </div>
+  );
+}
+
+function FocusPipeline({ progress }: { progress: FocusProgress }) {
+  const { pipeline, focus } = progress;
 
   const detector: NodeConfig = {
     label: "Detector",
@@ -115,7 +125,8 @@ export function ReviewProgressView({
   const connectorWidth = connectorPercent(pipeline);
 
   return (
-    <div className="review-progress grid gap-3" role="status" aria-live="polite">
+    <div className="review-progress__focus grid gap-2" data-focus={focus}>
+      <div className="font-mono text-caption text-text-secondary">{focusLabel(focus)}</div>
       <div className="review-progress__pipeline-row">
         <div className="review-progress__connector" aria-hidden="true" />
         <div
@@ -138,13 +149,8 @@ export function ReviewProgressView({
       </div>
 
       <div className="review-progress__bar" aria-hidden="true">
-        <div
-          className="review-progress__bar-fill"
-          style={{ width: `${barWidth}%` }}
-        />
+        <div className="review-progress__bar-fill" style={{ width: `${barWidth}%` }} />
       </div>
-
-      <ActivityFeed log={log} feedRef={feedRef} />
     </div>
   );
 }
@@ -172,6 +178,7 @@ function ActivityFeed({ log, feedRef }: ActivityFeedProps) {
           }${entry.phase === "done" ? " review-progress__entry--done" : ""}`}
         >
           <span className="review-progress__entry-time">{formatClock(entry.timestamp)}</span>
+          {entry.focus && entry.phase !== "multiFocus" && <FocusBadge focus={entry.focus} />}
           <span>{entry.text}</span>
         </div>
       ))}

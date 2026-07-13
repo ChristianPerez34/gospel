@@ -13,12 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useMcpServers } from "../hooks/useMcpServers";
-import type {
-  CreateMcpServerRequest,
-  McpEnvValue,
-  McpSafetyClass,
-  McpServer,
-} from "../types";
+import type { CreateMcpServerRequest, McpEnvValue, McpSafetyClass, McpServer } from "../types";
 
 interface EnvDraft {
   id: string;
@@ -183,11 +178,11 @@ export function McpSettingsPanel() {
     const result = await applyImport(
       importPreview.token,
       Array.from(selectedImports),
-      overwriteExisting,
+      overwriteExisting
     );
     if (!result) return;
     setLastImportSummary(
-      `${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped`,
+      `${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped`
     );
   }
 
@@ -219,10 +214,7 @@ export function McpSettingsPanel() {
 
       <section className="grid gap-3">
         <div className="flex items-center justify-between gap-3">
-          <SectionHeading
-            title="Custom"
-            detail={`${customServers.length} configured`}
-          />
+          <SectionHeading title="Custom" detail={`${customServers.length} configured`} />
           <Button
             type="button"
             size="sm"
@@ -353,7 +345,8 @@ export function McpSettingsPanel() {
                       <span className="grid gap-1">
                         {server.fieldDiffs.map((diff) => (
                           <span key={diff.field} className="text-caption text-text-muted">
-                            {diff.field}: {diff.current ?? "(empty)"} -&gt; {diff.incoming ?? "(empty)"}
+                            {diff.field}: {diff.current ?? "(empty)"} -&gt;{" "}
+                            {diff.incoming ?? "(empty)"}
                           </span>
                         ))}
                       </span>
@@ -703,7 +696,9 @@ function CustomServerEditor({
         <div className="grid gap-3">
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-caption font-medium uppercase text-text-muted">Non-secret env</div>
+              <div className="text-caption font-medium uppercase text-text-muted">
+                Non-secret env
+              </div>
               <Button
                 type="button"
                 size="xs"
@@ -750,7 +745,9 @@ function CustomServerEditor({
 
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-caption font-medium uppercase text-text-muted">Required secrets</div>
+              <div className="text-caption font-medium uppercase text-text-muted">
+                Required secrets
+              </div>
               <Button
                 type="button"
                 size="xs"

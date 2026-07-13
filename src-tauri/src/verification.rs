@@ -3,19 +3,14 @@ use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
 use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tokio::time::timeout;
 
-use crate::corpus::tools::{
-    create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
-    CORPUS_SYSTEM_PROMPT,
+use crate::harness_profile::{
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfile,
+    HarnessProfileRequest, LoopDetector, LoopStatus,
 };
-use crate::llm::WorkspaceToolContext;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
-use crate::workspace_tools::{
-    build_base_workspace_tools, create_context_search_tool, WORKSPACE_TOOLS_SYSTEM_PROMPT,
-};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
@@ -51,7 +46,7 @@ Review the assistant's response for correctness, completeness, and potential iss
 - Whether suggested changes are safe and correct
 - Potential edge cases or issues missed
 
-Use `context_search` for scoped claim checking only. Do not expand task scope.
+Use scoped workspace retrieval for claim checking when it is available. Do not expand task scope.
 Use live workspace tools (read_file, search_code) to verify specific claims.
 Remain read-only and focused on verification.
 
@@ -65,14 +60,11 @@ Return your assessment as JSON with exactly these fields:
 If you cannot verify something, set status to "unavailable" and explain why in the summary.
 Be concise and focused on concrete issues, not stylistic preferences."#;
 
-const VERIFICATION_MAX_TURNS: usize = 6;
-const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(90);
-
 pub async fn run_verification(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     response_to_verify: &str,
     user_prompt: &str,
 ) -> VerificationResult {
@@ -81,9 +73,25 @@ pub async fn run_verification(
     }
 
     let prompt = build_verification_prompt(workspace, response_to_verify, user_prompt);
+    let profile = match resolve_harness_profile(HarnessProfileRequest {
+        role: AgentRole::Verification,
+        workspace: Some(workspace.clone()),
+        role_guidance: Some(VERIFICATION_SYSTEM_PROMPT.to_string()),
+        matched_skills_section: None,
+        invoked_skill_section: None,
+        main_tool_inputs: None,
+    }) {
+        Ok(profile) => profile,
+        Err(error) => return unavailable(&format!("Verification unavailable: {error}")),
+    };
+    tracing::debug!(profile = ?profile.summary(), "resolved Verification Harness Profile");
+    let deadline = profile
+        .guards
+        .deadline
+        .expect("Verification Harness Profiles always have a deadline");
     let output = match timeout(
-        VERIFICATION_TIMEOUT,
-        run_verification_agent(provider, model, api_key, workspace, &prompt),
+        deadline,
+        run_verification_agent(provider, model, api_key, profile, &prompt),
     )
     .await
     {
@@ -105,28 +113,23 @@ async fn run_verification_agent(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    profile: HarnessProfile,
     prompt: &str,
 ) -> Result<String, String> {
-    let preamble = build_verification_preamble(workspace);
+    let preamble = profile.preamble.unwrap_or_default();
+    let tools = profile.tools;
+    let guards = profile.guards;
+    let deadline = guards
+        .deadline
+        .expect("Verification Harness Profiles always have a deadline");
 
     macro_rules! verify_from_client {
         ($client:expr, $model:expr) => {{
-            let mut builder = $client
+            let builder = $client
                 .agent($model)
                 .preamble(&preamble)
-                .default_max_turns(VERIFICATION_MAX_TURNS)
-                .tools(build_base_workspace_tools(workspace.workspace_path.clone()));
-
-            if workspace.corpus_available {
-                builder = builder
-                    .tool(create_corpus_summary_tool(workspace.workspace_path.clone()))
-                    .tool(create_corpus_query_tool(workspace.workspace_path.clone()))
-                    .tool(create_corpus_neighbors_tool(
-                        workspace.workspace_path.clone(),
-                    ))
-                    .tool(create_context_search_tool(workspace.workspace_path.clone()));
-            }
+                .default_max_turns(guards.max_turns)
+                .tools(tools);
 
             let agent = builder.build();
             // Use stream_prompt instead of prompt: the ChatGPT Codex
@@ -135,11 +138,12 @@ async fn run_verification_agent(
             // See https://github.com/0xPlaygrounds/rig/issues/2000.
             let mut stream = agent
                 .stream_prompt(prompt)
-                .multi_turn(VERIFICATION_MAX_TURNS)
+                .multi_turn(guards.max_turns)
                 .await;
             let mut final_output = String::new();
+            let mut loop_detector = LoopDetector::new(guards.loop_guard);
             loop {
-                match timeout(VERIFICATION_TIMEOUT, stream.next()).await {
+                match timeout(deadline, stream.next()).await {
                     Err(_) => break Err("verification agent timed out".to_string()),
                     Ok(None) => break Ok(final_output),
                     Ok(Some(item)) => match item {
@@ -151,6 +155,26 @@ async fn run_verification_agent(
                             StreamedAssistantContent::Text(text),
                         )) => {
                             final_output.push_str(&text.text);
+                        }
+                        Ok(MultiTurnStreamItem::StreamAssistantItem(
+                            StreamedAssistantContent::ToolCall { tool_call, .. },
+                        )) => {
+                            match loop_detector.record_call(
+                                &tool_call.function.name,
+                                &tool_call.function.arguments,
+                            ) {
+                                LoopStatus::Stop => break Err(format!(
+                                    "verification agent stopped after a repeated '{}' tool-call loop",
+                                    tool_call.function.name
+                                )),
+                                LoopStatus::Warning(count) => tracing::warn!(
+                                    role = "verification",
+                                    count,
+                                    tool_name = tool_call.function.name,
+                                    "repeated tool-call warning"
+                                ),
+                                LoopStatus::Ok => {}
+                            }
                         }
                         Ok(_) => {}
                         Err(error) => break Err(error.to_string()),
@@ -169,21 +193,8 @@ async fn run_verification_agent(
     )
 }
 
-fn build_verification_preamble(workspace: &WorkspaceToolContext) -> String {
-    let mut sections = vec![
-        WORKSPACE_TOOLS_SYSTEM_PROMPT.trim().to_string(),
-        VERIFICATION_SYSTEM_PROMPT.trim().to_string(),
-    ];
-
-    if workspace.corpus_available {
-        sections.insert(1, CORPUS_SYSTEM_PROMPT.trim().to_string());
-    }
-
-    sections.join("\n\n")
-}
-
 fn build_verification_prompt(
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     response_to_verify: &str,
     user_prompt: &str,
 ) -> String {

@@ -2,16 +2,8 @@ import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { Button } from "@/components/ui/button";
 import { codePlugin } from "@/lib/markdown";
-import type {
-  CurrentTurn,
-  Message,
-  ToolCallActivity,
-  TurnBlock,
-} from "../types";
-import {
-  summarizeLiveToolActivity,
-  toolActivitiesToTimelineSteps,
-} from "../toolActivityCards";
+import type { CurrentTurn, Message, ToolCallActivity, TurnBlock } from "../types";
+import { summarizeLiveToolActivity, toolActivitiesToTimelineSteps } from "../toolActivityCards";
 import { MessageBlock } from "./MessageBlock";
 import { ActivityStep } from "./ActivityStep";
 import { ApprovalCard } from "./ApprovalCard";
@@ -73,8 +65,7 @@ function coalesceBlocks(blocks: TurnBlock[]): TurnSegment[] {
 }
 
 function isNearBottom(element: HTMLElement) {
-  const distanceFromBottom =
-    element.scrollHeight - element.scrollTop - element.clientHeight;
+  const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
   return distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
 }
 
@@ -92,15 +83,8 @@ function ErrorBlock({ message }: { message: string }) {
   );
 }
 
-function RunningPill({
-  toolBlocks,
-}: {
-  toolBlocks: ToolTurnBlock[];
-}) {
-  const activities = useMemo(
-    () => toolBlocks.map(toolBlockToActivity),
-    [toolBlocks],
-  );
+function RunningPill({ toolBlocks }: { toolBlocks: ToolTurnBlock[] }) {
+  const activities = useMemo(() => toolBlocks.map(toolBlockToActivity), [toolBlocks]);
   const hasRunningTool = activities.some((activity) => activity.status === "calling");
   const liveStatus = hasRunningTool ? summarizeLiveToolActivity(activities, false) : null;
 
@@ -108,7 +92,10 @@ function RunningPill({
 
   return (
     <div className="running-pill sticky top-2 z-10 inline-flex max-w-full self-start rounded-full border border-surface-overlay bg-surface-base px-2 py-1 text-caption text-text-muted animate-fade-slide-in-fast motion-reduce:animate-none">
-      <span className="mr-2 mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full bg-accent-action animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+      <span
+        className="mr-2 mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full bg-accent-action animate-pulse motion-reduce:animate-none"
+        aria-hidden="true"
+      />
       <span className="truncate font-mono">{liveStatus}</span>
     </div>
   );
@@ -123,15 +110,15 @@ function ToolTimeline({
 }) {
   const toolBlocks = useMemo(
     () => blocks.filter((b): b is ToolTurnBlock => b.kind === "tool"),
-    [blocks],
+    [blocks]
   );
   const approvalBlocks = useMemo(
     () => blocks.filter((b): b is ApprovalTurnBlock => b.kind === "approval"),
-    [blocks],
+    [blocks]
   );
   const steps = useMemo(
     () => toolActivitiesToTimelineSteps(toolBlocks.map(toolBlockToActivity)),
-    [toolBlocks],
+    [toolBlocks]
   );
 
   if (steps.length === 0 && approvalBlocks.length === 0) return null;
@@ -146,11 +133,7 @@ function ToolTimeline({
           <ActivityStep card={step} key={step.id} />
         ))}
         {approvalBlocks.map((block) => (
-          <ApprovalCard
-            key={block.id}
-            block={block}
-            onResolve={onResolveApproval}
-          />
+          <ApprovalCard key={block.id} block={block} onResolve={onResolveApproval} />
         ))}
       </ol>
     </div>
@@ -205,14 +188,18 @@ function AgentActions() {
   );
 }
 
-function AgentTurnBlock({ message, currentTurn, isThinking, onResolveApproval }: AgentTurnBlockProps) {
+function AgentTurnBlock({
+  message,
+  currentTurn,
+  isThinking,
+  onResolveApproval,
+}: AgentTurnBlockProps) {
   const turnId = currentTurn?.id ?? message?.id ?? "agent-turn";
   const fallbackTimestampRef = useRef<Date | null>(null);
   if (!fallbackTimestampRef.current) {
     fallbackTimestampRef.current = new Date();
   }
-  const timestamp =
-    currentTurn?.createdAt ?? message?.timestamp ?? fallbackTimestampRef.current;
+  const timestamp = currentTurn?.createdAt ?? message?.timestamp ?? fallbackTimestampRef.current;
   const blocks =
     currentTurn?.blocks ??
     message?.blocks ??
@@ -224,9 +211,7 @@ function AgentTurnBlock({ message, currentTurn, isThinking, onResolveApproval }:
       ? blocks
       : [{ kind: "text" as const, id: `${turnId}-thinking`, text: "Thinking..." }];
   const isLive = Boolean(currentTurn);
-  const toolBlocks = visibleBlocks.filter(
-    (block): block is ToolTurnBlock => block.kind === "tool",
-  );
+  const toolBlocks = visibleBlocks.filter((block): block is ToolTurnBlock => block.kind === "tool");
   const showActions = Boolean(message && !currentTurn);
   const segments = useMemo(() => coalesceBlocks(visibleBlocks), [visibleBlocks]);
 
@@ -250,7 +235,7 @@ function AgentTurnBlock({ message, currentTurn, isThinking, onResolveApproval }:
             key={`tools-${segment.blocks[0].id}`}
             onResolveApproval={onResolveApproval}
           />
-        ),
+        )
       )}
       {message?.error && <ErrorBlock message={message.error} />}
       {showActions && <AgentActions />}
@@ -370,7 +355,10 @@ export function ChatView({
               onResolveApproval={onResolveApproval}
             />
           ) : (
-            <div key={msg.id} className="flex flex-col gap-1.5 animate-fade-slide-in-fast motion-reduce:animate-none">
+            <div
+              key={msg.id}
+              className="flex flex-col gap-1.5 animate-fade-slide-in-fast motion-reduce:animate-none"
+            >
               <MessageBlock message={msg} />
             </div>
           );

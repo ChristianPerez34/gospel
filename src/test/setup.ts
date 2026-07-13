@@ -1,5 +1,10 @@
 import { vi, beforeEach, afterEach } from "vitest";
 
+// Shim vi.mocked for environments where it is missing
+if (typeof vi !== "undefined" && !vi.mocked) {
+  (vi as any).mocked = <T>(fn: T): any => fn;
+}
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));

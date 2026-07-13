@@ -1,11 +1,4 @@
-import {
-  Activity,
-  ExternalLink,
-  FolderOpen,
-  GitBranch,
-  RefreshCw,
-  Terminal,
-} from "lucide-react";
+import { Activity, ExternalLink, FolderOpen, GitBranch, RefreshCw, Terminal } from "lucide-react";
 import type { AgentStatus, SessionMode } from "../types";
 
 interface WorkspaceStageProps {
@@ -64,10 +57,22 @@ export function WorkspaceStage({
           </div>
         </div>
         <div className="workspace-stage-actions">
-          <button className="stage-icon-button" type="button" disabled aria-label="Refresh workspace view" title="Refresh (coming soon)">
+          <button
+            className="stage-icon-button"
+            type="button"
+            disabled
+            aria-label="Refresh workspace view"
+            title="Refresh (coming soon)"
+          >
             <RefreshCw aria-hidden="true" />
           </button>
-          <button className="stage-icon-button" type="button" disabled aria-label="Open workspace externally" title="Open externally (coming soon)">
+          <button
+            className="stage-icon-button"
+            type="button"
+            disabled
+            aria-label="Open workspace externally"
+            title="Open externally (coming soon)"
+          >
             <ExternalLink aria-hidden="true" />
           </button>
         </div>
@@ -117,7 +122,9 @@ export function WorkspaceStage({
             </div>
             <div>
               <span className="term-muted">status</span>
-              <span className={status === "error" ? "term-error" : "term-success"}>{STATUS_COPY[status]}</span>
+              <span className={status === "error" ? "term-error" : "term-success"}>
+                {STATUS_COPY[status]}
+              </span>
             </div>
             <div>
               <GitBranch aria-hidden="true" />

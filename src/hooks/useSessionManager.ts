@@ -109,29 +109,27 @@ export function useSessionManager({
     setDraftSessionMode("Build");
   }, [activeWorkspaceId, status]);
 
-  const handleModelVariantWarning = useCallback((warning: ModelVariantWarningPayload) => {
-    if (warning.kind !== "missing") return;
-    onModelVariantFallback?.(warning);
-    const sessionId = activeSessionIdRef.current;
-    if (!sessionId) return;
-    onSessionsChange((prev) =>
-      prev.map((session) =>
-        session.id === sessionId &&
-        session.model === warning.model &&
-        session.provider.toLowerCase() === warning.provider.toLowerCase() &&
-        session.variant === warning.variant
-          ? { ...session, variant: null }
-          : session,
-      ),
-    );
-  }, [onModelVariantFallback, onSessionsChange]);
+  const handleModelVariantWarning = useCallback(
+    (warning: ModelVariantWarningPayload) => {
+      if (warning.kind !== "missing") return;
+      onModelVariantFallback?.(warning);
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      onSessionsChange((prev) =>
+        prev.map((session) =>
+          session.id === sessionId &&
+          session.model === warning.model &&
+          session.provider.toLowerCase() === warning.provider.toLowerCase() &&
+          session.variant === warning.variant
+            ? { ...session, variant: null }
+            : session
+        )
+      );
+    },
+    [onModelVariantFallback, onSessionsChange]
+  );
 
-  const {
-    currentTurn,
-    startStream,
-    resetStream,
-    resolveApproval,
-  } = useChatStream({
+  const { currentTurn, startStream, resetStream, resolveApproval } = useChatStream({
     onMessages: setMessages,
     onStatusChange: setStatus,
     onErrorToast: onError,
@@ -173,7 +171,7 @@ export function useSessionManager({
         ? models.some(
             (m) =>
               m.model === selectedModel.model &&
-              m.provider.toLowerCase() === selectedModel.provider.toLowerCase(),
+              m.provider.toLowerCase() === selectedModel.provider.toLowerCase()
           )
         : false;
       if (!selectedModel || !selectedParentAvailable) {
@@ -198,8 +196,7 @@ export function useSessionManager({
 
       let effectiveSessionId = activeSessionId;
       if (!activeSessionId) {
-        const title =
-          userMsg.content.slice(0, 50) + (userMsg.content.length > 50 ? "..." : "");
+        const title = userMsg.content.slice(0, 50) + (userMsg.content.length > 50 ? "..." : "");
         const mode = draftSessionMode;
 
         // Try backend session creation first
@@ -268,7 +265,7 @@ export function useSessionManager({
       resetStream,
       selectedModel,
       startStream,
-    ],
+    ]
   );
 
   const handleSessionSelect = useCallback(
@@ -357,7 +354,7 @@ export function useSessionManager({
         onError?.(`Unable to open session: ${e}`);
       }
     },
-    [activeWorkspaceId, onError, onSessionsChange, onSwitchWorkspace],
+    [activeWorkspaceId, onError, onSessionsChange, onSwitchWorkspace]
   );
 
   const handleNewSession = useCallback(() => {
@@ -378,9 +375,7 @@ export function useSessionManager({
       const target = sessions.find((session) => session.id === activeSessionId);
       const previousMode = normalizeSessionMode(target?.mode);
       onSessionsChange((prev) =>
-        prev.map((session) =>
-          session.id === activeSessionId ? { ...session, mode } : session,
-        ),
+        prev.map((session) => (session.id === activeSessionId ? { ...session, mode } : session))
       );
 
       if (!target?.backendCreated) return;
@@ -393,13 +388,13 @@ export function useSessionManager({
       } catch (e) {
         onSessionsChange((prev) =>
           prev.map((session) =>
-            session.id === activeSessionId ? { ...session, mode: previousMode } : session,
-          ),
+            session.id === activeSessionId ? { ...session, mode: previousMode } : session
+          )
         );
         onError?.(`Failed to update session mode: ${e}`);
       }
     },
-    [activeSessionId, onError, onSessionsChange, sessions],
+    [activeSessionId, onError, onSessionsChange, sessions]
   );
 
   return {

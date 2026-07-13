@@ -44,7 +44,13 @@ function includesQuery(result: PaletteResult, query: string) {
 
 function groupResults(results: PaletteResult[]) {
   const groups: Array<{ label: CommandGroup; results: PaletteResult[] }> = [];
-  for (const label of ["Sessions", "Files / context", "Settings", "Variants", "Commands"] as CommandGroup[]) {
+  for (const label of [
+    "Sessions",
+    "Files / context",
+    "Settings",
+    "Variants",
+    "Commands",
+  ] as CommandGroup[]) {
     const group = results.filter((result) => result.group === label);
     if (group.length > 0) groups.push({ label, results: group });
   }
@@ -153,22 +159,25 @@ export function CommandPalette({
     ];
 
     const currentModel = models.find((model) => model.id === selectedModelId);
-    const currentVariant = currentModel?.variants?.find((variant) => variant.id === selectedVariant);
+    const currentVariant = currentModel?.variants?.find(
+      (variant) => variant.id === selectedVariant
+    );
     const variantOptions = currentModel?.variants?.filter((variant) => !variant.deprecated) ?? [];
-    const variantResults: PaletteResult[] = variantOptions.length > 0
-      ? [
-          { id: null, name: "Default", description: currentModel?.provider ?? "" },
-          ...variantOptions,
-        ].map((variant) => ({
-          id: `variant-${variant.id ?? "default"}`,
-          group: "Variants" as const,
-          icon: selectedVariant === variant.id ? "A" : "V",
-          label: variant.name,
-          detail: variant.id ? variant.description : currentModel?.provider,
-          keywords: `variant model ${currentModel?.model ?? ""} ${variant.name} ${variant.id ?? "default"} ${variant.description}`,
-          action: closeAfter(() => onVariantChange(variant.id)),
-        }))
-      : [];
+    const variantResults: PaletteResult[] =
+      variantOptions.length > 0
+        ? [
+            { id: null, name: "Default", description: currentModel?.provider ?? "" },
+            ...variantOptions,
+          ].map((variant) => ({
+            id: `variant-${variant.id ?? "default"}`,
+            group: "Variants" as const,
+            icon: selectedVariant === variant.id ? "A" : "V",
+            label: variant.name,
+            detail: variant.id ? variant.description : currentModel?.provider,
+            keywords: `variant model ${currentModel?.model ?? ""} ${variant.name} ${variant.id ?? "default"} ${variant.description}`,
+            action: closeAfter(() => onVariantChange(variant.id)),
+          }))
+        : [];
 
     const modelResults: PaletteResult[] = models.map((model) => {
       const isActive = model.id === selectedModelId;
@@ -225,7 +234,13 @@ export function CommandPalette({
       ...modelResults,
     ];
 
-    return [...sessionResults, ...workspaceResults, ...settingsResults, ...variantResults, ...commandResults];
+    return [
+      ...sessionResults,
+      ...workspaceResults,
+      ...settingsResults,
+      ...variantResults,
+      ...commandResults,
+    ];
   }, [
     activeSessionId,
     models,
@@ -248,7 +263,7 @@ export function CommandPalette({
 
   const filteredResults = useMemo(
     () => allResults.filter((result) => includesQuery(result, query)),
-    [allResults, query],
+    [allResults, query]
   );
   const groupedResults = useMemo(() => groupResults(filteredResults), [filteredResults]);
 
@@ -293,7 +308,9 @@ export function CommandPalette({
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
-            setActiveIndex((current) => Math.min(current + 1, Math.max(filteredResults.length - 1, 0)));
+            setActiveIndex((current) =>
+              Math.min(current + 1, Math.max(filteredResults.length - 1, 0))
+            );
             return;
           }
           if (event.key === "ArrowUp") {
@@ -343,7 +360,10 @@ export function CommandPalette({
                       onMouseEnter={() => setActiveIndex(index)}
                       aria-current={isActive ? "true" : undefined}
                     >
-                      <span className="command-palette-icon rounded-lg bg-surface-base" aria-hidden="true">
+                      <span
+                        className="command-palette-icon rounded-lg bg-surface-base"
+                        aria-hidden="true"
+                      >
                         {result.icon}
                       </span>
                       <span className="min-w-0">

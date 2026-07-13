@@ -1,9 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import type {
-  ActionCard as ActionCardType,
-  ActionCardSection,
-} from "../types";
+import type { ActionCard as ActionCardType, ActionCardSection } from "../types";
 
 interface ActivityStepProps {
   card: ActionCardType;
@@ -81,7 +78,7 @@ function DiffPreview({ lines }: { lines: string[] }) {
             <div
               className={classNames(
                 "whitespace-pre-wrap break-words px-2 py-0.5",
-                DIFF_ROW_STYLES.hunk,
+                DIFF_ROW_STYLES.hunk
               )}
               key={index}
             >
@@ -100,15 +97,12 @@ function DiffPreview({ lines }: { lines: string[] }) {
                 {row.marker}
               </span>
               <span
-                className={classNames(
-                  "whitespace-pre-wrap break-words",
-                  DIFF_ROW_STYLES[row.kind],
-                )}
+                className={classNames("whitespace-pre-wrap break-words", DIFF_ROW_STYLES[row.kind])}
               >
                 {row.text}
               </span>
             </div>
-          ),
+          )
         )}
       </code>
     </pre>
@@ -127,8 +121,7 @@ function PreviewText({
   const [showAll, setShowAll] = useState(false);
   const lines = content.split("\n");
   const overflowing = lines.length > MAX_PREVIEW_LINES;
-  const visibleLines =
-    showAll || !overflowing ? lines : lines.slice(0, MAX_PREVIEW_LINES);
+  const visibleLines = showAll || !overflowing ? lines : lines.slice(0, MAX_PREVIEW_LINES);
   const hiddenCount = lines.length - MAX_PREVIEW_LINES;
 
   return (
@@ -139,7 +132,7 @@ function PreviewText({
         <pre
           className={classNames(
             "m-0 max-h-[320px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 text-text-primary",
-            monospace ? "font-mono text-mono" : "font-body text-body-sm",
+            monospace ? "font-mono text-mono" : "font-body text-body-sm"
           )}
         >
           {visibleLines.join("\n")}
@@ -171,7 +164,10 @@ function renderSection(section: ActionCardSection, keyPrefix = "") {
         )}
         <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {section.fields.map((item) => (
-            <div className="min-w-0 rounded-sm bg-surface-overlay p-2" key={`${item.label}-${item.value}`}>
+            <div
+              className="min-w-0 rounded-sm bg-surface-overlay p-2"
+              key={`${item.label}-${item.value}`}
+            >
               <dt className="mb-1 font-mono text-caption uppercase tracking-[0.04em] text-text-muted">
                 {item.label}
               </dt>
@@ -274,15 +270,11 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
   const isRunning = card.status === "calling";
   const groupCount = card.groupCount ?? 0;
   const hasBody =
-    (card.passes?.length ?? 0) > 0 ||
-    (card.sections?.length ?? 0) > 0 ||
-    Boolean(card.rawPayload);
+    (card.passes?.length ?? 0) > 0 || (card.sections?.length ?? 0) > 0 || Boolean(card.rawPayload);
   const chevronClass = expanded ? "rotate-180" : "";
   const ariaLabelParts = [card.summary, card.target].filter(Boolean);
   if (groupCount > 1) {
-    ariaLabelParts.push(
-      expanded ? `${groupCount} passes - expanded` : `${groupCount} passes`,
-    );
+    ariaLabelParts.push(expanded ? `${groupCount} passes - expanded` : `${groupCount} passes`);
   }
   ariaLabelParts.push(isRunning ? "Running" : "Done");
   const ariaLabel = ariaLabelParts.join(" ");
@@ -302,7 +294,7 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
             "activity-step-dot h-2 w-2 shrink-0 rounded-full",
             isRunning
               ? "bg-accent-action animate-pulse motion-reduce:animate-none"
-              : "bg-text-muted",
+              : "bg-text-muted"
           )}
           aria-hidden="true"
         />

@@ -34,9 +34,24 @@ export interface AvailableModel {
   variants?: AvailableModelVariant[];
 }
 
+const DEFAULT_STARTUP_MODEL = {
+  provider: "chatgpt",
+  model: "gpt-5.6-sol",
+} as const;
+
+export function defaultStartupModel(availableModels: AvailableModel[]): AvailableModel | undefined {
+  return (
+    availableModels.find(
+      (model) =>
+        model.provider.toLowerCase() === DEFAULT_STARTUP_MODEL.provider &&
+        model.model === DEFAULT_STARTUP_MODEL.model
+    ) ?? availableModels[0]
+  );
+}
+
 function providerConfigFromAvailability(
   provider: ProviderAvailability,
-  existing?: ProviderConfig,
+  existing?: ProviderConfig
 ): ProviderConfig {
   return {
     id: provider.provider,
@@ -48,7 +63,7 @@ function providerConfigFromAvailability(
     modelCount: provider.model_count,
     errorKind: provider.error_kind ?? undefined,
     errorDetail: provider.error_detail ?? undefined,
-    apiKey: provider.credentialed ? "" : existing?.apiKey ?? "",
+    apiKey: provider.credentialed ? "" : (existing?.apiKey ?? ""),
     enabled: provider.visible,
     status: existing?.status ?? (provider.credentialed ? "success" : "idle"),
     testMessage: existing?.testMessage ?? "",
@@ -57,12 +72,9 @@ function providerConfigFromAvailability(
   };
 }
 
-function buildModelOptions(
-  models: AvailableModel[],
-  providers: ProviderConfig[],
-): ModelOption[] {
+function buildModelOptions(models: AvailableModel[], providers: ProviderConfig[]): ModelOption[] {
   return models.map((m) => {
-    const provider = providers.find((p) => p.id === m.provider.toLowerCase() as ProviderId);
+    const provider = providers.find((p) => p.id === (m.provider.toLowerCase() as ProviderId));
     return {
       id: modelOptionId(m.provider, m.model),
       name: m.model,
@@ -83,7 +95,8 @@ interface UseModelAvailabilityOptions {
 export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilityOptions = {}) {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [availabilitySnapshot, setAvailabilitySnapshot] = useState<ModelAvailabilitySnapshot | null>(null);
+  const [availabilitySnapshot, setAvailabilitySnapshot] =
+    useState<ModelAvailabilitySnapshot | null>(null);
   const [isRefreshingModels, setIsRefreshingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
@@ -100,20 +113,27 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
       isRefreshingModelsRef.current = true;
     }
     try {
-      const snapshot = await invoke<ModelAvailabilitySnapshot>("get_model_availability", { forceRefresh });
+      const snapshot = await invoke<ModelAvailabilitySnapshot>("get_model_availability", {
+        forceRefresh,
+      });
       setAvailabilitySnapshot(snapshot);
       setAvailableModels(snapshot.available_models);
       setProviders((current) =>
         snapshot.providers.map((provider) =>
-          providerConfigFromAvailability(provider, current.find((p) => p.id === provider.provider)),
-        ),
+          providerConfigFromAvailability(
+            provider,
+            current.find((p) => p.id === provider.provider)
+          )
+        )
       );
       if (forceRefresh) {
         const failedProvider = snapshot.providers.find(
-          (p) => p.error_kind || p.model_fetch_status === "failed",
+          (p) => p.error_kind || p.model_fetch_status === "failed"
         );
         if (failedProvider) {
-          onErrorRef.current?.(`${failedProvider.display_name}: ${failedProvider.error_detail || "Model refresh failed."}`);
+          onErrorRef.current?.(
+            `${failedProvider.display_name}: ${failedProvider.error_detail || "Model refresh failed."}`
+          );
         } else {
           onSuccessRef.current?.("Models refreshed.");
         }
@@ -146,15 +166,20 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
     setSelectedModel((prev) => {
       if (prev) {
         const available = availableModels.find(
-          (m) =>
-            m.model === prev.model && m.provider.toLowerCase() === prev.provider.toLowerCase(),
+          (m) => m.model === prev.model && m.provider.toLowerCase() === prev.provider.toLowerCase()
         );
         if (available) {
-          const variant = prev.variant && available.variants?.some((v) => v.id === prev.variant) ? prev.variant : null;
+          const variant =
+            prev.variant && available.variants?.some((v) => v.id === prev.variant)
+              ? prev.variant
+              : null;
           return { provider: available.provider, model: available.model, variant };
         }
       }
-      return { provider: availableModels[0].provider, model: availableModels[0].model, variant: null };
+      const defaultModel = defaultStartupModel(availableModels);
+      return defaultModel
+        ? { provider: defaultModel.provider, model: defaultModel.model, variant: null }
+        : null;
     });
   }, [availableModels, providers]);
 

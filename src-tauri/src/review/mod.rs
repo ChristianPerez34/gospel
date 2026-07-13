@@ -15,11 +15,13 @@ pub use progress::{
     ReviewProgressEmitter, ReviewProgressEvent, ToolEventKind,
 };
 
+use crate::harness_profile::{
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
+    LoopDetector, LoopStatus,
+};
 use crate::keychain;
-use crate::llm::WorkspaceToolContext;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
-use crate::workspace_tools::build_base_workspace_tools;
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
@@ -28,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::process::Command;
@@ -44,6 +47,8 @@ const MAX_LINES_PER_INVOCATION: usize = 500;
 const SCAN_FILE_BYTES_CAP: u64 = 256 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const UNPARSEABLE_REVIEW_JSON_WARNING: &str = "did not contain parseable review JSON";
+
+const MAX_OVERSIZED_FILES: usize = 20;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewConfig {
@@ -423,27 +428,36 @@ struct PrDiff {
     title: String,
     body: String,
     diff: String,
+    warnings: Vec<String>,
+}
+
+struct FetchedPrDiff {
+    diff: String,
+    warnings: Vec<String>,
 }
 
 pub async fn run_review(
     config: ReviewConfig,
     workspace_path: PathBuf,
     api_key: String,
-    emitter: &dyn ReviewProgressEmitter,
+    emitter: Arc<dyn ReviewProgressEmitter>,
 ) -> Result<ReviewResult, String> {
     let run_id = Uuid::new_v4().to_string();
     let mode = config.review_mode()?;
     ensure_provider_session(&config.provider)?;
-    let workspace = WorkspaceToolContext {
+    let workspace = ActiveWorkspaceContext {
         workspace_path,
         corpus_available: false,
-        session_mode: crate::session_mode::SESSION_MODE_BUILD.to_string(),
+        session_mode: crate::session_mode::SessionMode::Build,
     };
+    let emitter: &dyn ReviewProgressEmitter = &*emitter;
+    let focus = config.focus;
 
     // Run-start handshake so the frontend can key on run_id and render the
     // pipeline immediately, before chunking is known.
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         &run_id,
+        focus,
         ReviewPhase::Detector {
             chunk: 0,
             total_chunks: 0,
@@ -463,13 +477,14 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
-                config.focus,
+                focus,
                 ReviewMode::Local,
                 format!(
                     "You are reviewing local staged and unstaged changes for {} findings.",
-                    config.focus
+                    focus
                 ),
                 diff,
+                Vec::new(),
             )
             .await
         }
@@ -477,7 +492,7 @@ pub async fn run_review(
             let pr = get_pr_diff(&workspace.workspace_path, pr_number).await?;
             let context = format!(
                 "You are reviewing Pull Request #{} for {} findings.\n\nPR Title: {}\nPR Description: {}\n\nAnalyze the changes for {} issues. Use read_file to examine surrounding context in the repository.",
-                pr_number, config.focus, pr.title, pr.body, config.focus
+                pr_number, focus, pr.title, pr.body, focus
             );
             run_diff_review(
                 &run_id,
@@ -486,10 +501,11 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
-                config.focus,
+                focus,
                 ReviewMode::PullRequest { pr_number },
                 context,
                 pr.diff,
+                pr.warnings,
             )
             .await
         }
@@ -501,7 +517,7 @@ pub async fn run_review(
                 &config.model,
                 &api_key,
                 &workspace,
-                config.focus,
+                focus,
             )
             .await
         }
@@ -510,8 +526,9 @@ pub async fn run_review(
     let result = match outcome {
         Ok(result) => result,
         Err(detail) => {
-            emitter.emit_progress(ReviewProgressEvent::new(
+            emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                 &run_id,
+                focus,
                 ReviewPhase::Failed {
                     detail: progress_failure_detail(&detail),
                 },
@@ -529,8 +546,9 @@ pub async fn run_review(
         result,
     ) {
         Ok(finalized) => {
-            emitter.emit_progress(ReviewProgressEvent::new(
+            emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                 &run_id,
+                focus,
                 ReviewPhase::Done {
                     findings: finalized.comments.len(),
                     suppressed: finalized.suppressed_count,
@@ -539,8 +557,9 @@ pub async fn run_review(
             Ok(finalized)
         }
         Err(detail) => {
-            emitter.emit_progress(ReviewProgressEvent::new(
+            emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                 &run_id,
+                focus,
                 ReviewPhase::Failed {
                     detail: progress_failure_detail(&detail),
                 },
@@ -586,8 +605,9 @@ fn finalize_review_result(
     workspace_path: &Path,
     mut result: ReviewResult,
 ) -> Result<ReviewResult, String> {
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        result.focus,
         ReviewPhase::Finalize {
             status: PhaseStatus::Running,
         },
@@ -657,8 +677,9 @@ fn finalize_review_result(
             .push(format!("Failed to write review run index: {}", error));
     }
 
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        result.focus,
         ReviewPhase::Finalize {
             status: PhaseStatus::Done,
         },
@@ -691,19 +712,153 @@ async fn get_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<PrDiff, St
     let diff_fut = run_program(workspace_path, "gh", &diff_args);
     let meta_fut = run_program(workspace_path, "gh", &meta_args);
 
-    let (diff, metadata) = tokio::try_join!(
-        async { diff_fut.await.map_err(|e| pr_fetch_error(pr_number, e)) },
-        async { meta_fut.await.map_err(|e| pr_fetch_error(pr_number, e)) }
-    )?;
+    let (diff_res, metadata_res) = tokio::join!(
+        async { diff_fut.await },
+        async { meta_fut.await }
+    );
 
+    let metadata = metadata_res.map_err(|e| pr_fetch_error(pr_number, e))?;
     let metadata: PrMetadata = serde_json::from_str(&metadata)
         .map_err(|e| format!("Failed to parse PR metadata for #{}: {}", pr_number, e))?;
+
+    let fetched = match diff_res {
+        Ok(diff) => FetchedPrDiff {
+            diff,
+            warnings: Vec::new(),
+        },
+        Err(e) => {
+            if is_oversized_diff_error(&e) {
+                tracing::info!(
+                    "Oversized diff detected for PR #{}. Falling back to per-file API...",
+                    pr_number
+                );
+                match get_oversized_pr_diff(workspace_path, pr_number).await {
+                    Ok(fallback_diff) => fallback_diff,
+                    Err(fallback_err) => {
+                        return Err(format!(
+                            "PR diff too large and fallback failed. Original error: {}. Fallback error: {}",
+                            e, fallback_err
+                        ));
+                    }
+                }
+            } else {
+                return Err(pr_fetch_error(pr_number, e));
+            }
+        }
+    };
 
     Ok(PrDiff {
         title: metadata.title,
         body: metadata.body.unwrap_or_default(),
-        diff,
+        diff: fetched.diff,
+        warnings: fetched.warnings,
     })
+}
+
+fn is_oversized_diff_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("406") || lower.contains("exceeded the maximum") || lower.contains("too large")
+}
+
+#[derive(Debug, Deserialize)]
+struct PrFileEntry {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrFilesList {
+    files: Vec<PrFileEntry>,
+}
+
+/// One entry from the GitHub PR files API. `patch` is optional because binary
+/// files and renames may not include one.
+#[derive(Debug, Deserialize)]
+struct PrFilePatch {
+    filename: String,
+    #[serde(default)]
+    patch: Option<String>,
+}
+
+async fn get_oversized_pr_diff(
+    workspace_path: &Path,
+    pr_number: u64,
+) -> Result<FetchedPrDiff, String> {
+    let pr_arg = pr_number.to_string();
+    let list_args = ["pr", "view", &pr_arg, "--json", "files"];
+    let list_json = run_program(workspace_path, "gh", &list_args)
+        .await
+        .map_err(|e| format!("Failed to fetch PR file list: {}", e))?;
+
+    let file_list: PrFilesList = serde_json::from_str(&list_json)
+        .map_err(|e| format!("Failed to parse PR files list JSON: {}", e))?;
+
+    let total_files = file_list.files.len();
+    let files_to_fetch: Vec<&PrFileEntry> = if total_files > MAX_OVERSIZED_FILES {
+        file_list.files[..MAX_OVERSIZED_FILES].iter().collect()
+    } else {
+        file_list.files.iter().collect()
+    };
+
+    // Fetch every patch in a single PR files API call instead of one request
+    // per file. The response includes `filename` and `patch`, which we match
+    // locally by path.
+    let patches_url = format!("repos/:owner/:repo/pulls/{}/files?per_page=100", pr_arg);
+    let patches_args = ["api", &patches_url];
+    let patches_json = run_program(workspace_path, "gh", &patches_args)
+        .await
+        .map_err(|e| format!("Failed to fetch PR files patches: {}", e))?;
+    let patches: Vec<PrFilePatch> = serde_json::from_str(&patches_json)
+        .map_err(|e| format!("Failed to parse PR files patches JSON: {}", e))?;
+    let patches_by_path: std::collections::HashMap<&str, &str> = patches
+        .iter()
+        .filter_map(|entry| entry.patch.as_deref().map(|p| (entry.filename.as_str(), p)))
+        .collect();
+
+    let mut reconstructed = String::new();
+    let mut missing_patches = Vec::new();
+    for file in &files_to_fetch {
+        match patches_by_path.get(file.path.as_str()) {
+            Some(patch) => {
+                let chunk = reconstruct_diff(&file.path, patch);
+                reconstructed.push_str(&chunk);
+            }
+            None => {
+                tracing::debug!("Skipping file {} as it has no patch field", file.path);
+                missing_patches.push(file.path.clone());
+            }
+        }
+    }
+
+    if !missing_patches.is_empty() {
+        tracing::debug!(
+            "No patch field for {} files: {:?}",
+            missing_patches.len(),
+            missing_patches
+        );
+    }
+
+    Ok(FetchedPrDiff {
+        diff: reconstructed,
+        warnings: oversized_diff_warnings(MAX_OVERSIZED_FILES.min(total_files), total_files),
+    })
+}
+
+fn oversized_diff_warnings(reviewed: usize, total: usize) -> Vec<String> {
+    (reviewed < total)
+        .then(|| partial_review_warning(reviewed, total))
+        .into_iter()
+        .collect()
+}
+
+fn reconstruct_diff(path: &str, patch: &str) -> String {
+    let mut chunk = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n");
+    if !patch.ends_with('\n') {
+        chunk.push_str(patch);
+        chunk.push('\n');
+    } else {
+        chunk.push_str(patch);
+    }
+    chunk
 }
 
 fn filter_rejected_comments(
@@ -757,7 +912,7 @@ async fn run_full_scan_review(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     focus: ReviewFocus,
 ) -> Result<ReviewResult, String> {
     let mut warnings = Vec::new();
@@ -793,8 +948,9 @@ async fn run_full_scan_review(
     for (index, batch) in batches.iter().enumerate() {
         let chunk_number = index + 1;
         let batch_files: Vec<String> = batch.iter().map(|file| file.path.clone()).collect();
-        emitter.emit_progress(ReviewProgressEvent::new(
+        emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             run_id,
+            focus,
             ReviewPhase::Detector {
                 chunk: chunk_number,
                 total_chunks,
@@ -805,7 +961,13 @@ async fn run_full_scan_review(
         ));
         let prompt =
             detector::build_scan_prompt(batch.iter().map(|file| file.path.as_str()), focus);
-        match detector::run_detector(provider, model, api_key, workspace, &prompt, focus, None)
+        let observer = DetectorToolObserver {
+            run_id,
+            chunk: chunk_number,
+            focus,
+            emitter,
+        };
+        match detector::run_detector(provider, model, api_key, workspace, &prompt, focus, Some(&observer))
             .await
         {
             Ok(output) => {
@@ -816,8 +978,9 @@ async fn run_full_scan_review(
                     parsed.comments,
                     &anti_pattern_store,
                 ));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -839,8 +1002,9 @@ async fn run_full_scan_review(
                     "detector invocation failed"
                 );
                 warnings.push(failure.warning_line("scan batch"));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -913,13 +1077,15 @@ async fn run_full_scan_review(
 struct DetectorToolObserver<'a> {
     run_id: &'a str,
     chunk: usize,
+    focus: ReviewFocus,
     emitter: &'a dyn ReviewProgressEmitter,
 }
 
 impl<'a> ToolEventObserver for DetectorToolObserver<'a> {
     fn on_tool_call(&self, name: &str, arguments: &serde_json::Value) {
-        self.emitter.emit_progress(ReviewProgressEvent::new(
+        self.emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             self.run_id,
+            self.focus,
             ReviewPhase::DetectorTool {
                 chunk: self.chunk,
                 tool_name: name.to_string(),
@@ -932,8 +1098,9 @@ impl<'a> ToolEventObserver for DetectorToolObserver<'a> {
 
     fn on_tool_result(&self, name: &str, result: &str) {
         let summary = truncate_tool_result(result);
-        self.emitter.emit_progress(ReviewProgressEvent::new(
+        self.emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             self.run_id,
+            self.focus,
             ReviewPhase::DetectorTool {
                 chunk: self.chunk,
                 tool_name: name.to_string(),
@@ -963,25 +1130,26 @@ async fn run_diff_review(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     focus: ReviewFocus,
     mode: ReviewMode,
     review_context: String,
     diff: String,
+    initial_warnings: Vec<String>,
 ) -> Result<ReviewResult, String> {
     if diff.trim().is_empty() {
         return Ok(review_result(
             Vec::new(),
             "No changes found to review".to_string(),
             true,
-            Vec::new(),
+            initial_warnings,
             0,
             focus,
             mode,
         ));
     }
 
-    let mut warnings = Vec::new();
+    let mut warnings = initial_warnings;
     let file_diffs: Vec<FileDiff> = parse_diff_by_file(&diff)
         .into_iter()
         .filter(|file| !file.is_binary)
@@ -1028,8 +1196,9 @@ async fn run_diff_review(
     for (index, chunk) in chunks.iter().enumerate() {
         let chunk_number = index + 1;
         let chunk_files: Vec<String> = chunk.iter().map(|file| file.file.clone()).collect();
-        emitter.emit_progress(ReviewProgressEvent::new(
+        emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             run_id,
+            focus,
             ReviewPhase::Detector {
                 chunk: chunk_number,
                 total_chunks,
@@ -1042,6 +1211,7 @@ async fn run_diff_review(
         let observer = DetectorToolObserver {
             run_id,
             chunk: chunk_number,
+            focus,
             emitter,
         };
         match detector::run_detector(
@@ -1063,8 +1233,9 @@ async fn run_diff_review(
                     parsed.comments,
                     &anti_pattern_store,
                 ));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -1086,8 +1257,9 @@ async fn run_diff_review(
                     "detector invocation failed"
                 );
                 warnings.push(failure.warning_line("diff chunk"));
-                emitter.emit_progress(ReviewProgressEvent::new(
+                emitter.emit_progress(ReviewProgressEvent::new_with_focus(
                     run_id,
+                    focus,
                     ReviewPhase::Detector {
                         chunk: chunk_number,
                         total_chunks,
@@ -1159,14 +1331,15 @@ async fn validate_candidates(
     provider: &str,
     model: &str,
     api_key: &str,
-    workspace: &WorkspaceToolContext,
+    workspace: &ActiveWorkspaceContext,
     candidates: &[ReviewComment],
     anti_pattern_store: &anti_pattern::AntiPatternStore,
     focus: ReviewFocus,
 ) -> Result<(Vec<ReviewComment>, bool, Option<String>, Vec<String>), String> {
     if candidates.is_empty() {
-        emitter.emit_progress(ReviewProgressEvent::new(
+        emitter.emit_progress(ReviewProgressEvent::new_with_focus(
             run_id,
+            focus,
             ReviewPhase::Validator {
                 candidate_count: 0,
                 status: PhaseStatus::Done,
@@ -1180,8 +1353,9 @@ async fn validate_candidates(
         ));
     }
 
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        focus,
         ReviewPhase::Validator {
             candidate_count: candidates.len(),
             status: PhaseStatus::Running,
@@ -1216,8 +1390,9 @@ async fn validate_candidates(
                 )],
             )),
         };
-    emitter.emit_progress(ReviewProgressEvent::new(
+    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
+        focus,
         ReviewPhase::Validator {
             candidate_count: candidates.len(),
             status: PhaseStatus::Done,
@@ -1716,6 +1891,11 @@ fn pr_fetch_error(pr_number: u64, error: String) -> String {
         || lower.contains("no pull requests found")
     {
         format!("PR #{} not found in this repository", pr_number)
+    } else if is_oversized_diff_error(&error) {
+        format!(
+            "PR #{} diff is too large. GitHub returns 406 for diffs over 20,000 lines.",
+            pr_number
+        )
     } else {
         format!("Failed to fetch PR: {}", error)
     }
@@ -1790,11 +1970,10 @@ pub(crate) struct AgentConfig<'a> {
     pub provider: &'a str,
     pub model: &'a str,
     pub api_key: &'a str,
-    pub workspace: &'a WorkspaceToolContext,
+    pub workspace: &'a ActiveWorkspaceContext,
+    pub role: AgentRole,
     pub preamble: &'a str,
     pub prompt: &'a str,
-    pub timeout: Duration,
-    pub max_turns: usize,
     /// Optional observer invoked when the agent makes a tool call or receives
     /// a tool result while streaming. Used by the detector to surface
     /// "reading file X" progress to the review progress emitter.
@@ -1829,22 +2008,41 @@ pub(crate) async fn run_workspace_agent(
             config.provider
         )));
     }
+    let profile = resolve_harness_profile(HarnessProfileRequest {
+        role: config.role,
+        workspace: Some(config.workspace.clone()),
+        role_guidance: Some(config.preamble.to_string()),
+        matched_skills_section: None,
+        invoked_skill_section: None,
+        main_tool_inputs: None,
+    })
+    .map_err(|error| ReviewAgentError::Provider(error.to_string()))?;
+    tracing::debug!(profile = ?profile.summary(), "resolved Review Harness Profile");
+    let profile_preamble = profile.preamble.unwrap_or_default();
+    let profile_tools = profile.tools;
+    let profile_guards = profile.guards;
+    let deadline = profile_guards
+        .deadline
+        .expect("Review Harness Profiles always have a deadline");
 
     macro_rules! run_from_client {
         ($client:expr, $model:expr) => {{
             let agent_builder = $client
                 .agent($model)
-                .preamble(config.preamble)
-                .default_max_turns(config.max_turns)
-                .tools(build_base_workspace_tools(
-                    config.workspace.workspace_path.clone(),
-                ));
+                .preamble(&profile_preamble)
+                .default_max_turns(profile_guards.max_turns)
+                .tools(profile_tools);
             let agent = agent_builder.build();
             let stream = agent
                 .stream_prompt(config.prompt)
-                .multi_turn(config.max_turns)
+                .multi_turn(profile_guards.max_turns)
                 .await;
-            consume_agent_stream(stream, config.timeout, config.on_tool_event).await
+            timeout(
+                deadline,
+                consume_agent_stream(stream, profile_guards.loop_guard, config.on_tool_event),
+            )
+            .await
+            .map_err(|_| ReviewAgentError::Timeout)?
         }};
     }
 
@@ -1863,7 +2061,7 @@ pub(crate) async fn run_workspace_agent(
 /// surfaces as a timeout rather than hanging forever.
 async fn consume_agent_stream<R>(
     mut stream: rig::agent::StreamingResult<R>,
-    deadline: Duration,
+    loop_guard: crate::harness_profile::LoopGuardPolicy,
     on_tool_event: Option<&dyn ToolEventObserver>,
 ) -> Result<String, ReviewAgentError>
 where
@@ -1872,48 +2070,59 @@ where
     let mut tool_name_by_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     let mut final_output = String::new();
+    let mut loop_detector = LoopDetector::new(loop_guard);
 
-    loop {
-        let next = timeout(deadline, stream.next()).await;
-        match next {
-            Err(_) => return Err(ReviewAgentError::Timeout),
-            Ok(None) => break,
-            Ok(Some(item)) => match item {
-                Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
-                    StreamedAssistantContent::ToolCall {
-                        tool_call,
-                        internal_call_id,
-                    } => {
-                        tool_name_by_id
-                            .insert(internal_call_id.clone(), tool_call.function.name.clone());
-                        if let Some(observer) = on_tool_event {
-                            observer.on_tool_call(
-                                &tool_call.function.name,
-                                &tool_call.function.arguments,
-                            );
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
+                StreamedAssistantContent::ToolCall {
+                    tool_call,
+                    internal_call_id,
+                } => {
+                    match loop_detector
+                        .record_call(&tool_call.function.name, &tool_call.function.arguments)
+                    {
+                        LoopStatus::Stop => {
+                            return Err(ReviewAgentError::Provider(format!(
+                                "review agent stopped after a repeated '{}' tool-call loop",
+                                tool_call.function.name
+                            )))
                         }
+                        LoopStatus::Warning(count) => tracing::warn!(
+                            role = "review",
+                            count,
+                            tool_name = tool_call.function.name,
+                            "repeated tool-call warning"
+                        ),
+                        LoopStatus::Ok => {}
                     }
-                    StreamedAssistantContent::Text(_) => {}
-                    _ => {}
-                },
-                Ok(MultiTurnStreamItem::StreamUserItem(user_content)) => {
+                    tool_name_by_id
+                        .insert(internal_call_id.clone(), tool_call.function.name.clone());
                     if let Some(observer) = on_tool_event {
-                        if let Some((name, result_text)) =
-                            extract_tool_result(&user_content, &tool_name_by_id)
-                        {
-                            observer.on_tool_result(&name, &result_text);
-                        }
+                        observer
+                            .on_tool_call(&tool_call.function.name, &tool_call.function.arguments);
                     }
                 }
-                Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
-                    final_output = final_response.response().to_owned();
-                    break;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    return Err(ReviewAgentError::Provider(error.to_string()));
-                }
+                StreamedAssistantContent::Text(_) => {}
+                _ => {}
             },
+            Ok(MultiTurnStreamItem::StreamUserItem(user_content)) => {
+                if let Some(observer) = on_tool_event {
+                    if let Some((name, result_text)) =
+                        extract_tool_result(&user_content, &tool_name_by_id)
+                    {
+                        observer.on_tool_result(&name, &result_text);
+                    }
+                }
+            }
+            Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
+                final_output = final_response.response().to_owned();
+                break;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Err(ReviewAgentError::Provider(error.to_string()));
+            }
         }
     }
 
@@ -2677,11 +2886,75 @@ Binary files a/icon.png and b/icon.png differ
     }
 
     #[test]
-    fn shared_agent_max_turns_is_50() {
+    fn test_is_oversized_diff_error() {
+        assert!(is_oversized_diff_error("406 Not Acceptable"));
+        assert!(is_oversized_diff_error("diff exceeded the maximum allowed size"));
+        assert!(is_oversized_diff_error("the diff was too large to fetch"));
+        assert!(!is_oversized_diff_error("some other random error message"));
+    }
+
+    #[test]
+    fn test_reconstruct_diff_format() {
+        let path = "src/main.rs";
+        let patch = "@@ -1,3 +1,3 @@\n-hello\n+world";
+        let expected = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n-hello\n+world\n";
+        assert_eq!(reconstruct_diff(path, patch), expected);
+    }
+
+    #[test]
+    fn oversized_diff_warning_is_structured_metadata() {
         assert_eq!(
-            crate::llm::AGENT_MAX_TURNS,
-            50,
-            "Shared interactive-agent turn budget should be 50"
+            oversized_diff_warnings(20, 82),
+            vec!["Reviewed 20/82 files — partial review due to size"]
         );
+        assert!(oversized_diff_warnings(20, 20).is_empty());
+    }
+
+    #[tokio::test]
+    async fn initial_warnings_propagate_to_review_result() {
+        let result = run_diff_review(
+            "run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            "key",
+            &ActiveWorkspaceContext {
+                workspace_path: std::env::current_dir().unwrap(),
+                corpus_available: false,
+                session_mode: crate::session_mode::SessionMode::Build,
+            },
+            ReviewFocus::Security,
+            ReviewMode::Local,
+            "Review".to_string(),
+            ""
+                .to_string(),
+            vec!["Reviewed 20/82 files — partial review due to size".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.warnings,
+            vec!["Reviewed 20/82 files — partial review due to size"]
+        );
+    }
+
+    #[test]
+    fn test_reconstruct_and_parse_diff() {
+        let path1 = "src/a.rs";
+        let patch1 = "@@ -1 +1 @@\n-old\n+new";
+        let path2 = "src/b.rs";
+        let patch2 = "@@ -10 +10,2 @@\n-delete\n+add1\n+add2";
+
+        let diff1 = reconstruct_diff(path1, patch1);
+        let diff2 = reconstruct_diff(path2, patch2);
+
+        let combined = format!("{}{}", diff1, diff2);
+        let parsed = parse_diff_by_file(&combined);
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].file, "src/a.rs");
+        assert_eq!(parsed[1].file, "src/b.rs");
+        assert!(parsed[0].diff.contains("--- a/src/a.rs"));
+        assert!(parsed[1].diff.contains("+++ b/src/b.rs"));
     }
 }

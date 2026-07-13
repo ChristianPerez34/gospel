@@ -34,9 +34,10 @@ export function WorkspaceSwitcher({
     shouldRestoreFocusOnDeactivate: !trapPaused,
   });
 
-  const filtered = workspaces.filter((w) =>
-    w.name.toLowerCase().includes(search.toLowerCase()) ||
-    w.path.toLowerCase().includes(search.toLowerCase())
+  const filtered = workspaces.filter(
+    (w) =>
+      w.name.toLowerCase().includes(search.toLowerCase()) ||
+      w.path.toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -63,7 +64,12 @@ export function WorkspaceSwitcher({
             fill="none"
           >
             <circle cx="5.5" cy="5.5" r="4" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M9 9L12.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <path
+              d="M9 9L12.5 12.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
           </svg>
           <input
             className="h-11 flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
@@ -76,18 +82,19 @@ export function WorkspaceSwitcher({
         </div>
         <div className="overflow-y-auto flex-1 bg-surface-elevated">
           {loading && workspaces.length === 0 && (
-            <div className="p-4 text-center text-text-muted text-body-sm">Loading workspaces...</div>
+            <div className="p-4 text-center text-text-muted text-body-sm">
+              Loading workspaces...
+            </div>
           )}
           {!loading && workspaces.length === 0 && (
-            <div className="p-4 text-center text-text-muted text-body-sm">No workspaces yet. Add one below.</div>
+            <div className="p-4 text-center text-text-muted text-body-sm">
+              No workspaces yet. Add one below.
+            </div>
           )}
           {filtered.map((ws) => {
             const isActive = ws.id === activeWorkspaceId;
             return (
-              <div
-                key={ws.id}
-                className={`workspace-row group ${isActive ? "is-active" : ""}`}
-              >
+              <div key={ws.id} className={`workspace-row group ${isActive ? "is-active" : ""}`}>
                 <span
                   className={`workspace-row-dot ${isActive ? "" : "opacity-0"}`}
                   aria-hidden="true"
@@ -99,8 +106,12 @@ export function WorkspaceSwitcher({
                     onClose();
                   }}
                 >
-                  <div className="text-body-sm font-medium text-text-primary min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{ws.name}</div>
-                  <div className="font-mono text-caption text-text-muted min-w-0 overflow-hidden text-ellipsis whitespace-nowrap flex-1">{ws.path}</div>
+                  <div className="text-body-sm font-medium text-text-primary min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                    {ws.name}
+                  </div>
+                  <div className="font-mono text-caption text-text-muted min-w-0 overflow-hidden text-ellipsis whitespace-nowrap flex-1">
+                    {ws.path}
+                  </div>
                   {ws.sessionCount > 0 && (
                     <span className="font-mono text-caption text-text-muted bg-surface-overlay px-1 rounded-sm shrink-0">
                       {ws.sessionCount}
@@ -127,7 +138,12 @@ export function WorkspaceSwitcher({
           onClick={onAdd}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 3V11M3 7H11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <path
+              d="M7 3V11M3 7H11"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
           </svg>
           Add workspace
         </button>

@@ -14,7 +14,13 @@ interface CapturedListeners {
 
 const SAMPLE_MODELS: ModelOption[] = [
   { id: "openai::gpt-4o", name: "gpt-4o", provider: "openai", model: "gpt-4o", configured: true },
-  { id: "anthropic::claude-3-5-sonnet", name: "claude-3-5-sonnet", provider: "anthropic", model: "claude-3-5-sonnet", configured: true },
+  {
+    id: "anthropic::claude-3-5-sonnet",
+    name: "claude-3-5-sonnet",
+    provider: "anthropic",
+    model: "claude-3-5-sonnet",
+    configured: true,
+  },
 ];
 
 let capturedListeners: CapturedListeners = {};
@@ -406,10 +412,10 @@ describe("useSessionManager", () => {
         await result.current.handleSend("hi");
       });
       act(() => {
-        triggerEvent<{ id: string; name: string; arguments?: unknown }>(
-          "llm-tool-call",
-          { id: "tool-1", name: "read_file" },
-        );
+        triggerEvent<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", {
+          id: "tool-1",
+          name: "read_file",
+        });
       });
       act(() => {
         triggerEvent<string>("llm-done", "done");
@@ -469,7 +475,7 @@ describe("useSessionManager", () => {
           variant: null,
           prompt: "hello world",
           sessionId: result.current.activeSessionId,
-        }),
+        })
       );
     });
 
@@ -512,7 +518,7 @@ describe("useSessionManager", () => {
           variant: "reasoning-high",
           prompt: "think hard",
           sessionId: result.current.activeSessionId,
-        }),
+        })
       );
       expect(result.current.sessions[0]).toMatchObject({
         provider: "openai",
@@ -592,10 +598,7 @@ describe("useSessionManager", () => {
 
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError.mock.calls[0]![0]).toMatch(/select an available model/i);
-      expect(invoke).not.toHaveBeenCalledWith(
-        "complete_streaming",
-        expect.anything(),
-      );
+      expect(invoke).not.toHaveBeenCalledWith("complete_streaming", expect.anything());
     });
 
     it("invokes onError and does not call startStream when the selected model is not in the models list", async () => {
@@ -610,10 +613,7 @@ describe("useSessionManager", () => {
       });
 
       expect(onError).toHaveBeenCalledTimes(1);
-      expect(invoke).not.toHaveBeenCalledWith(
-        "complete_streaming",
-        expect.anything(),
-      );
+      expect(invoke).not.toHaveBeenCalledWith("complete_streaming", expect.anything());
     });
 
     it("invokes onError and sets status to error when startStream throws", async () => {
@@ -691,10 +691,11 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
-        triggerEvent<{ id: string; name: string; arguments?: unknown }>(
-          "llm-tool-call",
-          { id: "tool-1", name: "read_file", arguments: { path: "x" } },
-        );
+        triggerEvent<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", {
+          id: "tool-1",
+          name: "read_file",
+          arguments: { path: "x" },
+        });
       });
 
       expect(result.current.status).toBe("acting");
@@ -779,10 +780,11 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
-        triggerEvent<{ id: string; name: string; arguments?: unknown }>(
-          "llm-tool-call",
-          { id: "tool-1", name: "read_file", arguments: { path: "src/lib.rs" } },
-        );
+        triggerEvent<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", {
+          id: "tool-1",
+          name: "read_file",
+          arguments: { path: "src/lib.rs" },
+        });
       });
 
       const turnId = result.current.currentTurn?.id;
@@ -797,10 +799,11 @@ describe("useSessionManager", () => {
       ]);
 
       act(() => {
-        triggerEvent<{ id: string; name: string; result: string }>(
-          "llm-tool-result",
-          { id: "tool-1", name: "read_file", result: "file contents" },
-        );
+        triggerEvent<{ id: string; name: string; result: string }>("llm-tool-result", {
+          id: "tool-1",
+          name: "read_file",
+          result: "file contents",
+        });
       });
 
       expect(result.current.currentTurn?.id).toBe(turnId);
@@ -866,7 +869,7 @@ describe("useSessionManager", () => {
       ]);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("llm-tool-result"),
-        expect.objectContaining({ name: "read_file" }),
+        expect.objectContaining({ name: "read_file" })
       );
       warnSpy.mockRestore();
     });
@@ -879,10 +882,11 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
-        triggerEvent<{ id: string; name: string; arguments?: unknown }>(
-          "llm-tool-call",
-          { id: "tool-1", name: "read_file", arguments: { path: "src/lib.rs" } },
-        );
+        triggerEvent<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", {
+          id: "tool-1",
+          name: "read_file",
+          arguments: { path: "src/lib.rs" },
+        });
       });
 
       const turnId = result.current.currentTurn?.id;

@@ -29,7 +29,7 @@ function renderChat({
       workspacePath="/workspace/gospel"
       isThinking={isThinking}
       currentTurn={currentTurn}
-    />,
+    />
   );
 }
 
@@ -47,7 +47,7 @@ function defineScrollMetrics(
     scrollHeight,
     clientHeight,
     scrollTop,
-  }: { scrollHeight: number; clientHeight: number; scrollTop: number },
+  }: { scrollHeight: number; clientHeight: number; scrollTop: number }
 ) {
   Object.defineProperties(element, {
     scrollHeight: { configurable: true, value: scrollHeight },
@@ -123,7 +123,9 @@ describe("ChatView block timeline rendering", () => {
 
     const readRow = screen.getByRole("button", { name: /read file.*running/i });
     expect(readRow.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.getByTestId("agent-turn-turn-running").className).toContain("motion-reduce:animate-none");
+    expect(screen.getByTestId("agent-turn-turn-running").className).toContain(
+      "motion-reduce:animate-none"
+    );
     expect(readRow.className).toContain("motion-reduce:transition-none");
 
     fireEvent.click(readRow);
@@ -255,7 +257,7 @@ describe("ChatView block timeline rendering", () => {
         workspacePath="/workspace/gospel"
         isThinking={false}
         currentTurn={null}
-      />,
+      />
     );
 
     expect(screen.getByTestId("agent-turn-turn-stable")).toBe(liveContainer);
@@ -306,7 +308,7 @@ describe("ChatView scroll following", () => {
           createdAt: new Date("2026-06-24T00:00:30Z"),
           blocks: [{ kind: "text", id: "text-0", text: "Streaming text" }],
         }}
-      />,
+      />
     );
 
     expect(scrollContainer.scrollTop).toBe(1200);
@@ -333,7 +335,7 @@ describe("ChatView scroll following", () => {
           createdAt: new Date("2026-06-24T00:00:30Z"),
           blocks: [{ kind: "text", id: "text-0", text: "Streaming text" }],
         }}
-      />,
+      />
     );
 
     expect(scrollContainer.scrollTop).toBe(500);
@@ -364,7 +366,7 @@ describe("ChatView scroll following", () => {
         workspacePath="/workspace/gospel"
         isThinking={true}
         currentTurn={null}
-      />,
+      />
     );
 
     expect(scrollContainer.scrollTop).toBe(1200);
@@ -408,7 +410,7 @@ describe("ChatView scroll following", () => {
             },
           ],
         }}
-      />,
+      />
     );
 
     expect(scrollContainer.scrollTop).toBe(1200);

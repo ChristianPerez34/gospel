@@ -14,9 +14,9 @@
   --gospel-accent-action: oklch(0.75 0.18 175);
   --gospel-accent-structure: oklch(0.72 0.14 280);
   --gospel-accent-signal: oklch(0.78 0.16 75);
-  --gospel-accent-data: oklch(0.70 0.13 30);
+  --gospel-accent-data: oklch(0.7 0.13 30);
 
-  --gospel-status-error: oklch(0.65 0.20 25);
+  --gospel-status-error: oklch(0.65 0.2 25);
   --gospel-status-warning: oklch(0.75 0.15 85);
   --gospel-status-success: oklch(0.72 0.19 155);
 
@@ -158,14 +158,14 @@
 
 [data-theme="light"] {
   --gospel-surface-base: oklch(0.98 0.003 260);
-  --gospel-surface-elevated: oklch(1.00 0.002 260);
+  --gospel-surface-elevated: oklch(1 0.002 260);
   --gospel-surface-overlay: oklch(0.95 0.004 260);
   --gospel-surface-sunken: oklch(0.92 0.004 260);
   --gospel-surface-line: oklch(0.88 0.004 260);
-  --gospel-scrim: oklch(0.10 0.000 260 / 0.35);
+  --gospel-scrim: oklch(0.1 0 260 / 0.35);
 
-  --gospel-text-primary: oklch(0.18 0.010 260);
-  --gospel-text-secondary: oklch(0.35 0.010 260);
+  --gospel-text-primary: oklch(0.18 0.01 260);
+  --gospel-text-secondary: oklch(0.35 0.01 260);
   --gospel-text-muted: oklch(0.55 0.008 260);
 
   --code-block-background: oklch(0.97 0.003 260);

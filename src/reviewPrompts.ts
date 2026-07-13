@@ -1,10 +1,4 @@
-import type {
-  ReviewComment,
-  ReviewFocus,
-  ReviewMode,
-  ReviewResult,
-  SignalTier,
-} from "./types";
+import type { ReviewComment, ReviewFocus, ReviewMode, ReviewResult, SignalTier } from "./types";
 
 interface ReviewFindingPromptContext {
   comment: ReviewComment;
@@ -50,12 +44,7 @@ function cweLabel(comment: ReviewComment) {
   return comment.cwe_id ?? comment.cwe_name ?? "not specified";
 }
 
-function findingMetadata({
-  comment,
-  review,
-  index,
-  workspacePath,
-}: ReviewFindingPromptContext) {
+function findingMetadata({ comment, review, index, workspacePath }: ReviewFindingPromptContext) {
   return [
     optionalLine("Finding index", index),
     optionalLine("Finding ID", comment.comment_id),
@@ -97,11 +86,12 @@ export function buildExternalAgentFindingPrompt(context: ReviewFindingPromptCont
 export function buildGospelFixFindingPrompt(context: ReviewFindingPromptContext) {
   const { comment, review } = context;
   const focus = review?.focus ?? comment.focus;
-  const rerunInstruction = review?.mode.type === "local"
-    ? `- After the minimal fix, rerun \`run_review\` with focus \`${focus}\` in \`local\` mode if the changed scope is still local.`
-    : review?.mode.type === "pull_request"
-      ? `- After the minimal fix, rerun \`run_review\` with focus \`${focus}\` in \`pr\` mode for PR #${review.mode.pr_number}.`
-      : null;
+  const rerunInstruction =
+    review?.mode.type === "local"
+      ? `- After the minimal fix, rerun \`run_review\` with focus \`${focus}\` in \`local\` mode if the changed scope is still local.`
+      : review?.mode.type === "pull_request"
+        ? `- After the minimal fix, rerun \`run_review\` with focus \`${focus}\` in \`pr\` mode for PR #${review.mode.pr_number}.`
+        : null;
 
   const workflow = [
     "Workflow:",

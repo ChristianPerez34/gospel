@@ -18,11 +18,13 @@ function isElementVisible(element: HTMLElement) {
 }
 
 function focusableElements(container: HTMLElement) {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((element) => {
-    if (element.getAttribute("aria-hidden") === "true") return false;
-    if (element.hasAttribute("disabled")) return false;
-    return isElementVisible(element);
-  });
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => {
+      if (element.getAttribute("aria-hidden") === "true") return false;
+      if (element.hasAttribute("disabled")) return false;
+      return isElementVisible(element);
+    }
+  );
 }
 
 interface UseFocusTrapOptions {

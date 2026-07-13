@@ -30,7 +30,15 @@ export function TitleBar() {
           aria-label="Maximize"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <rect x="2.5" y="2.5" width="7" height="7" stroke="currentColor" strokeWidth="1" fill="none" />
+            <rect
+              x="2.5"
+              y="2.5"
+              width="7"
+              height="7"
+              stroke="currentColor"
+              strokeWidth="1"
+              fill="none"
+            />
           </svg>
         </button>
         <button

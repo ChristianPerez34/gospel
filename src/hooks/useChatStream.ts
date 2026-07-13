@@ -91,7 +91,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       setCurrentTurn(next);
       return next;
     },
-    [createTurn],
+    [createTurn]
   );
 
   const clearCurrentTurn = useCallback(() => {
@@ -106,133 +106,105 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     (async () => {
       const unlisteners: (() => void)[] = [];
 
-      const track = (p: Promise<() => void>) => p.then((u) => { unlisteners.push(u); return u; });
+      const track = (p: Promise<() => void>) =>
+        p.then((u) => {
+          unlisteners.push(u);
+          return u;
+        });
       try {
         await Promise.all([
-          track(listen<string>("llm-token", (event) => {
-            updateCurrentTurn((turn) => {
-              const blocks = [...turn.blocks];
-              const last = blocks[blocks.length - 1];
-              if (last && last.kind === "text") {
-                blocks[blocks.length - 1] = {
-                  ...last,
-                  text: last.text + event.payload,
-                };
-              } else {
-                blocks.push({
-                  kind: "text",
-                  id: `text-${blocks.length}`,
-                  text: event.payload,
-                });
-              }
-              return { ...turn, blocks };
-            });
-          })),
-          track(listen<LlmDonePayload>("llm-done", (event) => {
-            const payload = event.payload;
-            const finalTurn = currentTurnRef.current;
-            const payloadContent =
-              typeof payload === "string"
-                ? payload
-                : payload?.response ?? "";
-            const blocks = finalTurn?.blocks ?? [];
-            const derivedContent = joinTextBlocks(blocks);
-            // Prefer the backend's authoritative response text when present;
-            // otherwise fall back to streamed text blocks.
-            const content = payloadContent || derivedContent || "";
-            const messageId = finalTurn?.id ?? generateTurnId();
-
-            if (content || blocks.length > 0) {
-              optionsRef.current.onMessages?.((prev) => [
-                ...prev,
-                {
-                  id: messageId,
-                  role: "agent",
-                  content: content || "Completed.",
-                  timestamp: new Date(),
-                  blocks: blocks.length > 0 ? blocks : undefined,
-                },
-              ]);
-            }
-
-            clearCurrentTurn();
-            optionsRef.current.onStatusChange?.("connected");
-          })),
-          track(listen<{ code: string; message: string }>("llm-error", (event) => {
-            const err = event.payload;
-            const finalTurn = currentTurnRef.current;
-            const messageId = finalTurn?.id ?? generateTurnId();
-            const blocks = finalTurn?.blocks ?? [];
-            const derivedContent = joinTextBlocks(blocks);
-
-            if (err?.message || derivedContent || blocks.length > 0) {
-              optionsRef.current.onMessages?.((prev) => [
-                ...prev,
-                {
-                  id: messageId,
-                  role: "agent",
-                  content: derivedContent || "",
-                  timestamp: new Date(),
-                  error: err?.message || "Completion failed.",
-                  blocks: blocks.length > 0 ? blocks : undefined,
-                },
-              ]);
-            }
-
-            clearCurrentTurn();
-            optionsRef.current.onStatusChange?.("error");
-
-            if (err?.code === "API_KEY_MISSING") {
-              optionsRef.current.onErrorToast?.(err.message, {
-                label: "Open Settings",
-                onClick: optionsRef.current.onOpenSettings ?? (() => {}),
-              });
-            } else {
-              optionsRef.current.onErrorToast?.(err?.message || "Completion failed.", {
-                label: "Retry",
-                onClick: optionsRef.current.onRetry ?? (() => {}),
-              });
-            }
-          })),
-          track(listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
-            updateCurrentTurn((turn) => ({
-              ...turn,
-              blocks: [
-                ...turn.blocks,
-                {
-                  kind: "tool",
-                  id: event.payload.id,
-                  name: event.payload.name,
-                  arguments: event.payload.arguments,
-                  status: "calling" as const,
-                },
-              ],
-            }));
-            optionsRef.current.onStatusChange?.("acting");
-          })),
-          track(listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
-            updateCurrentTurn((turn) => {
-              const idx = turn.blocks.findIndex(
-                (b): b is TurnBlock & { kind: "tool" } =>
-                  b.kind === "tool" && b.id === event.payload.id,
-              );
-              if (idx >= 0) {
+          track(
+            listen<string>("llm-token", (event) => {
+              updateCurrentTurn((turn) => {
                 const blocks = [...turn.blocks];
-                const existing = blocks[idx];
-                if (existing.kind === "tool") {
-                  blocks[idx] = {
-                    ...existing,
-                    result: event.payload.result,
-                    status: "completed",
+                const last = blocks[blocks.length - 1];
+                if (last && last.kind === "text") {
+                  blocks[blocks.length - 1] = {
+                    ...last,
+                    text: last.text + event.payload,
                   };
+                } else {
+                  blocks.push({
+                    kind: "text",
+                    id: `text-${blocks.length}`,
+                    text: event.payload,
+                  });
                 }
                 return { ...turn, blocks };
+              });
+            })
+          ),
+          track(
+            listen<LlmDonePayload>("llm-done", (event) => {
+              const payload = event.payload;
+              const finalTurn = currentTurnRef.current;
+              const payloadContent =
+                typeof payload === "string" ? payload : (payload?.response ?? "");
+              const blocks = finalTurn?.blocks ?? [];
+              const derivedContent = joinTextBlocks(blocks);
+              // Prefer the backend's authoritative response text when present;
+              // otherwise fall back to streamed text blocks.
+              const content = payloadContent || derivedContent || "";
+              const messageId = finalTurn?.id ?? generateTurnId();
+
+              if (content || blocks.length > 0) {
+                optionsRef.current.onMessages?.((prev) => [
+                  ...prev,
+                  {
+                    id: messageId,
+                    role: "agent",
+                    content: content || "Completed.",
+                    timestamp: new Date(),
+                    blocks: blocks.length > 0 ? blocks : undefined,
+                  },
+                ]);
               }
-              console.warn(
-                `[useChatStream] Received llm-tool-result for id "${event.payload.id}" with no matching llm-tool-call; appending as completed.`,
-                { name: event.payload.name },
-              );
-              return {
+
+              clearCurrentTurn();
+              optionsRef.current.onStatusChange?.("connected");
+            })
+          ),
+          track(
+            listen<{ code: string; message: string }>("llm-error", (event) => {
+              const err = event.payload;
+              const finalTurn = currentTurnRef.current;
+              const messageId = finalTurn?.id ?? generateTurnId();
+              const blocks = finalTurn?.blocks ?? [];
+              const derivedContent = joinTextBlocks(blocks);
+
+              if (err?.message || derivedContent || blocks.length > 0) {
+                optionsRef.current.onMessages?.((prev) => [
+                  ...prev,
+                  {
+                    id: messageId,
+                    role: "agent",
+                    content: derivedContent || "",
+                    timestamp: new Date(),
+                    error: err?.message || "Completion failed.",
+                    blocks: blocks.length > 0 ? blocks : undefined,
+                  },
+                ]);
+              }
+
+              clearCurrentTurn();
+              optionsRef.current.onStatusChange?.("error");
+
+              if (err?.code === "API_KEY_MISSING") {
+                optionsRef.current.onErrorToast?.(err.message, {
+                  label: "Open Settings",
+                  onClick: optionsRef.current.onOpenSettings ?? (() => {}),
+                });
+              } else {
+                optionsRef.current.onErrorToast?.(err?.message || "Completion failed.", {
+                  label: "Retry",
+                  onClick: optionsRef.current.onRetry ?? (() => {}),
+                });
+              }
+            })
+          ),
+          track(
+            listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
+              updateCurrentTurn((turn) => ({
                 ...turn,
                 blocks: [
                   ...turn.blocks,
@@ -240,67 +212,119 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                     kind: "tool",
                     id: event.payload.id,
                     name: event.payload.name,
-                    result: event.payload.result,
-                    status: "completed" as const,
+                    arguments: event.payload.arguments,
+                    status: "calling" as const,
                   },
                 ],
-              };
-            });
-            optionsRef.current.onStatusChange?.("acting");
-          })),
-          track(listen<CorpusAutoBuildComplete>("corpus-auto-build-complete", (event) => {
-            if (event.payload.success) {
-              optionsRef.current.onSuccessToast?.(`Corpus ready with ${event.payload.symbol_count} symbols.`);
-            } else {
-              optionsRef.current.onErrorToast?.("Corpus auto-build failed. Use Build Corpus to retry.");
-            }
-          })),
-          track(listen<ModelVariantWarningPayload>("llm-model-variant-warning", (event) => {
-            optionsRef.current.onErrorToast?.(
-              event.payload.message || "Model variant was not available; using Default.",
-            );
-            optionsRef.current.onModelVariantWarning?.(event.payload);
-          })),
-          track(listen<ApprovalRequest>("approval-requested", (event) => {
-            updateCurrentTurn((turn) => {
-              if (
-                turn.blocks.some(
-                  (b): b is Extract<TurnBlock, { kind: "approval" }> =>
-                    b.kind === "approval" && b.id === event.payload.id,
-                )
-              ) {
-                return turn;
+              }));
+              optionsRef.current.onStatusChange?.("acting");
+            })
+          ),
+          track(
+            listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
+              updateCurrentTurn((turn) => {
+                const idx = turn.blocks.findIndex(
+                  (b): b is TurnBlock & { kind: "tool" } =>
+                    b.kind === "tool" && b.id === event.payload.id
+                );
+                if (idx >= 0) {
+                  const blocks = [...turn.blocks];
+                  const existing = blocks[idx];
+                  if (existing.kind === "tool") {
+                    blocks[idx] = {
+                      ...existing,
+                      result: event.payload.result,
+                      status: "completed",
+                    };
+                  }
+                  return { ...turn, blocks };
+                }
+                console.warn(
+                  `[useChatStream] Received llm-tool-result for id "${event.payload.id}" with no matching llm-tool-call; appending as completed.`,
+                  { name: event.payload.name }
+                );
+                return {
+                  ...turn,
+                  blocks: [
+                    ...turn.blocks,
+                    {
+                      kind: "tool",
+                      id: event.payload.id,
+                      name: event.payload.name,
+                      result: event.payload.result,
+                      status: "completed" as const,
+                    },
+                  ],
+                };
+              });
+              optionsRef.current.onStatusChange?.("acting");
+            })
+          ),
+          track(
+            listen<CorpusAutoBuildComplete>("corpus-auto-build-complete", (event) => {
+              if (event.payload.success) {
+                optionsRef.current.onSuccessToast?.(
+                  `Corpus ready with ${event.payload.symbol_count} symbols.`
+                );
+              } else {
+                optionsRef.current.onErrorToast?.(
+                  "Corpus auto-build failed. Use Build Corpus to retry."
+                );
               }
-              return {
+            })
+          ),
+          track(
+            listen<ModelVariantWarningPayload>("llm-model-variant-warning", (event) => {
+              optionsRef.current.onErrorToast?.(
+                event.payload.message || "Model variant was not available; using Default."
+              );
+              optionsRef.current.onModelVariantWarning?.(event.payload);
+            })
+          ),
+          track(
+            listen<ApprovalRequest>("approval-requested", (event) => {
+              updateCurrentTurn((turn) => {
+                if (
+                  turn.blocks.some(
+                    (b): b is Extract<TurnBlock, { kind: "approval" }> =>
+                      b.kind === "approval" && b.id === event.payload.id
+                  )
+                ) {
+                  return turn;
+                }
+                return {
+                  ...turn,
+                  blocks: [
+                    ...turn.blocks,
+                    {
+                      kind: "approval",
+                      id: event.payload.id,
+                      toolName: event.payload.tool_name,
+                      approvalKind: event.payload.kind,
+                      title: event.payload.title,
+                      summary: event.payload.summary,
+                      reason: event.payload.reason,
+                      risk: event.payload.risk,
+                      status: "pending",
+                    },
+                  ],
+                };
+              });
+            })
+          ),
+          track(
+            listen<ApprovalResolution>("approval-resolved", (event) => {
+              const status = event.payload.outcome;
+              updateCurrentTurn((turn) => ({
                 ...turn,
-                blocks: [
-                  ...turn.blocks,
-                  {
-                    kind: "approval",
-                    id: event.payload.id,
-                    toolName: event.payload.tool_name,
-                    approvalKind: event.payload.kind,
-                    title: event.payload.title,
-                    summary: event.payload.summary,
-                    reason: event.payload.reason,
-                    risk: event.payload.risk,
-                    status: "pending",
-                  },
-                ],
-              };
-            });
-          })),
-          track(listen<ApprovalResolution>("approval-resolved", (event) => {
-            const status = event.payload.outcome;
-            updateCurrentTurn((turn) => ({
-              ...turn,
-              blocks: turn.blocks.map((block) =>
-                block.kind === "approval" && block.id === event.payload.id
-                  ? { ...block, status }
-                  : block,
-              ),
-            }));
-          })),
+                blocks: turn.blocks.map((block) =>
+                  block.kind === "approval" && block.id === event.payload.id
+                    ? { ...block, status }
+                    : block
+                ),
+              }));
+            })
+          ),
         ]);
       } catch (error) {
         unlisteners.forEach((unlisten) => unlisten());
@@ -334,19 +358,16 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     });
   }, []);
 
-  const resolveApproval = useCallback(
-    async (id: string, decision: ApprovalDecision) => {
-      // Default to invoking the Tauri command if the consumer did not supply
-      // a custom resolver. This keeps the hook self-contained for simple
-      // chat views while letting callers swap in test fakes.
-      if (optionsRef.current.onResolveApproval) {
-        await optionsRef.current.onResolveApproval(id, decision);
-        return;
-      }
-      await invoke("resolve_approval_request", { id, decision });
-    },
-    [],
-  );
+  const resolveApproval = useCallback(async (id: string, decision: ApprovalDecision) => {
+    // Default to invoking the Tauri command if the consumer did not supply
+    // a custom resolver. This keeps the hook self-contained for simple
+    // chat views while letting callers swap in test fakes.
+    if (optionsRef.current.onResolveApproval) {
+      await optionsRef.current.onResolveApproval(id, decision);
+      return;
+    }
+    await invoke("resolve_approval_request", { id, decision });
+  }, []);
 
   const resetStream = useCallback(() => {
     clearCurrentTurn();

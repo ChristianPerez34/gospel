@@ -19,9 +19,7 @@ export function SlashCommandMenu({
 }: SlashCommandMenuProps) {
   const { filtered, suggestion } = useMemo(() => {
     const lower = filter.toLowerCase();
-    const matched = skills.filter((s) =>
-      s.name.toLowerCase().startsWith(lower)
-    );
+    const matched = skills.filter((s) => s.name.toLowerCase().startsWith(lower));
 
     if (matched.length > 0 || lower.length === 0) {
       return { filtered: matched, suggestion: null as string | null };
@@ -51,7 +49,9 @@ export function SlashCommandMenu({
       <div className="absolute bottom-full left-0 mb-1 w-[480px] max-w-full bg-surface-elevated border border-surface-overlay rounded-md shadow-lg z-[--z-palette] p-3">
         <div className="text-text-muted text-body-sm">
           No skills found. Add a SKILL.md to{" "}
-          <code className="text-text-secondary">&lt;workspace&gt;/.agents/skills/&lt;name&gt;/</code>{" "}
+          <code className="text-text-secondary">
+            &lt;workspace&gt;/.agents/skills/&lt;name&gt;/
+          </code>{" "}
           to get started.
         </div>
         {onReload && (
@@ -95,12 +95,8 @@ export function SlashCommandMenu({
           onClick={() => onSelect(skill.name)}
           type="button"
         >
-          <span className="text-body-sm text-text-primary font-mono">
-            /{skill.name}
-          </span>
-          <span className="text-caption text-text-muted line-clamp-1">
-            {skill.description}
-          </span>
+          <span className="text-body-sm text-text-primary font-mono">/{skill.name}</span>
+          <span className="text-caption text-text-muted line-clamp-1">{skill.description}</span>
         </button>
       ))}
     </div>

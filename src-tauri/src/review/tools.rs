@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub const REVIEW_TOOLS_SYSTEM_PROMPT: &str = r#"
 ## Review Tools
@@ -207,7 +208,7 @@ impl Tool for RunMultiReviewTool {
             &focuses,
             self.workspace_root.clone(),
             self.api_key.clone(),
-            &NoopReviewProgressEmitter,
+            Arc::new(NoopReviewProgressEmitter),
         )
         .await
         .map_err(WorkspaceToolError::Internal)
@@ -298,7 +299,7 @@ async fn run_review_tool(
     // Phase 1: the agent-initiated tool path stays text-only in the chat
     // transcript, so it uses a no-op emitter. Streaming into a tool-call card
     // is a follow-up (see handoff "Out of scope").
-    match run_review(config, workspace_root, api_key, &NoopReviewProgressEmitter).await {
+    match run_review(config, workspace_root, api_key, Arc::new(NoopReviewProgressEmitter)).await {
         Ok(review) => {
             let findings = review
                 .comments

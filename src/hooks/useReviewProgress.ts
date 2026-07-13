@@ -5,13 +5,12 @@ import type {
   ChunkStatus,
   PhaseFailure,
   ReviewActivityEntry,
+  ReviewFocus,
   ReviewNodeState,
   ReviewPhase,
   ReviewPipelineState,
   ReviewProgressEvent,
 } from "../types";
-
-type ReviewStagePhase = Exclude<ReviewPhase, { type: "detectorTool" }>;
 
 const INITIAL_PIPELINE: ReviewPipelineState = {
   detector: { chunk: 0, totalChunks: 0, candidateCount: 0, status: "idle" },
@@ -24,9 +23,18 @@ const INITIAL_PIPELINE: ReviewPipelineState = {
   suppressed: 0,
 };
 
+export interface FocusProgress {
+  runId: string;
+  focus: ReviewFocus;
+  pipeline: ReviewPipelineState;
+}
+
 export interface UseReviewProgressState {
   runId: string | null;
+  done: boolean;
+  failed: boolean;
   pipeline: ReviewPipelineState;
+  perFocus: Partial<Record<ReviewFocus, FocusProgress>>;
   log: ReviewActivityEntry[];
 }
 
@@ -38,7 +46,7 @@ export interface UseReviewProgress extends UseReviewProgressState {
 /** Cap the activity feed so a 20-batch scan can't grow it without bound. */
 const MAX_LOG_ENTRIES = 400;
 
-function describe(phase: ReviewStagePhase): string {
+function describe(phase: ReviewPhase): string {
   switch (phase.type) {
     case "detector": {
       const where =
@@ -46,7 +54,9 @@ function describe(phase: ReviewStagePhase): string {
           ? `chunk ${phase.chunk}/${phase.totalChunks}`
           : `chunk ${phase.chunk}`;
       const filesLabel =
-        phase.files.length > 0 ? ` — ${phase.files.length} file${phase.files.length === 1 ? "" : "s"}` : "";
+        phase.files.length > 0
+          ? ` — ${phase.files.length} file${phase.files.length === 1 ? "" : "s"}`
+          : "";
       if (phase.status === "starting") return "Review started";
       if (phase.status === "running") return `Detector ${where} (running)${filesLabel}`;
       if (phase.status === "done")
@@ -66,13 +76,28 @@ function describe(phase: ReviewStagePhase): string {
       return `Review complete — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}, ${phase.suppressed} suppressed`;
     case "failed":
       return `Review failed: ${phase.detail}`;
+    case "detectorTool": {
+      if ("call" in phase.event) {
+        const args = phase.event.call.arguments as Record<string, unknown> | undefined;
+        const target =
+          typeof args === "object" && args !== null
+            ? (args.path ?? args.file ?? args.target_file ?? args.query ?? args.command)
+            : undefined;
+        const targetText = typeof target === "string" ? `: ${target}` : " called";
+        return `${phase.toolName}${targetText}`;
+      }
+      const summary = phase.event.result.summary;
+      return `${phase.toolName} returned${summary ? ` — ${summary.slice(0, 60)}${summary.length > 60 ? "…" : ""}` : ""}`;
+    }
     case "multiFocusStart":
       return `Multi-focus review started (${phase.total} focus${phase.total === 1 ? "" : "es"})`;
     case "multiFocus": {
       const progress = `${phase.completed}/${phase.total}`;
       if (phase.status === "running") return `${phase.focus} running [${progress}]`;
       if (phase.status === "done") {
-        const parts = [`${phase.focus} done — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}`];
+        const parts = [
+          `${phase.focus} done — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}`,
+        ];
         if (phase.suppressed > 0) parts.push(`${phase.suppressed} suppressed`);
         return parts.join(", ");
       }
@@ -87,7 +112,7 @@ function isChunkDone(status: unknown): status is "done" {
 
 function hasObjectFailure<TFailure>(
   status: unknown,
-  isFailure: (value: unknown) => value is TFailure,
+  isFailure: (value: unknown) => value is TFailure
 ): status is { failed: TFailure } {
   return (
     typeof status === "object" &&
@@ -122,20 +147,14 @@ function isPhaseFailed(status: unknown): status is { failed: PhaseFailure } {
   return hasObjectFailure(status, isPhaseFailure);
 }
 
-function phaseStatusToNodeState(
-  status: unknown,
-  previous: ReviewNodeState,
-): ReviewNodeState {
+function phaseStatusToNodeState(status: unknown, previous: ReviewNodeState): ReviewNodeState {
   if (status === "running") return "active";
   if (status === "done") return "done";
   if (isPhaseFailed(status)) return "failed";
   return previous;
 }
 
-function reducePipeline(
-  prev: ReviewPipelineState,
-  phase: ReviewStagePhase,
-): ReviewPipelineState {
+function reducePipeline(prev: ReviewPipelineState, phase: ReviewPhase): ReviewPipelineState {
   const next: ReviewPipelineState = { ...prev, detector: { ...prev.detector } };
 
   switch (phase.type) {
@@ -158,9 +177,6 @@ function reducePipeline(
           status: isLast ? "done" : "active",
         };
       } else if (isChunkFailed(phase.status)) {
-        // A chunk failed; the run-level `failed` event will mark the node if
-        // the whole run fails. Keep the node active so other chunks can still
-        // progress, but reflect the failure if it was the last chunk.
         next.detector = {
           chunk: phase.chunk,
           totalChunks: phase.totalChunks,
@@ -200,33 +216,95 @@ function reducePipeline(
       next.detector = { ...prev.detector, status: "active" };
       break;
     case "multiFocus":
-      // Per-focus updates don't move the pipeline; MultiFocusStart already
-      // moved the detector into `active` and per-focus failures flow through
-      // the separate Failed phase.
+      if (phase.status === "running") {
+        next.detector = { ...prev.detector, status: "active" };
+      } else if (phase.status === "done") {
+        next.detector = { ...prev.detector, status: "done" };
+        next.validator = "done";
+        next.finalize = "done";
+        next.done = true;
+        next.findings = phase.findings;
+        next.suppressed = phase.suppressed;
+      } else if (isPhaseFailed(phase.status)) {
+        next.failed = true;
+        next.failureDetail = phase.status.failed.detail;
+        if (next.detector.status === "active")
+          next.detector = { ...next.detector, status: "failed" };
+        else if (next.validator === "active") next.validator = "failed";
+        else if (next.finalize === "active") next.finalize = "failed";
+        else next.detector = { ...next.detector, status: "failed" };
+      }
       break;
     case "failed":
       next.failed = true;
       next.failureDetail = phase.detail;
-      // Mark the currently-active node as failed so the pipeline reflects it.
       if (next.detector.status === "active") next.detector = { ...next.detector, status: "failed" };
       else if (next.validator === "active") next.validator = "failed";
       else if (next.finalize === "active") next.finalize = "failed";
       break;
+    case "detectorTool":
+      // Tool-call activity is logged but does not move the pipeline.
+      break;
   }
+  return next;
+}
+
+function reduceReviewState(
+  prev: UseReviewProgressState,
+  runId: string,
+  phase: ReviewPhase,
+  focus?: ReviewFocus
+): UseReviewProgressState {
+  const next: UseReviewProgressState = {
+    ...prev,
+    perFocus: { ...prev.perFocus },
+  };
+
+  if (focus) {
+    const existing = next.perFocus[focus];
+    const focusProgress: FocusProgress = existing ?? {
+      runId,
+      focus,
+      pipeline: INITIAL_PIPELINE,
+    };
+    next.perFocus[focus] = {
+      ...focusProgress,
+      pipeline: reducePipeline(focusProgress.pipeline, phase),
+    };
+  } else {
+    next.pipeline = reducePipeline(prev.pipeline, phase);
+  }
+
+  const focusPipelines = Object.values(next.perFocus);
+  next.done =
+    next.pipeline.done ||
+    (focusPipelines.length > 0 && focusPipelines.every((progress) => progress.pipeline.done));
+  next.failed = next.pipeline.failed || focusPipelines.some((progress) => progress.pipeline.failed);
+
   return next;
 }
 
 export function useReviewProgress(): UseReviewProgress {
   const [state, setState] = useState<UseReviewProgressState>({
     runId: null,
+    done: false,
+    failed: false,
     pipeline: INITIAL_PIPELINE,
+    perFocus: {},
     log: [],
   });
   const runIdRef = useRef<string | null>(null);
 
   const reset = useCallback(() => {
     runIdRef.current = null;
-    setState({ runId: null, pipeline: INITIAL_PIPELINE, log: [] });
+    setState({
+      runId: null,
+      done: false,
+      failed: false,
+      pipeline: INITIAL_PIPELINE,
+      perFocus: {},
+      log: [],
+    });
   }, []);
 
   useEffect(() => {
@@ -240,30 +318,44 @@ export function useReviewProgress(): UseReviewProgress {
           const payload = event.payload;
           if (!payload?.run_id || !payload?.phase) return;
           const phase = payload.phase;
-          if (phase.type === "detectorTool") return;
+          const focus = payload.focus;
 
           setState((prev) => {
-            // Reset on run_id change so a new review starts clean.
-            const runChanged = runIdRef.current !== payload.run_id;
-            const basePipeline = runChanged ? INITIAL_PIPELINE : prev.pipeline;
-            const baseLog = runChanged ? [] : prev.log;
-            runIdRef.current = payload.run_id;
+            const isAggregate = focus == null;
+            if (!isAggregate && runIdRef.current !== null && runIdRef.current !== payload.run_id) {
+              return prev;
+            }
+            const runChanged =
+              runIdRef.current === null || (isAggregate && runIdRef.current !== payload.run_id);
+            if (runChanged) {
+              runIdRef.current = payload.run_id;
+            }
 
-            const pipeline = reducePipeline(basePipeline, phase);
+            const base: UseReviewProgressState = runChanged
+              ? {
+                  runId: payload.run_id,
+                  done: false,
+                  failed: false,
+                  pipeline: INITIAL_PIPELINE,
+                  perFocus: {},
+                  log: [],
+                }
+              : prev;
+
+            const next = reduceReviewState(base, payload.run_id, phase, focus);
             const entry: ReviewActivityEntry = {
               timestamp: payload.timestamp,
               phase: phase.type,
+              focus: payload.focus,
               text: describe(phase),
             };
-            const log = [...baseLog, entry];
+            const log = [...(runChanged ? [] : prev.log), entry];
             if (log.length > MAX_LOG_ENTRIES) {
               log.splice(0, log.length - MAX_LOG_ENTRIES);
             }
-            return { runId: payload.run_id, pipeline, log };
+            return { ...next, runId: payload.run_id, log };
           });
         });
-        // If the component unmounted while we were awaiting listen, tear down
-        // the subscription immediately instead of storing it for the cleanup.
         if (cancelled) {
           unsubscribe();
         } else {

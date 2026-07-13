@@ -32,7 +32,7 @@ describe("SlashCommandMenu", () => {
         filter=""
         visible
         onSelect={vi.fn()}
-      />,
+      />
     );
 
     expect(screen.getByText("/ask-matt")).toBeTruthy();
