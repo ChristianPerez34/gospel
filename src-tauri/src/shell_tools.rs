@@ -241,7 +241,14 @@ impl CommandPolicy {
         }
 
         if subcommand == "remote" {
-            return if args.len() == 1 || args.iter().any(|a| a == "-v" || a == "--verbose" || a == "show") {
+            // Only `git remote`, `git remote -v|--verbose`, and `git remote show <name>`
+            // are read-only. Inspect the remote subcommand position (args[1]) instead of
+            // scanning every token so `git remote add show <url>` is correctly Mutating.
+            return if args.len() == 1
+                || matches!(
+                    args.get(1).map(|s| s.as_str()),
+                    Some("-v" | "--verbose" | "show")
+                ) {
                 CommandSafety::ReadOnly
             } else {
                 CommandSafety::Mutating
@@ -655,7 +662,14 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
         }
         let subcommand = args[0].to_ascii_lowercase();
         if subcommand == "remote" {
-            return args.len() == 1 || args.iter().any(|a| a == "-v" || a == "--verbose" || a == "show");
+            // Read-only only for `git remote`, `git remote -v|--verbose`, and
+            // `git remote show <name>`. Check the remote subcommand position so
+            // `git remote add show <url>` is not treated as read-only.
+            return args.len() == 1
+                || matches!(
+                    args.get(1).map(|s| s.as_str()),
+                    Some("-v" | "--verbose" | "show")
+                );
         }
         return matches!(
             subcommand.as_str(),
@@ -1588,6 +1602,73 @@ mod tests {
         assert_eq!(
             policy.classify_git(&["log".to_string(), "--oneline".to_string()], &workspace()),
             CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
+    fn classify_git_remote_read_only_forms() {
+        let policy = CommandPolicy;
+        // `git remote`, `git remote -v`, `git remote --verbose`, and
+        // `git remote show <name>` are read-only.
+        assert_eq!(
+            policy.classify_git(&["remote".to_string()], &workspace()),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &["remote".to_string(), "-v".to_string()],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &["remote".to_string(), "--verbose".to_string()],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "remote".to_string(),
+                    "show".to_string(),
+                    "origin".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
+    fn classify_git_remote_add_show_url_is_mutating() {
+        // Regression: `git remote add show <url>` must NOT be classified as
+        // read-only just because `show` appears in the arg list.
+        let policy = CommandPolicy;
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "remote".to_string(),
+                    "add".to_string(),
+                    "show".to_string(),
+                    "https://example.com".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::Mutating
+        );
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "remote".to_string(),
+                    "set-url".to_string(),
+                    "origin".to_string(),
+                    "https://example.com".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::Mutating
         );
     }
 
