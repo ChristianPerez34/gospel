@@ -803,13 +803,20 @@ pub fn trace_event_for_session_turn_event(
             )),
             timestamp,
         }),
-        SessionTurnEvent::ToolResult { name, result, .. } => Some(trace::TraceEvent::ToolResult {
-            session_id: session_id.to_string(),
-            role: role.to_string(),
-            tool_name: name.clone(),
-            result_summary: result.chars().take(200).collect(),
-            timestamp,
-        }),
+        SessionTurnEvent::ToolResult { name, result, .. } => {
+            let redacted_result = if let Ok(val) = serde_json::from_str::<serde_json::Value>(result) {
+                trace::redacted_json_string(&val)
+            } else {
+                result.clone()
+            };
+            Some(trace::TraceEvent::ToolResult {
+                session_id: session_id.to_string(),
+                role: role.to_string(),
+                tool_name: name.clone(),
+                result_summary: redacted_result.chars().take(200).collect(),
+                timestamp,
+            })
+        },
         SessionTurnEvent::LoopWarning { count, tool_name } => Some(trace::TraceEvent::Warning {
             session_id: session_id.to_string(),
             role: role.to_string(),

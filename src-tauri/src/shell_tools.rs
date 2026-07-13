@@ -88,13 +88,16 @@ impl CommandPolicy {
             return CommandSafety::Blocked("shell_interpreter".to_string());
         }
 
-        // Block shell metacharacters anywhere in the invocation.
+        // Block shell metacharacters and secret-like paths anywhere in the invocation.
         if contains_shell_metacharacter(program) {
             return CommandSafety::Blocked("shell_metacharacter".to_string());
         }
         for arg in args {
             if contains_shell_metacharacter(arg) {
                 return CommandSafety::Blocked("shell_metacharacter".to_string());
+            }
+            if crate::workspace_tools::is_secret_like(Path::new(arg)) {
+                return CommandSafety::Blocked("secret_like_argument".to_string());
             }
         }
 
@@ -231,11 +234,18 @@ impl CommandPolicy {
                 | "blame"
                 | "ls-files"
                 | "ls-tree"
-                | "remote"
                 | "rev-parse"
                 | "describe"
         ) {
             return CommandSafety::ReadOnly;
+        }
+
+        if subcommand == "remote" {
+            return if args.len() == 1 || args.iter().any(|a| a == "-v" || a == "--verbose" || a == "show") {
+                CommandSafety::ReadOnly
+            } else {
+                CommandSafety::Mutating
+            };
         }
 
         if subcommand == "config" {
@@ -630,20 +640,31 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
         return false;
     }
 
+    if program == "sort" && args.iter().any(|a| a == "-o" || a.starts_with("--output=")) {
+        return false;
+    }
+
+    if program == "uniq" && args.iter().filter(|a| !a.starts_with('-')).count() > 1 {
+        return false;
+    }
+
     // git via shell tool is allowed only for read-only subcommands.
     if program == "git" {
         if args.is_empty() {
             return false;
         }
+        let subcommand = args[0].to_ascii_lowercase();
+        if subcommand == "remote" {
+            return args.len() == 1 || args.iter().any(|a| a == "-v" || a == "--verbose" || a == "show");
+        }
         return matches!(
-            args[0].to_ascii_lowercase().as_str(),
+            subcommand.as_str(),
             "status"
                 | "log"
                 | "diff"
                 | "show"
                 | "blame"
                 | "ls-files"
-                | "remote"
                 | "rev-parse"
                 | "describe"
         );

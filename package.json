@@ -17,7 +17,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "format": "biome format --write .",
-    "format:check": "biome format ."
+    "format:check": "biome format .",
+    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "check": "bun run typecheck && biome check . && bun run clippy"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

@@ -2438,7 +2438,7 @@ fn is_broad_ignored_file(path: &Path) -> bool {
     )
 }
 
-fn is_secret_like(path: &Path) -> bool {
+pub(crate) fn is_secret_like(path: &Path) -> bool {
     let Some(name) = path.file_name() else {
         return false;
     };

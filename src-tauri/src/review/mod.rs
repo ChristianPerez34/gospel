@@ -22,6 +22,7 @@ use crate::harness_profile::{
 use crate::keychain;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
+use crate::workspace_tools::is_secret_like;
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
@@ -1152,7 +1153,7 @@ async fn run_diff_review(
     let mut warnings = initial_warnings;
     let file_diffs: Vec<FileDiff> = parse_diff_by_file(&diff)
         .into_iter()
-        .filter(|file| !file.is_binary)
+        .filter(|file| !file.is_binary && !is_secret_like(Path::new(&file.file)))
         .collect();
 
     if file_diffs.is_empty() {

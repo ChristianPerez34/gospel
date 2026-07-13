@@ -46,6 +46,7 @@ pub struct SessionDetail {
     pub mode: String,
     pub workspace_id: Option<String>,
     pub display_transcript: String,
+    #[serde(skip_serializing)]
     pub model_history: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -77,6 +78,7 @@ pub struct ArchivedSessionDetail {
     pub mode: String,
     pub workspace_id: Option<String>,
     pub display_transcript: String,
+    #[serde(skip_serializing)]
     pub model_history: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -267,7 +269,7 @@ impl SessionStore {
         title: &str,
         provider: &str,
         model: &str,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
     ) -> Result<SessionRecord, SessionStoreError> {
         self.create_session_with_mode(title, provider, model, workspace_id, SESSION_MODE_BUILD)
     }
@@ -277,10 +279,10 @@ impl SessionStore {
         title: &str,
         provider: &str,
         model: &str,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
         mode: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, None, Some(workspace_id), mode)
+        self.insert_session(title, provider, model, None, workspace_id, mode)
     }
 
     pub fn create_session_with_selection(
@@ -289,10 +291,10 @@ impl SessionStore {
         provider: &str,
         model: &str,
         variant: Option<&str>,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
         mode: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, variant, Some(workspace_id), mode)
+        self.insert_session(title, provider, model, variant, workspace_id, mode)
     }
 
     fn insert_session(

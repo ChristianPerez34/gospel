@@ -208,6 +208,10 @@ const SENSITIVE_KEYS: &[&str] = &[
     "token",
     "old_text",
     "new_text",
+    "content",
+    "diff_preview",
+    "stdout",
+    "stderr",
 ];
 
 fn redact_sensitive_value(value: &mut serde_json::Value) {

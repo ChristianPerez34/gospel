@@ -1969,13 +1969,9 @@ fn create_session(
     provider: String,
     model: String,
     variant: Option<String>,
-    workspace_id: String,
+    workspace_id: Option<String>,
     mode: Option<String>,
 ) -> Result<SessionRecord, String> {
-    if workspace_id.is_empty() {
-        return Err("workspace_id is required".to_string());
-    }
-
     let mode = mode.unwrap_or_else(|| session_mode::SESSION_MODE_BUILD.to_string());
     match &session_store.store {
         Some(store) => store
@@ -1984,7 +1980,7 @@ fn create_session(
                 &provider,
                 &model,
                 variant.as_deref(),
-                &workspace_id,
+                workspace_id.as_deref(),
                 &mode,
             )
             .map_err(|e| e.to_string()),
@@ -2970,13 +2966,13 @@ mod workspace_response_tests {
 
         let session_store = SessionStore::in_memory_for_test().unwrap();
         let active = session_store
-            .create_session("Active", "openai", "gpt-4", &first_workspace.id)
+            .create_session("Active", "openai", "gpt-4", Some(&first_workspace.id))
             .unwrap();
         let errored = session_store
-            .create_session("Errored", "openai", "gpt-4", &first_workspace.id)
+            .create_session("Errored", "openai", "gpt-4", Some(&first_workspace.id))
             .unwrap();
         let draft = session_store
-            .create_session("Draft", "openai", "gpt-4", &first_workspace.id)
+            .create_session("Draft", "openai", "gpt-4", Some(&first_workspace.id))
             .unwrap();
 
         session_store.update_status(&active.id, "active").unwrap();

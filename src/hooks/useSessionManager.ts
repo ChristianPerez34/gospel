@@ -202,16 +202,14 @@ export function useSessionManager({
         // Try backend session creation first
         let backendSession: { id: string } | null = null;
         try {
-          if (activeWorkspaceId) {
-            backendSession = await invoke<{ id: string }>("create_session", {
-              title,
-              provider: selectedModel.provider,
-              model: selectedModel.model,
-              variant: selectedModel.variant ?? null,
-              workspaceId: activeWorkspaceId,
-              mode,
-            });
-          }
+          backendSession = await invoke<{ id: string }>("create_session", {
+            title,
+            provider: selectedModel.provider,
+            model: selectedModel.model,
+            variant: selectedModel.variant ?? null,
+            workspaceId: activeWorkspaceId ?? null,
+            mode,
+          });
         } catch (e) {
           console.warn("Backend session creation failed, using local session:", e);
         }
