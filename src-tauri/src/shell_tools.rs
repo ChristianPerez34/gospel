@@ -68,6 +68,41 @@ pub enum CommandSafety {
 pub struct CommandPolicy;
 
 impl CommandPolicy {
+    /// Shared safety checks for both top-level and `env`-wrapped shell commands.
+    fn common_shell_safety(
+        &self,
+        executable: &str,
+        program: &str,
+        args: &[String],
+        workspace_root: &Path,
+    ) -> Option<CommandSafety> {
+        let executable_lower = executable.to_ascii_lowercase();
+
+        // Block shell interpreters to prevent shell-injection attacks.
+        if is_shell_interpreter(&executable_lower) {
+            return Some(CommandSafety::Blocked("shell_interpreter".to_string()));
+        }
+
+        // Block shell metacharacters and secret-like paths anywhere in the invocation.
+        if contains_shell_metacharacter(program) {
+            return Some(CommandSafety::Blocked("shell_metacharacter".to_string()));
+        }
+        if let Some(safety) = blocked_argument_safety(args) {
+            return Some(safety);
+        }
+
+        if executable_lower == "env" {
+            return Some(self.classify_env_shell_wrapper(args, workspace_root));
+        }
+
+        // Hard-block known destructive patterns.
+        if is_blocked_shell_pattern(&executable_lower, args) {
+            return Some(CommandSafety::Blocked("dangerous_command".to_string()));
+        }
+
+        None
+    }
+
     pub fn classify_shell(
         &self,
         program: &str,
@@ -83,44 +118,24 @@ impl CommandPolicy {
         let executable_lower = executable.to_ascii_lowercase();
         let program_is_bare_name = executable == program;
 
-        // Block shell interpreters to prevent shell-injection attacks.
-        if is_shell_interpreter(&executable_lower) {
-            return CommandSafety::Blocked("shell_interpreter".to_string());
-        }
-
-        // Block shell metacharacters and secret-like paths anywhere in the invocation.
-        if contains_shell_metacharacter(program) {
-            return CommandSafety::Blocked("shell_metacharacter".to_string());
-        }
-        if let Some(safety) = blocked_argument_safety(args) {
+        if let Some(safety) = self.common_shell_safety(executable, program, args, workspace_root) {
             return safety;
         }
 
-        if executable_lower == "env" {
-            return self.classify_env_shell_wrapper(args, workspace_root);
-        }
-
-        // Hard-block known destructive patterns.
-        if is_blocked_shell_pattern(&executable_lower, args) {
-            return CommandSafety::Blocked("dangerous_command".to_string());
-        }
-
-        if executable_lower == "git" {
-            let safety = self.classify_git(args, workspace_root);
-            return if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
+        let promote_git_gh_safety = |safety: CommandSafety| {
+            if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
                 safety
             } else {
                 CommandSafety::Mutating
-            };
+            }
+        };
+
+        if executable_lower == "git" {
+            return promote_git_gh_safety(self.classify_git(args, workspace_root));
         }
 
         if executable_lower == "gh" {
-            let safety = self.classify_gh(args, workspace_root);
-            return if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
-                safety
-            } else {
-                CommandSafety::Mutating
-            };
+            return promote_git_gh_safety(self.classify_gh(args, workspace_root));
         }
 
         if executable_lower == "find" {
@@ -166,14 +181,8 @@ impl CommandPolicy {
         let executable = executable_name(program);
         let executable_lower = executable.to_ascii_lowercase();
 
-        if is_shell_interpreter(&executable_lower) {
-            return CommandSafety::Blocked("shell_interpreter".to_string());
-        }
-        if is_blocked_shell_pattern(&executable_lower, args) {
-            return CommandSafety::Blocked("dangerous_command".to_string());
-        }
-        if executable_lower == "env" {
-            return self.classify_env_shell_wrapper(args, workspace_root);
+        if let Some(safety) = self.common_shell_safety(executable, program, args, workspace_root) {
+            return safety;
         }
 
         let wrapped_safety = match executable_lower.as_str() {
@@ -447,7 +456,7 @@ fn http_method_is_read_only(method: &str) -> bool {
 
 fn executable_name(program: &str) -> &str {
     program
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or(program)
@@ -579,7 +588,7 @@ fn blocked_argument_safety(args: &[String]) -> Option<CommandSafety> {
             return Some(CommandSafety::Blocked("shell_metacharacter".to_string()));
         }
         if let Some(value) = argument_path_value(arg) {
-            if is_path_like(value) && crate::workspace_tools::is_secret_like(Path::new(value)) {
+            if crate::workspace_tools::is_secret_like(Path::new(value)) {
                 return Some(CommandSafety::Blocked("secret_like_argument".to_string()));
             }
         }

@@ -547,7 +547,7 @@ async fn run_exploration_agent(
         loop_detector: Arc::new(Mutex::new(LoopDetector::new(agent_guards.loop_guard))),
     };
     let tool_names = hook.tools.clone();
-    let prompt = build_exploration_prompt(&args, &workspace_snapshot);
+    let prompt = build_exploration_prompt(args, &workspace_snapshot);
 
     macro_rules! exploration_from_client {
         ($client:expr, $model:expr) => {{
@@ -605,6 +605,7 @@ async fn run_exploration_agent(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_completion<F>(
     provider: &str,
     prompt: &str,

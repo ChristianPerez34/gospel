@@ -262,6 +262,16 @@ fn normalize_crlf(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+fn canonicalize_with_warning(path: &Path) -> Option<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => Some(path),
+        Err(e) => {
+            tracing::warn!("Failed to canonicalize {}: {}", path.display(), e);
+            None
+        }
+    }
+}
+
 fn parse_skill_file(
     skill_dir: &Path,
     source: SkillSource,
@@ -272,28 +282,12 @@ fn parse_skill_file(
         return Ok(None);
     }
 
-    let canonical_skills_root = match fs::canonicalize(skills_root) {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::warn!(
-                "Failed to canonicalize skills root {}: {}",
-                skills_root.display(),
-                e
-            );
-            return Ok(None);
-        }
+    let Some(canonical_skills_root) = canonicalize_with_warning(skills_root) else {
+        return Ok(None);
     };
 
-    let canonical_skill_dir = match fs::canonicalize(skill_dir) {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::warn!(
-                "Failed to canonicalize skill dir {}: {}",
-                skill_dir.display(),
-                e
-            );
-            return Ok(None);
-        }
+    let Some(canonical_skill_dir) = canonicalize_with_warning(skill_dir) else {
+        return Ok(None);
     };
 
     if !canonical_skill_dir.starts_with(&canonical_skills_root) {
@@ -365,12 +359,8 @@ fn parse_skill_file(
         return Ok(None);
     }
 
-    let canonical_body_path = match fs::canonicalize(&skill_md_path) {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::warn!("Failed to canonicalize {}: {}", skill_md_path.display(), e);
-            return Ok(None);
-        }
+    let Some(canonical_body_path) = canonicalize_with_warning(&skill_md_path) else {
+        return Ok(None);
     };
 
     if !canonical_body_path.starts_with(&canonical_skill_dir) {

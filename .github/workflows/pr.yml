@@ -37,3 +37,9 @@ jobs:
 
       - name: Run Cargo Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Run Frontend Tests
+        run: bun run test
+
+      - name: Run Rust Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml

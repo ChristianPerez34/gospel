@@ -259,7 +259,7 @@ pub async fn run_streaming_turn(
                 skill_script_tool,
             },
             Box::new(move |event| {
-                events.emit_stream_event(&trace_sid, &trace_role, &event);
+                events.emit_stream_event(&trace_sid, trace_role, &event);
             }),
         )
         .await;
@@ -862,6 +862,7 @@ fn turn_requires_verification(response: &str, source_edit_succeeded: bool) -> bo
     source_edit_succeeded || response_requires_verification(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn verification_job_request(
     provider: &str,
     model: &str,

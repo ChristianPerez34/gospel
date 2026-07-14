@@ -73,6 +73,7 @@ type ChildReviewFn = Arc<
         + Sync,
 >;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_multi_focus_review(
     provider: String,
     model: String,
@@ -101,6 +102,7 @@ pub async fn run_multi_focus_review(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_multi_focus_review_with_child(
     provider: String,
     model: String,

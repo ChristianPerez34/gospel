@@ -1271,6 +1271,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn complete_streaming(
     app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
@@ -1336,9 +1337,7 @@ fn resolve_delegate_completion_config(
         .as_ref()
         .and_then(|store| store.get_config_value("delegate_provider").ok().flatten());
     let configured_provider = stored_provider.filter(|configured| {
-        ModelRegistry::all_providers()
-            .iter()
-            .any(|supported| *supported == configured.as_str())
+        ModelRegistry::all_providers().contains(&configured.as_str())
     });
     let delegate_provider = configured_provider.unwrap_or(fallback_provider);
 
@@ -1348,11 +1347,7 @@ fn resolve_delegate_completion_config(
         .and_then(|store| store.get_config_value("delegate_model").ok().flatten());
     let supported_models = ModelRegistry::models_for_provider(&delegate_provider);
     let delegate_model = stored_model
-        .filter(|configured| {
-            supported_models
-                .iter()
-                .any(|supported| *supported == configured.as_str())
-        })
+        .filter(|configured| supported_models.contains(&configured.as_str()))
         .unwrap_or(fallback_model);
 
     let delegate_api_key = if ModelRegistry::is_oauth_provider(&delegate_provider) {

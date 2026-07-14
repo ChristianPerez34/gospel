@@ -130,6 +130,7 @@ pub struct ArchivedSessionExportItem {
     pub mode: String,
     pub workspace_id: Option<String>,
     pub display_transcript: String,
+    #[serde(skip_serializing)]
     pub model_history: Option<String>,
     pub created_at: String,
     pub updated_at: String,
