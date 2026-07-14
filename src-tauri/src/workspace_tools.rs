@@ -1144,9 +1144,14 @@ impl From<ResolvedPath> for ListDirectoryTarget {
 
 impl From<ExternalResolvedPath> for ListDirectoryTarget {
     fn from(resolved: ExternalResolvedPath) -> Self {
+        let safety_path = resolved
+            .absolute_path
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_default();
         Self {
             absolute_path: resolved.absolute_path.clone(),
-            safety_path: resolved.absolute_path,
+            safety_path,
             display_path: resolved.display_path,
             exists: resolved.exists,
             is_dir: resolved.is_dir,
@@ -1275,7 +1280,12 @@ impl Tool for ListDirectoryTool {
         };
 
         if scope.external {
-            walk_external_list_directory(&scope.absolute_path, max_depth, &mut state)?;
+            walk_external_list_directory(
+                &scope.absolute_path,
+                &scope.absolute_path,
+                max_depth,
+                &mut state,
+            )?;
         } else {
             walk_list_directory(&access, &scope.absolute_path, max_depth, &mut state)?;
         }
@@ -2922,6 +2932,7 @@ fn walk_list_directory(
 }
 
 fn walk_external_list_directory(
+    root: &Path,
     directory: &Path,
     depth: usize,
     state: &mut ListState,
@@ -2945,7 +2956,11 @@ fn walk_external_list_directory(
         if entry.is_symlink {
             continue;
         }
-        if let Some(_reason) = blocked_path_reason(&entry.absolute_path, kind, true) {
+        let safety_path = entry
+            .absolute_path
+            .strip_prefix(root)
+            .unwrap_or(&entry.absolute_path);
+        if let Some(_reason) = blocked_path_reason(safety_path, kind, true) {
             continue;
         }
 
@@ -2965,7 +2980,7 @@ fn walk_external_list_directory(
         }
 
         if entry.is_directory() && !entry.is_symlink {
-            walk_external_list_directory(&entry.absolute_path, depth - 1, state)?;
+            walk_external_list_directory(root, &entry.absolute_path, depth - 1, state)?;
         }
     }
 
@@ -3761,6 +3776,44 @@ mod tests {
         assert!(paths.contains(&external_root.join("nested/item.txt").to_str().unwrap()));
         assert!(!paths.contains(&external_root.join(".env").to_str().unwrap()));
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn list_directory_ignores_noisy_ancestors_outside_approved_external_root() {
+        let workspace = tempdir().unwrap();
+        let external_container = tempdir().unwrap();
+        let noisy_ancestor = external_container.path().join("tmp");
+        fs::create_dir_all(&noisy_ancestor).unwrap();
+        let external = TempDirBuilder::new()
+            .prefix("gospel-approved-")
+            .tempdir_in(noisy_ancestor)
+            .unwrap();
+        write_file(&external.path().join("visible.txt"), b"ok");
+        write_file(&external.path().join("tmp/ignored.txt"), b"generated");
+        let (_calls, approval) = approval(true);
+        let tool = create_list_directory_tool_with_external_approval(
+            workspace.path().to_path_buf(),
+            Some(approval),
+        );
+
+        let output = tool
+            .call(ListDirectoryArgs {
+                path: Some(external.path().display().to_string()),
+                depth: Some(2),
+                max_entries: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        let external_root = fs::canonicalize(external.path()).unwrap();
+        assert!(output
+            .entries
+            .iter()
+            .any(|entry| entry.path == external_root.join("visible.txt").to_str().unwrap()));
+        assert!(output.entries.iter().all(|entry| !entry
+            .path
+            .starts_with(external_root.join("tmp").to_str().unwrap())));
     }
 
     #[tokio::test]
