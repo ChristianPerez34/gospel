@@ -147,26 +147,26 @@ describe("ActivityStep", () => {
     fireEvent.click(screen.getByRole("button", { name: /edit file/i }));
 
     expect(screen.getByText("@@ src/lib.rs:1 @@")).not.toBeNull();
-    expect(screen.getByLabelText(/Removed:.*println!\("old"\)/)).not.toBeNull();
-    expect(screen.getByLabelText(/Added:.*println!\("new"\)/)).not.toBeNull();
-    expect(screen.getByLabelText(/Context:\s*fn main\(\) \{/)).not.toBeNull();
+    expect(screen.getByText("Removed:").parentElement?.textContent).toContain('println!("old")');
+    expect(screen.getByText("Added:").parentElement?.textContent).toContain('println!("new")');
+    expect(screen.getAllByText("Context:")[0].parentElement?.textContent).toContain("fn main() {");
   });
 
   it("keeps textual +/- markers visible on added and removed diff rows", () => {
     renderStep(diffCard());
     fireEvent.click(screen.getByRole("button", { name: /edit file/i }));
 
-    const added = screen.getByLabelText(/Added:.*println!\("new"\)/);
-    const removed = screen.getByLabelText(/Removed:.*println!\("old"\)/);
-    expect(added.textContent).toContain("+");
-    expect(removed.textContent).toContain("-");
+    const addedRow = screen.getByText("Added:").parentElement!.parentElement!;
+    const removedRow = screen.getByText("Removed:").parentElement!.parentElement!;
+    expect(addedRow.textContent).toContain("+");
+    expect(removedRow.textContent).toContain("-");
   });
 
   it("still uses the plain preview and truncation for non-diff text sections", () => {
     renderStep(readFileCard("completed"));
     fireEvent.click(screen.getByRole("button", { name: /read file/i }));
 
-    expect(screen.queryByLabelText(/Context:/)).toBeNull();
+    expect(screen.queryByText(/Context:/)).toBeNull();
     expect(screen.getByText("file contents")).not.toBeNull();
   });
 });

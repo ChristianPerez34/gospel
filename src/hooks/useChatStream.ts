@@ -108,7 +108,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
       const track = (p: Promise<() => void>) =>
         p.then((u) => {
-          unlisteners.push(u);
+          if (cancelled) {
+            u();
+          } else {
+            unlisteners.push(u);
+          }
           return u;
         });
       try {
@@ -327,6 +331,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
         ]);
       } catch (error) {
+        cancelled = true;
         unlisteners.forEach((unlisten) => {
           unlisten();
         });

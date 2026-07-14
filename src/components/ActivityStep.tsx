@@ -91,8 +91,6 @@ function DiffPreview({ lines }: { lines: string[] }) {
               className="grid grid-cols-[1rem_minmax(0,1fr)] gap-2 px-2"
               // biome-ignore lint/suspicious/noArrayIndexKey: Position is the line identity in a diff.
               key={index}
-              role="img"
-              aria-label={`${DIFF_ROW_LABELS[row.kind]}: ${row.text}`}
             >
               <span
                 className={classNames("select-none text-center", DIFF_ROW_STYLES[row.kind])}
@@ -103,6 +101,7 @@ function DiffPreview({ lines }: { lines: string[] }) {
               <span
                 className={classNames("whitespace-pre-wrap break-words", DIFF_ROW_STYLES[row.kind])}
               >
+                <span className="sr-only">{DIFF_ROW_LABELS[row.kind]}: </span>
                 {row.text}
               </span>
             </div>
