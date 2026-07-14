@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useState } from "react";
 import type { Workspace } from "../types";
 
 interface UseWorkspacesReturn {

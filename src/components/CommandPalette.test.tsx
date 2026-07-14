@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CommandPalette } from "./CommandPalette";
 import { modelOptionId, type Session, type Workspace } from "../types";
+import { CommandPalette } from "./CommandPalette";
 
 const now = new Date("2026-06-19T12:00:00Z");
 const sessions: Session[] = [

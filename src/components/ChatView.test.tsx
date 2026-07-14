@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { ChatView } from "./ChatView";
 import type { CurrentTurn, Message } from "../types";
+import { ChatView } from "./ChatView";
 
 const userMessage: Message = {
   id: "m-user",

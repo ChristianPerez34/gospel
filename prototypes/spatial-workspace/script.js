@@ -5,7 +5,9 @@ document.addEventListener("DOMContentLoaded", () => {
   layoutBtns.forEach((btn) => {
     btn.addEventListener("click", () => {
       // Remove active class from all buttons
-      layoutBtns.forEach((b) => b.classList.remove("active"));
+      layoutBtns.forEach((b) => {
+        b.classList.remove("active");
+      });
       // Add active class to clicked button
       btn.classList.add("active");
 

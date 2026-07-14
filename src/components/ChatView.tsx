@@ -2,11 +2,11 @@ import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { Button } from "@/components/ui/button";
 import { codePlugin } from "@/lib/markdown";
-import type { CurrentTurn, Message, ToolCallActivity, TurnBlock } from "../types";
 import { summarizeLiveToolActivity, toolActivitiesToTimelineSteps } from "../toolActivityCards";
-import { MessageBlock } from "./MessageBlock";
+import type { CurrentTurn, Message, ToolCallActivity, TurnBlock } from "../types";
 import { ActivityStep } from "./ActivityStep";
 import { ApprovalCard } from "./ApprovalCard";
+import { MessageBlock } from "./MessageBlock";
 
 interface ChatViewProps {
   messages: Message[];
@@ -250,7 +250,7 @@ export function ChatView({
   currentTurn,
   onResolveApproval,
 }: ChatViewProps) {
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
   const shouldFollowRef = useRef(true);
   const isEmpty = messages.length === 0 && !currentTurn && !isThinking;
   const visibleTurns = useMemo(() => {
@@ -263,7 +263,7 @@ export function ChatView({
       turns.push({ type: "currentTurn", currentTurn });
     } else if (isThinking) {
       const lastMessage = messages[messages.length - 1];
-      if (!lastMessage || lastMessage.role !== "agent") {
+      if (lastMessage?.role !== "agent") {
         turns.push({ type: "thinking" });
       }
     }
@@ -286,10 +286,13 @@ export function ChatView({
     return null;
   }, [messages]);
 
+  // The message ID is an intentional trigger: a new user turn resumes auto-follow.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The dependency triggers the ref reset.
   useLayoutEffect(() => {
     shouldFollowRef.current = true;
   }, [lastUserMessageId]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: New rendered turns trigger scrolling.
   useLayoutEffect(() => {
     if (!shouldFollowRef.current) return;
     scrollToBottom();
@@ -297,23 +300,19 @@ export function ChatView({
 
   if (isEmpty) {
     return (
-      <div
-        className="chat-view chat-empty-state flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center"
-        role="main"
-      >
+      <main className="chat-view chat-empty-state flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center">
         <div className="flex flex-col items-center gap-2 animate-fade-slide-in motion-reduce:animate-none">
           <p className="text-heading text-text-primary font-medium">New session ready</p>
           <p className="font-mono text-mono text-text-muted">{workspacePath}</p>
         </div>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div
+    <main
       ref={scrollContainerRef}
       className="chat-view flex-1 overflow-y-auto overflow-x-hidden flex flex-col relative"
-      role="main"
       aria-live="polite"
       onScroll={updateShouldFollow}
     >
@@ -364,6 +363,6 @@ export function ChatView({
           );
         })}
       </div>
-    </div>
+    </main>
   );
 }

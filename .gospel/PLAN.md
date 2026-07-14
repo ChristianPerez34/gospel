@@ -11,7 +11,7 @@ Implement Phase 1 of the Gospel shell/git/GitHub CLI agent tools: a safe command
 - [x] Implement `src-tauri/src/shell_tools.rs` with `CommandSafety`, `CommandPolicy`, `CommandExecutor`, `CommandApproval`, and the three tool structs.
 - [x] Add unit tests for the command classifier and safety checks.
 - [x] Wire the tools into `llm.rs` system preamble and `stream_completion` tool builder.
-- [x] Wire `command_approval` through the `lib.rs` Tauri adapter (mirrors the existing `ExternalPathApproval` pattern; `session_turn.rs` does not need changes because approval is provided by the Tauri-side `SessionTurnLlm` adapter).
+- [x] Wire `command_approval` through the `lib.rs` Tauri adapter (mirrors the existing `ExternalPathApproval` pattern; `session_turn.rs` is only touched to add the `command_approval` field to default/test `RunSkillScriptTool` instances; runtime approval is supplied by the Tauri-side `SessionTurnLlm` adapter).
 - [x] Implement `TauriCommandApproval` using `tauri_plugin_dialog`.
 - [x] Update `AGENTS.md` to document the new tools and policy.
 - [x] Verify with `cargo test --manifest-path src-tauri/Cargo.toml` and `bun run build`.

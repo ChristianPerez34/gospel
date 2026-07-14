@@ -195,6 +195,12 @@ pub fn redacted_json_string(value: &serde_json::Value) -> String {
     serde_json::to_string(&redacted).unwrap_or_default()
 }
 
+pub fn redacted_text(value: &str) -> String {
+    let mut redacted = value.to_string();
+    redact_sensitive(&mut redacted);
+    redacted
+}
+
 const SENSITIVE_KEYS: &[&str] = &[
     "api_key",
     "apiKey",
@@ -208,6 +214,10 @@ const SENSITIVE_KEYS: &[&str] = &[
     "token",
     "old_text",
     "new_text",
+    "content",
+    "diff_preview",
+    "stdout",
+    "stderr",
 ];
 
 fn redact_sensitive_value(value: &mut serde_json::Value) {
@@ -253,7 +263,7 @@ fn redact_sensitive(json_str: &mut String) {
             let value_start = start + search.len();
             if let Some(end) = json_str[value_start..].find('"') {
                 let redacted = format!("\"{}\":\"[REDACTED]\"", pattern);
-                json_str.replace_range(start..value_start + end, &redacted);
+                json_str.replace_range(start..value_start + end + 1, &redacted);
                 search_from = start + redacted.len();
             } else {
                 break;

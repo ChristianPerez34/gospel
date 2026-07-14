@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -47,6 +47,13 @@ export interface ModelVariantWarningPayload {
   message: string;
 }
 
+function joinTextBlocks(blocks: TurnBlock[]): string {
+  return blocks
+    .filter((block): block is { kind: "text"; id: string; text: string } => block.kind === "text")
+    .map((block) => block.text)
+    .join("");
+}
+
 interface StartStreamOptions {
   provider: string;
   prompt: string;
@@ -76,13 +83,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     };
   }, [generateTurnId]);
 
-  /** Join all `text` blocks into a single string (back-compat for `content`). */
-  const joinTextBlocks = (blocks: TurnBlock[]): string =>
-    blocks
-      .filter((b): b is { kind: "text"; id: string; text: string } => b.kind === "text")
-      .map((b) => b.text)
-      .join("");
-
   const updateCurrentTurn = useCallback(
     (updater: (turn: CurrentTurn) => CurrentTurn) => {
       const existing = currentTurnRef.current ?? createTurn();
@@ -108,7 +108,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
       const track = (p: Promise<() => void>) =>
         p.then((u) => {
-          unlisteners.push(u);
+          if (cancelled) {
+            u();
+          } else {
+            unlisteners.push(u);
+          }
           return u;
         });
       try {
@@ -327,12 +331,17 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
         ]);
       } catch (error) {
-        unlisteners.forEach((unlisten) => unlisten());
+        cancelled = true;
+        unlisteners.forEach((unlisten) => {
+          unlisten();
+        });
         throw error;
       }
 
       cleanup = () => {
-        unlisteners.forEach((unlisten) => unlisten());
+        unlisteners.forEach((unlisten) => {
+          unlisten();
+        });
       };
 
       if (cancelled) {
@@ -345,7 +354,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       cancelled = true;
       cleanup?.();
     };
-  }, []);
+  }, [updateCurrentTurn, generateTurnId, clearCurrentTurn]);
 
   const startStream = useCallback(async (opts: StartStreamOptions) => {
     await invoke("complete_streaming", {

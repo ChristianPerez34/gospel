@@ -259,7 +259,7 @@ pub async fn run_streaming_turn(
                 skill_script_tool,
             },
             Box::new(move |event| {
-                events.emit_stream_event(&trace_sid, &trace_role, &event);
+                events.emit_stream_event(&trace_sid, trace_role, &event);
             }),
         )
         .await;
@@ -803,13 +803,21 @@ pub fn trace_event_for_session_turn_event(
             )),
             timestamp,
         }),
-        SessionTurnEvent::ToolResult { name, result, .. } => Some(trace::TraceEvent::ToolResult {
-            session_id: session_id.to_string(),
-            role: role.to_string(),
-            tool_name: name.clone(),
-            result_summary: result.chars().take(200).collect(),
-            timestamp,
-        }),
+        SessionTurnEvent::ToolResult { name, result, .. } => {
+            let redacted_result = if let Ok(val) = serde_json::from_str::<serde_json::Value>(result)
+            {
+                trace::redacted_json_string(&val)
+            } else {
+                trace::redacted_text(result)
+            };
+            Some(trace::TraceEvent::ToolResult {
+                session_id: session_id.to_string(),
+                role: role.to_string(),
+                tool_name: name.clone(),
+                result_summary: redacted_result.chars().take(200).collect(),
+                timestamp,
+            })
+        }
         SessionTurnEvent::LoopWarning { count, tool_name } => Some(trace::TraceEvent::Warning {
             session_id: session_id.to_string(),
             role: role.to_string(),
@@ -854,6 +862,7 @@ fn turn_requires_verification(response: &str, source_edit_succeeded: bool) -> bo
     source_edit_succeeded || response_requires_verification(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn verification_job_request(
     provider: &str,
     model: &str,
@@ -1849,6 +1858,28 @@ mod tests {
         assert_eq!(value["session_id"], "session-1");
         assert_eq!(value["tool_name"], "read_file");
         assert_eq!(value["result_summary"].as_str().unwrap().len(), 200);
+
+        let trace = trace_event_for_session_turn_event(
+            &SessionTurnEvent::ToolResult {
+                id: "call-2".to_string(),
+                name: "read_file".to_string(),
+                result: r#"read failed: {"token":"sk-result"}"#.to_string(),
+            },
+            "session-1",
+            "main",
+            123,
+        )
+        .unwrap();
+
+        let value = serde_json::to_value(trace).unwrap();
+        assert_eq!(
+            value["result_summary"],
+            r#"read failed: {"token":"[REDACTED]"}"#
+        );
+        assert!(!value["result_summary"]
+            .as_str()
+            .unwrap()
+            .contains("sk-result"));
     }
 
     #[test]

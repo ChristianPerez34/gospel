@@ -1,13 +1,13 @@
 import { useEffect, useRef } from "react";
+import type { FocusProgress } from "../hooks/useReviewProgress";
 import type {
   ReviewActivityEntry,
   ReviewFocus,
   ReviewNodeState,
   ReviewPipelineState,
 } from "../types";
-import { FocusProgress } from "../hooks/useReviewProgress";
+import { FOCUS_ORDER, focusLabel } from "../utils/focus";
 import { FocusBadge } from "./FocusBadge";
-import { focusLabel, FOCUS_ORDER } from "../utils/focus";
 
 interface ReviewProgressViewProps {
   perFocus: Partial<Record<ReviewFocus, FocusProgress>>;
@@ -60,6 +60,8 @@ export function ReviewProgressView({ perFocus, log, variant = "active" }: Review
   const feedRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll the feed to the latest entry. Respect reduced-motion.
+  // A newly appended entry should move the feed to the latest activity.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Log length is an intentional trigger.
   useEffect(() => {
     const node = feedRef.current;
     if (!node) return;
@@ -172,6 +174,8 @@ function ActivityFeed({ log, feedRef }: ActivityFeedProps) {
     <div className="review-progress__feed" ref={feedRef}>
       {log.map((entry, index) => (
         <div
+          // Entries have no backend ID and identical events can occur in sequence.
+          // biome-ignore lint/suspicious/noArrayIndexKey: Position disambiguates duplicate log entries.
           key={`${entry.timestamp}-${index}`}
           className={`review-progress__entry${
             entry.phase === "failed" ? " review-progress__entry--failed" : ""

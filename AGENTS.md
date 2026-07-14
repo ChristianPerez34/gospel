@@ -56,5 +56,5 @@ Gospel exposes three agent-facing tools for workspace command execution:
 
 - Core logic lives in `src-tauri/src/shell_tools.rs`.
 - Approval is provided by the `CommandApproval` trait; the Tauri implementation uses `tauri_plugin_dialog`.
-- Tools are registered in `src-tauri/src/llm.rs` and gated by the classifier in `CommandPolicy`.
+- Tools are registered in `src-tauri/src/harness_profile.rs` and gated by the classifier in `CommandPolicy`.
 - Policy defaults are hard-coded for Phase 1; future phases may load per-project overrides from `.gospel/shell-policy.json`.

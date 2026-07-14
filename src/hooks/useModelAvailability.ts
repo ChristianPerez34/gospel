@@ -1,7 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { modelOptionId, type AvailableModelVariant, type ModelOption } from "../types";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderConfig, ProviderId } from "../components/ProviderSelector";
+import { type AvailableModelVariant, type ModelOption, modelOptionId } from "../types";
 
 interface ProviderAvailability {
   provider: ProviderId;

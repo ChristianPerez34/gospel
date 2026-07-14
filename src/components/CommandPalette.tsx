@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import type { ModelOption, Session, Workspace } from "../types";
+import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import type { ModelOption, Session, Workspace } from "../types";
 
 type CommandGroup = "Sessions" | "Files / context" | "Settings" | "Variants" | "Commands";
 
@@ -281,6 +281,8 @@ export function CommandPalette({
     setActiveIndex(0);
   }, [open]);
 
+  // Search changes intentionally reset keyboard selection.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The query is an event trigger.
   useEffect(() => {
     setActiveIndex(0);
   }, [query]);

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 export type ProviderId =
@@ -55,7 +55,6 @@ function oauthCopy(provider: ProviderConfig) {
         button: "Sign in with GitHub",
         connecting: "Connecting to GitHub...",
       };
-    case "chatgpt":
     default:
       return {
         prompt: "Sign in with your ChatGPT Plus/Pro account",
@@ -175,7 +174,7 @@ export function ProviderSelector({
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [onRefreshAvailability]);
 
   const updateProvider = useCallback(
     (id: ProviderId, patch: Partial<ProviderConfig>) => {
@@ -236,6 +235,26 @@ export function ProviderSelector({
     [updateProvider, onRefreshAvailability]
   );
 
+  const handleOAuthLogout = useCallback(
+    async (provider: ProviderConfig) => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("logout_provider_oauth", { provider: provider.id });
+        updateProvider(provider.id, {
+          isAuthenticated: false,
+          credentialed: false,
+          status: "idle",
+          testMessage: "",
+        });
+        setOauthChallenge((current) => (current?.provider === provider.id ? null : current));
+        await onRefreshAvailability();
+      } catch (e) {
+        updateProvider(provider.id, { status: "error", testMessage: `Logout failed: ${e}` });
+      }
+    },
+    [updateProvider, onRefreshAvailability]
+  );
+
   const handleRemoveKey = useCallback(
     async (provider: ProviderConfig) => {
       if (isOperationInProgress.current) return;
@@ -261,7 +280,7 @@ export function ProviderSelector({
         isOperationInProgress.current = false;
       }
     },
-    [updateProvider, onRefreshAvailability]
+    [updateProvider, onRefreshAvailability, handleOAuthLogout]
   );
 
   const handleOAuthLogin = useCallback(
@@ -285,26 +304,6 @@ export function ProviderSelector({
         await onRefreshAvailability();
       } finally {
         isOperationInProgress.current = false;
-      }
-    },
-    [updateProvider, onRefreshAvailability]
-  );
-
-  const handleOAuthLogout = useCallback(
-    async (provider: ProviderConfig) => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("logout_provider_oauth", { provider: provider.id });
-        updateProvider(provider.id, {
-          isAuthenticated: false,
-          credentialed: false,
-          status: "idle",
-          testMessage: "",
-        });
-        setOauthChallenge((current) => (current?.provider === provider.id ? null : current));
-        await onRefreshAvailability();
-      } catch (e) {
-        updateProvider(provider.id, { status: "error", testMessage: `Logout failed: ${e}` });
       }
     },
     [updateProvider, onRefreshAvailability]
@@ -348,10 +347,12 @@ export function ProviderSelector({
                           ? "text-status-error"
                           : "text-text-muted animate-pulse"
                     }`}
-                    aria-label={provider.testMessage}
                     title={provider.testMessage}
                   >
-                    {isTesting ? "…" : isSuccess ? "✓" : isError ? "✕" : null}
+                    <span aria-hidden="true">
+                      {isTesting ? "…" : isSuccess ? "✓" : isError ? "✕" : null}
+                    </span>
+                    <span className="sr-only">{provider.testMessage}</span>
                   </span>
                 )}
               </div>
@@ -452,6 +453,7 @@ export function ProviderSelector({
                             fill="none"
                             stroke="currentColor"
                             strokeWidth="1.2"
+                            aria-hidden="true"
                           >
                             <path d="M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" />
                             <circle cx="8" cy="8" r="1.5" />
@@ -465,6 +467,7 @@ export function ProviderSelector({
                             fill="none"
                             stroke="currentColor"
                             strokeWidth="1.2"
+                            aria-hidden="true"
                           >
                             <path d="M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" />
                             <circle cx="8" cy="8" r="1.5" />

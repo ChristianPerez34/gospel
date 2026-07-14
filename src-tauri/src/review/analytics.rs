@@ -59,6 +59,7 @@ pub struct ReviewMetricsRecord {
 }
 
 impl ReviewMetricsRecord {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_comments(
         run_id: String,
         timestamp: DateTime<Utc>,

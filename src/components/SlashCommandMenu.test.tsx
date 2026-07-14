@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SlashCommandMenu } from "./SlashCommandMenu";
 import type { SkillSummary } from "../hooks/useSkills";
+import { SlashCommandMenu } from "./SlashCommandMenu";
 
 function skill(name: string): SkillSummary {
   return {

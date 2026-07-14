@@ -1271,6 +1271,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn complete_streaming(
     app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
@@ -1336,9 +1337,7 @@ fn resolve_delegate_completion_config(
         .as_ref()
         .and_then(|store| store.get_config_value("delegate_provider").ok().flatten());
     let configured_provider = stored_provider.filter(|configured| {
-        ModelRegistry::all_providers()
-            .iter()
-            .any(|supported| *supported == configured.as_str())
+        ModelRegistry::all_providers().contains(&configured.as_str())
     });
     let delegate_provider = configured_provider.unwrap_or(fallback_provider);
 
@@ -1348,11 +1347,7 @@ fn resolve_delegate_completion_config(
         .and_then(|store| store.get_config_value("delegate_model").ok().flatten());
     let supported_models = ModelRegistry::models_for_provider(&delegate_provider);
     let delegate_model = stored_model
-        .filter(|configured| {
-            supported_models
-                .iter()
-                .any(|supported| *supported == configured.as_str())
-        })
+        .filter(|configured| supported_models.contains(&configured.as_str()))
         .unwrap_or(fallback_model);
 
     let delegate_api_key = if ModelRegistry::is_oauth_provider(&delegate_provider) {
@@ -1969,13 +1964,9 @@ fn create_session(
     provider: String,
     model: String,
     variant: Option<String>,
-    workspace_id: String,
+    workspace_id: Option<String>,
     mode: Option<String>,
 ) -> Result<SessionRecord, String> {
-    if workspace_id.is_empty() {
-        return Err("workspace_id is required".to_string());
-    }
-
     let mode = mode.unwrap_or_else(|| session_mode::SESSION_MODE_BUILD.to_string());
     match &session_store.store {
         Some(store) => store
@@ -1984,7 +1975,7 @@ fn create_session(
                 &provider,
                 &model,
                 variant.as_deref(),
-                &workspace_id,
+                workspace_id.as_deref(),
                 &mode,
             )
             .map_err(|e| e.to_string()),
@@ -2970,13 +2961,13 @@ mod workspace_response_tests {
 
         let session_store = SessionStore::in_memory_for_test().unwrap();
         let active = session_store
-            .create_session("Active", "openai", "gpt-4", &first_workspace.id)
+            .create_session("Active", "openai", "gpt-4", Some(&first_workspace.id))
             .unwrap();
         let errored = session_store
-            .create_session("Errored", "openai", "gpt-4", &first_workspace.id)
+            .create_session("Errored", "openai", "gpt-4", Some(&first_workspace.id))
             .unwrap();
         let draft = session_store
-            .create_session("Draft", "openai", "gpt-4", &first_workspace.id)
+            .create_session("Draft", "openai", "gpt-4", Some(&first_workspace.id))
             .unwrap();
 
         session_store.update_status(&active.id, "active").unwrap();

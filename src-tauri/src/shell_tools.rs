@@ -68,6 +68,41 @@ pub enum CommandSafety {
 pub struct CommandPolicy;
 
 impl CommandPolicy {
+    /// Shared safety checks for both top-level and `env`-wrapped shell commands.
+    fn common_shell_safety(
+        &self,
+        executable: &str,
+        program: &str,
+        args: &[String],
+        workspace_root: &Path,
+    ) -> Option<CommandSafety> {
+        let executable_lower = executable.to_ascii_lowercase();
+
+        // Block shell interpreters to prevent shell-injection attacks.
+        if is_shell_interpreter(&executable_lower) {
+            return Some(CommandSafety::Blocked("shell_interpreter".to_string()));
+        }
+
+        // Block shell metacharacters and secret-like paths anywhere in the invocation.
+        if contains_shell_metacharacter(program) {
+            return Some(CommandSafety::Blocked("shell_metacharacter".to_string()));
+        }
+        if let Some(safety) = blocked_argument_safety(args) {
+            return Some(safety);
+        }
+
+        if executable_lower == "env" {
+            return Some(self.classify_env_shell_wrapper(args, workspace_root));
+        }
+
+        // Hard-block known destructive patterns.
+        if is_blocked_shell_pattern(&executable_lower, args) {
+            return Some(CommandSafety::Blocked("dangerous_command".to_string()));
+        }
+
+        None
+    }
+
     pub fn classify_shell(
         &self,
         program: &str,
@@ -83,46 +118,24 @@ impl CommandPolicy {
         let executable_lower = executable.to_ascii_lowercase();
         let program_is_bare_name = executable == program;
 
-        // Block shell interpreters to prevent shell-injection attacks.
-        if is_shell_interpreter(&executable_lower) {
-            return CommandSafety::Blocked("shell_interpreter".to_string());
+        if let Some(safety) = self.common_shell_safety(executable, program, args, workspace_root) {
+            return safety;
         }
 
-        // Block shell metacharacters anywhere in the invocation.
-        if contains_shell_metacharacter(program) {
-            return CommandSafety::Blocked("shell_metacharacter".to_string());
-        }
-        for arg in args {
-            if contains_shell_metacharacter(arg) {
-                return CommandSafety::Blocked("shell_metacharacter".to_string());
-            }
-        }
-
-        if executable_lower == "env" {
-            return self.classify_env_shell_wrapper(args, workspace_root);
-        }
-
-        // Hard-block known destructive patterns.
-        if is_blocked_shell_pattern(&executable_lower, args) {
-            return CommandSafety::Blocked("dangerous_command".to_string());
-        }
-
-        if executable_lower == "git" {
-            let safety = self.classify_git(args, workspace_root);
-            return if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
+        let promote_git_gh_safety = |safety: CommandSafety| {
+            if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
                 safety
             } else {
                 CommandSafety::Mutating
-            };
+            }
+        };
+
+        if executable_lower == "git" {
+            return promote_git_gh_safety(self.classify_git(args, workspace_root));
         }
 
         if executable_lower == "gh" {
-            let safety = self.classify_gh(args, workspace_root);
-            return if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
-                safety
-            } else {
-                CommandSafety::Mutating
-            };
+            return promote_git_gh_safety(self.classify_gh(args, workspace_root));
         }
 
         if executable_lower == "find" {
@@ -168,14 +181,8 @@ impl CommandPolicy {
         let executable = executable_name(program);
         let executable_lower = executable.to_ascii_lowercase();
 
-        if is_shell_interpreter(&executable_lower) {
-            return CommandSafety::Blocked("shell_interpreter".to_string());
-        }
-        if is_blocked_shell_pattern(&executable_lower, args) {
-            return CommandSafety::Blocked("dangerous_command".to_string());
-        }
-        if executable_lower == "env" {
-            return self.classify_env_shell_wrapper(args, workspace_root);
+        if let Some(safety) = self.common_shell_safety(executable, program, args, workspace_root) {
+            return safety;
         }
 
         let wrapped_safety = match executable_lower.as_str() {
@@ -195,10 +202,8 @@ impl CommandPolicy {
             return CommandSafety::Blocked("empty_git_command".to_string());
         }
 
-        for arg in args {
-            if contains_shell_metacharacter(arg) {
-                return CommandSafety::Blocked("shell_metacharacter".to_string());
-            }
+        if let Some(safety) = blocked_argument_safety(args) {
+            return safety;
         }
 
         let subcommand = args[0].to_ascii_lowercase();
@@ -231,11 +236,18 @@ impl CommandPolicy {
                 | "blame"
                 | "ls-files"
                 | "ls-tree"
-                | "remote"
                 | "rev-parse"
                 | "describe"
         ) {
             return CommandSafety::ReadOnly;
+        }
+
+        if subcommand == "remote" {
+            return if git_remote_is_read_only(args) {
+                CommandSafety::ReadOnly
+            } else {
+                CommandSafety::Mutating
+            };
         }
 
         if subcommand == "config" {
@@ -326,10 +338,8 @@ impl CommandPolicy {
             return CommandSafety::Blocked("empty_gh_command".to_string());
         }
 
-        for arg in args {
-            if contains_shell_metacharacter(arg) {
-                return CommandSafety::Blocked("shell_metacharacter".to_string());
-            }
+        if let Some(safety) = blocked_argument_safety(args) {
+            return safety;
         }
 
         let first = args[0].to_ascii_lowercase();
@@ -446,7 +456,7 @@ fn http_method_is_read_only(method: &str) -> bool {
 
 fn executable_name(program: &str) -> &str {
     program
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or(program)
@@ -557,6 +567,49 @@ fn contains_shell_metacharacter(s: &str) -> bool {
     })
 }
 
+fn is_path_like(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Reject whitespace-containing values
+    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    // Reject other clearly non-path-like free-form values (e.g. containing quotes or JSON-like braces/brackets)
+    if s.chars().any(|c| matches!(c, '"' | '\'' | '{' | '}' | '[' | ']')) {
+        return false;
+    }
+    true
+}
+
+fn blocked_argument_safety(args: &[String]) -> Option<CommandSafety> {
+    for arg in args {
+        if contains_shell_metacharacter(arg) {
+            return Some(CommandSafety::Blocked("shell_metacharacter".to_string()));
+        }
+        if let Some(value) = argument_path_value(arg) {
+            if crate::workspace_tools::is_secret_like(Path::new(value)) {
+                return Some(CommandSafety::Blocked("secret_like_argument".to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn argument_path_value(arg: &str) -> Option<&str> {
+    let value = if let Some(option) = arg.strip_prefix("--") {
+        option.split_once('=').map(|(_, value)| value)
+    } else if arg.starts_with('-') {
+        arg.split_once('=')
+            .map(|(_, value)| value)
+            .or_else(|| arg.get(2..))
+    } else {
+        Some(arg)
+    };
+
+    value.filter(|v| is_path_like(v))
+}
+
 fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
     // rm -rf / or rm -rf /*
     if program == "rm" {
@@ -625,31 +678,75 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
             | "wc"
             | "sort"
             | "uniq"
-            | "git"
     ) {
         return false;
     }
 
-    // git via shell tool is allowed only for read-only subcommands.
-    if program == "git" {
-        if args.is_empty() {
-            return false;
-        }
-        return matches!(
-            args[0].to_ascii_lowercase().as_str(),
-            "status"
-                | "log"
-                | "diff"
-                | "show"
-                | "blame"
-                | "ls-files"
-                | "remote"
-                | "rev-parse"
-                | "describe"
-        );
+    if program == "sort" && sort_has_output_destination(args) {
+        return false;
+    }
+
+    if program == "uniq" && uniq_has_output_destination(args) {
+        return false;
     }
 
     true
+}
+
+fn git_remote_is_read_only(args: &[String]) -> bool {
+    let mut verb_index = 1;
+    if matches!(
+        args.get(verb_index).map(String::as_str),
+        Some("-v" | "--verbose")
+    ) {
+        verb_index += 1;
+    }
+
+    matches!(
+        args.get(verb_index).map(String::as_str),
+        None | Some("show")
+    )
+}
+
+fn sort_has_output_destination(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "-o"
+            || arg == "--output"
+            || (arg.starts_with("-o") && arg.len() > 2)
+            || arg.starts_with("--output=")
+    })
+}
+
+fn uniq_has_output_destination(args: &[String]) -> bool {
+    let mut positional_count = 0;
+    let mut options_ended = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+        if !options_ended && arg == "--" {
+            options_ended = true;
+        } else if !options_ended && uniq_option_takes_value(arg) {
+            index += 1;
+        } else if !options_ended && arg.starts_with('-') && arg != "-" {
+            // Flag or option with an attached value.
+        } else {
+            positional_count += 1;
+            if positional_count > 1 {
+                return true;
+            }
+        }
+        index += 1;
+    }
+
+    false
+}
+
+fn uniq_option_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-f" | "--skip-fields" | "-s" | "--skip-chars" | "-w" | "--check-chars"
+    )
 }
 
 fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
@@ -659,37 +756,24 @@ fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
     };
 
     for arg in args {
-        let mut paths_to_check = Vec::new();
-        if arg.starts_with('-') {
-            if let Some(position) = arg.find('=') {
-                paths_to_check.push(arg[position + 1..].to_string());
-            } else if !arg.starts_with("--") && arg.len() > 2 {
-                paths_to_check.push(arg[2..].to_string());
-            }
-        } else {
-            paths_to_check.push(arg.clone());
+        let Some(path_string) = argument_path_value(arg).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+
+        let path = PathBuf::from(path_string);
+        if !path.is_absolute() && path_string.contains("..") {
+            return Some(format!(
+                "relative path may escape workspace: {}",
+                path_string
+            ));
         }
-
-        for path_string in paths_to_check {
-            if path_string.is_empty() {
-                continue;
-            }
-
-            let path = PathBuf::from(&path_string);
-            if !path.is_absolute() && path_string.contains("..") {
-                return Some(format!(
-                    "relative path may escape workspace: {}",
-                    path_string
-                ));
-            }
-            let candidate = if path.is_absolute() {
-                path
-            } else {
-                workspace_canonical.join(&path)
-            };
-            if candidate_escapes_workspace(&candidate, &workspace_canonical) {
-                return Some(format!("path escapes workspace: {}", path_string));
-            }
+        let candidate = if path.is_absolute() {
+            path
+        } else {
+            workspace_canonical.join(&path)
+        };
+        if candidate_escapes_workspace(&candidate, &workspace_canonical) {
+            return Some(format!("path escapes workspace: {}", path_string));
         }
     }
     None
@@ -1341,6 +1425,52 @@ mod tests {
     }
 
     #[test]
+    fn classifiers_block_secret_like_argument_paths() {
+        let policy = CommandPolicy;
+        let blocked = CommandSafety::Blocked("secret_like_argument".to_string());
+
+        assert_eq!(
+            policy.classify_shell("cat", &[".env".to_string()], &workspace()),
+            blocked
+        );
+        assert_eq!(
+            policy.classify_shell("cat", &["--input=.env".to_string()], &workspace()),
+            blocked
+        );
+        assert_eq!(
+            policy.classify_git(
+                &["status".to_string(), "--config=.npmrc".to_string()],
+                &workspace()
+            ),
+            blocked
+        );
+        assert_eq!(
+            policy.classify_gh(
+                &["status".to_string(), "--input=.env".to_string()],
+                &workspace()
+            ),
+            blocked
+        );
+
+        // Allow free-form/whitespace-containing args that might contain secret keywords
+        assert_ne!(
+            policy.classify_git(
+                &["commit".to_string(), "-m".to_string(), "fixed credentials bug".to_string()],
+                &workspace()
+            ),
+            blocked
+        );
+        assert_ne!(
+            policy.classify_shell(
+                "echo",
+                &["this is my secret message".to_string()],
+                &workspace()
+            ),
+            blocked
+        );
+    }
+
+    #[test]
     fn classify_shell_blocks_rm_rf_root() {
         let policy = CommandPolicy;
         let safety =
@@ -1385,6 +1515,52 @@ mod tests {
         );
         assert_eq!(
             policy.classify_shell("git", &["status".to_string()], &workspace()),
+            CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
+    fn classify_shell_detects_sort_and_uniq_output_destinations() {
+        let policy = CommandPolicy;
+
+        for args in [
+            vec![
+                "-o".to_string(),
+                "sorted.txt".to_string(),
+                "input.txt".to_string(),
+            ],
+            vec!["-osorted.txt".to_string(), "input.txt".to_string()],
+            vec![
+                "--output".to_string(),
+                "sorted.txt".to_string(),
+                "input.txt".to_string(),
+            ],
+            vec!["--output=sorted.txt".to_string(), "input.txt".to_string()],
+        ] {
+            assert_eq!(
+                policy.classify_shell("sort", &args, &workspace()),
+                CommandSafety::Mutating
+            );
+        }
+
+        assert_eq!(
+            policy.classify_shell(
+                "uniq",
+                &["-".to_string(), "unique.txt".to_string()],
+                &workspace()
+            ),
+            CommandSafety::Mutating
+        );
+        assert_eq!(
+            policy.classify_shell(
+                "uniq",
+                &[
+                    "--skip-fields".to_string(),
+                    "1".to_string(),
+                    "input.txt".to_string(),
+                ],
+                &workspace()
+            ),
             CommandSafety::ReadOnly
         );
     }
@@ -1568,6 +1744,109 @@ mod tests {
             policy.classify_git(&["log".to_string(), "--oneline".to_string()], &workspace()),
             CommandSafety::ReadOnly
         );
+    }
+
+    #[test]
+    fn classify_git_remote_read_only_forms() {
+        let policy = CommandPolicy;
+        // `git remote`, `git remote -v`, `git remote --verbose`, and
+        // `git remote show <name>` are read-only.
+        assert_eq!(
+            policy.classify_git(&["remote".to_string()], &workspace()),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &["remote".to_string(), "-v".to_string()],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &["remote".to_string(), "--verbose".to_string()],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "remote".to_string(),
+                    "show".to_string(),
+                    "origin".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "remote".to_string(),
+                    "-v".to_string(),
+                    "show".to_string(),
+                    "origin".to_string(),
+                ],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
+    fn classify_git_remote_add_show_url_is_mutating() {
+        // Regression: `git remote add show <url>` must NOT be classified as
+        // read-only just because `show` appears in the arg list.
+        let policy = CommandPolicy;
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "remote".to_string(),
+                    "add".to_string(),
+                    "show".to_string(),
+                    "https://example.com".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::Mutating
+        );
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "remote".to_string(),
+                    "set-url".to_string(),
+                    "origin".to_string(),
+                    "https://example.com".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::Mutating
+        );
+    }
+
+    #[test]
+    fn classify_git_remote_verbose_mutations_are_mutating() {
+        let policy = CommandPolicy;
+        for args in [
+            vec![
+                "remote".to_string(),
+                "-v".to_string(),
+                "add".to_string(),
+                "show".to_string(),
+                "https://example.com".to_string(),
+            ],
+            vec![
+                "remote".to_string(),
+                "--verbose".to_string(),
+                "update".to_string(),
+            ],
+        ] {
+            assert_eq!(
+                policy.classify_git(&args, &workspace()),
+                CommandSafety::Mutating
+            );
+        }
     }
 
     #[test]

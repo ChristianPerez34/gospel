@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface SkillSummary {
   name: string;
@@ -52,6 +52,8 @@ export function useSkills(workspacePath?: string) {
     }
   }, []);
 
+  // The backend resolves skills against the active workspace; the path signals that change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Workspace path is an intentional trigger.
   useEffect(() => {
     fetchSkills();
   }, [fetchSkills, workspacePath]);

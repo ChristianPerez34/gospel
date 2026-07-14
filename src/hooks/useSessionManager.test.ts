@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { useState } from "react";
-import { renderHook, act } from "@testing-library/react";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { useSessionManager, type UseSessionManagerParams } from "./useSessionManager";
+import { listen } from "@tauri-apps/api/event";
+import { act, renderHook } from "@testing-library/react";
+import { useState } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message, ModelOption, Session } from "../types";
+import { type UseSessionManagerParams, useSessionManager } from "./useSessionManager";
 
 type ListenerCallback = (event: { payload: unknown }) => void;
 

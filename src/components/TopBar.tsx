@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, type RefObject } from "react";
 import { Columns2, Cpu, Frame, GitPullRequest, Hammer, Lock, Shield } from "lucide-react";
-import type { Workspace, AgentStatus, SessionMode } from "../types";
+import { type RefObject, useEffect, useRef, useState } from "react";
+import type { AgentStatus, SessionMode, Workspace } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
 export type WorkspaceLayoutMode = "focus" | "pairing" | "review" | "pipeline";
@@ -75,6 +75,7 @@ export function TopBar({
     <header className="app-topbar spatial-topbar px-4 bg-surface-base shrink-0">
       <div className="topbar-primary flex items-center gap-2 min-w-0">
         <button
+          type="button"
           ref={sessionToggleRef}
           className={`hit-target w-8 h-8 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${sessionToggleClass}`}
           onClick={onToggleSessions}
@@ -82,7 +83,7 @@ export function TopBar({
           aria-pressed={sessionsOpen}
           title="Sessions"
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect
               x="2"
               y="2"
@@ -122,6 +123,7 @@ export function TopBar({
           </svg>
         </button>
         <button
+          type="button"
           className="hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
           onClick={onWorkspaceSwitch}
           aria-label="Switch workspace"
@@ -136,6 +138,7 @@ export function TopBar({
             height="14"
             viewBox="0 0 14 14"
             fill="none"
+            aria-hidden="true"
           >
             <path
               d="M4.5 5.5L7 8L9.5 5.5"
@@ -165,6 +168,7 @@ export function TopBar({
           />
         ) : (
           <button
+            type="button"
             className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary"
             onClick={() => setEditing(true)}
             aria-label="Edit session title"
@@ -190,6 +194,7 @@ export function TopBar({
           </button>
         </div>
       </div>
+      {/* biome-ignore lint/a11y/useSemanticElements: These are pressed buttons, not form inputs. */}
       <div className="topbar-layout-controls" role="group" aria-label="Workspace layout">
         {LAYOUT_OPTIONS.map(({ value, label, Icon }) => {
           const active = workspaceLayout === value;
@@ -226,6 +231,7 @@ export function TopBar({
         </span>
         <StatusIndicator status={status} />
         <button
+          type="button"
           className="hit-target w-8 h-8 flex items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
           aria-label="Settings"
           title="Settings"

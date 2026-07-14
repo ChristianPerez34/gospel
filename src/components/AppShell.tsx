@@ -1,29 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { TopBar } from "./TopBar";
-import { ChatView } from "./ChatView";
-import { InputBar } from "./InputBar";
-import { SessionDrawer } from "./SessionDrawer";
-import { WorkspaceStage } from "./WorkspaceStage";
-import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
-import { SettingsModal } from "./SettingsModal";
-import { ReviewPanel } from "./ReviewPanel";
-import { CommandPalette } from "./CommandPalette";
-import { ToastContainer, useToasts } from "./Toast";
-import { useWorkspaces } from "../hooks/useWorkspaces";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
-import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useThemePreference } from "../hooks/useThemePreference";
+import { useWorkspaces } from "../hooks/useWorkspaces";
+import { noModelCopy } from "../modelAvailabilityCopy";
 import {
-  modelOptionId,
-  normalizeSessionMode,
   type ArchivePolicy,
   type ArchiveStats,
+  modelOptionId,
+  normalizeSessionMode,
   type Session,
 } from "../types";
-import { noModelCopy } from "../modelAvailabilityCopy";
+import { ChatView } from "./ChatView";
+import { CommandPalette } from "./CommandPalette";
+import { InputBar } from "./InputBar";
+import { ReviewPanel } from "./ReviewPanel";
+import { SessionDrawer } from "./SessionDrawer";
+import { SettingsModal } from "./SettingsModal";
+import { ToastContainer, useToasts } from "./Toast";
 import type { WorkspaceLayoutMode } from "./TopBar";
+import { TopBar } from "./TopBar";
+import { WorkspaceStage } from "./WorkspaceStage";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 type SettingsTab = "general" | "models" | "data";
 type TrappedSurface = "sessions" | null;
@@ -629,7 +629,7 @@ export function AppShell() {
           : current
       );
     },
-    [setSelectedModel, setSessions]
+    [setSelectedModel]
   );
 
   const applyModelSelection = useCallback(

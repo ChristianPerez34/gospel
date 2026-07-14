@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultStartupModel, type AvailableModel } from "./useModelAvailability";
+import { type AvailableModel, defaultStartupModel } from "./useModelAvailability";
 
 describe("defaultStartupModel", () => {
   it("prefers the ChatGPT subscription gpt-5.6-sol model on startup", () => {

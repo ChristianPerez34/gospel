@@ -179,7 +179,7 @@ function waitingSection(activity: ToolCallActivity): ActionCardSection[] {
 }
 
 function failureSection(result: Record<string, unknown> | undefined) {
-  if (!result || result.success !== false) return [];
+  if (result?.success !== false) return [];
 
   return [
     fieldsSection("Failure", [field("Reason", result.reason)]),

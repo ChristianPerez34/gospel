@@ -1,8 +1,15 @@
-import { useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { normalize, resolve } from "@tauri-apps/api/path";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { type ReactNode, type RefObject, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useFocusTrap } from "../hooks/useFocusTrap";
+import { useReviewProgress } from "../hooks/useReviewProgress";
+import {
+  buildExternalAgentFindingPrompt,
+  buildGospelFixFindingPrompt,
+  isActionableReviewFinding,
+} from "../reviewPrompts";
 import type {
   MultiReviewResult,
   ReviewComment,
@@ -13,16 +20,9 @@ import type {
   ReviewResult,
   SignalTier,
 } from "../types";
-import {
-  buildExternalAgentFindingPrompt,
-  buildGospelFixFindingPrompt,
-  isActionableReviewFinding,
-} from "../reviewPrompts";
-import { useFocusTrap } from "../hooks/useFocusTrap";
-import { useReviewProgress } from "../hooks/useReviewProgress";
-import { ReviewProgressView } from "./ReviewProgressView";
-import { FocusBadge } from "./FocusBadge";
 import { FOCUS_OPTIONS, focusLabel } from "../utils/focus";
+import { FocusBadge } from "./FocusBadge";
+import { ReviewProgressView } from "./ReviewProgressView";
 
 type ReviewPanelMode = "local" | "pr" | "scan";
 

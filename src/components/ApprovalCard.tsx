@@ -36,7 +36,6 @@ function statusClass(status: ApprovalBlock["status"]): string {
       return "text-status-error";
     case "timed_out":
       return "text-text-muted";
-    case "pending":
     default:
       return "text-text-primary";
   }

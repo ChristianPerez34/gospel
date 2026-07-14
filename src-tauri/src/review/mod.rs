@@ -22,7 +22,10 @@ use crate::harness_profile::{
 use crate::keychain;
 use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
+use crate::workspace_tools::is_secret_like;
 use futures::StreamExt;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
 use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
@@ -88,10 +91,11 @@ pub enum ReviewMode {
     FullScan,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "PascalCase")]
 pub enum ReviewFocus {
     #[serde(alias = "security", alias = "SECURITY")]
+    #[default]
     Security,
     #[serde(alias = "bug_hunt", alias = "bughunt", alias = "Bug Hunt")]
     BugHunt,
@@ -101,12 +105,6 @@ pub enum ReviewFocus {
     Performance,
     #[serde(alias = "style", alias = "STYLE")]
     Style,
-}
-
-impl Default for ReviewFocus {
-    fn default() -> Self {
-        Self::Security
-    }
 }
 
 impl fmt::Display for ReviewFocus {
@@ -712,10 +710,7 @@ async fn get_pr_diff(workspace_path: &Path, pr_number: u64) -> Result<PrDiff, St
     let diff_fut = run_program(workspace_path, "gh", &diff_args);
     let meta_fut = run_program(workspace_path, "gh", &meta_args);
 
-    let (diff_res, metadata_res) = tokio::join!(
-        async { diff_fut.await },
-        async { meta_fut.await }
-    );
+    let (diff_res, metadata_res) = tokio::join!(diff_fut, meta_fut);
 
     let metadata = metadata_res.map_err(|e| pr_fetch_error(pr_number, e))?;
     let metadata: PrMetadata = serde_json::from_str(&metadata)
@@ -1124,6 +1119,16 @@ fn truncate_tool_result(result: &str) -> String {
     format!("{}…", &result[..end])
 }
 
+static DIFF_SECRET_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token|private[_-]?key|client[_-]?secret)['"]?\s*[:=]\s*['"]?[^'"\s]{8,}['"]?"#)
+        .expect("static secret regex is valid")
+});
+
+fn diff_contains_secrets(diff_text: &str) -> bool {
+    DIFF_SECRET_RE.is_match(diff_text)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_diff_review(
     run_id: &str,
     emitter: &dyn ReviewProgressEmitter,
@@ -1150,14 +1155,28 @@ async fn run_diff_review(
     }
 
     let mut warnings = initial_warnings;
-    let file_diffs: Vec<FileDiff> = parse_diff_by_file(&diff)
+    let parsed_file_diffs = parse_diff_by_file(&diff);
+    let excluded_secret_like_text = parsed_file_diffs.iter().any(|file| {
+        !file.is_binary
+            && (is_secret_like(Path::new(&file.file))
+                || diff_contains_secrets(&file.diff))
+    });
+    let file_diffs: Vec<FileDiff> = parsed_file_diffs
         .into_iter()
-        .filter(|file| !file.is_binary)
+        .filter(|file| {
+            !file.is_binary
+                && !is_secret_like(Path::new(&file.file))
+                && !diff_contains_secrets(&file.diff)
+        })
         .collect();
 
     if file_diffs.is_empty() {
-        warnings
-            .push("Only binary files were present in the diff; nothing was reviewed".to_string());
+        let warning = if excluded_secret_like_text {
+            "Secret-like text files were excluded from the diff; nothing was reviewed"
+        } else {
+            "Only binary files were present in the diff; nothing was reviewed"
+        };
+        warnings.push(warning.to_string());
         return Ok(review_result(
             Vec::new(),
             "No text changes found to review".to_string(),
@@ -1325,6 +1344,7 @@ async fn run_diff_review(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn validate_candidates(
     run_id: &str,
     emitter: &dyn ReviewProgressEmitter,
@@ -2935,6 +2955,78 @@ Binary files a/icon.png and b/icon.png differ
         assert_eq!(
             result.warnings,
             vec!["Reviewed 20/82 files — partial review due to size"]
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_review_distinguishes_binary_only_from_secret_filtered_diffs() {
+        let workspace = ActiveWorkspaceContext {
+            workspace_path: std::env::current_dir().unwrap(),
+            corpus_available: false,
+            session_mode: crate::session_mode::SessionMode::Build,
+        };
+        let binary_diff =
+            "diff --git a/icon.png b/icon.png\nBinary files a/icon.png and b/icon.png differ\n";
+        let binary_result = run_diff_review(
+            "run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            "key",
+            &workspace,
+            ReviewFocus::Security,
+            ReviewMode::Local,
+            "Review".to_string(),
+            binary_diff.to_string(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            binary_result.warnings,
+            vec!["Only binary files were present in the diff; nothing was reviewed"]
+        );
+
+        let secret_diff = "diff --git a/.env b/.env\nindex 111..222 100644\n--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-old\n+new\n";
+        let secret_result = run_diff_review(
+            "run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            "key",
+            &workspace,
+            ReviewFocus::Security,
+            ReviewMode::Local,
+            "Review".to_string(),
+            secret_diff.to_string(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            secret_result.warnings,
+            vec!["Secret-like text files were excluded from the diff; nothing was reviewed"]
+        );
+
+        let secret_content_diff = "diff --git a/config.json b/config.json\nindex 111..222 100644\n--- a/config.json\n+++ b/config.json\n@@ -1 +1 @@\n-{\"api_key\": \"sk-secret123456789\"}\n+{\"api_key\": \"sk-newsecret123456789\"}\n";
+        let secret_content_result = run_diff_review(
+            "run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            "key",
+            &workspace,
+            ReviewFocus::Security,
+            ReviewMode::Local,
+            "Review".to_string(),
+            secret_content_diff.to_string(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            secret_content_result.warnings,
+            vec!["Secret-like text files were excluded from the diff; nothing was reviewed"]
         );
     }
 

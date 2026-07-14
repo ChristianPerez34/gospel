@@ -46,6 +46,7 @@ pub struct SessionDetail {
     pub mode: String,
     pub workspace_id: Option<String>,
     pub display_transcript: String,
+    #[serde(skip_serializing)]
     pub model_history: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -77,6 +78,7 @@ pub struct ArchivedSessionDetail {
     pub mode: String,
     pub workspace_id: Option<String>,
     pub display_transcript: String,
+    #[serde(skip_serializing)]
     pub model_history: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -128,6 +130,7 @@ pub struct ArchivedSessionExportItem {
     pub mode: String,
     pub workspace_id: Option<String>,
     pub display_transcript: String,
+    #[serde(skip_serializing)]
     pub model_history: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -251,7 +254,8 @@ impl SessionStore {
     fn from_connection(conn: Connection) -> Result<Self, SessionStoreError> {
         conn.execute_batch(SESSION_STORE_SCHEMA)?;
         ensure_session_schema_columns(&conn)?;
-        conn.execute("DELETE FROM sessions WHERE workspace_id IS NULL", params![])?;
+        // Unscoped sessions (workspace_id IS NULL) are now first-class and must
+        // survive reopening the store. Do not delete them on startup.
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -267,7 +271,7 @@ impl SessionStore {
         title: &str,
         provider: &str,
         model: &str,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
     ) -> Result<SessionRecord, SessionStoreError> {
         self.create_session_with_mode(title, provider, model, workspace_id, SESSION_MODE_BUILD)
     }
@@ -277,10 +281,10 @@ impl SessionStore {
         title: &str,
         provider: &str,
         model: &str,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
         mode: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, None, Some(workspace_id), mode)
+        self.insert_session(title, provider, model, None, workspace_id, mode)
     }
 
     pub fn create_session_with_selection(
@@ -289,10 +293,10 @@ impl SessionStore {
         provider: &str,
         model: &str,
         variant: Option<&str>,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
         mode: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, variant, Some(workspace_id), mode)
+        self.insert_session(title, provider, model, variant, workspace_id, mode)
     }
 
     fn insert_session(
@@ -1393,7 +1397,7 @@ mod tests {
     fn create_and_get_session() {
         let store = test_store();
         let session = store
-            .create_session("Test Session", "openai", "gpt-4", "ws1")
+            .create_session("Test Session", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         assert_eq!(session.title, "Test Session");
         assert_eq!(session.status, "draft");
@@ -1418,7 +1422,7 @@ mod tests {
                 "openai",
                 "gpt-5.2",
                 Some("reasoning-high"),
-                "ws1",
+                Some("ws1"),
                 SESSION_MODE_BUILD,
             )
             .unwrap();
@@ -1443,7 +1447,7 @@ mod tests {
     fn update_session_mode_round_trips_through_get_and_list() {
         let store = test_store();
         let session = store
-            .create_session("Read only", "openai", "gpt-4", "ws1")
+            .create_session("Read only", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store.update_session_mode(&session.id, "ReadOnly").unwrap();
         store.update_status(&session.id, "active").unwrap();
@@ -1456,7 +1460,9 @@ mod tests {
     }
 
     #[test]
-    fn from_connection_deletes_sessions_without_workspace() {
+    fn from_connection_preserves_unscoped_sessions() {
+        // Unscoped sessions (workspace_id IS NULL) are first-class and must NOT
+        // be deleted when the store is reopened.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SESSION_STORE_SCHEMA).unwrap();
         conn.execute(
@@ -1480,18 +1486,29 @@ mod tests {
 
         let store = SessionStore::from_connection(conn).unwrap();
 
-        assert!(store.get_session("orphan-session").unwrap().is_none());
+        assert!(
+            store.get_session("orphan-session").unwrap().is_some(),
+            "unscoped sessions must survive from_connection"
+        );
         assert!(store.get_session("workspace-session").unwrap().is_some());
+        assert_eq!(
+            store
+                .get_session("orphan-session")
+                .unwrap()
+                .unwrap()
+                .workspace_id,
+            None
+        );
     }
 
     #[test]
     fn list_filters_drafts() {
         let store = test_store();
         store
-            .create_session("Draft", "openai", "gpt-4", "ws1")
+            .create_session("Draft", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let s = store
-            .create_session("Active", "openai", "gpt-4", "ws1")
+            .create_session("Active", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store.update_status(&s.id, "active").unwrap();
 
@@ -1507,10 +1524,10 @@ mod tests {
             .create_unscoped_session_for_test("Unscoped", "openai", "gpt-4")
             .unwrap();
         let scoped = store
-            .create_session("Scoped", "openai", "gpt-4", "ws1")
+            .create_session("Scoped", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let other = store
-            .create_session("Other", "openai", "gpt-4", "ws2")
+            .create_session("Other", "openai", "gpt-4", Some("ws2"))
             .unwrap();
 
         store.update_status(&unscoped.id, "active").unwrap();
@@ -1542,22 +1559,22 @@ mod tests {
     fn workspace_session_counts_include_only_non_draft_workspace_sessions() {
         let store = test_store();
         let draft = store
-            .create_session("Draft", "openai", "gpt-4", "ws1")
+            .create_session("Draft", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let active = store
-            .create_session("Active", "openai", "gpt-4", "ws1")
+            .create_session("Active", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let error = store
-            .create_session("Error", "openai", "gpt-4", "ws1")
+            .create_session("Error", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let other = store
-            .create_session("Other", "openai", "gpt-4", "ws2")
+            .create_session("Other", "openai", "gpt-4", Some("ws2"))
             .unwrap();
         let unscoped = store
             .create_unscoped_session_for_test("Unscoped", "openai", "gpt-4")
             .unwrap();
         let empty_ws = store
-            .create_session("EmptyWs", "openai", "gpt-4", "")
+            .create_session("EmptyWs", "openai", "gpt-4", Some(""))
             .unwrap();
 
         store.update_status(&active.id, "active").unwrap();
@@ -1593,10 +1610,49 @@ mod tests {
     }
 
     #[test]
+    fn unscoped_sessions_survive_store_reopen() {
+        // Regression: `from_connection` used to run
+        // `DELETE FROM sessions WHERE workspace_id IS NULL`, silently dropping
+        // unscoped sessions on the next app restart.
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("sessions.sqlite3");
+
+        let store = SessionStore::from_connection(rusqlite::Connection::open(&db_path).unwrap())
+            .unwrap();
+        let unscoped = store
+            .create_unscoped_session_for_test("Unscoped", "openai", "gpt-4")
+            .unwrap();
+        let scoped = store
+            .create_session("Scoped", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        drop(store);
+
+        let reopened =
+            SessionStore::from_connection(rusqlite::Connection::open(&db_path).unwrap()).unwrap();
+        assert!(
+            reopened.get_session(&unscoped.id).unwrap().is_some(),
+            "unscoped session must survive reopening the store"
+        );
+        assert!(
+            reopened.get_session(&scoped.id).unwrap().is_some(),
+            "scoped session must survive reopening the store"
+        );
+        assert_eq!(
+            reopened
+                .get_session(&unscoped.id)
+                .unwrap()
+                .unwrap()
+                .workspace_id,
+            None
+        );
+    }
+
+    #[test]
     fn delete_session_removes_record() {
         let store = test_store();
         let s = store
-            .create_session("To Delete", "openai", "gpt-4", "ws1")
+            .create_session("To Delete", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store.delete_session(&s.id).unwrap();
         assert!(store.get_session(&s.id).unwrap().is_none());
@@ -1606,7 +1662,7 @@ mod tests {
     fn delete_session_cascades_notes() {
         let store = test_store();
         let s = store
-            .create_session("With Note", "openai", "gpt-4", "ws1")
+            .create_session("With Note", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let note = store
             .create_note(&s.id, "verification_concern", "Check this", None)
@@ -1621,7 +1677,7 @@ mod tests {
     fn archive_session_moves_payload_and_removes_live_record() {
         let store = test_store();
         let s = store
-            .create_session("Archive Me", "openai", "gpt-4", "ws1")
+            .create_session("Archive Me", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store
             .persist_turn(
@@ -1653,7 +1709,7 @@ mod tests {
     fn archive_rejects_draft_sessions() {
         let store = test_store();
         let s = store
-            .create_session("Draft", "openai", "gpt-4", "ws1")
+            .create_session("Draft", "openai", "gpt-4", Some("ws1"))
             .unwrap();
 
         let err = store.archive_session(&s.id).unwrap_err();
@@ -1666,10 +1722,10 @@ mod tests {
     fn list_archived_sessions_filters_workspace() {
         let store = test_store();
         let first = store
-            .create_session("First", "openai", "gpt-4", "ws1")
+            .create_session("First", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let second = store
-            .create_session("Second", "openai", "gpt-4", "ws2")
+            .create_session("Second", "openai", "gpt-4", Some("ws2"))
             .unwrap();
         store.update_status(&first.id, "active").unwrap();
         store.update_status(&second.id, "active").unwrap();
@@ -1688,7 +1744,7 @@ mod tests {
     fn restore_archived_session_round_trips_notes() {
         let store = test_store();
         let s = store
-            .create_session("With Note", "openai", "gpt-4", "ws1")
+            .create_session("With Note", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store
             .persist_turn(
@@ -1719,7 +1775,7 @@ mod tests {
     fn delete_archived_session_removes_archive_record() {
         let store = test_store();
         let s = store
-            .create_session("Archive Me", "openai", "gpt-4", "ws1")
+            .create_session("Archive Me", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store.update_status(&s.id, "active").unwrap();
         store.archive_session(&s.id).unwrap();
@@ -1760,10 +1816,10 @@ mod tests {
         let store = test_store();
         store.set_archive_policy(Some("ws1"), 7, 1).unwrap();
         let old = store
-            .create_session("Old", "openai", "gpt-4", "ws1")
+            .create_session("Old", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let recent = store
-            .create_session("Recent", "openai", "gpt-4", "ws1")
+            .create_session("Recent", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store.update_status(&old.id, "active").unwrap();
         store.update_status(&recent.id, "active").unwrap();
@@ -1790,10 +1846,10 @@ mod tests {
     fn bulk_restore_and_delete_archived_sessions() {
         let store = test_store();
         let first = store
-            .create_session("First", "openai", "gpt-4", "ws1")
+            .create_session("First", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         let second = store
-            .create_session("Second", "openai", "gpt-4", "ws1")
+            .create_session("Second", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store.update_status(&first.id, "active").unwrap();
         store.update_status(&second.id, "active").unwrap();
@@ -1824,7 +1880,7 @@ mod tests {
                 "openai",
                 "gpt-5.2",
                 Some("reasoning-high"),
-                "ws1",
+                Some("ws1"),
                 SESSION_MODE_BUILD,
             )
             .unwrap();
@@ -1862,7 +1918,7 @@ mod tests {
     fn persist_turn_stores_transcript_and_history() {
         let store = test_store();
         let s = store
-            .create_session("Turn Test", "openai", "gpt-4", "ws1")
+            .create_session("Turn Test", "openai", "gpt-4", Some("ws1"))
             .unwrap();
         store
             .persist_turn(
@@ -1887,7 +1943,7 @@ mod tests {
 
         let store = test_store();
         let s = store
-            .create_session("Round Trip", "openai", "gpt-4", "ws1")
+            .create_session("Round Trip", "openai", "gpt-4", Some("ws1"))
             .unwrap();
 
         let original: Vec<Message> = vec![

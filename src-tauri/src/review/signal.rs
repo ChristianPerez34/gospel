@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SignalTier {
     #[serde(rename = "tier_1", alias = "Tier1", alias = "tier1", alias = "TIER_1")]
     Tier1,
@@ -16,13 +16,8 @@ pub enum SignalTier {
         alias = "Unclassified",
         alias = "UNCLASSIFIED"
     )]
+    #[default]
     Unclassified,
-}
-
-impl Default for SignalTier {
-    fn default() -> Self {
-        Self::Unclassified
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -206,12 +201,11 @@ pub fn classify_comment(comment: &ReviewComment, rules: &SignalRules) -> SignalT
         return SignalTier::Tier1;
     }
 
-    if cwe_in(&rules.tier1_cwes, |rules| &rules.tier1_cwes)
-        || category_in(&rules.tier1_categories, |rules| &rules.tier1_categories)
+    if (cwe_in(&rules.tier1_cwes, |rules| &rules.tier1_cwes)
+        || category_in(&rules.tier1_categories, |rules| &rules.tier1_categories))
+        && matches!(comment.severity, Severity::High | Severity::Medium)
     {
-        if matches!(comment.severity, Severity::High | Severity::Medium) {
-            return SignalTier::Tier1;
-        }
+        return SignalTier::Tier1;
     }
 
     if matches!(comment.severity, Severity::Low | Severity::Info)
