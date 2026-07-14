@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 export interface ToastData {
@@ -52,13 +52,12 @@ export function Toast({ toast, onDismiss }: ToastProps) {
 
   return (
     <div
-      className={`flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] cursor-pointer pointer-events-auto max-w-[380px] animate-toast-in transition-opacity duration-200 hover:border-text-muted ${TYPE_STYLES[toast.type]}`}
-      onClick={handleDismiss}
+      className={`flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] pointer-events-auto max-w-[380px] animate-toast-in transition-opacity duration-200 ${TYPE_STYLES[toast.type]}`}
       role="alert"
     >
       <div className={`shrink-0 flex items-center ${ICON_STYLES[toast.type]}`}>
         {toast.type === "error" && (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
             <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
             <line
               x1="7"
@@ -81,12 +80,13 @@ export function Toast({ toast, onDismiss }: ToastProps) {
             stroke="currentColor"
             strokeWidth="1.5"
             strokeLinecap="round"
+            aria-hidden="true"
           >
             <path d="M3 7L6 10L11 4" />
           </svg>
         )}
         {toast.type === "info" && (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
             <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
             <circle cx="7" cy="4.5" r="0.6" />
             <line
@@ -127,6 +127,14 @@ export function Toast({ toast, onDismiss }: ToastProps) {
             {toast.secondaryAction.label}
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={handleDismiss}
+          aria-label="Dismiss notification"
+        >
+          <span aria-hidden="true">×</span>
+        </Button>
       </div>
     </div>
   );

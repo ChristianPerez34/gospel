@@ -1,10 +1,10 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ReviewPanel } from "./ReviewPanel";
 import type { ReviewComment, ReviewProgressEvent, ReviewResult } from "../types";
+import { ReviewPanel } from "./ReviewPanel";
 
 const actionableComment: ReviewComment = {
   comment_id: "rc_1",

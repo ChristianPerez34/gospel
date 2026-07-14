@@ -1,8 +1,8 @@
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { listen } from "@tauri-apps/api/event";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useReviewProgress } from "./useReviewProgress";
 import type { ReviewFocus, ReviewPhase, ReviewProgressEvent } from "../types";
+import { useReviewProgress } from "./useReviewProgress";
 
 type ReviewProgressListener = (event: { payload: ReviewProgressEvent }) => void;
 

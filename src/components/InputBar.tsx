@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Button } from "@/components/ui/button";
 import { ChevronDown, Cpu, GitBranch, Send } from "lucide-react";
-import type { ModelOption } from "../types";
-import { SlashCommandMenu } from "./SlashCommandMenu";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { useSkills } from "../hooks/useSkills";
+import type { ModelOption } from "../types";
 import { levenshtein } from "../utils/levenshtein";
+import { SlashCommandMenu } from "./SlashCommandMenu";
 
 interface InputBarProps {
   models: ModelOption[];
@@ -124,7 +124,7 @@ export function InputBar({
       const rest = text.split("\n").slice(1).join("\n").trim();
       const match = firstLine.match(SLASH_REGEX);
       if (match) {
-        let skillName = match[1];
+        const skillName = match[1];
         const args = match[2]?.trim();
         const knownSkill = skills.find((s) => s.name.toLowerCase() === skillName.toLowerCase());
         if (knownSkill) {
@@ -198,7 +198,7 @@ export function InputBar({
     setValue(e.target.value);
     const el = e.target;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, []);
 
   return (
@@ -279,6 +279,7 @@ export function InputBar({
                           : " hover:bg-surface-overlay";
                         return (
                           <button
+                            type="button"
                             key={m.id}
                             className={`${baseClass}${activeClass}${disabledClass}`}
                             role="option"

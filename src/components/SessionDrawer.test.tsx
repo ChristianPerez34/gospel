@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionDrawer } from "./SessionDrawer";
 import type { Session } from "../types";
+import { SessionDrawer } from "./SessionDrawer";
 
 const baseDate = new Date("2026-06-19T12:00:00Z");
 

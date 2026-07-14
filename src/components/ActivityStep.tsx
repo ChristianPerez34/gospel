@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { ActionCard as ActionCardType, ActionCardSection } from "../types";
+import type { ActionCardSection, ActionCard as ActionCardType } from "../types";
 
 interface ActivityStepProps {
   card: ActionCardType;
@@ -80,6 +80,8 @@ function DiffPreview({ lines }: { lines: string[] }) {
                 "whitespace-pre-wrap break-words px-2 py-0.5",
                 DIFF_ROW_STYLES.hunk
               )}
+              // Diff lines have no stable identity and duplicates are valid.
+              // biome-ignore lint/suspicious/noArrayIndexKey: Position is the line identity in a diff.
               key={index}
             >
               {row.text}
@@ -87,7 +89,9 @@ function DiffPreview({ lines }: { lines: string[] }) {
           ) : (
             <div
               className="grid grid-cols-[1rem_minmax(0,1fr)] gap-2 px-2"
+              // biome-ignore lint/suspicious/noArrayIndexKey: Position is the line identity in a diff.
               key={index}
+              role="img"
               aria-label={`${DIFF_ROW_LABELS[row.kind]}: ${row.text}`}
             >
               <span

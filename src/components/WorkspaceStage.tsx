@@ -46,16 +46,16 @@ export function WorkspaceStage({
   return (
     <section className="workspace-stage-shell" aria-label="Workspace stage">
       <header className="workspace-stage-header">
-        <div className="workspace-stage-tabs" aria-label="Workspace surfaces">
-          <div className="workspace-stage-tab is-active" aria-current="page">
+        <nav className="workspace-stage-tabs" aria-label="Workspace surfaces">
+          <span className="workspace-stage-tab is-active" aria-current="page">
             <FolderOpen aria-hidden="true" />
             <span>Live Workspace</span>
-          </div>
-          <div className="workspace-stage-tab is-disabled" aria-disabled="true">
+          </span>
+          <span className="workspace-stage-tab is-disabled">
             <Terminal aria-hidden="true" />
             <span>Run Log</span>
-          </div>
-        </div>
+          </span>
+        </nav>
         <div className="workspace-stage-actions">
           <button
             className="stage-icon-button"
@@ -109,7 +109,7 @@ export function WorkspaceStage({
           </div>
         </div>
 
-        <div className="workspace-terminal-panel" aria-label="Workspace terminal summary">
+        <section className="workspace-terminal-panel" aria-label="Workspace terminal summary">
           <div className="workspace-terminal-title">
             <Activity aria-hidden="true" />
             <span>Workspace Telemetry</span>
@@ -132,7 +132,7 @@ export function WorkspaceStage({
               <span>{sessionMode === "Build" ? "Build enabled" : "Plan only"}</span>
             </div>
           </div>
-        </div>
+        </section>
       </div>
     </section>
   );

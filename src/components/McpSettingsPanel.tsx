@@ -1,4 +1,3 @@
-import { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   Edit3,
@@ -11,6 +10,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useMcpServers } from "../hooks/useMcpServers";
 import type { CreateMcpServerRequest, McpEnvValue, McpSafetyClass, McpServer } from "../types";

@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useFocusTrap } from "../hooks/useFocusTrap";
+import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
+import { McpSettingsPanel } from "./McpSettingsPanel";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
-import { McpSettingsPanel } from "./McpSettingsPanel";
-import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
-import { useFocusTrap } from "../hooks/useFocusTrap";
 
 function themeIndex(value: ThemePreference) {
   switch (value) {
@@ -109,14 +109,17 @@ export function SettingsModal({
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 bg-scrim z-[var(--z-dialog)] flex items-center justify-center animate-fade-in"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 bg-scrim z-[var(--z-dialog)] flex items-center justify-center animate-fade-in">
+      <button
+        type="button"
+        className="absolute inset-0 cursor-default"
+        onClick={onClose}
+        aria-label="Close settings"
+        tabIndex={-1}
+      />
       <div
         ref={dialogRef}
-        className="w-[680px] max-w-[92vw] max-h-[84vh] flex flex-col bg-surface-elevated border border-surface-overlay rounded-lg shadow-[var(--shadow-dialog)] animate-slide-up"
-        onClick={(e) => e.stopPropagation()}
+        className="relative w-[680px] max-w-[92vw] max-h-[84vh] flex flex-col bg-surface-elevated border border-surface-overlay rounded-lg shadow-[var(--shadow-dialog)] animate-slide-up"
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-modal-title"
@@ -129,7 +132,7 @@ export function SettingsModal({
             Settings
           </h2>
           <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close settings">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
               <path
                 d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5"
                 stroke="currentColor"
@@ -231,6 +234,7 @@ export function SettingsModal({
                   {THEME_OPTIONS.map((option, index) => {
                     const selected = option.value === themePreference;
                     return (
+                      // biome-ignore lint/a11y/useSemanticElements: Native buttons provide the custom roving radio behavior.
                       <button
                         key={option.value}
                         type="button"

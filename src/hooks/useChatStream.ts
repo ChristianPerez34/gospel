@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -47,6 +47,13 @@ export interface ModelVariantWarningPayload {
   message: string;
 }
 
+function joinTextBlocks(blocks: TurnBlock[]): string {
+  return blocks
+    .filter((block): block is { kind: "text"; id: string; text: string } => block.kind === "text")
+    .map((block) => block.text)
+    .join("");
+}
+
 interface StartStreamOptions {
   provider: string;
   prompt: string;
@@ -75,13 +82,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       createdAt: new Date(),
     };
   }, [generateTurnId]);
-
-  /** Join all `text` blocks into a single string (back-compat for `content`). */
-  const joinTextBlocks = (blocks: TurnBlock[]): string =>
-    blocks
-      .filter((b): b is { kind: "text"; id: string; text: string } => b.kind === "text")
-      .map((b) => b.text)
-      .join("");
 
   const updateCurrentTurn = useCallback(
     (updater: (turn: CurrentTurn) => CurrentTurn) => {
@@ -327,12 +327,16 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
         ]);
       } catch (error) {
-        unlisteners.forEach((unlisten) => unlisten());
+        unlisteners.forEach((unlisten) => {
+          unlisten();
+        });
         throw error;
       }
 
       cleanup = () => {
-        unlisteners.forEach((unlisten) => unlisten());
+        unlisteners.forEach((unlisten) => {
+          unlisten();
+        });
       };
 
       if (cancelled) {
@@ -345,7 +349,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       cancelled = true;
       cleanup?.();
     };
-  }, []);
+  }, [updateCurrentTurn, generateTurnId, clearCurrentTurn]);
 
   const startStream = useCallback(async (opts: StartStreamOptions) => {
     await invoke("complete_streaming", {

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   type Dispatch,
   type SetStateAction,
@@ -6,8 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { normalizeSessionMode } from "../types";
 import type {
   AgentStatus,
   CurrentTurn,
@@ -17,8 +16,9 @@ import type {
   SessionMode,
   TurnBlock,
 } from "../types";
+import { normalizeSessionMode } from "../types";
+import { type ModelVariantWarningPayload, useChatStream } from "./useChatStream";
 import type { SelectedModel } from "./useModelAvailability";
-import { useChatStream, type ModelVariantWarningPayload } from "./useChatStream";
 
 export interface SessionManagerStreamOptions {
   provider: string;
@@ -87,6 +87,8 @@ export function useSessionManager({
   activeSessionIdRef.current = activeSessionId;
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
+  // Status changes retry a workspace reset that was deferred while streaming.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Status is an intentional trigger.
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
 
@@ -186,7 +188,7 @@ export function useSessionManager({
         id: `m-${Date.now()}-user`,
         role: "user",
         content: invokedSkill
-          ? `/${invokedSkill.name}${invokedSkill.args ? " " + invokedSkill.args : ""}`
+          ? `/${invokedSkill.name}${invokedSkill.args ? ` ${invokedSkill.args}` : ""}`
           : message,
         timestamp: new Date(),
       };

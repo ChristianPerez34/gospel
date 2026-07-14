@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   Archive,
   CheckSquare,
@@ -9,8 +8,9 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import type { ArchiveStats, Session } from "../types";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import type { ArchiveStats, Session } from "../types";
 
 interface SessionDrawerProps {
   sessions: Session[];
@@ -61,13 +61,13 @@ function groupByDate(sessions: Session[]): Record<string, Session[]> {
     const d = new Date(session.timestamp);
     const sessionDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     if (sessionDate.getTime() === today.getTime()) {
-      groups["Today"].push(session);
+      groups.Today.push(session);
     } else if (sessionDate.getTime() === yesterday.getTime()) {
-      groups["Yesterday"].push(session);
+      groups.Yesterday.push(session);
     } else if (sessionDate.getTime() >= weekAgo.getTime()) {
       groups["This Week"].push(session);
     } else {
-      groups["Older"].push(session);
+      groups.Older.push(session);
     }
   }
 
@@ -160,6 +160,8 @@ export function SessionDrawer({
     setInert(drawer, !open);
   }, [open]);
 
+  // Filter changes invalidate selection even though the effect only mutates local state.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Dependencies are intentional triggers.
   useEffect(() => {
     setSelectedIds(new Set());
   }, [showArchived, workspaceFilter, dateRangeFilter, search]);
@@ -212,6 +214,7 @@ export function SessionDrawer({
               height="14"
               viewBox="0 0 14 14"
               fill="none"
+              aria-hidden="true"
             >
               <circle cx="5.5" cy="5.5" r="4" stroke="currentColor" strokeWidth="1.5" />
               <path
@@ -230,7 +233,8 @@ export function SessionDrawer({
             />
           </div>
           {hasArchiveMode && (
-            <div className="session-mode-switch" role="group" aria-label="Session view">
+            <fieldset className="session-mode-switch">
+              <legend className="sr-only">Session view</legend>
               <button
                 type="button"
                 className={`session-mode-button ${!showArchived ? "is-active" : ""}`}
@@ -247,7 +251,7 @@ export function SessionDrawer({
               >
                 Archived
               </button>
-            </div>
+            </fieldset>
           )}
           <div className="session-management-bar">
             {selectionEnabled && (
@@ -510,7 +514,11 @@ export function SessionDrawer({
                       </button>
                     )}
                     {showArchived ? (
-                      <div className="session-row-actions" aria-label={`Actions for ${title}`}>
+                      <div
+                        className="session-row-actions"
+                        role="toolbar"
+                        aria-label={`Actions for ${title}`}
+                      >
                         {(onRestoreSession || onRestoreArchivedSessions) && (
                           <button
                             type="button"
@@ -587,10 +595,11 @@ export function SessionDrawer({
           ))}
         </div>
         <button
+          type="button"
           className="flex min-h-11 items-center justify-center gap-2 w-full p-3 border-t border-surface-overlay text-body-sm text-text-muted transition-colors duration-150 ease-out-quart shrink-0 hover:bg-surface-overlay hover:text-text-secondary"
           onClick={onNewSession}
         >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path
               d="M7 3V11M3 7H11"
               stroke="currentColor"
