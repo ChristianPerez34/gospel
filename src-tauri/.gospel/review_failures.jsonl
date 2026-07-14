@@ -1,0 +1,1 @@
+{"timestamp":"2026-07-14T01:04:51.103726Z","mode":{"type":"local"},"focus":"Security","provider":"openai","model":"model","files_scanned":1,"failed_chunks":1,"chunks":[{"index":1,"kind":"provider_error","detail":"CompletionError: ProviderError: Invalid status code 401 Unauthorized with message: {"}]}
