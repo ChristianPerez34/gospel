@@ -804,10 +804,11 @@ pub fn trace_event_for_session_turn_event(
             timestamp,
         }),
         SessionTurnEvent::ToolResult { name, result, .. } => {
-            let redacted_result = if let Ok(val) = serde_json::from_str::<serde_json::Value>(result) {
+            let redacted_result = if let Ok(val) = serde_json::from_str::<serde_json::Value>(result)
+            {
                 trace::redacted_json_string(&val)
             } else {
-                result.clone()
+                trace::redacted_text(result)
             };
             Some(trace::TraceEvent::ToolResult {
                 session_id: session_id.to_string(),
@@ -816,7 +817,7 @@ pub fn trace_event_for_session_turn_event(
                 result_summary: redacted_result.chars().take(200).collect(),
                 timestamp,
             })
-        },
+        }
         SessionTurnEvent::LoopWarning { count, tool_name } => Some(trace::TraceEvent::Warning {
             session_id: session_id.to_string(),
             role: role.to_string(),
@@ -1856,6 +1857,28 @@ mod tests {
         assert_eq!(value["session_id"], "session-1");
         assert_eq!(value["tool_name"], "read_file");
         assert_eq!(value["result_summary"].as_str().unwrap().len(), 200);
+
+        let trace = trace_event_for_session_turn_event(
+            &SessionTurnEvent::ToolResult {
+                id: "call-2".to_string(),
+                name: "read_file".to_string(),
+                result: r#"read failed: {"token":"sk-result"}"#.to_string(),
+            },
+            "session-1",
+            "main",
+            123,
+        )
+        .unwrap();
+
+        let value = serde_json::to_value(trace).unwrap();
+        assert_eq!(
+            value["result_summary"],
+            r#"read failed: {"token":"[REDACTED]"}"#
+        );
+        assert!(!value["result_summary"]
+            .as_str()
+            .unwrap()
+            .contains("sk-result"));
     }
 
     #[test]

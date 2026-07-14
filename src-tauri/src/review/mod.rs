@@ -1151,14 +1151,22 @@ async fn run_diff_review(
     }
 
     let mut warnings = initial_warnings;
-    let file_diffs: Vec<FileDiff> = parse_diff_by_file(&diff)
+    let parsed_file_diffs = parse_diff_by_file(&diff);
+    let excluded_secret_like_text = parsed_file_diffs
+        .iter()
+        .any(|file| !file.is_binary && is_secret_like(Path::new(&file.file)));
+    let file_diffs: Vec<FileDiff> = parsed_file_diffs
         .into_iter()
         .filter(|file| !file.is_binary && !is_secret_like(Path::new(&file.file)))
         .collect();
 
     if file_diffs.is_empty() {
-        warnings
-            .push("Only binary files were present in the diff; nothing was reviewed".to_string());
+        let warning = if excluded_secret_like_text {
+            "Secret-like text files were excluded from the diff; nothing was reviewed"
+        } else {
+            "Only binary files were present in the diff; nothing was reviewed"
+        };
+        warnings.push(warning.to_string());
         return Ok(review_result(
             Vec::new(),
             "No text changes found to review".to_string(),
@@ -2936,6 +2944,57 @@ Binary files a/icon.png and b/icon.png differ
         assert_eq!(
             result.warnings,
             vec!["Reviewed 20/82 files — partial review due to size"]
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_review_distinguishes_binary_only_from_secret_filtered_diffs() {
+        let workspace = ActiveWorkspaceContext {
+            workspace_path: std::env::current_dir().unwrap(),
+            corpus_available: false,
+            session_mode: crate::session_mode::SessionMode::Build,
+        };
+        let binary_diff =
+            "diff --git a/icon.png b/icon.png\nBinary files a/icon.png and b/icon.png differ\n";
+        let binary_result = run_diff_review(
+            "run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            "key",
+            &workspace,
+            ReviewFocus::Security,
+            ReviewMode::Local,
+            "Review".to_string(),
+            binary_diff.to_string(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            binary_result.warnings,
+            vec!["Only binary files were present in the diff; nothing was reviewed"]
+        );
+
+        let secret_diff = "diff --git a/.env b/.env\nindex 111..222 100644\n--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-old\n+new\n";
+        let secret_result = run_diff_review(
+            "run-id",
+            &NoopReviewProgressEmitter,
+            "openai",
+            "model",
+            "key",
+            &workspace,
+            ReviewFocus::Security,
+            ReviewMode::Local,
+            "Review".to_string(),
+            secret_diff.to_string(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            secret_result.warnings,
+            vec!["Secret-like text files were excluded from the diff; nothing was reviewed"]
         );
     }
 
