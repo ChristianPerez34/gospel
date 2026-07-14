@@ -558,31 +558,47 @@ fn contains_shell_metacharacter(s: &str) -> bool {
     })
 }
 
+fn is_path_like(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Reject whitespace-containing values
+    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    // Reject other clearly non-path-like free-form values (e.g. containing quotes or JSON-like braces/brackets)
+    if s.chars().any(|c| matches!(c, '"' | '\'' | '{' | '}' | '[' | ']')) {
+        return false;
+    }
+    true
+}
+
 fn blocked_argument_safety(args: &[String]) -> Option<CommandSafety> {
     for arg in args {
         if contains_shell_metacharacter(arg) {
             return Some(CommandSafety::Blocked("shell_metacharacter".to_string()));
         }
-        if argument_path_value(arg)
-            .is_some_and(|value| crate::workspace_tools::is_secret_like(Path::new(value)))
-        {
-            return Some(CommandSafety::Blocked("secret_like_argument".to_string()));
+        if let Some(value) = argument_path_value(arg) {
+            if is_path_like(value) && crate::workspace_tools::is_secret_like(Path::new(value)) {
+                return Some(CommandSafety::Blocked("secret_like_argument".to_string()));
+            }
         }
     }
     None
 }
 
 fn argument_path_value(arg: &str) -> Option<&str> {
-    if let Some(option) = arg.strip_prefix("--") {
-        return option.split_once('=').map(|(_, value)| value);
-    }
-    if arg.starts_with('-') {
-        return arg
-            .split_once('=')
+    let value = if let Some(option) = arg.strip_prefix("--") {
+        option.split_once('=').map(|(_, value)| value)
+    } else if arg.starts_with('-') {
+        arg.split_once('=')
             .map(|(_, value)| value)
-            .or_else(|| arg.get(2..));
-    }
-    Some(arg)
+            .or_else(|| arg.get(2..))
+    } else {
+        Some(arg)
+    };
+
+    value.filter(|v| is_path_like(v))
 }
 
 fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
@@ -653,7 +669,6 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
             | "wc"
             | "sort"
             | "uniq"
-            | "git"
     ) {
         return false;
     }
@@ -664,21 +679,6 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
 
     if program == "uniq" && uniq_has_output_destination(args) {
         return false;
-    }
-
-    // git via shell tool is allowed only for read-only subcommands.
-    if program == "git" {
-        if args.is_empty() {
-            return false;
-        }
-        let subcommand = args[0].to_ascii_lowercase();
-        if subcommand == "remote" {
-            return git_remote_is_read_only(args);
-        }
-        return matches!(
-            subcommand.as_str(),
-            "status" | "log" | "diff" | "show" | "blame" | "ls-files" | "rev-parse" | "describe"
-        );
     }
 
     true
@@ -1438,6 +1438,23 @@ mod tests {
         assert_eq!(
             policy.classify_gh(
                 &["status".to_string(), "--input=.env".to_string()],
+                &workspace()
+            ),
+            blocked
+        );
+
+        // Allow free-form/whitespace-containing args that might contain secret keywords
+        assert_ne!(
+            policy.classify_git(
+                &["commit".to_string(), "-m".to_string(), "fixed credentials bug".to_string()],
+                &workspace()
+            ),
+            blocked
+        );
+        assert_ne!(
+            policy.classify_shell(
+                "echo",
+                &["this is my secret message".to_string()],
                 &workspace()
             ),
             blocked
