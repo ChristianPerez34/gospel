@@ -874,6 +874,105 @@ describe("useSessionManager", () => {
       warnSpy.mockRestore();
     });
 
+    it("accumulates reasoning deltas and replaces them on the matching complete event", async () => {
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
+          "llm-reasoning",
+          { id: "rs-1", text: "step ", phase: "delta" }
+        );
+      });
+      act(() => {
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
+          "llm-reasoning",
+          { id: "rs-1", text: "by step", phase: "delta" }
+        );
+      });
+      expect(result.current.currentTurn?.blocks).toMatchObject([
+        { kind: "reasoning", id: "rs-1", text: "step by step", phase: "delta" },
+      ]);
+
+      act(() => {
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
+          "llm-reasoning",
+          { id: "rs-1", text: "authoritative text", phase: "complete" }
+        );
+      });
+      // A complete event replaces — not appends — the accumulated deltas.
+      expect(result.current.currentTurn?.blocks).toMatchObject([
+        { kind: "reasoning", id: "rs-1", text: "authoritative text", phase: "complete" },
+      ]);
+    });
+
+    it("strips reasoning blocks when llm-done finalizes the live turn", async () => {
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent<string>("llm-token", "Public answer. ");
+      });
+      act(() => {
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
+          "llm-reasoning",
+          { id: "rs-1", text: "private thoughts", phase: "complete" }
+        );
+      });
+      expect(result.current.currentTurn?.blocks?.map((b) => b.kind)).toEqual([
+        "text",
+        "reasoning",
+      ]);
+
+      act(() => {
+        triggerEvent("llm-done", {
+          response: "Public answer. ",
+        });
+      });
+
+      const agentMessages = result.current.messages.filter((m) => m.role === "agent");
+      expect(agentMessages).toHaveLength(1);
+      // Reasoning must not be part of the persisted message.
+      expect(agentMessages[0]?.content).toBe("Public answer. ");
+      expect(agentMessages[0]?.blocks ?? []).toEqual([
+        { kind: "text", id: "text-0", text: "Public answer. " },
+      ]);
+    });
+
+    it("strips reasoning blocks when llm-error finalizes the live turn", async () => {
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("hi");
+      });
+
+      act(() => {
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
+          "llm-reasoning",
+          { id: "rs-1", text: "do not persist me", phase: "delta" }
+        );
+      });
+
+      act(() => {
+        triggerEvent<{ code: string; message: string }>("llm-error", {
+          code: "BOOM",
+          message: "boom",
+        });
+      });
+
+      const agentMessages = result.current.messages.filter((m) => m.role === "agent");
+      expect(agentMessages).toHaveLength(1);
+      expect(agentMessages[0]?.error).toBe("boom");
+      // Reasoning is ephemeral — even on error, it must not be persisted.
+      expect(agentMessages[0]?.blocks ?? []).toEqual([]);
+    });
+
     it("clears the live turn on errors while preserving tool blocks on the error message", async () => {
       const { result } = renderSessionManager();
 

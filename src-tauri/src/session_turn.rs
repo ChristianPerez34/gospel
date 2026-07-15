@@ -1,5 +1,7 @@
 use crate::harness_profile::ActiveWorkspaceContext;
-use crate::llm::{self, LlmError, StreamCompletionResult, StreamEvent};
+use crate::llm::{
+    self, LlmError, ReasoningPayload, ReasoningPhase, StreamCompletionResult, StreamEvent,
+};
 use crate::models::ModelRegistry;
 use crate::session_mode::{SessionMode, SESSION_MODE_BUILD};
 use crate::session_store::SessionNote;
@@ -662,6 +664,11 @@ pub enum SessionTurnEvent {
         name: String,
         result: String,
     },
+    Reasoning {
+        id: String,
+        text: String,
+        phase: ReasoningPhase,
+    },
     LoopWarning {
         count: usize,
         tool_name: String,
@@ -695,6 +702,9 @@ impl From<StreamEvent> for SessionTurnEvent {
             },
             StreamEvent::ToolResult { id, name, result } => {
                 SessionTurnEvent::ToolResult { id, name, result }
+            }
+            StreamEvent::Reasoning(ReasoningPayload { id, text, phase }) => {
+                SessionTurnEvent::Reasoning { id, text, phase }
             }
             StreamEvent::LoopWarning { count, tool_name } => {
                 SessionTurnEvent::LoopWarning { count, tool_name }
@@ -753,6 +763,14 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
             name: "llm-tool-result",
             payload: json!({ "id": id, "name": name, "result": result }),
         },
+        SessionTurnEvent::Reasoning { id, text, phase } => UiEventPayload {
+            name: "llm-reasoning",
+            payload: json!({
+                "id": id,
+                "text": text,
+                "phase": phase,
+            }),
+        },
         SessionTurnEvent::LoopWarning { count, tool_name } => UiEventPayload {
             name: "llm-loop-warning",
             payload: json!({ "count": count, "toolName": tool_name }),
@@ -792,6 +810,7 @@ pub fn trace_event_for_session_turn_event(
 ) -> Option<trace::TraceEvent> {
     match event {
         SessionTurnEvent::TextToken(_) => None,
+        SessionTurnEvent::Reasoning { .. } => None,
         SessionTurnEvent::ToolCall {
             name, arguments, ..
         } => Some(trace::TraceEvent::ToolCall {
@@ -1782,6 +1801,46 @@ mod tests {
             stopped.payload,
             json!({ "count": 5, "toolName": "read_file", "message": "Agent stopped" })
         );
+    }
+
+    #[test]
+    fn reasoning_event_emits_ephemeral_payload_and_no_trace() {
+        let delta = ui_event_payload(&SessionTurnEvent::Reasoning {
+            id: "rs-1".to_string(),
+            text: "thinking ".to_string(),
+            phase: crate::llm::ReasoningPhase::Delta,
+        });
+        assert_eq!(delta.name, "llm-reasoning");
+        assert_eq!(
+            delta.payload,
+            json!({ "id": "rs-1", "text": "thinking ", "phase": "delta" })
+        );
+
+        let complete = ui_event_payload(&SessionTurnEvent::Reasoning {
+            id: "rs-1".to_string(),
+            text: "thinking done".to_string(),
+            phase: crate::llm::ReasoningPhase::Complete,
+        });
+        assert_eq!(complete.name, "llm-reasoning");
+        assert_eq!(
+            complete.payload,
+            json!({ "id": "rs-1", "text": "thinking done", "phase": "complete" })
+        );
+
+        // Reasoning must never produce a trace event — the trace is intended
+        // for tool calls, results, and warnings, not ephemeral model
+        // reasoning content.
+        let trace = trace_event_for_session_turn_event(
+            &SessionTurnEvent::Reasoning {
+                id: "rs-1".to_string(),
+                text: "should not trace".to_string(),
+                phase: crate::llm::ReasoningPhase::Complete,
+            },
+            "session-1",
+            "main",
+            123,
+        );
+        assert!(trace.is_none());
     }
 
     #[test]

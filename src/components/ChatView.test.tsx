@@ -274,6 +274,60 @@ describe("ChatView block timeline rendering", () => {
     expect(screen.getByTestId("agent-turn-thinking-placeholder")).not.toBeNull();
   });
 
+  it("renders live reasoning blocks as subdued text in occurrence order", () => {
+    const { container } = renderChat({
+      currentTurn: {
+        id: "turn-reasoning",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
+        blocks: [
+          { kind: "text", id: "text-0", text: "Public answer." },
+          {
+            kind: "reasoning",
+            id: "rs-1",
+            text: "private thoughts",
+            phase: "complete",
+          },
+        ],
+      },
+    });
+
+    const reasoning = screen.getByTestId("agent-reasoning-rs-1");
+    expect(reasoning.textContent).toBe("private thoughts");
+    expect(reasoning.className).toMatch(/text-text-muted/);
+    expect(reasoning.className).toMatch(/font-mono/);
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Public answer.")).toBeLessThan(text.indexOf("private thoughts"));
+  });
+
+  it("does not render reasoning blocks for finalized messages", () => {
+    renderChat({
+      messages: [
+        userMessage,
+        {
+          id: "m-finalized",
+          role: "agent",
+          content: "Public answer.",
+          timestamp: new Date("2026-06-24T00:01:00Z"),
+          blocks: [
+            { kind: "text", id: "text-0", text: "Public answer." },
+            {
+              kind: "reasoning",
+              id: "rs-1",
+              text: "private thoughts",
+              phase: "complete",
+            },
+          ],
+        },
+      ],
+    });
+
+    // Reasoning blocks are dropped from finalized messages; they must not
+    // render in the historical timeline.
+    expect(screen.queryByTestId("agent-reasoning-rs-1")).toBeNull();
+    expect(screen.getByText("Public answer.")).not.toBeNull();
+  });
+
   it("does not render a thinking placeholder when not thinking", () => {
     renderChat({
       messages: [userMessage],

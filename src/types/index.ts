@@ -212,6 +212,15 @@ export type TurnBlock =
       status: "calling" | "completed";
     }
   | {
+      /** Ephemeral, live-only model reasoning block. Stripped from the
+       * finalized `Message` so reasoning never persists, copies into
+       * clipboard text, or feeds verification/tracing. */
+      kind: "reasoning";
+      id: string;
+      text: string;
+      phase: "delta" | "complete";
+    }
+  | {
       kind: "approval";
       id: string;
       toolName: string;

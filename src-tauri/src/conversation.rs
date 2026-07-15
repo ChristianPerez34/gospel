@@ -1,5 +1,7 @@
 use crate::text_utils::truncate_text_bytes;
-use rig::completion::message::{AssistantContent, Message, ToolResultContent, UserContent};
+use rig::completion::message::{
+    AssistantContent, Message, ReasoningContent, ToolResultContent, UserContent,
+};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -150,8 +152,21 @@ fn truncate_message_text_payloads(message: &mut Message, reduce_by: usize) -> bo
         Message::Assistant { content, .. } => {
             let mut truncated = false;
             for item in content.iter_mut() {
-                if let AssistantContent::Text(text) = item {
-                    truncated |= truncate_text_payload(&mut text.text, reduce_by);
+                match item {
+                    AssistantContent::Text(text) => {
+                        truncated |= truncate_text_payload(&mut text.text, reduce_by);
+                    }
+                    // Provider reasoning text is also subject to the size
+                    // cap so a single over-long reasoning block cannot
+                    // stall history pruning.
+                    AssistantContent::Reasoning(reasoning) => {
+                        for part in reasoning.content.iter_mut() {
+                            if let ReasoningContent::Text { text, .. } = part {
+                                truncated |= truncate_text_payload(text, reduce_by);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             truncated
@@ -373,5 +388,33 @@ mod tests {
         let mut store = ConversationStore::new();
         let history = store.get_history("non-existent-session");
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn oversized_assistant_reasoning_is_truncated_under_history_cap() {
+        use rig::completion::message::Reasoning;
+
+        let mut store = ConversationStore::new();
+        let large = "z".repeat(MAX_HISTORY_BYTES * 2);
+        let reasoning = Reasoning::new_with_signature(&large, None).optional_id(Some("rs-1".to_string()));
+        let message = Message::Assistant {
+            id: None,
+            content: rig::one_or_many::OneOrMany::one(AssistantContent::Reasoning(reasoning)),
+        };
+
+        store.store_history("s1", vec![message]);
+
+        let retrieved = store.get_history("s1");
+        assert_eq!(retrieved.len(), 1);
+        let Message::Assistant { content, .. } = &retrieved[0] else {
+            panic!("expected assistant message");
+        };
+        let Some(AssistantContent::Reasoning(reasoning)) = content.iter().next() else {
+            panic!("expected reasoning content");
+        };
+        let Some(ReasoningContent::Text { text, .. }) = reasoning.content.first() else {
+            panic!("expected reasoning text");
+        };
+        assert!(text.contains("[truncated]"));
     }
 }

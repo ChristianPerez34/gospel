@@ -2,7 +2,7 @@ use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::agent::{HookAction, PromptHook, ToolCallHookAction};
 use rig::client::CompletionClient;
-use rig::completion::message::Message;
+use rig::completion::message::{Message, ReasoningContent};
 use rig::completion::{CompletionModel, Prompt, ToolDefinition};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
 use rig::tool::Tool;
@@ -96,6 +96,27 @@ impl LlmError {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum ReasoningPhase {
+    #[serde(rename = "delta")]
+    Delta,
+    #[serde(rename = "complete")]
+    Complete,
+}
+
+/// Reasoning surfaces a transient, plain-text reasoning block for the
+/// UI. The `id` is the provider's reasoning block id when supplied;
+/// otherwise the backend synthesizes a stable id for the active
+/// reasoning block so deltas and the matching complete event collapse
+/// onto a single turn block. Encrypted and redacted payloads are
+/// dropped here — the `text` is the only field exposed to callers.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReasoningPayload {
+    pub id: String,
+    pub text: String,
+    pub phase: ReasoningPhase,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StreamEvent {
@@ -110,6 +131,7 @@ pub enum StreamEvent {
         name: String,
         result: String,
     },
+    Reasoning(ReasoningPayload),
     LoopWarning {
         count: usize,
         tool_name: String,
@@ -705,6 +727,12 @@ where
             let mut tool_name_by_id: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             let mut loop_detector = LoopDetector::new(profile_guards.loop_guard);
+            // Backend fallback id used when a reasoning delta lacks one. We
+            // mint a new id at the start of each reasoning burst so deltas
+            // and the matching complete event collapse onto a single
+            // frontend block. Reset whenever the provider reports a new id.
+            let mut active_reasoning_id: Option<String> = None;
+            let mut reasoning_seq: usize = 0;
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -714,6 +742,48 @@ where
                         ) => {
                             full_response.push_str(&text.text);
                             on_event(StreamEvent::Text(text.text.clone()));
+                        }
+                        MultiTurnStreamItem::StreamAssistantItem(
+                            StreamedAssistantContent::Reasoning(reasoning),
+                        ) => {
+                            // Skip encrypted/redacted payloads entirely; the
+                            // UI should never see those bytes.
+                            let text = reasoning_text_from_content(&reasoning.content);
+                            let id = reasoning.id.clone().unwrap_or_else(|| {
+                                ensure_active_reasoning_id(
+                                    &mut active_reasoning_id,
+                                    &mut reasoning_seq,
+                                )
+                            });
+                            active_reasoning_id = Some(id.clone());
+                            if text.is_empty() {
+                                continue;
+                            }
+                            on_event(StreamEvent::Reasoning(ReasoningPayload {
+                                id,
+                                text,
+                                phase: ReasoningPhase::Complete,
+                            }));
+                            active_reasoning_id = None;
+                        }
+                        MultiTurnStreamItem::StreamAssistantItem(
+                            StreamedAssistantContent::ReasoningDelta { id, reasoning },
+                        ) => {
+                            if reasoning.is_empty() {
+                                continue;
+                            }
+                            let resolved_id = id.clone().unwrap_or_else(|| {
+                                ensure_active_reasoning_id(
+                                    &mut active_reasoning_id,
+                                    &mut reasoning_seq,
+                                )
+                            });
+                            active_reasoning_id = Some(resolved_id.clone());
+                            on_event(StreamEvent::Reasoning(ReasoningPayload {
+                                id: resolved_id,
+                                text: reasoning.clone(),
+                                phase: ReasoningPhase::Delta,
+                            }));
                         }
                         MultiTurnStreamItem::StreamAssistantItem(
                             StreamedAssistantContent::ToolCall {
@@ -927,6 +997,27 @@ fn record_tool_result_failure(
     }
 }
 
+fn reasoning_text_from_content(content: &[ReasoningContent]) -> String {
+    let mut parts = Vec::with_capacity(content.len());
+    for item in content {
+        if let ReasoningContent::Text { text, .. } = item {
+            parts.push(text.clone());
+        }
+        // Encrypted and Redacted variants intentionally contribute nothing.
+    }
+    parts.join("")
+}
+
+fn ensure_active_reasoning_id(active: &mut Option<String>, seq: &mut usize) -> String {
+    if let Some(id) = active.as_ref() {
+        return id.clone();
+    }
+    *seq += 1;
+    let id = format!("reasoning-{}", *seq);
+    *active = Some(id.clone());
+    id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,5 +1217,42 @@ mod tests {
             record_tool_result_failure(&mut detector, r#"{"success":false,"reason":"blocked"}"#),
             Some(("blocked".to_string(), LoopStatus::Ok))
         );
+    }
+
+    #[test]
+    fn reasoning_text_from_content_joins_text_blocks_and_skips_encrypted() {
+        use rig::completion::message::ReasoningContent;
+
+        let content = vec![
+            ReasoningContent::Text {
+                text: "hello ".to_string(),
+                signature: None,
+            },
+            ReasoningContent::Text {
+                text: "world".to_string(),
+                signature: Some("sig".to_string()),
+            },
+            ReasoningContent::Encrypted("cipher".to_string()),
+            ReasoningContent::Redacted {
+                data: "redacted".to_string(),
+            },
+        ];
+
+        assert_eq!(reasoning_text_from_content(&content), "hello world");
+    }
+
+    #[test]
+    fn ensure_active_reasoning_id_reuses_and_advances() {
+        let mut active: Option<String> = None;
+        let mut seq = 0usize;
+
+        let first = ensure_active_reasoning_id(&mut active, &mut seq);
+        assert_eq!(first, "reasoning-1");
+        // Reuses the same id while still active.
+        assert_eq!(ensure_active_reasoning_id(&mut active, &mut seq), "reasoning-1");
+
+        active = None;
+        let second = ensure_active_reasoning_id(&mut active, &mut seq);
+        assert_eq!(second, "reasoning-2");
     }
 }
