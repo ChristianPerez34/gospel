@@ -749,12 +749,24 @@ where
                             // Skip encrypted/redacted payloads entirely; the
                             // UI should never see those bytes.
                             let text = reasoning_text_from_content(&reasoning.content);
-                            let id = reasoning.id.clone().unwrap_or_else(|| {
-                                ensure_active_reasoning_id(
-                                    &mut active_reasoning_id,
-                                    &mut reasoning_seq,
-                                )
-                            });
+                            // Collapse the complete onto the same id the
+                            // deltas used. If deltas minted a fallback id
+                            // (provider omitted ids on deltas), reuse it so
+                            // the frontend replaces accumulated deltas
+                            // rather than emitting an orphaned block under
+                            // a different provider-supplied id. If no
+                            // active burst exists, prefer the provider's id
+                            // and only mint a fallback when it is absent.
+                            let id = if let Some(active) = active_reasoning_id.clone() {
+                                active
+                            } else {
+                                reasoning.id.clone().unwrap_or_else(|| {
+                                    ensure_active_reasoning_id(
+                                        &mut active_reasoning_id,
+                                        &mut reasoning_seq,
+                                    )
+                                })
+                            };
                             if text.is_empty() {
                                 // Encrypted or redacted complete reasoning
                                 // closes the current burst so the next
@@ -1284,5 +1296,29 @@ mod tests {
         let next_delta = ensure_active_reasoning_id(&mut active, &mut seq);
         assert_eq!(next_delta, "reasoning-2");
         assert_ne!(next_delta, first_delta);
+    }
+
+    // Models the stream loop's reasoning-id state machine for the
+    // scenario: id-less ReasoningDeltas open a burst under a fallback
+    // id, then the provider supplies a *different* id on the matching
+    // complete Reasoning. The loop must reuse the active fallback id
+    // for the complete event so the frontend replaces the accumulated
+    // deltas instead of emitting an orphaned block under the
+    // provider's id.
+    #[test]
+    fn complete_reasoning_reuses_active_fallback_id_over_provider_id() {
+        let mut active: Option<String> = None;
+        let mut seq = 0usize;
+
+        // id-less ReasoningDelta opens burst -> reasoning-1.
+        let delta_id = ensure_active_reasoning_id(&mut active, &mut seq);
+        assert_eq!(delta_id, "reasoning-1");
+
+        // Complete Reasoning arrives with a provider-supplied id, but
+        // the loop prefers the active fallback id so the frontend can
+        // collapse the complete onto the accumulated deltas.
+        let complete_id = active.clone().unwrap_or_else(|| "provider-rs-9".to_string());
+        assert_eq!(complete_id, "reasoning-1");
+        assert_ne!(complete_id, "provider-rs-9");
     }
 }
