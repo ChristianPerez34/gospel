@@ -755,8 +755,11 @@ where
                                     &mut reasoning_seq,
                                 )
                             });
-                            active_reasoning_id = Some(id.clone());
                             if text.is_empty() {
+                                // Encrypted or redacted complete reasoning
+                                // closes the current burst so the next
+                                // id-less delta does not reuse a stale id.
+                                active_reasoning_id = None;
                                 continue;
                             }
                             on_event(StreamEvent::Reasoning(ReasoningPayload {
@@ -1254,5 +1257,32 @@ mod tests {
         active = None;
         let second = ensure_active_reasoning_id(&mut active, &mut seq);
         assert_eq!(second, "reasoning-2");
+    }
+
+    // Models the stream loop's reasoning-id state machine for the
+    // scenario: an id-less ReasoningDelta opens a burst, then an
+    // empty complete Reasoning (encrypted/redacted) closes it, so
+    // the next id-less ReasoningDelta mints a fresh id instead of
+    // reusing the stale fallback from the closed burst.
+    #[test]
+    fn empty_complete_reasoning_closes_burst_before_next_idless_delta() {
+        let mut active: Option<String> = None;
+        let mut seq = 0usize;
+
+        // id-less ReasoningDelta "thinking..." opens burst -> reasoning-1.
+        let first_delta = ensure_active_reasoning_id(&mut active, &mut seq);
+        assert_eq!(first_delta, "reasoning-1");
+        assert_eq!(active.as_deref(), Some("reasoning-1"));
+
+        // Empty complete Reasoning (no provider id): the loop calls
+        // ensure_active_reasoning_id (a no-op reuse here) then, on
+        // text.is_empty(), resets active_reasoning_id to None.
+        let _ = ensure_active_reasoning_id(&mut active, &mut seq);
+        active = None;
+
+        // Next id-less ReasoningDelta must NOT reuse reasoning-1.
+        let next_delta = ensure_active_reasoning_id(&mut active, &mut seq);
+        assert_eq!(next_delta, "reasoning-2");
+        assert_ne!(next_delta, first_delta);
     }
 }
