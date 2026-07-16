@@ -47,11 +47,24 @@ export interface ModelVariantWarningPayload {
   message: string;
 }
 
+interface LlmReasoningPayload {
+  id: string;
+  text: string;
+  phase: "delta" | "complete";
+}
+
 function joinTextBlocks(blocks: TurnBlock[]): string {
   return blocks
     .filter((block): block is { kind: "text"; id: string; text: string } => block.kind === "text")
     .map((block) => block.text)
     .join("");
+}
+
+/** Strip ephemeral reasoning blocks. Reasoning is shown live only and must
+ * never reach a finalized `Message` (which is persisted, copied, or fed to
+ * verification and tracing downstream). */
+function dropReasoningBlocks(blocks: TurnBlock[]): TurnBlock[] {
+  return blocks.filter((block) => block.kind !== "reasoning");
 }
 
 interface StartStreamOptions {
@@ -144,7 +157,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const finalTurn = currentTurnRef.current;
               const payloadContent =
                 typeof payload === "string" ? payload : (payload?.response ?? "");
-              const blocks = finalTurn?.blocks ?? [];
+              const rawBlocks = finalTurn?.blocks ?? [];
+              // Reasoning blocks are ephemeral: do not let them leak into
+              // the finalized message content, blocks, or anything that
+              // gets copied or persisted downstream.
+              const blocks = dropReasoningBlocks(rawBlocks);
               const derivedContent = joinTextBlocks(blocks);
               // Prefer the backend's authoritative response text when present;
               // otherwise fall back to streamed text blocks.
@@ -173,7 +190,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const err = event.payload;
               const finalTurn = currentTurnRef.current;
               const messageId = finalTurn?.id ?? generateTurnId();
-              const blocks = finalTurn?.blocks ?? [];
+              const rawBlocks = finalTurn?.blocks ?? [];
+              const blocks = dropReasoningBlocks(rawBlocks);
               const derivedContent = joinTextBlocks(blocks);
 
               if (err?.message || derivedContent || blocks.length > 0) {
@@ -262,6 +280,54 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 };
               });
               optionsRef.current.onStatusChange?.("acting");
+            })
+          ),
+          track(
+            listen<LlmReasoningPayload>("llm-reasoning", (event) => {
+              const { id, text, phase } = event.payload;
+              updateCurrentTurn((turn) => {
+                const idx = turn.blocks.findIndex(
+                  (b): b is Extract<TurnBlock, { kind: "reasoning" }> =>
+                    b.kind === "reasoning" && b.id === id
+                );
+                if (phase === "complete") {
+                  // A complete event replaces accumulated deltas with the
+                  // provider's authoritative text for the same id. A new
+                  // burst with the same id always starts here, so a
+                  // previously-completed block is overwritten.
+                  if (idx >= 0) {
+                    const blocks = [...turn.blocks];
+                    blocks[idx] = { kind: "reasoning", id, text, phase: "complete" };
+                    return { ...turn, blocks };
+                  }
+                  return {
+                    ...turn,
+                    blocks: [
+                      ...turn.blocks,
+                      { kind: "reasoning", id, text, phase: "complete" },
+                    ],
+                  };
+                }
+                if (idx >= 0) {
+                  const blocks = [...turn.blocks];
+                  const existing = blocks[idx];
+                  if (existing.kind === "reasoning") {
+                    blocks[idx] = {
+                      ...existing,
+                      text: existing.text + text,
+                      phase: "delta",
+                    };
+                  }
+                  return { ...turn, blocks };
+                }
+                return {
+                  ...turn,
+                  blocks: [
+                    ...turn.blocks,
+                    { kind: "reasoning", id, text, phase: "delta" },
+                  ],
+                };
+              });
             })
           ),
           track(

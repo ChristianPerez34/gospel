@@ -26,10 +26,12 @@ interface AgentTurnBlockProps {
 type TextTurnBlock = Extract<TurnBlock, { kind: "text" }>;
 type ToolTurnBlock = Extract<TurnBlock, { kind: "tool" }>;
 type ApprovalTurnBlock = Extract<TurnBlock, { kind: "approval" }>;
+type ReasoningTurnBlock = Extract<TurnBlock, { kind: "reasoning" }>;
 type ActivityTurnBlock = ToolTurnBlock | ApprovalTurnBlock;
 
 type TurnSegment =
   | { kind: "text"; block: TextTurnBlock }
+  | { kind: "reasoning"; block: ReasoningTurnBlock }
   | { kind: "tools"; blocks: ActivityTurnBlock[] };
 
 const AUTO_FOLLOW_THRESHOLD_PX = 64;
@@ -46,7 +48,9 @@ function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
 
 /** Collapses consecutive tool and approval blocks into one segment so they
  * share a single connected activity timeline, while preserving
- * text/activity occurrence order. */
+ * text/activity occurrence order. Reasoning blocks stay as their own
+ * segments — they share text-block insertion order but render with a
+ * distinct subdued style. */
 function coalesceBlocks(blocks: TurnBlock[]): TurnSegment[] {
   const segments: TurnSegment[] = [];
   for (const block of blocks) {
@@ -57,6 +61,8 @@ function coalesceBlocks(blocks: TurnBlock[]): TurnSegment[] {
       } else {
         segments.push({ kind: "tools", blocks: [block] });
       }
+    } else if (block.kind === "reasoning") {
+      segments.push({ kind: "reasoning", block });
     } else {
       segments.push({ kind: "text", block });
     }
@@ -152,6 +158,19 @@ function AgentTextBlock({ block }: { block: TextTurnBlock }) {
   );
 }
 
+function ReasoningBlock({ block }: { block: ReasoningTurnBlock }) {
+  if (!block.text) return null;
+  return (
+    <div
+      className="agent-reasoning-block ml-16 w-[calc(100%-3.25rem)] max-w-[680px] rounded-md border border-dashed border-surface-overlay bg-surface-base/40 px-3 py-2 text-caption text-text-muted font-mono whitespace-pre-wrap break-words"
+      data-testid={`agent-reasoning-${block.id}`}
+      aria-live="polite"
+    >
+      {block.text}
+    </div>
+  );
+}
+
 function AgentHeader({ timestamp }: { timestamp: Date }) {
   const timeStr = timestamp.toLocaleTimeString([], {
     hour: "2-digit",
@@ -200,12 +219,20 @@ function AgentTurnBlock({
     fallbackTimestampRef.current = new Date();
   }
   const timestamp = currentTurn?.createdAt ?? message?.timestamp ?? fallbackTimestampRef.current;
-  const blocks =
+  const liveBlocks =
     currentTurn?.blocks ??
     message?.blocks ??
     (message?.content
       ? [{ kind: "text" as const, id: `${turnId}-legacy-text`, text: message.content }]
       : []);
+  // Reasoning is ephemeral and must never appear in finalized agent
+  // messages. Live turns keep reasoning blocks so the user can see them
+  // stream in real time, but the moment a turn is finalized, we drop
+  // them from the displayed blocks. We also defend in depth against any
+  // historical message that somehow still contains one.
+  const blocks = currentTurn
+    ? liveBlocks
+    : liveBlocks.filter((block) => block.kind !== "reasoning");
   const visibleBlocks =
     blocks.length > 0 || !isThinking
       ? blocks
@@ -229,6 +256,8 @@ function AgentTurnBlock({
       {segments.map((segment) =>
         segment.kind === "text" ? (
           <AgentTextBlock block={segment.block} key={segment.block.id} />
+        ) : segment.kind === "reasoning" ? (
+          <ReasoningBlock block={segment.block} key={segment.block.id} />
         ) : (
           <ToolTimeline
             blocks={segment.blocks}
