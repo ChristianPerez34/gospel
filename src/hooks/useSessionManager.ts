@@ -80,18 +80,13 @@ export function useSessionManager({
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [draftSessionMode, setDraftSessionMode] = useState<SessionMode>("Build");
   const statusRef = useRef(status);
+  statusRef.current = status;
   const latestSelectedSessionRef = useRef<string | null>(null);
   const skipNextWorkspaceResetRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
-
-  useEffect(() => {
-    activeSessionIdRef.current = activeSessionId;
-  }, [activeSessionId]);
 
   // Status changes retry a workspace reset that was deferred while streaming.
   // biome-ignore lint/correctness/useExhaustiveDependencies: Status is an intentional trigger.

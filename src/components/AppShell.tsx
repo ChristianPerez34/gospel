@@ -556,7 +556,9 @@ export function AppShell() {
   const activeSessionModel = activeSession?.model;
   const activeSessionVariant = activeSession?.variant ?? null;
   const activeSessionRef = useRef(activeSession);
+  activeSessionRef.current = activeSession;
   const selectedModelRef = useRef(selectedModel);
+  selectedModelRef.current = selectedModel;
   const sessionTitle = activeSession?.title || "New session";
   const selectedModelId = selectedModel
     ? modelOptionId(selectedModel.provider, selectedModel.model)
@@ -573,11 +575,6 @@ export function AppShell() {
   const noModels = noModelCopy(availabilitySnapshot);
   const surfaceTrapOpen = trappedSurface !== null;
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
-
-  useEffect(() => {
-    activeSessionRef.current = activeSession;
-    selectedModelRef.current = selectedModel;
-  }, [activeSession, selectedModel]);
 
   useEffect(() => {
     if (!activeSessionId || !activeSessionProvider || !activeSessionModel) return;
