@@ -87,6 +87,7 @@ export function useSessionManager({
   activeSessionIdRef.current = activeSessionId;
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
+
   // Status changes retry a workspace reset that was deferred while streaming.
   // biome-ignore lint/correctness/useExhaustiveDependencies: Status is an intentional trigger.
   useEffect(() => {

@@ -44,18 +44,15 @@ export function WorkspaceStage({
   reviewOpen,
 }: WorkspaceStageProps) {
   return (
-    <section className="workspace-stage-shell" aria-label="Workspace stage">
+    <section className="workspace-stage-shell" aria-label="Evidence rail">
       <header className="workspace-stage-header">
-        <nav className="workspace-stage-tabs" aria-label="Workspace surfaces">
-          <span className="workspace-stage-tab is-active" aria-current="page">
-            <FolderOpen aria-hidden="true" />
-            <span>Live Workspace</span>
-          </span>
-          <span className="workspace-stage-tab is-disabled">
-            <Terminal aria-hidden="true" />
-            <span>Run Log</span>
-          </span>
-        </nav>
+        <div className="workspace-stage-title">
+          <FolderOpen aria-hidden="true" />
+          <div>
+            <span>Evidence Rail</span>
+            <small>Review, browser, and runtime artifacts</small>
+          </div>
+        </div>
         <div className="workspace-stage-actions">
           <button
             className="stage-icon-button"
@@ -80,45 +77,78 @@ export function WorkspaceStage({
 
       <div className="workspace-stage-content">
         <div className="workspace-stage-preview">
-          <div className="stage-grid-mark" aria-hidden="true" />
-          <div className="stage-status-panel">
-            <div className="stage-status-kicker">
-              <span className={`stage-status-dot ${STATUS_CLASS[status]}`} aria-hidden="true" />
-              <span>{STATUS_COPY[status]}</span>
+          <div className="stage-focus-mark" aria-hidden="true" />
+          <div className="workspace-stage-overview">
+            <div className="stage-status-panel">
+              <div className="stage-status-kicker">
+                <span className={`stage-status-dot ${STATUS_CLASS[status]}`} aria-hidden="true" />
+                <span>{STATUS_COPY[status]}</span>
+              </div>
+              <h2>Workspace Evidence</h2>
+              <p>{trimPath(workspacePath)}</p>
+              <div className="stage-stat-grid">
+                <div className="stage-stat">
+                  <span>Workspace</span>
+                  <strong>{workspaceName}</strong>
+                </div>
+                <div className="stage-stat">
+                  <span>Mode</span>
+                  <strong>{sessionMode === "Build" ? "Build" : "Plan"}</strong>
+                </div>
+                <div className="stage-stat">
+                  <span>Turns</span>
+                  <strong>{messageCount}</strong>
+                </div>
+                <div className="stage-stat">
+                  <span>Review</span>
+                  <strong>{reviewOpen ? "Inspector open" : "Packet ready"}</strong>
+                </div>
+              </div>
             </div>
-            <h2>{workspaceName}</h2>
-            <p>{trimPath(workspacePath)}</p>
-            <div className="stage-stat-grid">
-              <div className="stage-stat">
-                <span>Session</span>
-                <strong>{sessionTitle || "New session"}</strong>
-              </div>
-              <div className="stage-stat">
-                <span>Mode</span>
-                <strong>{sessionMode === "Build" ? "Build" : "Plan"}</strong>
-              </div>
-              <div className="stage-stat">
-                <span>Turns</span>
-                <strong>{messageCount}</strong>
-              </div>
-              <div className="stage-stat">
-                <span>Review</span>
-                <strong>{reviewOpen ? "Open" : "Closed"}</strong>
-              </div>
-            </div>
+
+            <section className="evidence-module-grid" aria-label="Evidence modules">
+              <article className="evidence-module">
+                <div className="evidence-module-header">
+                  <Activity aria-hidden="true" />
+                  <span>Run ledger</span>
+                </div>
+                <p>{sessionTitle || "New session"}</p>
+              </article>
+              <article className="evidence-module">
+                <div className="evidence-module-header">
+                  <GitBranch aria-hidden="true" />
+                  <span>Review packet</span>
+                </div>
+                <p>{reviewOpen ? "Inspector is open" : "Findings attach to this run"}</p>
+              </article>
+              <article className="evidence-module">
+                <div className="evidence-module-header">
+                  <ExternalLink aria-hidden="true" />
+                  <span>Browser artifacts</span>
+                </div>
+                <p>Preview, console, network, and screenshots will dock here.</p>
+              </article>
+              <article className="evidence-module">
+                <div className="evidence-module-header">
+                  <Terminal aria-hidden="true" />
+                  <span>Verification</span>
+                </div>
+                <p>Tests and command output stay tied to the current run.</p>
+              </article>
+            </section>
           </div>
         </div>
 
-        <section className="workspace-terminal-panel" aria-label="Workspace terminal summary">
+        <section className="workspace-terminal-panel" aria-label="Runtime telemetry summary">
           <div className="workspace-terminal-title">
             <Activity aria-hidden="true" />
-            <span>Workspace Telemetry</span>
+            <span>Runtime Telemetry</span>
           </div>
           <div className="workspace-terminal-lines">
             <div>
               <span className="term-prompt">gospel</span>
               <span className="term-dir">{workspaceName}</span>
-              <span className="term-muted">session.inspect</span>
+              <span className="term-muted">run.inspect</span>
             </div>
             <div>
               <span className="term-muted">status</span>
@@ -130,6 +160,11 @@ export function WorkspaceStage({
               <GitBranch aria-hidden="true" />
               <span className="term-muted">mode</span>
               <span>{sessionMode === "Build" ? "Build enabled" : "Plan only"}</span>
+            </div>
+            <div>
+              <ExternalLink aria-hidden="true" />
+              <span className="term-muted">browser</span>
+              <span>Artifacts pending integration</span>
             </div>
           </div>
         </section>
