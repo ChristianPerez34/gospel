@@ -1948,33 +1948,50 @@ async fn run_program(
     }
 }
 
+struct CapturedOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
 async fn run_command_output(
     workspace_path: &Path,
     program: &str,
     args: &[&str],
-) -> Result<std::process::Output, CommandRunError> {
+) -> Result<CapturedOutput, CommandRunError> {
     let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(workspace_path)
-        .kill_on_drop(true)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    command.args(args).current_dir(workspace_path);
     let command_label = command_label(program, args);
 
-    let child = command.spawn().map_err(|error| CommandRunError::Io {
-        program: program.to_string(),
-        error,
-    })?;
-
-    match timeout(COMMAND_TIMEOUT, child.wait_with_output()).await {
-        Ok(result) => result.map_err(|error| CommandRunError::Io {
-            program: program.to_string(),
-            error,
-        }),
-        Err(_) => Err(CommandRunError::Timeout {
+    match crate::subprocess_output::run_with_bounded_output(
+        &command_label,
+        command,
+        COMMAND_TIMEOUT,
+        usize::MAX,
+        usize::MAX,
+    )
+    .await
+    {
+        Ok(output) if output.timed_out => Err(CommandRunError::Timeout {
             command: command_label,
         }),
+        Ok(output) => Ok(CapturedOutput {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }),
+        Err(crate::subprocess_output::SubprocessError::Spawn { source, .. }) => {
+            Err(CommandRunError::Io {
+                program: program.to_string(),
+                error: source,
+            })
+        }
+        Err(crate::subprocess_output::SubprocessError::Wait { source, .. }) => {
+            Err(CommandRunError::Io {
+                program: program.to_string(),
+                error: source,
+            })
+        }
     }
 }
 

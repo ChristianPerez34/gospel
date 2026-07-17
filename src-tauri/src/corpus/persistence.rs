@@ -45,9 +45,32 @@ pub struct CorpusPersistence {
 }
 
 impl CorpusPersistence {
-    /// Create a new persistence manager for the given workspace
+    /// Create a new persistence manager for the given workspace.
+    ///
+    /// Rejects storage paths that resolve outside the canonical workspace root,
+    /// including an attacker-planted symlink at `.gospel`.
     pub fn new(workspace_path: &Path) -> Result<Self, PersistenceError> {
+        let workspace_canonical = std::fs::canonicalize(workspace_path)?;
+        let gospel_dir = workspace_path.join(".gospel");
+        if let Some(canonical_gospel) = crate::corpus::symlink_guard::canonical(&gospel_dir) {
+            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_gospel) {
+                return Err(PersistenceError::IoError(std::io::Error::other(format!(
+                    "Corpus parent directory {} escapes the workspace",
+                    canonical_gospel.display()
+                ))));
+            }
+        }
+
         let corpus_dir = workspace_path.join(CORPUS_DIR_NAME);
+        if let Some(canonical_corpus) = crate::corpus::symlink_guard::canonical(&corpus_dir) {
+            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_corpus) {
+                return Err(PersistenceError::IoError(std::io::Error::other(format!(
+                    "Corpus directory {} escapes the workspace",
+                    canonical_corpus.display()
+                ))));
+            }
+        }
+
         Ok(Self { corpus_dir })
     }
 
@@ -631,5 +654,22 @@ mod tests {
         assert_eq!(manifest.node_count, 2);
         assert_eq!(manifest.relationship_count, 1);
         assert_eq!(manifest.version, "1.0.0");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corpus_persistence_rejects_symlinked_gospel_dir() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("corpus");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let gospel = dir.path().join(".gospel");
+        symlink(&target, &gospel).unwrap();
+
+        let result = CorpusPersistence::new(dir.path());
+        assert!(result.is_err(), "symlinked .gospel should be rejected");
     }
 }

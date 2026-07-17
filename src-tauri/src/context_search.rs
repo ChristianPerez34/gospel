@@ -40,7 +40,26 @@ pub const MAX_CONTEXT_SEARCH_LIMIT: usize = 50;
 
 impl ContextSearchIndex {
     pub fn new(workspace_path: &Path) -> Result<Self, ContextSearchError> {
+        let workspace_canonical = std::fs::canonicalize(workspace_path)?;
+        let gospel_dir = workspace_path.join(".gospel");
+        if let Some(canonical_gospel) = crate::corpus::symlink_guard::canonical(&gospel_dir) {
+            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_gospel) {
+                return Err(ContextSearchError::Io(std::io::Error::other(format!(
+                    "Context search parent directory {} escapes the workspace",
+                    canonical_gospel.display()
+                ))));
+            }
+        }
+
         let index_dir = workspace_path.join(".gospel").join("context_search");
+        if let Some(canonical_index) = crate::corpus::symlink_guard::canonical(&index_dir) {
+            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_index) {
+                return Err(ContextSearchError::Io(std::io::Error::other(format!(
+                    "Context search directory {} escapes the workspace",
+                    canonical_index.display()
+                ))));
+            }
+        }
         std::fs::create_dir_all(&index_dir)?;
 
         let db_path = index_dir.join("search_index.db");
@@ -69,12 +88,21 @@ impl ContextSearchIndex {
     }
 
     pub fn open_if_exists(workspace_path: &Path) -> Result<Self, ContextSearchError> {
+        let workspace_canonical = std::fs::canonicalize(workspace_path)?;
         let db_path = workspace_path
             .join(".gospel")
             .join("context_search")
             .join("search_index.db");
         if !db_path.exists() {
             return Err(ContextSearchError::NotInitialized);
+        }
+        if let Some(canonical_db) = crate::corpus::symlink_guard::canonical(&db_path) {
+            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_db) {
+                return Err(ContextSearchError::Io(std::io::Error::other(format!(
+                    "Context search index {} escapes the workspace",
+                    canonical_db.display()
+                ))));
+            }
         }
 
         let conn = Connection::open(db_path)?;
@@ -269,4 +297,31 @@ pub fn chunk_markdown_file(path: &Path, content: &str) -> Vec<SearchChunk> {
 pub fn chunk_text_file(path: &Path, content: &str) -> Vec<SearchChunk> {
     // Use source file chunking for other text files
     chunk_source_file(path, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn context_search_new_rejects_symlinked_gospel_dir() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("context_search");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let gospel = dir.path().join(".gospel");
+        std::fs::create_dir_all(&gospel).unwrap();
+        symlink(&target, gospel.join("context_search")).unwrap();
+
+        let result = ContextSearchIndex::new(dir.path());
+        assert!(
+            result.is_err(),
+            "symlinked .gospel/context_search should be rejected"
+        );
+    }
 }
