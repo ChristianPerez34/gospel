@@ -115,6 +115,14 @@ pre {
   backdrop-filter: blur(18px);
 }
 
+@media (min-width: 1121px) {
+  #stage,
+  #graph,
+  #review {
+    scroll-margin-top: 144px;
+  }
+}
+
 .deck-header h1 {
   margin-top: 6px;
   font-size: 28px;
@@ -984,7 +992,7 @@ textarea {
   }
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 1140px) {
   .deck-header,
   .variant-intro {
     grid-template-columns: 1fr;
@@ -1006,7 +1014,7 @@ textarea {
 
   .app-topbar,
   .app-layout {
-    min-width: 1040px;
+    min-width: 1140px;
   }
 }
 

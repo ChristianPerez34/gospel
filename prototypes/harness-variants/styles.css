@@ -191,6 +191,12 @@ pre {
   gap: 18px;
 }
 
+@media (min-width: 1121px) {
+  .variant-block {
+    scroll-margin-top: 144px;
+  }
+}
+
 .variant-copy {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr) minmax(320px, 0.7fr);
@@ -714,6 +720,12 @@ pre {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 10px;
+}
+
+.suggestion-row {
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
 }
 
 .file-chips span,
