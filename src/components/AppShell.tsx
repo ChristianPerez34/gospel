@@ -103,7 +103,7 @@ export function AppShell() {
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
-  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayoutMode>("pairing");
+  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayoutMode>("evidence");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
@@ -557,8 +557,6 @@ export function AppShell() {
   const activeSessionVariant = activeSession?.variant ?? null;
   const activeSessionRef = useRef(activeSession);
   const selectedModelRef = useRef(selectedModel);
-  activeSessionRef.current = activeSession;
-  selectedModelRef.current = selectedModel;
   const sessionTitle = activeSession?.title || "New session";
   const selectedModelId = selectedModel
     ? modelOptionId(selectedModel.provider, selectedModel.model)
@@ -575,6 +573,11 @@ export function AppShell() {
   const noModels = noModelCopy(availabilitySnapshot);
   const surfaceTrapOpen = trappedSurface !== null;
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
+
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+    selectedModelRef.current = selectedModel;
+  }, [activeSession, selectedModel]);
 
   useEffect(() => {
     if (!activeSessionId || !activeSessionProvider || !activeSessionModel) return;
@@ -834,15 +837,15 @@ export function AppShell() {
             sessionMode={session.activeSessionMode}
             status={session.status}
             messageCount={session.messages.length}
-            reviewOpen={workspaceLayout === "review" || workspaceLayout === "pipeline"}
+            reviewOpen={workspaceLayout === "review"}
           />
           <ReviewPanel
-            open={workspaceLayout === "review" || workspaceLayout === "pipeline"}
+            open={workspaceLayout === "review"}
             provider={selectedModel?.provider}
             model={selectedModel?.model}
             workspacePath={activeWorkspace?.path}
             canSendTurn={!session.isStreaming}
-            onClose={() => setWorkspaceLayout("pairing")}
+            onClose={() => setWorkspaceLayout("evidence")}
             onError={showError}
             onSuccess={showSuccess}
             onFixFinding={(prompt) => session.handleSend(prompt)}

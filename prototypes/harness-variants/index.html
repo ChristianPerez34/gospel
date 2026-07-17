@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gospel Harness Variants</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="deck-header">
+    <div>
+      <p class="deck-kicker">Gospel agentic coding harness</p>
+      <h1>Three directions without Pair/Pipeline tabs</h1>
+      <p class="deck-summary">
+        Reference lock: Linear-style dark run ledger as the foundation, v0-style direct prompt composer,
+        and Depot-style green only for live or successful execution states.
+      </p>
+    </div>
+    <nav class="variant-nav" aria-label="Prototype variants">
+      <a href="#variant-ledger">Run Ledger</a>
+      <a href="#variant-runway">Command Runway</a>
+      <a href="#variant-cockpit">Triage Cockpit</a>
+    </nav>
+  </header>
+
+  <main class="variant-deck">
+    <section class="variant-block" id="variant-ledger">
+      <div class="variant-copy">
+        <p class="variant-number">Variant 01</p>
+        <div>
+          <h2>Run Ledger Workbench</h2>
+          <p>
+            The app becomes a single continuous run record. Chat, tool calls, diffs, approvals, and tests
+            live in one chronological ledger, with evidence pinned on the right. This is the closest to
+            the current app, but clearer because there is no mode switcher to understand first.
+          </p>
+        </div>
+        <ul class="decision-list">
+          <li>Best for: current chat-first workflow with review visible but secondary.</li>
+          <li>Tradeoff: less dramatic than the other directions, but easiest to ship incrementally.</li>
+          <li>No tabs: review and pipeline become evidence cards attached to the active run.</li>
+        </ul>
+      </div>
+
+      <section class="prototype-shell ledger-shell" aria-label="Run Ledger Workbench mockup">
+        <div class="app-topbar">
+          <div class="topbar-left">
+            <button class="icon-button" type="button" aria-label="Open sessions">
+              <span class="icon-lines" aria-hidden="true"></span>
+            </button>
+            <button class="workspace-pill" type="button">gospel <span>/ RustProjects</span></button>
+            <span class="topbar-divider"></span>
+            <button class="session-title" type="button">Review archive policy repair</button>
+          </div>
+          <div class="run-status" role="status" aria-label="Agent is acting">
+            <span class="equalizer" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span>acting: editing tests</span>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" type="button">Plan</button>
+            <button class="ghost-button strong" type="button">Stop run</button>
+            <button class="model-pill" type="button">gpt-5.5 <span>high</span></button>
+          </div>
+        </div>
+
+        <div class="ledger-grid app-grid">
+          <aside class="session-rail panel-surface">
+            <div class="rail-header">
+              <span>Sessions</span>
+              <button class="tiny-button" type="button">New</button>
+            </div>
+            <label class="search-field">
+              <span>Search</span>
+              <input value="archive" aria-label="Search sessions">
+            </label>
+            <div class="session-list">
+              <article class="session-item active">
+                <strong>Archive policy repair</strong>
+                <span>running now</span>
+              </article>
+              <article class="session-item">
+                <strong>Command approval audit</strong>
+                <span>12 min ago</span>
+              </article>
+              <article class="session-item">
+                <strong>MCP settings cleanup</strong>
+                <span>yesterday</span>
+              </article>
+              <article class="session-item">
+                <strong>Review progress reducers</strong>
+                <span>Mon</span>
+              </article>
+            </div>
+            <div class="rail-meter">
+              <span>Context</span>
+              <div><i style="width: 64%"></i></div>
+              <small>8 files, 38k tokens</small>
+            </div>
+          </aside>
+
+          <section class="ledger-main">
+            <div class="run-header">
+              <div>
+                <p class="micro-label">Current run</p>
+                <h3>Fix stale archive metadata and verify workspace scoped cleanup.</h3>
+              </div>
+              <button class="primary-button" type="button">Approve safe edits</button>
+            </div>
+
+            <div class="run-ledger">
+              <article class="message user">
+                <div class="message-meta"><strong>You</strong><span>2:04 AM</span></div>
+                <p>Archive cleanup says it completed, but expired sessions still show up after workspace switch. Diagnose and patch it.</p>
+              </article>
+
+              <article class="ledger-entry done">
+                <div class="entry-marker"></div>
+                <div class="entry-body">
+                  <div class="entry-title">
+                    <strong>Inspected workspace archive flow</strong>
+                    <span>1.2s</span>
+                  </div>
+                  <p>Read AppShell archive callbacks, reducer tests, and Tauri commands.</p>
+                  <div class="file-chips"><span>AppShell.tsx</span><span>useSessionManager.ts</span><span>archive.test.ts</span></div>
+                </div>
+              </article>
+
+              <article class="ledger-entry active">
+                <div class="entry-marker"></div>
+                <div class="entry-body">
+                  <div class="entry-title">
+                    <strong>Editing failing test first</strong>
+                    <span>running</span>
+                  </div>
+                  <div class="code-card compact-code">
+<pre>useEffect(() =&gt; {
+  if (!activeWorkspace?.id) return;
+  void reloadArchiveData(activeWorkspace.id);
+}, [activeWorkspace?.id, reloadArchiveData]);</pre>
+                  </div>
+                </div>
+              </article>
+
+              <article class="ledger-entry queued">
+                <div class="entry-marker"></div>
+                <div class="entry-body">
+                  <div class="entry-title">
+                    <strong>Run verification</strong>
+                    <span>queued</span>
+                  </div>
+                  <p>bun run test with focused archive/session coverage.</p>
+                </div>
+              </article>
+            </div>
+
+            <div class="composer ledger-composer">
+              <div class="context-row"><span>src/components/AppShell.tsx</span><span>src/hooks/useSessionManager.ts</span></div>
+              <div class="composer-row">
+                <textarea aria-label="Prompt" rows="2">Make the smallest patch and keep workspace switches predictable.</textarea>
+                <button class="send-button" type="button">Send</button>
+              </div>
+            </div>
+          </section>
+
+          <aside class="evidence-stack panel-surface">
+            <div class="rail-header">
+              <span>Evidence</span>
+              <button class="tiny-button" type="button">Pin</button>
+            </div>
+            <article class="evidence-card live">
+              <div class="card-heading"><strong>Active diff</strong><span>2 files</span></div>
+              <div class="diff-mini">
+                <p><span class="add">+ 18</span> <span class="remove">- 6</span> AppShell.tsx</p>
+                <p><span class="add">+ 31</span> <span class="remove">- 0</span> archive.test.ts</p>
+              </div>
+            </article>
+            <article class="evidence-card">
+              <div class="card-heading"><strong>Review queue</strong><span>waiting</span></div>
+              <p>One agent finding needs confirmation before accepting all changes.</p>
+              <button class="inline-action" type="button">Open finding</button>
+            </article>
+            <article class="evidence-card success">
+              <div class="card-heading"><strong>Checks</strong><span>ready</span></div>
+              <ul class="check-list">
+                <li>Typecheck pending</li>
+                <li>Vitest pending</li>
+                <li>Rust clippy not started</li>
+              </ul>
+            </article>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section class="variant-block" id="variant-runway">
+      <div class="variant-copy">
+        <p class="variant-number">Variant 02</p>
+        <div>
+          <h2>Command Runway</h2>
+          <p>
+            The prompt becomes the center of gravity. Instead of selecting a layout, the user launches an
+            intent into a visible sequence: context, plan, patch, verify, handoff. It feels more like a
+            focused tool than a chat app.
+          </p>
+        </div>
+        <ul class="decision-list">
+          <li>Best for: users who want to steer the agent by jobs, not conversations.</li>
+          <li>Tradeoff: bigger product shift because chat becomes a transcript below the command surface.</li>
+          <li>No tabs: the run stages are ordered work packets, not alternate views.</li>
+        </ul>
+      </div>
+
+      <section class="prototype-shell runway-shell" aria-label="Command Runway mockup">
+        <div class="app-topbar runway-topbar">
+          <div class="topbar-left">
+            <button class="workspace-pill" type="button">gospel</button>
+            <span class="topbar-divider"></span>
+            <span class="muted-path">/Users/lifelinelogics/RustProjects/gospel</span>
+          </div>
+          <div class="run-status calm"><span class="status-dot"></span><span>ready for command</span></div>
+          <div class="topbar-actions">
+            <button class="ghost-button" type="button">History</button>
+            <button class="model-pill" type="button">openai/gpt-5.5</button>
+          </div>
+        </div>
+
+        <div class="runway-grid app-grid">
+          <aside class="panel-surface context-dock">
+            <div class="rail-header"><span>Context dock</span><button class="tiny-button" type="button">Add</button></div>
+            <div class="context-tree">
+              <p class="tree-root">gospel</p>
+              <p class="tree-row selected">src/components/AppShell.tsx</p>
+              <p class="tree-row selected">src/components/ReviewPanel.tsx</p>
+              <p class="tree-row">src/hooks/useReviewProgress.ts</p>
+              <p class="tree-row">src/styles/global.css</p>
+              <p class="tree-row muted">src-tauri/src/shell_tools.rs</p>
+            </div>
+            <div class="intent-note">
+              <strong>Guardrails</strong>
+              <p>Smallest correct change. Do not touch unrelated files. Run Vitest before handoff.</p>
+            </div>
+          </aside>
+
+          <section class="runway-main">
+            <div class="prompt-console">
+              <p class="micro-label">What should Gospel do?</p>
+              <h3>Patch the archive cleanup bug, explain the root cause, and verify the fix.</h3>
+              <div class="prompt-input">
+                <textarea rows="3" aria-label="Command prompt">Diagnose why expired archived sessions remain visible after workspace switch. Make the minimal fix and run the relevant tests.</textarea>
+                <button class="primary-button launch-button" type="button">Launch run</button>
+              </div>
+              <fieldset class="suggestion-row" aria-label="Common commands">
+                <button type="button">Diagnose failing test</button>
+                <button type="button">Review current diff</button>
+                <button type="button">Implement issue</button>
+                <button type="button">Write PR summary</button>
+              </fieldset>
+            </div>
+
+            <section class="runway-timeline" aria-label="Run stages">
+              <article class="stage-packet done">
+                <span class="stage-index">01</span>
+                <div>
+                  <strong>Context</strong>
+                  <p>Read archive state, workspace switcher, and session persistence commands.</p>
+                </div>
+                <span class="stage-state">done</span>
+              </article>
+              <article class="stage-packet active">
+                <span class="stage-index">02</span>
+                <div>
+                  <strong>Plan</strong>
+                  <p>Root cause isolated: archive metadata reload uses stale workspace scope after switch.</p>
+                </div>
+                <span class="stage-state">live</span>
+              </article>
+              <article class="stage-packet">
+                <span class="stage-index">03</span>
+                <div>
+                  <strong>Patch</strong>
+                  <p>Update reload call ownership and add regression coverage.</p>
+                </div>
+                <span class="stage-state">next</span>
+              </article>
+              <article class="stage-packet">
+                <span class="stage-index">04</span>
+                <div>
+                  <strong>Verify</strong>
+                  <p>bun run test, then summarize touched files and residual risk.</p>
+                </div>
+                <span class="stage-state">queued</span>
+              </article>
+            </section>
+
+            <div class="transcript-strip">
+              <div class="message-meta"><strong>Agent note</strong><span>31 sec ago</span></div>
+              <p>Workspace scoped archive data is loaded correctly on initial mount, but refresh after cleanup can race against active workspace changes.</p>
+            </div>
+          </section>
+
+          <aside class="panel-surface telemetry-panel">
+            <div class="rail-header"><span>Runtime</span><button class="tiny-button" type="button">Details</button></div>
+            <div class="telemetry-card active">
+              <span class="metric-label">Current tool</span>
+              <strong>read_file</strong>
+              <p>src/components/AppShell.tsx</p>
+            </div>
+            <div class="telemetry-grid">
+              <div><span>Turns</span><strong>3</strong></div>
+              <div><span>Files</span><strong>6</strong></div>
+              <div><span>Edits</span><strong>0</strong></div>
+              <div><span>Cost</span><strong>$0.07</strong></div>
+            </div>
+            <div class="code-card terminal-card">
+<pre>$ git status --short
+ M src/components/AppShell.tsx
+?? src/hooks/archive.test.ts
+
+$ bun run test --filter archive</pre>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section class="variant-block" id="variant-cockpit">
+      <div class="variant-copy">
+        <p class="variant-number">Variant 03</p>
+        <div>
+          <h2>Triage Cockpit</h2>
+          <p>
+            The harness is organized into three permanent lanes: intent, agent work, and evidence. This is
+            the most explicit replacement for Pair and Pipeline because it shows what each surface is for
+            without asking the user to switch layouts.
+          </p>
+        </div>
+        <ul class="decision-list">
+          <li>Best for: multi-agent review, approvals, and high-control sessions.</li>
+          <li>Tradeoff: denser and more operational; less calm for simple one-shot prompts.</li>
+          <li>No tabs: lanes stay visible and resize/collapse by intent, not by named modes.</li>
+        </ul>
+      </div>
+
+      <section class="prototype-shell cockpit-shell" aria-label="Triage Cockpit mockup">
+        <div class="app-topbar cockpit-topbar">
+          <div class="topbar-left">
+            <button class="workspace-pill" type="button">gospel</button>
+            <button class="mode-button" type="button">Build enabled</button>
+            <button class="mode-button quiet" type="button">Auto-approve off</button>
+          </div>
+          <div class="run-status"><span class="equalizer" aria-hidden="true"><i></i><i></i><i></i></span><span>3 agents evaluating</span></div>
+          <div class="topbar-actions">
+            <button class="ghost-button" type="button">Command K</button>
+            <button class="ghost-button strong" type="button">Pause all</button>
+          </div>
+        </div>
+
+        <div class="cockpit-grid app-grid">
+          <aside class="lane intent-lane">
+            <div class="lane-header">
+              <p class="micro-label">Intent</p>
+              <h3>Make the shell tools safer without slowing normal commands.</h3>
+            </div>
+            <div class="operator-card">
+              <strong>Instruction</strong>
+              <p>Harden destructive command classification, preserve approval UX, add regression tests.</p>
+            </div>
+            <div class="operator-card subdued">
+              <strong>Constraints</strong>
+              <ul class="check-list">
+                <li>No git reset or clean paths.</li>
+                <li>Do not change Tauri dialog copy unless required.</li>
+                <li>Keep command policy deterministic.</li>
+              </ul>
+            </div>
+            <div class="composer mini-composer">
+              <textarea rows="4" aria-label="Follow-up prompt">If the shell policy has a parser seam already, use it. Otherwise keep the new rule inside CommandPolicy.</textarea>
+              <button class="send-button wide" type="button">Send follow-up</button>
+            </div>
+          </aside>
+
+          <section class="lane work-lane">
+            <div class="lane-header horizontal">
+              <div>
+                <p class="micro-label">Agent work</p>
+                <h3>Live execution stream</h3>
+              </div>
+              <button class="tiny-button" type="button">Collapse completed</button>
+            </div>
+            <div class="agent-stream">
+              <article class="agent-work-item active">
+                <div class="agent-avatar cyan">EX</div>
+                <div>
+                  <div class="entry-title"><strong>Explorer</strong><span>reading policy tests</span></div>
+                  <p>Found existing hard-block table and approval boundary in src-tauri/src/shell_tools.rs.</p>
+                  <div class="file-chips"><span>shell_tools.rs</span><span>harness_profile.rs</span></div>
+                </div>
+              </article>
+              <article class="agent-work-item">
+                <div class="agent-avatar violet">TD</div>
+                <div>
+                  <div class="entry-title"><strong>Test driver</strong><span>queued</span></div>
+                  <p>Will add command classifier cases before the implementation patch.</p>
+                </div>
+              </article>
+              <article class="agent-work-item warning">
+                <div class="agent-avatar amber">RV</div>
+                <div>
+                  <div class="entry-title"><strong>Reviewer</strong><span>needs decision</span></div>
+                  <p>Question: should glob-like destructive paths be blocked before shell metacharacter rejection?</p>
+                  <div class="decision-actions"><button type="button">Answer inline</button><button type="button">Let agent decide</button></div>
+                </div>
+              </article>
+              <article class="code-card wide-code">
+<pre>match command.intent() {
+  Intent::ReadOnly =&gt; Decision::Allow,
+  Intent::Mutating if requires_approval =&gt; Decision::Ask,
+  Intent::HardBlocked(reason) =&gt; Decision::Deny(reason),
+}</pre>
+              </article>
+            </div>
+          </section>
+
+          <aside class="lane evidence-lane">
+            <div class="lane-header horizontal">
+              <div>
+                <p class="micro-label">Evidence</p>
+                <h3>Reviewable output</h3>
+              </div>
+              <button class="primary-button small-primary" type="button">Accept safe</button>
+            </div>
+            <div class="evidence-card live">
+              <div class="card-heading"><strong>Patch set</strong><span>not applied</span></div>
+              <div class="file-row"><span>shell_tools.rs</span><strong>+42 -11</strong></div>
+              <div class="file-row"><span>shell_tools.test.rs</span><strong>+66 -0</strong></div>
+            </div>
+            <div class="evidence-card warning">
+              <div class="card-heading"><strong>Approval required</strong><span>1 edge</span></div>
+              <p>Classifier behavior changes for `rm -rf ~/project/*` need explicit confirmation.</p>
+              <button class="inline-action" type="button">Compare behavior</button>
+            </div>
+            <div class="evidence-card">
+              <div class="card-heading"><strong>Verification</strong><span>pending</span></div>
+              <ul class="check-list">
+                <li>cargo test shell_tools</li>
+                <li>bun run typecheck</li>
+                <li>bun run test</li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section class="critique-panel" aria-label="Critique summary">
+      <p class="deck-kicker">Impeccable critique pass</p>
+      <h2>Recommended direction</h2>
+      <div class="critique-grid">
+        <article>
+          <strong>Safest next step: Run Ledger</strong>
+          <p>It preserves Gospel's chat-first product model and can absorb current ReviewPanel work without a mode switcher.</p>
+        </article>
+        <article>
+          <strong>Boldest product bet: Command Runway</strong>
+          <p>It reduces chatbot feel and makes the harness task-native, but would require deeper information architecture changes.</p>
+        </article>
+        <article>
+          <strong>Most powerful: Triage Cockpit</strong>
+          <p>It is strongest for multi-agent and review-heavy sessions, but risks overwhelming simple coding work.</p>
+        </article>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

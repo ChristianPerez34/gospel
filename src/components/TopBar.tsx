@@ -1,9 +1,9 @@
-import { Columns2, Cpu, Frame, GitPullRequest, Hammer, Lock, Shield } from "lucide-react";
+import { Activity, Cpu, Frame, Hammer, Lock, Shield } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import type { AgentStatus, SessionMode, Workspace } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
-export type WorkspaceLayoutMode = "focus" | "pairing" | "review" | "pipeline";
+export type WorkspaceLayoutMode = "focus" | "evidence" | "review";
 
 interface TopBarProps {
   workspace: Workspace;
@@ -21,18 +21,11 @@ interface TopBarProps {
   sessionToggleRef?: RefObject<HTMLButtonElement>;
 }
 
-const LAYOUT_OPTIONS = [
-  { value: "focus", label: "Focus", Icon: Frame },
-  { value: "pairing", label: "Pair", Icon: Columns2 },
-  { value: "review", label: "Review", Icon: Shield },
-  { value: "pipeline", label: "Pipeline", Icon: GitPullRequest },
-] as const;
-
 export function TopBar({
   workspace,
   sessionTitle,
   sessionMode,
-  workspaceLayout = "pairing",
+  workspaceLayout = "evidence",
   model,
   status,
   onWorkspaceSwitch,
@@ -194,25 +187,39 @@ export function TopBar({
           </button>
         </div>
       </div>
-      {/* biome-ignore lint/a11y/useSemanticElements: These are pressed buttons, not form inputs. */}
-      <div className="topbar-layout-controls" role="group" aria-label="Workspace layout">
-        {LAYOUT_OPTIONS.map(({ value, label, Icon }) => {
-          const active = workspaceLayout === value;
-          return (
-            <button
-              type="button"
-              className={`topbar-layout-button ${active ? "is-active" : ""}`}
-              key={value}
-              onClick={() => onWorkspaceLayoutChange?.(value)}
-              aria-pressed={active}
-              title={`${label} layout`}
-            >
-              <Icon aria-hidden="true" />
-              <span>{label}</span>
-            </button>
-          );
-        })}
-      </div>
+      <fieldset className="topbar-surface-controls">
+        <legend className="sr-only">Workspace surfaces</legend>
+        <button
+          type="button"
+          className={`topbar-surface-button ${workspaceLayout === "focus" ? "is-active" : ""}`}
+          onClick={() => onWorkspaceLayoutChange?.("focus")}
+          aria-pressed={workspaceLayout === "focus"}
+          title="Hide evidence rail"
+        >
+          <Frame aria-hidden="true" />
+          <span>Focus</span>
+        </button>
+        <button
+          type="button"
+          className={`topbar-surface-button ${workspaceLayout === "evidence" ? "is-active" : ""}`}
+          onClick={() => onWorkspaceLayoutChange?.("evidence")}
+          aria-pressed={workspaceLayout === "evidence"}
+          title="Show evidence rail"
+        >
+          <Activity aria-hidden="true" />
+          <span>Evidence</span>
+        </button>
+        <button
+          type="button"
+          className={`topbar-surface-button ${workspaceLayout === "review" ? "is-active" : ""}`}
+          onClick={() => onWorkspaceLayoutChange?.("review")}
+          aria-pressed={workspaceLayout === "review"}
+          title="Open review inspector"
+        >
+          <Shield aria-hidden="true" />
+          <span>Review</span>
+        </button>
+      </fieldset>
       <div className="topbar-actions flex items-center gap-3 shrink-0">
         <div
           className={`topbar-compute-graph ${computeActive ? "is-active" : ""}`}

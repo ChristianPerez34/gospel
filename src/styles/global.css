@@ -256,16 +256,6 @@ summary,
       color-mix(in srgb, var(--text-primary) 2.5%, transparent),
       transparent 120px
     ),
-    repeating-linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--text-primary) 1.8%, transparent) 0 1px,
-      transparent 1px 96px
-    ),
-    repeating-linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--text-primary) 1.2%, transparent) 0 1px,
-      transparent 1px 96px
-    ),
     var(--surface-base);
   color: var(--text-primary);
 }
@@ -292,8 +282,8 @@ summary,
   transition:
     grid-template-columns var(--duration-slow) var(--ease-out-quart),
     margin-left var(--duration-normal) var(--ease-out-quart);
-  --spatial-chat-width: minmax(380px, 0.9fr);
-  --spatial-stage-width: minmax(440px, 1.1fr);
+  --spatial-chat-width: minmax(520px, 1fr);
+  --spatial-stage-width: minmax(340px, 420px);
   --spatial-review-width: 0px;
 }
 
@@ -304,15 +294,9 @@ summary,
 }
 
 .app-shell[data-workspace-layout="review"] .app-workspace {
-  --spatial-chat-width: minmax(380px, 0.9fr);
+  --spatial-chat-width: minmax(440px, 1fr);
   --spatial-stage-width: 0px;
-  --spatial-review-width: minmax(440px, 1.1fr);
-}
-
-.app-shell[data-workspace-layout="pipeline"] .app-workspace {
-  --spatial-chat-width: 0px;
-  --spatial-stage-width: minmax(460px, 1fr);
-  --spatial-review-width: minmax(380px, 500px);
+  --spatial-review-width: minmax(420px, 520px);
 }
 
 .chat-column {
@@ -328,23 +312,12 @@ summary,
       color-mix(in srgb, var(--accent-action) 6%, transparent),
       transparent
     ),
-    repeating-linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--text-primary) 1.5%, transparent) 0 1px,
-      transparent 1px 64px
-    ),
-    repeating-linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--text-primary) 1.5%, transparent) 0 1px,
-      transparent 1px 64px
-    ),
     var(--surface-base);
   transition:
     opacity var(--duration-normal) var(--ease-out-quart),
     filter var(--duration-normal) var(--ease-out-quart);
 }
 
-.app-shell[data-workspace-layout="pipeline"] .chat-column,
 .app-shell[data-workspace-layout="review"] .workspace-stage-shell,
 .app-shell[data-workspace-layout="focus"] .workspace-stage-shell {
   pointer-events: none;
@@ -377,24 +350,26 @@ summary,
   justify-self: end;
 }
 
-.topbar-layout-controls {
+.topbar-surface-controls {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   justify-self: center;
+  min-inline-size: 0;
   min-width: 0;
   border: 1px solid color-mix(in srgb, var(--surface-line) 74%, transparent);
   border-radius: var(--radius-md);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent),
     color-mix(in srgb, var(--surface-sunken) 72%, var(--surface-elevated) 28%);
+  margin: 0;
   padding: 2px;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.035),
     0 8px 24px -18px rgba(0, 0, 0, 0.7);
 }
 
-.topbar-layout-button {
+.topbar-surface-button {
   display: inline-flex;
   min-height: 30px;
   align-items: center;
@@ -410,13 +385,13 @@ summary,
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
-.topbar-layout-button svg {
+.topbar-surface-button svg {
   width: 14px;
   height: 14px;
 }
 
-.topbar-layout-button:hover,
-.topbar-layout-button.is-active {
+.topbar-surface-button:hover,
+.topbar-surface-button.is-active {
   background: color-mix(in srgb, var(--surface-overlay) 82%, var(--accent-structure) 10%);
   color: var(--text-primary);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -503,49 +478,49 @@ summary,
 .workspace-stage-header {
   display: flex;
   min-height: 40px;
-  align-items: stretch;
+  align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid color-mix(in srgb, var(--surface-line) 72%, transparent);
   background: color-mix(in srgb, var(--surface-elevated) 86%, transparent);
   backdrop-filter: blur(12px);
 }
 
-.workspace-stage-tabs {
-  display: flex;
-  min-width: 0;
-}
-
-.workspace-stage-tab {
+.workspace-stage-title {
   display: inline-flex;
   min-width: 0;
   align-items: center;
   gap: var(--space-2);
-  border-right: 1px solid color-mix(in srgb, var(--surface-line) 70%, transparent);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   padding: 0 var(--space-4);
   font-size: var(--font-size-body-sm);
-  transition:
-    background-color var(--duration-fast) var(--ease-out-quart),
-    color var(--duration-fast) var(--ease-out-quart);
 }
 
-.workspace-stage-tab svg {
+.workspace-stage-title svg {
+  flex: 0 0 auto;
   width: 14px;
   height: 14px;
+  color: var(--accent-action);
 }
 
-.workspace-stage-tab:not(.is-disabled):hover,
-.workspace-stage-tab.is-active {
-  background: color-mix(in srgb, var(--surface-base) 60%, var(--surface-elevated) 40%);
-  color: var(--text-primary);
+.workspace-stage-title div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
 }
 
-.workspace-stage-tab.is-disabled {
-  opacity: 0.65;
+.workspace-stage-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.workspace-stage-tab.is-active {
-  box-shadow: inset 0 2px 0 var(--accent-action);
+.workspace-stage-title small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-stage-actions {
@@ -586,53 +561,51 @@ summary,
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-template-rows: minmax(0, 1fr) minmax(180px, 30vh);
+  grid-template-rows: minmax(0, 1fr) minmax(164px, 26vh);
   overflow: hidden;
 }
 
 .workspace-stage-preview {
   position: relative;
-  display: grid;
+  display: block;
   min-height: 0;
-  place-items: center;
-  overflow: hidden;
+  overflow: auto;
   border-bottom: 1px solid color-mix(in srgb, var(--surface-line) 72%, transparent);
   background:
     linear-gradient(180deg, transparent, color-mix(in srgb, var(--surface-sunken) 32%, transparent)),
     var(--surface-base);
 }
 
-.stage-grid-mark {
+.stage-focus-mark {
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(color-mix(in srgb, var(--text-primary) 2.8%, transparent) 1px, transparent 1px),
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--text-primary) 2.4%, transparent) 1px,
-      transparent 1px
-    );
-  background-size: 48px 48px;
-  mask-image: radial-gradient(ellipse 72% 66% at 50% 45%, #000 0%, transparent 76%);
-  opacity: 0.68;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 72% 52% at 50% 12%,
+    color-mix(in srgb, var(--accent-structure) 12%, transparent),
+    transparent 64%
+  );
+}
+
+.workspace-stage-overview {
+  position: relative;
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
 }
 
 .stage-status-panel {
   position: relative;
   display: grid;
-  width: min(560px, calc(100% - 48px));
-  gap: var(--space-4);
+  width: 100%;
+  gap: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--surface-line) 78%, transparent);
   border-radius: var(--radius-md);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0)),
     color-mix(in srgb, var(--surface-elevated) 78%, transparent);
-  padding: var(--space-5);
-  backdrop-filter: blur(18px);
-  box-shadow:
-    0 24px 80px -42px rgba(0, 0, 0, 0.95),
-    0 0 34px -26px color-mix(in srgb, var(--accent-structure) 65%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  padding: var(--space-4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .stage-status-kicker {
@@ -672,9 +645,9 @@ summary,
 .stage-status-panel h2 {
   margin: 0;
   color: var(--text-primary);
-  font-size: clamp(22px, 3vw, 34px);
+  font-size: 22px;
   font-weight: 500;
-  line-height: 1.05;
+  line-height: 1.1;
   text-wrap: balance;
 }
 
@@ -717,6 +690,42 @@ summary,
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.evidence-module-grid {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.evidence-module {
+  display: grid;
+  gap: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--surface-line) 70%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-sunken) 62%, transparent);
+  padding: var(--space-3);
+}
+
+.evidence-module-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--font-size-body-sm);
+  font-weight: 500;
+}
+
+.evidence-module-header svg {
+  width: 13px;
+  height: 13px;
+  color: var(--accent-action);
+}
+
+.evidence-module p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-body-sm);
 }
 
 .workspace-terminal-panel {
@@ -1691,13 +1700,13 @@ summary,
   }
 }
 
-/* Collapse layout button labels to icon-only on medium screens */
+/* Collapse surface control labels to icon-only on medium screens */
 @media (max-width: 1199px) {
-  .topbar-layout-button span {
+  .topbar-surface-button span {
     display: none;
   }
 
-  .topbar-layout-button {
+  .topbar-surface-button {
     padding: 0 var(--space-2);
   }
 
@@ -1714,7 +1723,7 @@ summary,
   }
 }
 
-/* Single-column workspace: hide layout controls and secondary topbar chrome */
+/* Single-column workspace: hide surface controls and secondary topbar chrome */
 @media (max-width: 999px) {
   .app-workspace {
     display: flex;
@@ -1737,7 +1746,7 @@ summary,
     gap: var(--space-2);
   }
 
-  .topbar-layout-controls,
+  .topbar-surface-controls,
   .topbar-model-badge {
     display: none;
   }
