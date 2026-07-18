@@ -684,8 +684,9 @@ fn detect_interpreter(script_path: &Path) -> Result<String, String> {
     detect_interpreter_from_content(script_path, &content)
 }
 
-fn detect_interpreter_from_content(script_path: &Path, content: &str) -> Result<String, String> {
-    let first_line = content.lines().next().unwrap_or("");
+fn detect_interpreter_from_content(script_path: &Path, content: &[u8]) -> Result<String, String> {
+    let content_str = String::from_utf8_lossy(content);
+    let first_line = content_str.lines().next().unwrap_or("");
     if first_line.starts_with("#!") {
         let shebang = first_line
             .strip_prefix("#!")
@@ -718,7 +719,7 @@ fn detect_interpreter_from_content(script_path: &Path, content: &str) -> Result<
     }
 }
 
-fn read_verified_script(script_path: &Path) -> Result<String, String> {
+fn read_verified_script(script_path: &Path) -> Result<Vec<u8>, String> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -730,9 +731,9 @@ fn read_verified_script(script_path: &Path) -> Result<String, String> {
     let mut script = options
         .open(script_path)
         .map_err(|error| format!("Failed to read script: {}", error))?;
-    let mut content = String::new();
+    let mut content = Vec::new();
     script
-        .read_to_string(&mut content)
+        .read_to_end(&mut content)
         .map_err(|error| format!("Failed to read script: {}", error))?;
     Ok(content)
 }
@@ -793,12 +794,21 @@ pub async fn run_skill_script(
 
     let script_content = read_verified_script(&canonical_script)?;
     let interpreter = detect_interpreter_from_content(&canonical_script, &script_content)?;
+    
+    let extension = canonical_script
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{}", e))
+        .unwrap_or_default();
+    let parent_dir = canonical_script.parent().unwrap_or_else(|| std::path::Path::new("."));
+
     let mut verified_script = tempfile::Builder::new()
         .prefix("gospel-skill-")
-        .tempfile()
+        .suffix(&extension)
+        .tempfile_in(parent_dir)
         .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
     verified_script
-        .write_all(script_content.as_bytes())
+        .write_all(&script_content)
         .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
     verified_script
         .flush()
