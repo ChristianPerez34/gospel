@@ -40,29 +40,20 @@ pub const MAX_CONTEXT_SEARCH_LIMIT: usize = 50;
 
 impl ContextSearchIndex {
     pub fn new(workspace_path: &Path) -> Result<Self, ContextSearchError> {
-        let workspace_canonical = std::fs::canonicalize(workspace_path)?;
-        let gospel_dir = workspace_path.join(".gospel");
-        if let Some(canonical_gospel) = crate::corpus::symlink_guard::canonical(&gospel_dir) {
-            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_gospel) {
-                return Err(ContextSearchError::Io(std::io::Error::other(format!(
-                    "Context search parent directory {} escapes the workspace",
-                    canonical_gospel.display()
-                ))));
-            }
-        }
-
-        let index_dir = workspace_path.join(".gospel").join("context_search");
-        if let Some(canonical_index) = crate::corpus::symlink_guard::canonical(&index_dir) {
-            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_index) {
-                return Err(ContextSearchError::Io(std::io::Error::other(format!(
-                    "Context search directory {} escapes the workspace",
-                    canonical_index.display()
-                ))));
-            }
-        }
+        let workspace_root = crate::corpus::symlink_guard::canonical(workspace_path)?;
+        let index_dir = workspace_root.join(".gospel").join("context_search");
+        crate::corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &index_dir)?;
         std::fs::create_dir_all(&index_dir)?;
+        let index_dir = crate::corpus::symlink_guard::canonical(&index_dir)?;
+        if !crate::corpus::symlink_guard::is_within(&workspace_root, &index_dir) {
+            return Err(ContextSearchError::Io(std::io::Error::other(format!(
+                "Context search directory {} escapes the workspace",
+                index_dir.display()
+            ))));
+        }
 
         let db_path = index_dir.join("search_index.db");
+        crate::corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &db_path)?;
         let conn = Connection::open(db_path)?;
 
         // Create FTS5 virtual table
@@ -88,24 +79,28 @@ impl ContextSearchIndex {
     }
 
     pub fn open_if_exists(workspace_path: &Path) -> Result<Self, ContextSearchError> {
-        let workspace_canonical = std::fs::canonicalize(workspace_path)?;
-        let db_path = workspace_path
+        let workspace_root = crate::corpus::symlink_guard::canonical(workspace_path)?;
+        let db_path = workspace_root
             .join(".gospel")
             .join("context_search")
             .join("search_index.db");
-        if !db_path.exists() {
-            return Err(ContextSearchError::NotInitialized);
-        }
-        if let Some(canonical_db) = crate::corpus::symlink_guard::canonical(&db_path) {
-            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_db) {
-                return Err(ContextSearchError::Io(std::io::Error::other(format!(
-                    "Context search index {} escapes the workspace",
-                    canonical_db.display()
-                ))));
+        match std::fs::symlink_metadata(&db_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ContextSearchError::NotInitialized);
             }
+            Err(error) => return Err(ContextSearchError::Io(error)),
+        }
+        crate::corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &db_path)?;
+        let canonical_db = crate::corpus::symlink_guard::canonical(&db_path)?;
+        if !crate::corpus::symlink_guard::is_within(&workspace_root, &canonical_db) {
+            return Err(ContextSearchError::Io(std::io::Error::other(format!(
+                "Context search index {} escapes the workspace",
+                canonical_db.display()
+            ))));
         }
 
-        let conn = Connection::open(db_path)?;
+        let conn = Connection::open(canonical_db)?;
         Ok(Self { conn })
     }
 

@@ -297,11 +297,26 @@ pub async fn run_with_bounded_output(
     let timed_out = wait_result.is_err();
 
     if timed_out {
-        // Dropping the child kills it because of kill_on_drop(true).
+        // On Unix, create the command in its own process group and signal the
+        // group so descendants cannot retain inherited stdout/stderr pipes.
+        terminate_child_group(&mut child).await?;
+        child.wait().await?;
     }
 
-    // After child exit, the pipes are closed and the readers finish.
-    let (stdout_res, stderr_res) = tokio::join!(stdout_task, stderr_task);
+    // Descendants are gone after group termination, but keep a bounded drain
+    // as a final guard before aborting the reader tasks.
+    let (stdout_res, stderr_res) = if timed_out {
+        tokio::time::timeout(POST_KILL_DRAIN_TIMEOUT, async {
+            tokio::join!(stdout_task, stderr_task)
+        })
+        .await
+        .map_err(|_| SubprocessError::Wait {
+            label: label.to_string(),
+            source: io::Error::new(io::ErrorKind::TimedOut, "subprocess pipes remained open"),
+        })?
+    } else {
+        tokio::join!(stdout_task, stderr_task)
+    };
     let (stdout_bytes, stdout_truncated) = stdout_res
         .map_err(|e| SubprocessError::Wait { label: label.to_string(), source: io::Error::new(io::ErrorKind::Other, e) })?
         .unwrap_or_default();
@@ -479,7 +494,10 @@ let (stdout, stdout_truncated) =
     truncate_bytes_to_string(&output.stdout, COMMAND_OUTPUT_CAP);
 let (stderr, stderr_truncated) =
     truncate_bytes_to_string(&output.stderr, COMMAND_OUTPUT_CAP);
-let truncated = stdout_truncated || stderr_truncated;
+let truncated = stdout_truncated
+    || stderr_truncated
+    || output.stdout_truncated
+    || output.stderr_truncated;
 let exit_code = output.status.code().unwrap_or(-1);
 let success = output.status.success();
 // ... rest of the function unchanged: build message, return CommandOutput ...
@@ -529,7 +547,10 @@ Ok(ScriptResult {
     stdout,
     stderr,
     exit_code: output.status.code().unwrap_or(-1),
-    truncated: stdout_truncated || stderr_truncated,
+    truncated: stdout_truncated
+        || stderr_truncated
+        || output.stdout_truncated
+        || output.stderr_truncated,
 })
 ```
 
@@ -559,6 +580,8 @@ struct CapturedOutput {
     timed_out: bool,
 }
 
+const REVIEW_COMMAND_OUTPUT_CAP: usize = 4 * 1024 * 1024;
+
 async fn run_command_output(
     workspace_path: &Path,
     program: &str,
@@ -577,8 +600,8 @@ async fn run_command_output(
         &command_label,
         command,
         COMMAND_TIMEOUT,
-        usize::MAX, // review's existing behavior keeps the full output
-        usize::MAX,
+        REVIEW_COMMAND_OUTPUT_CAP,
+        REVIEW_COMMAND_OUTPUT_CAP,
     )
     .await;
 

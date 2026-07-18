@@ -477,14 +477,9 @@ pub fn extract_directory(
     ignore_patterns: &[&str],
 ) -> Result<(), ExtractionError> {
     let mut files = Vec::new();
-    let canonical_root = crate::corpus::symlink_guard::canonical(root_path);
-    collect_files(
-        root_path,
-        root_path,
-        &mut files,
-        ignore_patterns,
-        canonical_root.as_deref(),
-    )?;
+    let canonical_root = crate::corpus::symlink_guard::canonical(root_path)
+        .map_err(|error| ExtractionError::IoError(error.to_string()))?;
+    collect_files(root_path, &mut files, ignore_patterns, &canonical_root)?;
 
     for file_path in files {
         if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
@@ -499,13 +494,11 @@ pub fn extract_directory(
     Ok(())
 }
 
-#[allow(clippy::only_used_in_recursion)]
 fn collect_files(
-    _root: &Path,
     current: &Path,
     files: &mut Vec<std::path::PathBuf>,
     ignore_patterns: &[&str],
-    canonical_root: Option<&Path>,
+    canonical_root: &Path,
 ) -> Result<(), ExtractionError> {
     let Ok(metadata) = std::fs::symlink_metadata(current) else {
         return Ok(());
@@ -515,13 +508,11 @@ fn collect_files(
     }
 
     if metadata.is_file() {
-        if let Some(canonical_root) = canonical_root {
-            let Some(canonical_current) = crate::corpus::symlink_guard::canonical(current) else {
-                return Ok(());
-            };
-            if !crate::corpus::symlink_guard::is_within(canonical_root, &canonical_current) {
-                return Ok(());
-            }
+        let Ok(canonical_current) = crate::corpus::symlink_guard::canonical(current) else {
+            return Ok(());
+        };
+        if !crate::corpus::symlink_guard::is_within(canonical_root, &canonical_current) {
+            return Ok(());
         }
         files.push(current.to_path_buf());
         return Ok(());
@@ -560,7 +551,7 @@ fn collect_files(
         }
 
         // Recurse
-        let _ = collect_files(_root, &path, files, ignore_patterns, canonical_root);
+        let _ = collect_files(&path, files, ignore_patterns, canonical_root);
     }
 
     Ok(())

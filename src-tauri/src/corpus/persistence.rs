@@ -41,6 +41,7 @@ impl CorpusManifest {
 
 /// Persistence manager for corpus data
 pub struct CorpusPersistence {
+    workspace_root: PathBuf,
     corpus_dir: PathBuf,
 }
 
@@ -50,42 +51,35 @@ impl CorpusPersistence {
     /// Rejects storage paths that resolve outside the canonical workspace root,
     /// including an attacker-planted symlink at `.gospel`.
     pub fn new(workspace_path: &Path) -> Result<Self, PersistenceError> {
-        let workspace_canonical = std::fs::canonicalize(workspace_path)?;
-        let gospel_dir = workspace_path.join(".gospel");
-        if let Some(canonical_gospel) = crate::corpus::symlink_guard::canonical(&gospel_dir) {
-            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_gospel) {
-                return Err(PersistenceError::IoError(std::io::Error::other(format!(
-                    "Corpus parent directory {} escapes the workspace",
-                    canonical_gospel.display()
-                ))));
-            }
-        }
+        let workspace_root = crate::corpus::symlink_guard::canonical(workspace_path)?;
+        let corpus_dir = workspace_root.join(CORPUS_DIR_NAME);
+        crate::corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &corpus_dir)?;
 
-        let corpus_dir = workspace_path.join(CORPUS_DIR_NAME);
-        if let Some(canonical_corpus) = crate::corpus::symlink_guard::canonical(&corpus_dir) {
-            if !crate::corpus::symlink_guard::is_within(&workspace_canonical, &canonical_corpus) {
-                return Err(PersistenceError::IoError(std::io::Error::other(format!(
-                    "Corpus directory {} escapes the workspace",
-                    canonical_corpus.display()
-                ))));
-            }
-        }
-
-        Ok(Self { corpus_dir })
+        Ok(Self {
+            workspace_root,
+            corpus_dir,
+        })
     }
 
     /// Save corpus to disk
     pub fn save(&self, corpus: &Corpus, workspace_path: &Path) -> Result<(), PersistenceError> {
         // Create corpus directory
         std::fs::create_dir_all(&self.corpus_dir)?;
+        let corpus_dir = crate::corpus::symlink_guard::canonical(&self.corpus_dir)?;
+        if !crate::corpus::symlink_guard::is_within(&self.workspace_root, &corpus_dir) {
+            return Err(PersistenceError::IoError(std::io::Error::other(format!(
+                "Corpus directory {} escapes the workspace",
+                corpus_dir.display()
+            ))));
+        }
 
         // Save graph as JSON
-        let graph_path = self.corpus_dir.join(GRAPH_JSON_FILE);
+        let graph_path = corpus_dir.join(GRAPH_JSON_FILE);
         let json = serde_json::to_string_pretty(corpus)?;
         std::fs::write(&graph_path, json)?;
 
         // Create/update SQLite database for queries
-        self.create_database(corpus)?;
+        Self::create_database(corpus, &corpus_dir)?;
 
         // Save manifest
         let manifest = CorpusManifest::new(
@@ -93,7 +87,7 @@ impl CorpusPersistence {
             corpus.nodes.len(),
             corpus.relationships.len(),
         );
-        let manifest_path = self.corpus_dir.join(MANIFEST_FILE);
+        let manifest_path = corpus_dir.join(MANIFEST_FILE);
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         std::fs::write(&manifest_path, manifest_json)?;
 
@@ -159,8 +153,8 @@ impl CorpusPersistence {
         Ok(manifest)
     }
 
-    fn create_database(&self, corpus: &Corpus) -> Result<(), PersistenceError> {
-        let db_path = self.corpus_dir.join(SQLITE_DB_FILE);
+    fn create_database(corpus: &Corpus, corpus_dir: &Path) -> Result<(), PersistenceError> {
+        let db_path = corpus_dir.join(SQLITE_DB_FILE);
         let conn = Connection::open(&db_path)?;
 
         // Create tables

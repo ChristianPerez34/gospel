@@ -145,7 +145,7 @@ impl CommandPolicy {
         }
 
         // Workspace-escaping paths require approval.
-        if has_path_escape(args, workspace_root).is_some() {
+        if has_shell_path_escape(&executable_lower, args, workspace_root).is_some() {
             return CommandSafety::Mutating;
         }
 
@@ -786,16 +786,32 @@ fn uniq_option_takes_value(arg: &str) -> bool {
 }
 
 fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
+    has_path_escape_for_values(
+        args.iter()
+            .filter_map(|arg| argument_path_value(arg).filter(|value| !value.is_empty())),
+        workspace_root,
+    )
+}
+
+fn has_shell_path_escape(program: &str, args: &[String], workspace_root: &Path) -> Option<String> {
+    has_path_escape_for_values(
+        args.iter().enumerate().filter_map(|(index, _)| {
+            shell_path_argument_value(program, args, index).filter(|value| !value.is_empty())
+        }),
+        workspace_root,
+    )
+}
+
+fn has_path_escape_for_values<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+    workspace_root: &Path,
+) -> Option<String> {
     let workspace_canonical = match std::fs::canonicalize(workspace_root) {
         Ok(c) => c,
         Err(e) => return Some(format!("failed to canonicalize workspace root: {}", e)),
     };
 
-    for arg in args {
-        let Some(path_string) = argument_path_value(arg).filter(|value| !value.is_empty()) else {
-            continue;
-        };
-
+    for path_string in values {
         let path = PathBuf::from(path_string);
         if !path.is_absolute() && path_string.contains("..") {
             return Some(format!(
@@ -813,6 +829,85 @@ fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
         }
     }
     None
+}
+
+fn shell_path_argument_value<'a>(
+    program: &str,
+    args: &'a [String],
+    index: usize,
+) -> Option<&'a str> {
+    let arg = args[index].as_str();
+    if !arg.chars().any(char::is_whitespace) {
+        return argument_path_value(arg);
+    }
+
+    if let Some(value) = shell_path_option_value(program, args, index) {
+        return Some(value);
+    }
+    if is_shell_file_operand(program, args, index) {
+        return Some(arg);
+    }
+
+    None
+}
+
+fn shell_path_option_value<'a>(program: &str, args: &'a [String], index: usize) -> Option<&'a str> {
+    let arg = args[index].as_str();
+    let previous = index.checked_sub(1).and_then(|previous| args.get(previous));
+
+    match program {
+        "file" => arg
+            .strip_prefix("--files-from=")
+            .or_else(|| arg.strip_prefix("--magic-file="))
+            .or_else(|| {
+                matches!(
+                    previous.map(String::as_str),
+                    Some("-f" | "--files-from" | "-m" | "--magic-file")
+                )
+                .then_some(arg)
+            }),
+        "grep" => arg.strip_prefix("--file=").or_else(|| {
+            matches!(previous.map(String::as_str), Some("-f" | "--file")).then_some(arg)
+        }),
+        "rg" => arg
+            .strip_prefix("--pre=")
+            .or_else(|| matches!(previous.map(String::as_str), Some("--pre")).then_some(arg)),
+        _ => None,
+    }
+}
+
+fn is_shell_file_operand(program: &str, args: &[String], index: usize) -> bool {
+    if !matches!(
+        program,
+        "cat" | "head" | "tail" | "ls" | "find" | "grep" | "rg" | "stat" | "file" | "wc"
+    ) {
+        return false;
+    }
+
+    let mut options_ended = false;
+    let mut positional_count = 0;
+    for (current_index, arg) in args.iter().enumerate() {
+        if !options_ended && arg == "--" {
+            options_ended = true;
+            continue;
+        }
+        if !options_ended && arg.starts_with('-') && arg != "-" {
+            continue;
+        }
+
+        let is_file_operand = match program {
+            // The first positional grep/rg argument is the pattern; every
+            // following positional argument is a candidate file path.
+            "grep" | "rg" => positional_count > 0,
+            _ => true,
+        };
+        if current_index == index {
+            return is_file_operand;
+        }
+        positional_count += 1;
+    }
+
+    false
 }
 
 fn candidate_escapes_workspace(candidate: &Path, workspace_canonical: &Path) -> bool {
@@ -1728,27 +1823,31 @@ mod tests {
 
     #[test]
     fn classify_shell_permits_safe_in_workspace_spaced_path() {
-        let workspace = workspace();
-        let temp_dir = tempfile::tempdir_in(&workspace).expect("workspace tempdir");
-        let spaced_path = temp_dir.path().join("some file.txt");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let spaced_path = workspace.path().join("some file.txt");
         std::fs::write(&spaced_path, "safe").expect("workspace file");
 
         let policy = CommandPolicy;
         let safety = policy.classify_shell(
             "cat",
             &[spaced_path.to_string_lossy().into_owned()],
-            &workspace,
+            workspace.path(),
         );
         assert_eq!(safety, CommandSafety::ReadOnly);
     }
 
     #[test]
-    fn classify_shell_ignores_freeform_text_with_spaces() {
+    fn classify_shell_permits_relative_spaced_filename() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let files_dir = workspace.path().join("some files");
+        std::fs::create_dir(&files_dir).expect("workspace files directory");
+        std::fs::write(files_dir.join("notes.txt"), "safe").expect("workspace file");
+
         let policy = CommandPolicy;
         let safety = policy.classify_shell(
             "cat",
-            &["hello world how are you".to_string()],
-            &workspace(),
+            &["some files/notes.txt".to_string()],
+            workspace.path(),
         );
         assert_eq!(safety, CommandSafety::ReadOnly);
     }
@@ -1763,8 +1862,8 @@ mod tests {
 
         let policy = CommandPolicy;
         let safety = policy.classify_shell(
-            "cat",
-            &[format!("--output={}", spaced_path.to_string_lossy())],
+            "file",
+            &[format!("--files-from={}", spaced_path.to_string_lossy())],
             &workspace(),
         );
         assert_eq!(safety, CommandSafety::Mutating);
@@ -1820,6 +1919,26 @@ mod tests {
             policy.classify_shell(
                 "cat",
                 &["outside-link/new-file.txt".to_string()],
+                workspace.path()
+            ),
+            CommandSafety::Mutating
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_shell_requires_approval_for_relative_spaced_symlink_escape() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret file.txt"), "secret").expect("outside file");
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("outside link"))
+            .expect("symlink");
+
+        let policy = CommandPolicy;
+        assert_eq!(
+            policy.classify_shell(
+                "cat",
+                &["outside link/secret file.txt".to_string()],
                 workspace.path()
             ),
             CommandSafety::Mutating

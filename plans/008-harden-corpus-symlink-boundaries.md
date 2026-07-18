@@ -181,12 +181,19 @@ with two functions:
 //! Helpers that ensure corpus operations stay within the active workspace,
 //! even when the workspace contains attacker-planted symlinks.
 
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
-/// Resolve `path` to its canonical form. Returns `None` if the path does
-/// not exist or cannot be canonicalized.
-pub fn canonical(path: &Path) -> Option<std::path::PathBuf> {
-    std::fs::canonicalize(path).ok()
+/// Resolve `path` while preserving canonicalization errors.
+pub fn canonical(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+/// Reject a target whose existing path components resolve outside `root`.
+pub fn validate_existing_ancestors(root: &Path, target: &Path) -> io::Result<()> {
+    // Walk from root to target. Missing suffixes are safe to create; existing
+    // components must canonicalize and remain contained.
+    // implementation omitted
 }
 
 /// Return `true` when `target` (already canonical) lives under `root`
@@ -220,15 +227,13 @@ In `src-tauri/src/corpus/extractor.rs`:
    ingested.
 3. In the file-append branch (`if current.is_file()`), verify that the
    canonical form of `current` is inside the canonical root using the new
-   helper. If it is not, skip the file silently (mirror the existing
-   `read_dir` error-swallowing pattern at line 520-522).
+   helper. If canonicalization fails or the target is outside the root, skip
+   the file silently (mirror the existing `read_dir` error-swallowing pattern
+   at line 520-522).
 
 Update the single caller `extract_directory` (line 474-493) to pass the
 canonical root through. Resolve the canonical root once at the top of
-`extract_directory` and pass it down. If the root cannot be canonicalized
-(e.g. the path does not exist), the function should still proceed with the
-lexical root, but the per-file check will simply reject anything that
-canonicalizes away.
+`extract_directory` and return an extraction error if it cannot be resolved.
 
 Sketch:
 
@@ -239,8 +244,9 @@ pub fn extract_directory(
     ignore_patterns: &[&str],
 ) -> Result<(), ExtractionError> {
     let mut files = Vec::new();
-    let canonical_root = crate::corpus::symlink_guard::canonical(root_path);
-    collect_files(root_path, root_path, &mut files, ignore_patterns, canonical_root.as_deref())?;
+    let canonical_root = crate::corpus::symlink_guard::canonical(root_path)
+        .map_err(|error| ExtractionError::IoError(error.to_string()))?;
+    collect_files(root_path, &mut files, ignore_patterns, &canonical_root)?;
 
     for file_path in files {
         // ...existing extension-based dispatch...
@@ -250,19 +256,17 @@ pub fn extract_directory(
 }
 
 fn collect_files(
-    root: &Path,
     current: &Path,
     files: &mut Vec<std::path::PathBuf>,
     ignore_patterns: &[&str],
-    canonical_root: Option<&Path>,
+    canonical_root: &Path,
 ) -> Result<(), ExtractionError> {
     if current.is_file() {
-        if let Some(canonical_root) = canonical_root {
-            if let Some(canonical_current) = crate::corpus::symlink_guard::canonical(current) {
-                if !crate::corpus::symlink_guard::is_within(canonical_root, &canonical_current) {
-                    return Ok(());
-                }
-            }
+        let Ok(canonical_current) = crate::corpus::symlink_guard::canonical(current) else {
+            return Ok(());
+        };
+        if !crate::corpus::symlink_guard::is_within(canonical_root, &canonical_current) {
+            return Ok(());
         }
         files.push(current.to_path_buf());
         return Ok(());
@@ -300,7 +304,7 @@ fn collect_files(
         if metadata.file_type().is_symlink() {
             continue;
         }
-        let _ = collect_files(root, &path, files, ignore_patterns, canonical_root);
+        let _ = collect_files(&path, files, ignore_patterns, canonical_root);
     }
 
     Ok(())
@@ -312,8 +316,10 @@ fn collect_files(
 ### Step 3: Tighten `CorpusPersistence::new` to require in-workspace storage
 
 In `src-tauri/src/corpus/persistence.rs`, replace the body of
-`CorpusPersistence::new` so it canonicalizes the workspace and verifies the
-resulting corpus directory lives under it.
+`CorpusPersistence::new` so it canonicalizes the workspace and verifies every
+existing `.gospel` / `corpus` ancestor before retaining a workspace-local path
+for later writes. Canonicalization failures for existing components must be
+returned as errors rather than ignored.
 
 ```rust
 impl CorpusPersistence {
@@ -324,20 +330,13 @@ impl CorpusPersistence {
     /// workspace root. This prevents writes from following a symlinked
     /// `.gospel` directory out of the workspace.
     pub fn new(workspace_path: &Path) -> Result<Self, PersistenceError> {
-        let workspace_canonical = std::fs::canonicalize(workspace_path).map_err(|e| {
-            PersistenceError::IoError(format!("Failed to canonicalize workspace: {}", e))
-        })?;
-        let corpus_dir = workspace_path.join(CORPUS_DIR_NAME);
-        let canonical_corpus = std::fs::canonicalize(&corpus_dir).ok();
-        if let Some(canonical_corpus) = canonical_corpus {
-            if !canonical_corpus.starts_with(&workspace_canonical) {
-                return Err(PersistenceError::IoError(format!(
-                    "Corpus directory {} escapes the workspace",
-                    canonical_corpus.display()
-                )));
-            }
-        }
-        Ok(Self { corpus_dir })
+        let workspace_root = crate::corpus::symlink_guard::canonical(workspace_path)?;
+        let corpus_dir = workspace_root.join(CORPUS_DIR_NAME);
+        crate::corpus::symlink_guard::validate_existing_ancestors(
+            &workspace_root,
+            &corpus_dir,
+        )?;
+        Ok(Self { workspace_root, corpus_dir })
     }
 ```
 
@@ -348,10 +347,10 @@ string variant or use `NotFound`. Read the enum at line 535 and use the
 existing shape — do not invent a new variant unless `IoError` cannot
 hold the new message.
 
-`save` already runs `std::fs::create_dir_all(&self.corpus_dir)` (line 57);
-if `corpus_dir` is a symlinked `.gospel`, that operation will create the
-*target* of the symlink. The check above prevents that, so
-`create_dir_all` becomes a no-op or creates an in-workspace dir.
+`save` must re-canonicalize `corpus_dir` immediately after
+`create_dir_all(&self.corpus_dir)` and use that verified path for all writes.
+This closes the interval where a workspace process swaps a missing storage
+component for a symlink after construction.
 
 **Verify**: `cargo check --manifest-path src-tauri/Cargo.toml` exits 0.
 
@@ -365,44 +364,36 @@ path.
 
 ```rust
 pub fn new(workspace_path: &Path) -> Result<Self, ContextSearchError> {
-    let workspace_canonical = std::fs::canonicalize(workspace_path)?;
-    let index_dir = workspace_path.join(".gospel").join("context_search");
-    if let Ok(canonical_index) = std::fs::canonicalize(&index_dir) {
-        if !canonical_index.starts_with(&workspace_canonical) {
-            return Err(ContextSearchError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "Context search directory {} escapes the workspace",
-                    canonical_index.display()
-                ),
-            )));
-        }
-    }
+    let workspace_root = crate::corpus::symlink_guard::canonical(workspace_path)?;
+    let index_dir = workspace_root.join(".gospel").join("context_search");
+    crate::corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &index_dir)?;
     std::fs::create_dir_all(&index_dir)?;
+    let index_dir = crate::corpus::symlink_guard::canonical(&index_dir)?;
+    if !crate::corpus::symlink_guard::is_within(&workspace_root, &index_dir) {
+        return Err(ContextSearchError::Io(std::io::Error::other("context search escapes workspace")));
+    }
     // ... rest unchanged
 }
 
 pub fn open_if_exists(workspace_path: &Path) -> Result<Self, ContextSearchError> {
-    let workspace_canonical = std::fs::canonicalize(workspace_path)?;
-    let db_path = workspace_path
+    let workspace_root = crate::corpus::symlink_guard::canonical(workspace_path)?;
+    let db_path = workspace_root
         .join(".gospel")
         .join("context_search")
         .join("search_index.db");
-    if !db_path.exists() {
-        return Err(ContextSearchError::NotInitialized);
-    }
-    if let Ok(canonical_db) = std::fs::canonicalize(&db_path) {
-        if !canonical_db.starts_with(&workspace_canonical) {
-            return Err(ContextSearchError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "Context search index {} escapes the workspace",
-                    canonical_db.display()
-                ),
-            )));
+    match std::fs::symlink_metadata(&db_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ContextSearchError::NotInitialized);
         }
+        Err(error) => return Err(ContextSearchError::Io(error)),
     }
-    let conn = Connection::open(db_path)?;
+    crate::corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &db_path)?;
+    let canonical_db = crate::corpus::symlink_guard::canonical(&db_path)?;
+    if !crate::corpus::symlink_guard::is_within(&workspace_root, &canonical_db) {
+        return Err(ContextSearchError::Io(std::io::Error::other("context search escapes workspace")));
+    }
+    let conn = Connection::open(canonical_db)?;
     Ok(Self { conn })
 }
 ```
@@ -505,7 +496,9 @@ If `context_search.rs` does not currently have a `tests` module, add one
 modeled on the other modules' test setups. Search for an existing `mod
 tests` block in the file first.
 
-**Verify**: `cargo test --manifest-path src-tauri/Cargo.toml -- corpus:: context_search::` exits 0 and the three new tests pass.
+**Verify**: run `cargo test --manifest-path src-tauri/Cargo.toml corpus::` and
+`cargo test --manifest-path src-tauri/Cargo.toml context_search::` separately,
+or run the full Rust test suite. Cargo test filters must appear before `--`.
 
 ### Step 6: Run lint and full test suite
 

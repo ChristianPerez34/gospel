@@ -187,11 +187,9 @@ fn is_path_like_extended(value: &str) -> bool {
     // or an explicit relative marker.
     let has_separator = value.contains('/')
         || (cfg!(windows) && value.contains('\\'));
-    let starts_with_drive = value
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .any(|_| value.starts_with(|c: char| c.is_ascii_alphabetic())
-            && value[1..].starts_with(':'));
+    let starts_with_drive = value.len() >= 2
+        && value.as_bytes()[0].is_ascii_alphabetic()
+        && value.as_bytes()[1] == b':';
     let starts_with_tilde = value.starts_with('~');
     let starts_with_dot_slash = value.starts_with("./") || value.starts_with("../");
     has_separator || starts_with_drive || starts_with_tilde || starts_with_dot_slash
@@ -297,8 +295,9 @@ test at line 1650 is a good template. New tests, all platform-portable:
    shape as test 1 but exercised via the flag value extractor.
 
 Use `tempfile::tempdir()` to construct real on-disk paths for tests 1 and 2.
-Use a stable workspace for the policy call: `std::env::current_dir().expect("current dir")`,
-matching the existing `workspace()` helper at line 1365.
+For test 2, pass that tempdir as the policy workspace root so the spaced path
+is actually in-workspace. Keep the external-path tests rooted at the normal
+workspace helper.
 
 **Verify**: `cargo test --manifest-path src-tauri/Cargo.toml -- shell_tools::tests::` exits 0 and the four new tests appear in the output.
 
@@ -351,10 +350,10 @@ no regressions.
 - The drift check shows non-empty output for `src-tauri/src/shell_tools.rs`
   between `8c6e3ad` and `HEAD`. Re-open the file, reconcile the "Current
   state" excerpts, and treat the mismatch as a planning defect.
-- The new helper `is_path_like_extended` rejects paths the existing
-  `is_path_like` accepted in production code. The two helpers should differ
-  *only* for whitespace/control-bearing values; if any other test regresses,
-  STOP.
+- The new helper `is_path_like_extended` rejects non-whitespace paths the
+  existing `is_path_like` accepted in production code. It should only add
+  recognition for whitespace-bearing values with a valid path shape; control
+  characters remain rejected. If any other test regresses, STOP.
 - The pre-existing `classify_shell_requires_approval_for_external_path`
   test starts failing. This indicates the new path is not flowing through
   `has_path_escape`; STOP and re-read Step 1.

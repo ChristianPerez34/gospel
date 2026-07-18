@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 
 pub const DEFAULT_READ_CHUNK: usize = 8 * 1024;
+const POST_KILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
 pub enum SubprocessError {
@@ -38,6 +39,8 @@ pub async fn run_with_bounded_output(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
 
     let mut child = command.spawn().map_err(|source| SubprocessError::Spawn {
         label: label.to_string(),
@@ -46,15 +49,45 @@ pub async fn run_with_bounded_output(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_task = tokio::spawn(read_bounded(stdout, stdout_cap));
-    let stderr_task = tokio::spawn(read_bounded(stderr, stderr_cap));
+    let mut stdout_task = tokio::spawn(read_bounded(stdout, stdout_cap));
+    let mut stderr_task = tokio::spawn(read_bounded(stderr, stderr_cap));
 
     let wait_result = tokio::time::timeout(timeout, child.wait()).await;
-    if wait_result.is_err() {
-        let _ = child.kill().await;
+    let timed_out = wait_result.is_err();
+    if timed_out {
+        terminate_child_group(&mut child)
+            .await
+            .map_err(|source| SubprocessError::Wait {
+                label: label.to_string(),
+                source,
+            })?;
+        child.wait().await.map_err(|source| SubprocessError::Wait {
+            label: label.to_string(),
+            source,
+        })?;
     }
 
-    let (stdout_result, stderr_result) = tokio::join!(stdout_task, stderr_task);
+    let readers = async { tokio::join!(&mut stdout_task, &mut stderr_task) };
+    let (stdout_result, stderr_result) = if timed_out {
+        match tokio::time::timeout(POST_KILL_DRAIN_TIMEOUT, readers).await {
+            Ok(results) => results,
+            Err(_) => {
+                stdout_task.abort();
+                stderr_task.abort();
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return Err(SubprocessError::Wait {
+                    label: label.to_string(),
+                    source: io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "subprocess pipes remained open after timeout cleanup",
+                    ),
+                });
+            }
+        }
+    } else {
+        readers.await
+    };
     let (stdout, stdout_truncated) = stdout_result
         .map_err(|source| SubprocessError::Wait {
             label: label.to_string(),
@@ -91,8 +124,26 @@ pub async fn run_with_bounded_output(
         stderr,
         stdout_truncated,
         stderr_truncated,
-        timed_out: wait_result.is_err(),
+        timed_out,
     })
+}
+
+async fn terminate_child_group(child: &mut Child) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use nix::errno::Errno;
+        use nix::sys::signal::{killpg, Signal};
+        use nix::unistd::Pid;
+
+        if let Some(id) = child.id() {
+            match killpg(Pid::from_raw(id as i32), Signal::SIGKILL) {
+                Ok(()) | Err(Errno::ESRCH) => return Ok(()),
+                Err(error) => return Err(io::Error::from_raw_os_error(error as i32)),
+            }
+        }
+    }
+
+    child.kill().await
 }
 
 async fn read_bounded<R>(pipe: Option<R>, cap: usize) -> io::Result<(Vec<u8>, bool)>
@@ -206,5 +257,26 @@ mod tests {
         .expect("run resolves with timed_out=true");
 
         assert!(out.timed_out);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_helper_kills_descendants_that_hold_pipes_open() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("sleep 5 & wait");
+
+        let started = tokio::time::Instant::now();
+        let out = run_with_bounded_output(
+            "background-sleep",
+            command,
+            Duration::from_millis(200),
+            1024,
+            1024,
+        )
+        .await
+        .expect("timeout cleanup completes");
+
+        assert!(out.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

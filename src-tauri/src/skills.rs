@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing;
@@ -677,12 +678,13 @@ pub struct ScriptResult {
     pub truncated: bool,
 }
 
+#[cfg(test)]
 fn detect_interpreter(script_path: &Path) -> Result<String, String> {
-    let content = match fs::read_to_string(script_path) {
-        Ok(c) => c,
-        Err(e) => return Err(format!("Failed to read script: {}", e)),
-    };
+    let content = read_verified_script(script_path)?;
+    detect_interpreter_from_content(script_path, &content)
+}
 
+fn detect_interpreter_from_content(script_path: &Path, content: &str) -> Result<String, String> {
     let first_line = content.lines().next().unwrap_or("");
     if first_line.starts_with("#!") {
         let shebang = first_line
@@ -714,6 +716,25 @@ fn detect_interpreter(script_path: &Path) -> Result<String, String> {
             script_path.display()
         )),
     }
+}
+
+fn read_verified_script(script_path: &Path) -> Result<String, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::libc::O_NOFOLLOW);
+    }
+
+    let mut script = options
+        .open(script_path)
+        .map_err(|error| format!("Failed to read script: {}", error))?;
+    let mut content = String::new();
+    script
+        .read_to_string(&mut content)
+        .map_err(|error| format!("Failed to read script: {}", error))?;
+    Ok(content)
 }
 
 pub async fn run_skill_script(
@@ -770,7 +791,18 @@ pub async fn run_skill_script(
         return Err(format!("'{}' is not a file", script_name));
     }
 
-    let interpreter = detect_interpreter(&canonical_script)?;
+    let script_content = read_verified_script(&canonical_script)?;
+    let interpreter = detect_interpreter_from_content(&canonical_script, &script_content)?;
+    let mut verified_script = tempfile::Builder::new()
+        .prefix("gospel-skill-")
+        .tempfile()
+        .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
+    verified_script
+        .write_all(script_content.as_bytes())
+        .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
+    verified_script
+        .flush()
+        .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
     let interpreter_parts: Vec<&str> = interpreter.split_whitespace().collect();
 
     let timeout_secs = skill.timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
@@ -779,7 +811,9 @@ pub async fn run_skill_script(
     for arg in &interpreter_parts[1..] {
         cmd.arg(arg);
     }
-    cmd.arg(&canonical_script);
+    // The staged copy prevents a workspace replacement from changing the
+    // already-verified script between validation and interpreter startup.
+    cmd.arg(verified_script.path());
 
     if let Some(ws) = workspace_path {
         cmd.current_dir(ws);
@@ -1465,6 +1499,31 @@ mod tests {
         assert_eq!(result.exit_code, 0);
         assert!(result.truncated);
         assert!(result.stdout.len() <= SCRIPT_OUTPUT_CAP + 100);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_timeout_kills_background_children() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("background.sh");
+        fs::write(&script_path, "#!/bin/sh\nsleep 5 & wait\n").unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.timeout_seconds = Some(1);
+
+        let started = std::time::Instant::now();
+        let result = run_skill_script(&skill, "background.sh", Some(dir.path())).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[tokio::test]
