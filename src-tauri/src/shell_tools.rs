@@ -145,7 +145,7 @@ impl CommandPolicy {
         }
 
         // Workspace-escaping paths require approval.
-        if has_path_escape(args, workspace_root).is_some() {
+        if has_shell_path_escape(&executable_lower, args, workspace_root).is_some() {
             return CommandSafety::Mutating;
         }
 
@@ -582,6 +582,42 @@ fn is_path_like(s: &str) -> bool {
     true
 }
 
+fn is_path_like_extended(value: &str) -> bool {
+    if is_path_like(value) {
+        return true;
+    }
+
+    if value.is_empty() {
+        return false;
+    }
+    if value.starts_with(['"', '\'']) {
+        return false;
+    }
+    if value.chars().any(|c| {
+        c.is_control() || matches!(c, ';' | '|' | '&' | '$' | '`' | '<' | '>')
+    }) {
+        return false;
+    }
+    if value
+        .chars()
+        .any(|c| matches!(c, '"' | '\'' | '{' | '}' | '[' | ']'))
+    {
+        return false;
+    }
+    if !value.chars().any(char::is_whitespace) {
+        return false;
+    }
+
+    let has_separator = value.contains('/') || (cfg!(windows) && value.contains('\\'));
+    let starts_with_drive = value.len() >= 2
+        && value.as_bytes()[0].is_ascii_alphabetic()
+        && value.as_bytes()[1] == b':';
+    let starts_with_tilde = value.starts_with('~');
+    let starts_with_dot_slash = value.starts_with("./") || value.starts_with("../");
+
+    has_separator || starts_with_drive || starts_with_tilde || starts_with_dot_slash
+}
+
 fn blocked_argument_safety(args: &[String]) -> Option<CommandSafety> {
     for arg in args {
         if contains_shell_metacharacter(arg) {
@@ -607,7 +643,7 @@ fn argument_path_value(arg: &str) -> Option<&str> {
         Some(arg)
     };
 
-    value.filter(|v| is_path_like(v))
+    value.filter(|v| is_path_like_extended(v))
 }
 
 fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
@@ -750,16 +786,32 @@ fn uniq_option_takes_value(arg: &str) -> bool {
 }
 
 fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
+    has_path_escape_for_values(
+        args.iter()
+            .filter_map(|arg| argument_path_value(arg).filter(|value| !value.is_empty())),
+        workspace_root,
+    )
+}
+
+fn has_shell_path_escape(program: &str, args: &[String], workspace_root: &Path) -> Option<String> {
+    has_path_escape_for_values(
+        args.iter().enumerate().filter_map(|(index, _)| {
+            shell_path_argument_value(program, args, index).filter(|value| !value.is_empty())
+        }),
+        workspace_root,
+    )
+}
+
+fn has_path_escape_for_values<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+    workspace_root: &Path,
+) -> Option<String> {
     let workspace_canonical = match std::fs::canonicalize(workspace_root) {
         Ok(c) => c,
         Err(e) => return Some(format!("failed to canonicalize workspace root: {}", e)),
     };
 
-    for arg in args {
-        let Some(path_string) = argument_path_value(arg).filter(|value| !value.is_empty()) else {
-            continue;
-        };
-
+    for path_string in values {
         let path = PathBuf::from(path_string);
         if !path.is_absolute() && path_string.contains("..") {
             return Some(format!(
@@ -777,6 +829,85 @@ fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
         }
     }
     None
+}
+
+fn shell_path_argument_value<'a>(
+    program: &str,
+    args: &'a [String],
+    index: usize,
+) -> Option<&'a str> {
+    let arg = args[index].as_str();
+    if !arg.chars().any(char::is_whitespace) {
+        return argument_path_value(arg);
+    }
+
+    if let Some(value) = shell_path_option_value(program, args, index) {
+        return Some(value);
+    }
+    if is_shell_file_operand(program, args, index) {
+        return Some(arg);
+    }
+
+    None
+}
+
+fn shell_path_option_value<'a>(program: &str, args: &'a [String], index: usize) -> Option<&'a str> {
+    let arg = args[index].as_str();
+    let previous = index.checked_sub(1).and_then(|previous| args.get(previous));
+
+    match program {
+        "file" => arg
+            .strip_prefix("--files-from=")
+            .or_else(|| arg.strip_prefix("--magic-file="))
+            .or_else(|| {
+                matches!(
+                    previous.map(String::as_str),
+                    Some("-f" | "--files-from" | "-m" | "--magic-file")
+                )
+                .then_some(arg)
+            }),
+        "grep" => arg.strip_prefix("--file=").or_else(|| {
+            matches!(previous.map(String::as_str), Some("-f" | "--file")).then_some(arg)
+        }),
+        "rg" => arg
+            .strip_prefix("--pre=")
+            .or_else(|| matches!(previous.map(String::as_str), Some("--pre")).then_some(arg)),
+        _ => None,
+    }
+}
+
+fn is_shell_file_operand(program: &str, args: &[String], index: usize) -> bool {
+    if !matches!(
+        program,
+        "cat" | "head" | "tail" | "ls" | "find" | "grep" | "rg" | "stat" | "file" | "wc"
+    ) {
+        return false;
+    }
+
+    let mut options_ended = false;
+    let mut positional_count = 0;
+    for (current_index, arg) in args.iter().enumerate() {
+        if !options_ended && arg == "--" {
+            options_ended = true;
+            continue;
+        }
+        if !options_ended && arg.starts_with('-') && arg != "-" {
+            continue;
+        }
+
+        let is_file_operand = match program {
+            // The first positional grep/rg argument is the pattern; every
+            // following positional argument is a candidate file path.
+            "grep" | "rg" => positional_count > 0,
+            _ => true,
+        };
+        if current_index == index {
+            return is_file_operand;
+        }
+        positional_count += 1;
+    }
+
+    false
 }
 
 fn candidate_escapes_workspace(candidate: &Path, workspace_canonical: &Path) -> bool {
@@ -1002,46 +1133,63 @@ impl CommandExecutor {
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
-            .current_dir(&self.workspace_root)
-            .kill_on_drop(true)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .current_dir(&self.workspace_root);
 
         let label = command_label(program, args);
 
-        let child = command.spawn().map_err(|e| {
-            ShellToolError::Execution(format!("failed to spawn `{}`: {}", label, e))
-        })?;
-
-        let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
-
-        let output = match result {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
+        let output = match crate::subprocess_output::run_with_bounded_output(
+            &label,
+            command,
+            timeout,
+            COMMAND_OUTPUT_CAP,
+            COMMAND_OUTPUT_CAP,
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(crate::subprocess_output::SubprocessError::Spawn { source, .. }) => {
                 return Err(ShellToolError::Execution(format!(
-                    "failed to run `{}`: {}",
-                    label, e
+                    "failed to spawn `{}`: {}",
+                    label, source
                 )));
             }
-            Err(_) => {
-                return Ok(CommandOutput {
-                    success: false,
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: format!("Command `{}` timed out after {:?}", label, timeout),
-                    truncated: false,
-                    needs_approval: None,
-                    reason: Some("timeout".to_string()),
-                    message: format!("Command `{}` timed out after {:?}", label, timeout),
-                });
+            Err(crate::subprocess_output::SubprocessError::Wait { source, .. }) => {
+                return Err(ShellToolError::Execution(format!(
+                    "failed to run `{}`: {}",
+                    label, source
+                )));
             }
         };
 
-        let (stdout, stdout_truncated) =
-            truncate_bytes_to_string(&output.stdout, COMMAND_OUTPUT_CAP);
-        let (stderr, stderr_truncated) =
-            truncate_bytes_to_string(&output.stderr, COMMAND_OUTPUT_CAP);
-        let truncated = stdout_truncated || stderr_truncated;
+        if output.timed_out {
+            return Ok(CommandOutput {
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: format!("Command `{}` timed out after {:?}", label, timeout),
+                truncated: false,
+                needs_approval: None,
+                reason: Some("timeout".to_string()),
+                message: format!("Command `{}` timed out after {:?}", label, timeout),
+            });
+        }
+
+        let stdout_cap = if output.stdout_truncated {
+            COMMAND_OUTPUT_CAP.saturating_sub(1)
+        } else {
+            COMMAND_OUTPUT_CAP
+        };
+        let stderr_cap = if output.stderr_truncated {
+            COMMAND_OUTPUT_CAP.saturating_sub(1)
+        } else {
+            COMMAND_OUTPUT_CAP
+        };
+        let (stdout, stdout_truncated) = truncate_bytes_to_string(&output.stdout, stdout_cap);
+        let (stderr, stderr_truncated) = truncate_bytes_to_string(&output.stderr, stderr_cap);
+        let truncated = stdout_truncated
+            || stderr_truncated
+            || output.stdout_truncated
+            || output.stderr_truncated;
         let exit_code = output.status.code().unwrap_or(-1);
         let success = output.status.success();
 
@@ -1657,6 +1805,71 @@ mod tests {
     }
 
     #[test]
+    fn classify_shell_requires_approval_for_external_spaced_path() {
+        let outside = tempfile::tempdir().expect("outside");
+        let spaced_dir = outside.path().join("some spaced dir");
+        std::fs::create_dir(&spaced_dir).expect("spaced dir");
+        let spaced_path = spaced_dir.join("passwd");
+        std::fs::write(&spaced_path, "secret").expect("spaced file");
+
+        let policy = CommandPolicy;
+        let safety = policy.classify_shell(
+            "cat",
+            &[spaced_path.to_string_lossy().into_owned()],
+            &workspace(),
+        );
+        assert_eq!(safety, CommandSafety::Mutating);
+    }
+
+    #[test]
+    fn classify_shell_permits_safe_in_workspace_spaced_path() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let spaced_path = workspace.path().join("some file.txt");
+        std::fs::write(&spaced_path, "safe").expect("workspace file");
+
+        let policy = CommandPolicy;
+        let safety = policy.classify_shell(
+            "cat",
+            &[spaced_path.to_string_lossy().into_owned()],
+            workspace.path(),
+        );
+        assert_eq!(safety, CommandSafety::ReadOnly);
+    }
+
+    #[test]
+    fn classify_shell_permits_relative_spaced_filename() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let files_dir = workspace.path().join("some files");
+        std::fs::create_dir(&files_dir).expect("workspace files directory");
+        std::fs::write(files_dir.join("notes.txt"), "safe").expect("workspace file");
+
+        let policy = CommandPolicy;
+        let safety = policy.classify_shell(
+            "cat",
+            &["some files/notes.txt".to_string()],
+            workspace.path(),
+        );
+        assert_eq!(safety, CommandSafety::ReadOnly);
+    }
+
+    #[test]
+    fn classify_shell_requires_approval_for_flag_with_spaced_value() {
+        let outside = tempfile::tempdir().expect("outside");
+        let spaced_dir = outside.path().join("some spaced dir");
+        std::fs::create_dir(&spaced_dir).expect("spaced dir");
+        let spaced_path = spaced_dir.join("x");
+        std::fs::write(&spaced_path, "secret").expect("spaced file");
+
+        let policy = CommandPolicy;
+        let safety = policy.classify_shell(
+            "file",
+            &[format!("--files-from={}", spaced_path.to_string_lossy())],
+            &workspace(),
+        );
+        assert_eq!(safety, CommandSafety::Mutating);
+    }
+
+    #[test]
     fn classify_shell_requires_approval_for_flag_style_path_escape() {
         let policy = CommandPolicy;
 
@@ -1706,6 +1919,26 @@ mod tests {
             policy.classify_shell(
                 "cat",
                 &["outside-link/new-file.txt".to_string()],
+                workspace.path()
+            ),
+            CommandSafety::Mutating
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_shell_requires_approval_for_relative_spaced_symlink_escape() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret file.txt"), "secret").expect("outside file");
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("outside link"))
+            .expect("symlink");
+
+        let policy = CommandPolicy;
+        assert_eq!(
+            policy.classify_shell(
+                "cat",
+                &["outside link/secret file.txt".to_string()],
                 workspace.path()
             ),
             CommandSafety::Mutating
@@ -2110,6 +2343,24 @@ mod tests {
             .expect("execution should succeed");
         assert!(output.success);
         assert!(output.stdout.contains("hello"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_capture_truncates_large_stdout_without_deadlock() {
+        let executor = CommandExecutor::new(workspace(), None);
+        let output = executor
+            .execute(
+                "sh",
+                &["-c".to_string(), "yes x | head -c 131072".to_string()],
+                Duration::from_secs(2),
+            )
+            .await
+            .expect("execution should succeed");
+
+        assert!(output.success);
+        assert!(output.truncated);
+        assert!(output.stdout.len() <= COMMAND_OUTPUT_CAP + 100);
     }
 
     #[tokio::test]

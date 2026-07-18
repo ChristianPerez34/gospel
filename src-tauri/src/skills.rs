@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing;
@@ -677,12 +678,13 @@ pub struct ScriptResult {
     pub truncated: bool,
 }
 
+#[cfg(test)]
 fn detect_interpreter(script_path: &Path) -> Result<String, String> {
-    let content = match fs::read_to_string(script_path) {
-        Ok(c) => c,
-        Err(e) => return Err(format!("Failed to read script: {}", e)),
-    };
+    let content = read_verified_script(script_path)?;
+    detect_interpreter_from_content(script_path, &content)
+}
 
+fn detect_interpreter_from_content(script_path: &Path, content: &str) -> Result<String, String> {
     let first_line = content.lines().next().unwrap_or("");
     if first_line.starts_with("#!") {
         let shebang = first_line
@@ -714,6 +716,25 @@ fn detect_interpreter(script_path: &Path) -> Result<String, String> {
             script_path.display()
         )),
     }
+}
+
+fn read_verified_script(script_path: &Path) -> Result<String, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::libc::O_NOFOLLOW);
+    }
+
+    let mut script = options
+        .open(script_path)
+        .map_err(|error| format!("Failed to read script: {}", error))?;
+    let mut content = String::new();
+    script
+        .read_to_string(&mut content)
+        .map_err(|error| format!("Failed to read script: {}", error))?;
+    Ok(content)
 }
 
 pub async fn run_skill_script(
@@ -752,6 +773,13 @@ pub async fn run_skill_script(
         Err(e) => return Err(format!("Failed to resolve scripts directory: {}", e)),
     };
 
+    if !canonical_scripts_dir.starts_with(&skill_dir) {
+        return Err(format!(
+            "Scripts directory escapes the skill directory: {}",
+            canonical_scripts_dir.display()
+        ));
+    }
+
     if !canonical_script.starts_with(&canonical_scripts_dir) {
         return Err(format!(
             "Script '{}' escapes the skill directory",
@@ -763,7 +791,18 @@ pub async fn run_skill_script(
         return Err(format!("'{}' is not a file", script_name));
     }
 
-    let interpreter = detect_interpreter(&canonical_script)?;
+    let script_content = read_verified_script(&canonical_script)?;
+    let interpreter = detect_interpreter_from_content(&canonical_script, &script_content)?;
+    let mut verified_script = tempfile::Builder::new()
+        .prefix("gospel-skill-")
+        .tempfile()
+        .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
+    verified_script
+        .write_all(script_content.as_bytes())
+        .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
+    verified_script
+        .flush()
+        .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
     let interpreter_parts: Vec<&str> = interpreter.split_whitespace().collect();
 
     let timeout_secs = skill.timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
@@ -772,45 +811,63 @@ pub async fn run_skill_script(
     for arg in &interpreter_parts[1..] {
         cmd.arg(arg);
     }
-    cmd.kill_on_drop(true);
-    cmd.arg(&canonical_script);
+    // The staged copy prevents a workspace replacement from changing the
+    // already-verified script between validation and interpreter startup.
+    cmd.arg(verified_script.path());
 
     if let Some(ws) = workspace_path {
         cmd.current_dir(ws);
     }
 
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn script '{}': {}", script_name, e))?;
-
-    let result = tokio::time::timeout(
+    let output = match crate::subprocess_output::run_with_bounded_output(
+        script_name,
+        cmd,
         std::time::Duration::from_secs(timeout_secs),
-        child.wait_with_output(),
+        SCRIPT_OUTPUT_CAP,
+        SCRIPT_OUTPUT_CAP,
     )
-    .await;
-
-    let output = match result {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("Script execution failed: {}", e)),
-        Err(_) => {
+    .await
+    {
+        Ok(output) => output,
+        Err(crate::subprocess_output::SubprocessError::Spawn { source, .. }) => {
             return Err(format!(
-                "Script '{}' timed out after {} seconds",
-                script_name, timeout_secs
+                "Failed to spawn script '{}': {}",
+                script_name, source
             ));
+        }
+        Err(crate::subprocess_output::SubprocessError::Wait { source, .. }) => {
+            return Err(format!("Script execution failed: {}", source));
         }
     };
 
-    let (stdout, stdout_truncated) = truncate_bytes_to_string(&output.stdout, SCRIPT_OUTPUT_CAP);
-    let (stderr, stderr_truncated) = truncate_bytes_to_string(&output.stderr, SCRIPT_OUTPUT_CAP);
+    if output.timed_out {
+        return Err(format!(
+            "Script '{}' timed out after {} seconds",
+            script_name, timeout_secs
+        ));
+    }
+
+    let stdout_cap = if output.stdout_truncated {
+        SCRIPT_OUTPUT_CAP.saturating_sub(1)
+    } else {
+        SCRIPT_OUTPUT_CAP
+    };
+    let stderr_cap = if output.stderr_truncated {
+        SCRIPT_OUTPUT_CAP.saturating_sub(1)
+    } else {
+        SCRIPT_OUTPUT_CAP
+    };
+    let (stdout, stdout_truncated) = truncate_bytes_to_string(&output.stdout, stdout_cap);
+    let (stderr, stderr_truncated) = truncate_bytes_to_string(&output.stderr, stderr_cap);
 
     Ok(ScriptResult {
         stdout,
         stderr,
         exit_code: output.status.code().unwrap_or(-1),
-        truncated: stdout_truncated || stderr_truncated,
+        truncated: stdout_truncated
+            || stderr_truncated
+            || output.stdout_truncated
+            || output.stderr_truncated,
     })
 }
 
@@ -1413,6 +1470,62 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_caps_output() {
+        let dir = tempdir().unwrap();
+        let skills_dir = dir.path().join(".agents").join("skills");
+        let skill_dir = skills_dir.join("test-skill");
+        let scripts_dir = skill_dir.join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: test\n---\n\nbody",
+        )
+        .unwrap();
+
+        let script_path = scripts_dir.join("loud");
+        fs::write(&script_path, "#!/bin/bash\nyes x | head -c 65536").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.timeout_seconds = Some(5);
+
+        let result = run_skill_script(&skill, "loud", Some(dir.path()))
+            .await
+            .unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.truncated);
+        assert!(result.stdout.len() <= SCRIPT_OUTPUT_CAP + 100);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_timeout_kills_background_children() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("background.sh");
+        fs::write(&script_path, "#!/bin/sh\nsleep 5 & wait\n").unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.timeout_seconds = Some(1);
+
+        let started = std::time::Instant::now();
+        let result = run_skill_script(&skill, "background.sh", Some(dir.path())).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
     #[tokio::test]
     async fn run_skill_script_rejects_escape() {
         let dir = tempdir().unwrap();
@@ -1439,6 +1552,51 @@ mod tests {
         let result = run_skill_script(&skill, "escape.sh", Some(dir.path())).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("escapes"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_rejects_symlinked_scripts_dir() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let skills_dir = dir.path().join(".agents").join("skills");
+        let skill_dir = skills_dir.join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: test\n---\n\nbody",
+        )
+        .unwrap();
+
+        let outside = tempdir().unwrap();
+        let outside_script_dir = outside.path().join("external-scripts");
+        fs::create_dir_all(&outside_script_dir).unwrap();
+        let outside_script = outside_script_dir.join("evil.sh");
+        fs::write(&outside_script, "#!/bin/bash\necho pwned").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&outside_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let scripts_link = skill_dir.join("scripts");
+        symlink(&outside_script_dir, &scripts_link).unwrap();
+
+        let canonical_link = fs::canonicalize(&scripts_link).unwrap();
+        let canonical_skill = fs::canonicalize(&skill_dir).unwrap();
+        assert!(
+            !canonical_link.starts_with(&canonical_skill),
+            "test setup: scripts symlink should escape skill dir"
+        );
+
+        let skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        let result = run_skill_script(&skill, "evil.sh", Some(dir.path())).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Scripts directory escapes") || err.contains("escapes"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[tokio::test]

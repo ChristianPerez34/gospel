@@ -49,6 +49,8 @@ const MAX_SCAN_INVOCATIONS: usize = 20;
 const MAX_LINES_PER_INVOCATION: usize = 500;
 const SCAN_FILE_BYTES_CAP: u64 = 256 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+// Review commands may inspect a full diff, but must not retain unbounded output.
+const REVIEW_COMMAND_OUTPUT_CAP: usize = 4 * 1024 * 1024;
 const UNPARSEABLE_REVIEW_JSON_WARNING: &str = "did not contain parseable review JSON";
 
 const MAX_OVERSIZED_FILES: usize = 20;
@@ -414,6 +416,8 @@ enum CommandRunError {
         #[source]
         error: std::io::Error,
     },
+    #[error("Output from {command} exceeded the {REVIEW_COMMAND_OUTPUT_CAP}-byte review limit")]
+    OutputTruncated { command: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -1948,33 +1952,55 @@ async fn run_program(
     }
 }
 
+struct CapturedOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
 async fn run_command_output(
     workspace_path: &Path,
     program: &str,
     args: &[&str],
-) -> Result<std::process::Output, CommandRunError> {
+) -> Result<CapturedOutput, CommandRunError> {
     let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(workspace_path)
-        .kill_on_drop(true)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    command.args(args).current_dir(workspace_path);
     let command_label = command_label(program, args);
 
-    let child = command.spawn().map_err(|error| CommandRunError::Io {
-        program: program.to_string(),
-        error,
-    })?;
-
-    match timeout(COMMAND_TIMEOUT, child.wait_with_output()).await {
-        Ok(result) => result.map_err(|error| CommandRunError::Io {
-            program: program.to_string(),
-            error,
-        }),
-        Err(_) => Err(CommandRunError::Timeout {
+    match crate::subprocess_output::run_with_bounded_output(
+        &command_label,
+        command,
+        COMMAND_TIMEOUT,
+        REVIEW_COMMAND_OUTPUT_CAP,
+        REVIEW_COMMAND_OUTPUT_CAP,
+    )
+    .await
+    {
+        Ok(output) if output.timed_out => Err(CommandRunError::Timeout {
             command: command_label,
         }),
+        Ok(output) if output.stdout_truncated || output.stderr_truncated => {
+            Err(CommandRunError::OutputTruncated {
+                command: command_label,
+            })
+        }
+        Ok(output) => Ok(CapturedOutput {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }),
+        Err(crate::subprocess_output::SubprocessError::Spawn { source, .. }) => {
+            Err(CommandRunError::Io {
+                program: program.to_string(),
+                error: source,
+            })
+        }
+        Err(crate::subprocess_output::SubprocessError::Wait { source, .. }) => {
+            Err(CommandRunError::Io {
+                program: program.to_string(),
+                error: source,
+            })
+        }
     }
 }
 
@@ -2532,6 +2558,20 @@ Binary files a/icon.png and b/icon.png differ
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 131072);
         assert!(output.stderr.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_output_rejects_truncated_review_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = format!("yes x | head -c {}", REVIEW_COMMAND_OUTPUT_CAP + 1);
+
+        let result = run_command_output(dir.path(), "sh", &["-c", &command]).await;
+
+        assert!(matches!(
+            result,
+            Err(CommandRunError::OutputTruncated { .. })
+        ));
     }
 
     fn detector_failure(index: usize, kind: DetectorFailureKind, detail: &str) -> DetectorFailure {

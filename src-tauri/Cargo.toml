@@ -45,6 +45,7 @@ tempfile = "3"
 globset = "0.4"
 regex = "1"
 sha2 = "0.11.0"
+nix = { version = "0.31.3", features = ["signal", "process"] }
 
 [dev-dependencies]
 keyring = "3"

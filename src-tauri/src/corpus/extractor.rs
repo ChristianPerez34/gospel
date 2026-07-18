@@ -477,7 +477,9 @@ pub fn extract_directory(
     ignore_patterns: &[&str],
 ) -> Result<(), ExtractionError> {
     let mut files = Vec::new();
-    collect_files(root_path, root_path, &mut files, ignore_patterns)?;
+    let canonical_root = crate::corpus::symlink_guard::canonical(root_path)
+        .map_err(|error| ExtractionError::IoError(error.to_string()))?;
+    collect_files(root_path, &mut files, ignore_patterns, &canonical_root)?;
 
     for file_path in files {
         if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
@@ -492,19 +494,31 @@ pub fn extract_directory(
     Ok(())
 }
 
-#[allow(clippy::only_used_in_recursion)]
 fn collect_files(
-    root: &Path,
     current: &Path,
     files: &mut Vec<std::path::PathBuf>,
     ignore_patterns: &[&str],
+    canonical_root: &Path,
 ) -> Result<(), ExtractionError> {
-    if current.is_file() {
+    let Ok(metadata) = std::fs::symlink_metadata(current) else {
+        return Ok(());
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+
+    if metadata.is_file() {
+        let Ok(canonical_current) = crate::corpus::symlink_guard::canonical(current) else {
+            return Ok(());
+        };
+        if !crate::corpus::symlink_guard::is_within(canonical_root, &canonical_current) {
+            return Ok(());
+        }
         files.push(current.to_path_buf());
         return Ok(());
     }
 
-    if !current.is_dir() {
+    if !metadata.is_dir() {
         return Ok(());
     }
 
@@ -529,8 +543,15 @@ fn collect_files(
                 continue;
             }
         }
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+
         // Recurse
-        let _ = collect_files(root, &path, files, ignore_patterns);
+        let _ = collect_files(&path, files, ignore_patterns, canonical_root);
     }
 
     Ok(())
@@ -658,5 +679,38 @@ struct TestStruct {
             Some(ExtractorLanguage::Jsx)
         );
         assert_eq!(ExtractorLanguage::from_extension("py"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_files_skips_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("outside.rs");
+        std::fs::write(&outside_file, "fn outside() {}").unwrap();
+
+        let inside_dir = dir.path().join("src");
+        std::fs::create_dir_all(&inside_dir).unwrap();
+        let inside_file = inside_dir.join("inside.rs");
+        std::fs::write(&inside_file, "fn inside() {}").unwrap();
+
+        symlink(&outside_file, inside_dir.join("escape.rs")).unwrap();
+
+        let mut corpus = Corpus::new();
+        extract_directory(&mut corpus, dir.path(), &[]).unwrap();
+
+        let has_outside = corpus.nodes.values().any(|n| matches!(
+            &n.node_type,
+            NodeType::File { path, .. } if path.contains("outside.rs")
+        ));
+        assert!(!has_outside, "symlinked outside file should not be ingested");
+
+        let has_inside = corpus.nodes.values().any(|n| matches!(
+            &n.node_type,
+            NodeType::File { path, .. } if path.contains("inside.rs")
+        ));
+        assert!(has_inside, "in-workspace file should be ingested");
     }
 }

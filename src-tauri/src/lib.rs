@@ -20,6 +20,7 @@ pub mod session_store;
 mod session_turn;
 mod shell_tools;
 pub mod skills;
+pub mod subprocess_output;
 mod text_utils;
 pub mod trace;
 pub mod verification;

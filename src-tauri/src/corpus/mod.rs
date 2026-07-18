@@ -4,6 +4,7 @@ pub mod commands;
 pub mod dto;
 pub mod extractor;
 pub mod persistence;
+pub(crate) mod symlink_guard;
 pub mod tools;
 
 use serde::{Deserialize, Serialize};

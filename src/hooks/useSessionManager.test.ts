@@ -461,6 +461,11 @@ describe("useSessionManager", () => {
 
   describe("message orchestration", () => {
     it("invokes startStream with the correct provider, model, prompt, and sessionId when a valid model is selected", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "backend-session" };
+        return undefined;
+      });
+
       const { result } = renderSessionManager();
 
       await act(async () => {
@@ -474,12 +479,83 @@ describe("useSessionManager", () => {
           model: "gpt-4o",
           variant: null,
           prompt: "hello world",
-          sessionId: result.current.activeSessionId,
+          sessionId: "backend-session",
+        })
+      );
+    });
+
+    it("falls back to a local session and passes null sessionId on first send when create_session fails", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "list_sessions") return [];
+        if (cmd === "create_session") throw new Error("backend down");
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("hello world");
+      });
+
+      expect(result.current.sessions).toHaveLength(1);
+      expect(result.current.sessions[0]).toMatchObject({
+        backendCreated: false,
+      });
+      expect(result.current.sessions[0]!.id).toMatch(/^s-/);
+      expect(result.current.activeSessionId).toBe(result.current.sessions[0]!.id);
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({
+          prompt: "hello world",
+          sessionId: null,
+        })
+      );
+    });
+
+    it("keeps the local session local-only on a subsequent send", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "list_sessions") return [];
+        if (cmd === "create_session") throw new Error("backend down");
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("first prompt");
+      });
+
+      const localSessionId = result.current.sessions[0]!.id;
+
+      await act(async () => {
+        await result.current.handleSend("second prompt");
+      });
+
+      expect(result.current.sessions).toHaveLength(1);
+      expect(result.current.sessions[0]).toMatchObject({
+        id: localSessionId,
+        backendCreated: false,
+      });
+      expect(result.current.activeSessionId).toBe(localSessionId);
+      const createSessionCalls = vi
+        .mocked(invoke)
+        .mock.calls.filter(([cmd]) => cmd === "create_session");
+      expect(createSessionCalls).toHaveLength(1);
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({
+          prompt: "second prompt",
+          sessionId: null,
         })
       );
     });
 
     it("sends the selected variant for same-slug model variants", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "variant-backend-session" };
+        return undefined;
+      });
+
       const variantModels: ModelOption[] = [
         {
           id: "openai::gpt-5.2",
@@ -517,7 +593,7 @@ describe("useSessionManager", () => {
           model: "gpt-5.2",
           variant: "reasoning-high",
           prompt: "think hard",
-          sessionId: result.current.activeSessionId,
+          sessionId: "variant-backend-session",
         })
       );
       expect(result.current.sessions[0]).toMatchObject({

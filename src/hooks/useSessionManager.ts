@@ -84,9 +84,12 @@ export function useSessionManager({
   const latestSelectedSessionRef = useRef<string | null>(null);
   const skipNextWorkspaceResetRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
-  activeSessionIdRef.current = activeSessionId;
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   // Status changes retry a workspace reset that was deferred while streaming.
   // biome-ignore lint/correctness/useExhaustiveDependencies: Status is an intentional trigger.
@@ -198,6 +201,7 @@ export function useSessionManager({
       resetStream();
 
       let effectiveSessionId = activeSessionId;
+      let streamSessionId: string | null = effectiveSessionId;
       if (!activeSessionId) {
         const title = userMsg.content.slice(0, 50) + (userMsg.content.length > 50 ? "..." : "");
         const mode = draftSessionMode;
@@ -218,6 +222,7 @@ export function useSessionManager({
         }
 
         const sessionId = backendSession?.id ?? `s-${Date.now()}`;
+        const isLocalOnly = !backendSession;
         const newSession: Session = {
           id: sessionId,
           title,
@@ -235,6 +240,11 @@ export function useSessionManager({
         setActiveSessionId(sessionId);
         activeSessionIdRef.current = sessionId;
         effectiveSessionId = sessionId;
+        streamSessionId = isLocalOnly ? null : sessionId;
+      } else {
+        const existing = sessions.find((session) => session.id === activeSessionId);
+        const isLocalOnly = existing?.backendCreated === false;
+        streamSessionId = isLocalOnly ? null : effectiveSessionId;
       }
 
       try {
@@ -243,7 +253,7 @@ export function useSessionManager({
           prompt: message,
           model: selectedModel.model,
           variant: selectedModel.variant ?? null,
-          sessionId: effectiveSessionId,
+          sessionId: streamSessionId,
           invokedSkill: invokedSkill ?? null,
         });
       } catch (e) {
@@ -265,6 +275,7 @@ export function useSessionManager({
       onSessionsChange,
       resetStream,
       selectedModel,
+      sessions,
       startStream,
     ]
   );
