@@ -3,16 +3,11 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button";
 import { useConstellation } from "../hooks/useConstellation";
 import type { UseReviewProgress } from "../hooks/useReviewProgress";
-import type {
-  CurrentTurn,
-  Message,
-  ReviewFocus,
-  ReviewResult,
-  MultiReviewResult,
-} from "../types";
+import type { CurrentTurn, Message, MultiReviewResult, ReviewFocus, ReviewResult } from "../types";
 import { FOCUS_OPTIONS, focusLabel } from "../utils/focus";
 import { ConstellationCanvas } from "./ConstellationCanvas";
 import { ReviewerPanelCard } from "./ReviewerPanelCard";
+import { ReviewResults } from "./ReviewResults";
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -37,6 +32,8 @@ interface WorkbenchLayoutProps {
   conversationSlot: ReactNode;
   /** Whether to collapse the left column (focus mode). */
   focusMode: boolean;
+  /** Whether the TopBar Review surface is selected. */
+  reviewSurfaceActive: boolean;
   /** Approval resolver from session manager. */
   onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
 }
@@ -60,6 +57,7 @@ export function WorkbenchLayout({
   onSuccess,
   conversationSlot,
   focusMode,
+  reviewSurfaceActive,
   onResolveApproval,
 }: WorkbenchLayoutProps) {
   const [leftTab, setLeftTab] = useState<LeftTab>("conversation");
@@ -73,15 +71,9 @@ export function WorkbenchLayout({
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewResult, setReviewResult] = useState<ReviewResult | null>(null);
-  const [multiReviewResult, setMultiReviewResult] =
-    useState<MultiReviewResult | null>(null);
+  const [multiReviewResult, setMultiReviewResult] = useState<MultiReviewResult | null>(null);
 
-  const constellation = useConstellation(
-    messages,
-    currentTurn,
-    reviewProgress,
-    isStreaming
-  );
+  const constellation = useConstellation(messages, currentTurn, reviewProgress, isStreaming);
 
   // Auto-switch to Reviewers tab when review starts.
   const switchedRef = useRef(false);
@@ -92,6 +84,10 @@ export function WorkbenchLayout({
     }
     if (!constellation.reviewActive) switchedRef.current = false;
   }, [constellation.reviewActive]);
+
+  useEffect(() => {
+    if (reviewSurfaceActive) setLeftTab("reviewers");
+  }, [reviewSurfaceActive]);
 
   // Draggable splitter
   const draggingRef = useRef(false);
@@ -122,9 +118,7 @@ export function WorkbenchLayout({
   }, []);
 
   // Review trigger handlers (extracted from ReviewPanel)
-  const canRun = Boolean(
-    reviewProvider && reviewModel && workspacePath && !reviewLoading
-  );
+  const canRun = Boolean(reviewProvider && reviewModel && workspacePath && !reviewLoading);
 
   const runReview = useCallback(async () => {
     if (!reviewProvider || !reviewModel || !workspacePath) {
@@ -248,10 +242,7 @@ export function WorkbenchLayout({
   return (
     <div className="workbench-layout">
       {/* Left: tabbed column */}
-      <aside
-        className="workbench-left-column"
-        style={{ width: colW }}
-      >
+      <aside className="workbench-left-column" style={{ width: colW }}>
         <div className="workbench-tab-bar">
           <button
             type="button"
@@ -259,9 +250,7 @@ export function WorkbenchLayout({
             onClick={() => setLeftTab("conversation")}
           >
             Conversation
-            {messages.length > 0 && (
-              <span className="workbench-tab-badge">{messages.length}</span>
-            )}
+            {messages.length > 0 && <span className="workbench-tab-badge">{messages.length}</span>}
           </button>
           <button
             type="button"
@@ -302,17 +291,16 @@ export function WorkbenchLayout({
             multiReviewResult={multiReviewResult}
             canFix={canSendTurn && !reviewLoading && Boolean(onFixFinding)}
             onFixFinding={onFixFinding}
+            onFixStarted={() => setLeftTab("conversation")}
             workspacePath={workspacePath}
+            onError={onError}
+            onSuccess={onSuccess}
           />
         )}
       </aside>
 
       {/* Draggable splitter */}
-      <div
-        className="workbench-splitter"
-        onMouseDown={onSplitterDown}
-        aria-hidden
-      />
+      <div className="workbench-splitter" onMouseDown={onSplitterDown} aria-hidden />
 
       {/* Right: constellation canvas */}
       <div className="workbench-canvas-wrap">
@@ -354,7 +342,10 @@ interface ReviewersTabProps {
   multiReviewResult: MultiReviewResult | null;
   canFix: boolean;
   onFixFinding?: (prompt: string) => Promise<void> | void;
+  onFixStarted: () => void;
   workspacePath?: string;
+  onError?: (message: string) => void;
+  onSuccess?: (message: string) => void;
 }
 
 function ReviewersTab({
@@ -375,6 +366,14 @@ function ReviewersTab({
   onRunReview,
   onRunMultiReview,
   reviewError,
+  reviewResult,
+  multiReviewResult,
+  canFix,
+  onFixFinding,
+  onFixStarted,
+  workspacePath,
+  onError,
+  onSuccess,
 }: ReviewersTabProps) {
   return (
     <div className="workbench-reviewers-tab">
@@ -437,9 +436,7 @@ function ReviewersTab({
             Run All
           </Button>
         </div>
-        {reviewError && (
-          <div className="review-trigger-error">{reviewError}</div>
-        )}
+        {reviewError && <div className="review-trigger-error">{reviewError}</div>}
       </div>
 
       {/* Summary pills */}
@@ -453,10 +450,8 @@ function ReviewersTab({
 
       {/* Reviewer cards */}
       <div className="reviewers-list">
-        {reviewers.length === 0 && !reviewActive && (
-          <div className="reviewers-empty">
-            Run a review to see parallel reviewer activity.
-          </div>
+        {reviewers.length === 0 && !reviewActive && !reviewResult && !multiReviewResult && (
+          <div className="reviewers-empty">Run a review to see parallel reviewer activity.</div>
         )}
         {reviewers.map((r) => (
           <ReviewerPanelCard
@@ -467,6 +462,21 @@ function ReviewersTab({
             onLeave={onLeave}
           />
         ))}
+        <ReviewResults
+          key={
+            multiReviewResult
+              ? multiReviewResult.results.map((review) => review.run_id).join(",")
+              : (reviewResult?.run_id ?? "no-review")
+          }
+          result={reviewResult}
+          multiResult={multiReviewResult}
+          workspacePath={workspacePath}
+          canFix={canFix}
+          onFixFinding={onFixFinding}
+          onFixStarted={onFixStarted}
+          onError={onError}
+          onSuccess={onSuccess}
+        />
       </div>
     </div>
   );

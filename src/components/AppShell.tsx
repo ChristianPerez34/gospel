@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
+import { useReviewProgress } from "../hooks/useReviewProgress";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useWorkspaces } from "../hooks/useWorkspaces";
@@ -21,9 +22,8 @@ import { SettingsModal } from "./SettingsModal";
 import { ToastContainer, useToasts } from "./Toast";
 import type { WorkspaceLayoutMode } from "./TopBar";
 import { TopBar } from "./TopBar";
-import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { WorkbenchLayout } from "./WorkbenchLayout";
-import { useReviewProgress } from "../hooks/useReviewProgress";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 type SettingsTab = "general" | "models" | "data";
 type TrappedSurface = "sessions" | null;
@@ -818,6 +818,7 @@ export function AppShell() {
             onError={showError}
             onSuccess={showSuccess}
             focusMode={workspaceLayout === "focus"}
+            reviewSurfaceActive={workspaceLayout === "review"}
             onResolveApproval={session.resolveApproval}
             conversationSlot={
               <>
