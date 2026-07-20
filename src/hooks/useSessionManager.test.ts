@@ -958,26 +958,29 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
-        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
-          "llm-reasoning",
-          { id: "rs-1", text: "step ", phase: "delta" }
-        );
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>("llm-reasoning", {
+          id: "rs-1",
+          text: "step ",
+          phase: "delta",
+        });
       });
       act(() => {
-        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
-          "llm-reasoning",
-          { id: "rs-1", text: "by step", phase: "delta" }
-        );
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>("llm-reasoning", {
+          id: "rs-1",
+          text: "by step",
+          phase: "delta",
+        });
       });
       expect(result.current.currentTurn?.blocks).toMatchObject([
         { kind: "reasoning", id: "rs-1", text: "step by step", phase: "delta" },
       ]);
 
       act(() => {
-        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
-          "llm-reasoning",
-          { id: "rs-1", text: "authoritative text", phase: "complete" }
-        );
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>("llm-reasoning", {
+          id: "rs-1",
+          text: "authoritative text",
+          phase: "complete",
+        });
       });
       // A complete event replaces — not appends — the accumulated deltas.
       expect(result.current.currentTurn?.blocks).toMatchObject([
@@ -996,15 +999,13 @@ describe("useSessionManager", () => {
         triggerEvent<string>("llm-token", "Public answer. ");
       });
       act(() => {
-        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
-          "llm-reasoning",
-          { id: "rs-1", text: "private thoughts", phase: "complete" }
-        );
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>("llm-reasoning", {
+          id: "rs-1",
+          text: "private thoughts",
+          phase: "complete",
+        });
       });
-      expect(result.current.currentTurn?.blocks?.map((b) => b.kind)).toEqual([
-        "text",
-        "reasoning",
-      ]);
+      expect(result.current.currentTurn?.blocks?.map((b) => b.kind)).toEqual(["text", "reasoning"]);
 
       act(() => {
         triggerEvent("llm-done", {
@@ -1029,10 +1030,11 @@ describe("useSessionManager", () => {
       });
 
       act(() => {
-        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>(
-          "llm-reasoning",
-          { id: "rs-1", text: "do not persist me", phase: "delta" }
-        );
+        triggerEvent<{ id: string; text: string; phase: "delta" | "complete" }>("llm-reasoning", {
+          id: "rs-1",
+          text: "do not persist me",
+          phase: "delta",
+        });
       });
 
       act(() => {

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
+import { useReviewProgress } from "../hooks/useReviewProgress";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useWorkspaces } from "../hooks/useWorkspaces";
@@ -16,13 +17,12 @@ import {
 import { ChatView } from "./ChatView";
 import { CommandPalette } from "./CommandPalette";
 import { InputBar } from "./InputBar";
-import { ReviewPanel } from "./ReviewPanel";
 import { SessionDrawer } from "./SessionDrawer";
 import { SettingsModal } from "./SettingsModal";
 import { ToastContainer, useToasts } from "./Toast";
 import type { WorkspaceLayoutMode } from "./TopBar";
 import { TopBar } from "./TopBar";
-import { WorkspaceStage } from "./WorkspaceStage";
+import { WorkbenchLayout } from "./WorkbenchLayout";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 type SettingsTab = "general" | "models" | "data";
@@ -110,6 +110,7 @@ export function AppShell() {
   const commandPaletteOpenRef = useRef(false);
   const chatColumnRef = useRef<HTMLDivElement>(null);
   const { themePreference, resolvedTheme, setThemePreference } = useThemePreference();
+  const reviewProgress = useReviewProgress();
 
   const trappedSurface: TrappedSurface = sessionDrawerOpen ? "sessions" : null;
 
@@ -799,54 +800,51 @@ export function AppShell() {
         sessionToggleRef={sessionToggleRef}
       />
       <div className="app-layout" data-session-drawer-open={sessionDrawerOpen ? "true" : "false"}>
-        <div className="app-workspace">
-          <div
-            className="chat-column"
-            ref={chatColumnRef}
-            aria-hidden={surfaceTrapOpen ? "true" : undefined}
-          >
-            <ChatView
-              messages={session.messages}
-              workspacePath={activeWorkspace?.path ?? ""}
-              isThinking={session.isThinking}
-              currentTurn={session.currentTurn}
-              onResolveApproval={session.resolveApproval}
-            />
-            <InputBar
-              models={models}
-              selectedModel={selectedModelId}
-              selectedVariant={selectedModel?.variant ?? null}
-              onModelChange={applyModelSelection}
-              onVariantChange={applyVariantSelection}
-              onSend={session.handleSend}
-              disabled={session.isStreaming || models.length === 0}
-              unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
-              unavailableDetail={noModels.detail}
-              unavailableActionLabel={noModels.actionLabel}
-              onUnavailableAction={() => openSettings("models")}
-              workspacePath={activeWorkspace?.path}
-            />
-          </div>
-          <WorkspaceStage
-            workspaceName={activeWorkspace?.name ?? "No workspace"}
-            workspacePath={activeWorkspace?.path}
-            sessionTitle={sessionTitle}
-            sessionMode={session.activeSessionMode}
-            status={session.status}
-            messageCount={session.messages.length}
-            reviewOpen={workspaceLayout === "review"}
-          />
-          <ReviewPanel
-            open={workspaceLayout === "review"}
-            provider={selectedModel?.provider}
-            model={selectedModel?.model}
+        <div
+          className="app-workspace"
+          ref={chatColumnRef}
+          aria-hidden={surfaceTrapOpen ? "true" : undefined}
+        >
+          <WorkbenchLayout
+            messages={session.messages}
+            currentTurn={session.currentTurn}
+            isStreaming={session.isStreaming}
+            reviewProgress={reviewProgress}
+            reviewProvider={selectedModel?.provider}
+            reviewModel={selectedModel?.model}
             workspacePath={activeWorkspace?.path}
             canSendTurn={!session.isStreaming}
-            onClose={() => setWorkspaceLayout("evidence")}
+            onFixFinding={(prompt) => session.handleSend(prompt)}
             onError={showError}
             onSuccess={showSuccess}
-            onFixFinding={(prompt) => session.handleSend(prompt)}
-            trapPaused={modalSurfaceOpen}
+            focusMode={workspaceLayout === "focus"}
+            reviewSurfaceActive={workspaceLayout === "review"}
+            onResolveApproval={session.resolveApproval}
+            conversationSlot={
+              <>
+                <ChatView
+                  messages={session.messages}
+                  workspacePath={activeWorkspace?.path ?? ""}
+                  isThinking={session.isThinking}
+                  currentTurn={session.currentTurn}
+                  onResolveApproval={session.resolveApproval}
+                />
+                <InputBar
+                  models={models}
+                  selectedModel={selectedModelId}
+                  selectedVariant={selectedModel?.variant ?? null}
+                  onModelChange={applyModelSelection}
+                  onVariantChange={applyVariantSelection}
+                  onSend={session.handleSend}
+                  disabled={session.isStreaming || models.length === 0}
+                  unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
+                  unavailableDetail={noModels.detail}
+                  unavailableActionLabel={noModels.actionLabel}
+                  onUnavailableAction={() => openSettings("models")}
+                  workspacePath={activeWorkspace?.path}
+                />
+              </>
+            }
           />
         </div>
       </div>

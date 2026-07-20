@@ -271,32 +271,12 @@ summary,
 
 .app-workspace {
   position: relative;
-  display: grid;
+  display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  grid-template-columns: var(--spatial-chat-width) var(--spatial-stage-width) var(
-      --spatial-review-width
-    );
   width: 100%;
-  transition:
-    grid-template-columns var(--duration-slow) var(--ease-out-quart),
-    margin-left var(--duration-normal) var(--ease-out-quart);
-  --spatial-chat-width: minmax(520px, 1fr);
-  --spatial-stage-width: minmax(340px, 420px);
-  --spatial-review-width: 0px;
-}
-
-.app-shell[data-workspace-layout="focus"] .app-workspace {
-  --spatial-chat-width: minmax(0, 1fr);
-  --spatial-stage-width: 0px;
-  --spatial-review-width: 0px;
-}
-
-.app-shell[data-workspace-layout="review"] .app-workspace {
-  --spatial-chat-width: minmax(440px, 1fr);
-  --spatial-stage-width: 0px;
-  --spatial-review-width: minmax(420px, 520px);
+  overflow: hidden;
 }
 
 .chat-column {
@@ -2233,5 +2213,999 @@ summary,
   .review-progress__bar-fill,
   .review-progress__connector-fill {
     transition: none;
+  }
+}
+
+/* ── Workbench Constellation layout ────────────────────────────────────── */
+
+.workbench-layout {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.workbench-layout.workbench-focus {
+  /* Focus mode: canvas only, no left column */
+}
+
+/* Left tabbed column */
+.workbench-left-column {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border-right: 1px solid var(--surface-line);
+  background: var(--surface-sunken);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workbench-tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--surface-line);
+  flex-shrink: 0;
+}
+
+.workbench-tab-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out-quart),
+    border-color var(--duration-fast) var(--ease-out-quart),
+    background var(--duration-fast) var(--ease-out-quart);
+}
+
+.workbench-tab-btn.is-active {
+  background: var(--surface-elevated);
+  border-bottom-color: var(--accent-action);
+  color: var(--text-primary);
+}
+
+.workbench-tab-btn:hover:not(.is-active) {
+  color: var(--text-secondary);
+}
+
+.workbench-tab-badge {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: var(--surface-base);
+  border-radius: var(--radius-full);
+  padding: 1px 7px;
+}
+
+.workbench-tab-badge-live {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--accent-action);
+  background: color-mix(in srgb, var(--accent-action) 13%, transparent);
+  border-radius: var(--radius-full);
+  padding: 1px 7px;
+}
+
+/* Conversation tab */
+.workbench-conversation-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Reviewers tab */
+.workbench-reviewers-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Review trigger header */
+.review-trigger {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--surface-line);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-trigger-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.review-trigger-mode-group {
+  display: inline-grid;
+  grid-template-columns: repeat(3, auto);
+  overflow: hidden;
+  border: 1px solid var(--surface-overlay);
+  border-radius: var(--radius-sm);
+}
+
+.review-trigger-mode-btn {
+  min-height: 36px;
+  min-width: 56px;
+  padding: 0 12px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out-quart),
+    color var(--duration-fast) var(--ease-out-quart);
+}
+
+.review-trigger-mode-btn.is-active {
+  background: var(--surface-overlay);
+  color: var(--accent-action);
+}
+
+.review-trigger-mode-btn:hover:not(.is-active) {
+  background: var(--surface-overlay);
+  color: var(--text-secondary);
+}
+
+.review-trigger-pr-input {
+  height: 36px;
+  width: 80px;
+  border: 1px solid var(--surface-overlay);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-body-sm);
+  color: var(--text-primary);
+}
+
+.review-trigger-pr-input::placeholder {
+  color: var(--text-muted);
+}
+
+.review-trigger-focus-select {
+  height: 36px;
+  border: 1px solid var(--surface-overlay);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--text-primary);
+}
+
+.review-trigger-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.review-trigger-error {
+  font-size: var(--font-size-body-sm);
+  color: var(--status-error);
+  white-space: pre-wrap;
+}
+
+/* Reviewers summary + list */
+.reviewers-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--surface-line);
+  flex-shrink: 0;
+}
+
+.reviewers-summary-meta {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.reviewers-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reviewers-empty {
+  color: var(--text-muted);
+  font-size: var(--font-size-body-sm);
+  text-align: center;
+  padding: 32px 16px;
+}
+
+/* Reviewer panel card */
+.reviewer-panel-card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--surface-line);
+  border-left-width: 2px;
+  border-radius: var(--radius-md);
+  padding: 12px;
+  transition:
+    border-color var(--duration-fast) var(--ease-out-quart),
+    box-shadow var(--duration-fast) var(--ease-out-quart);
+}
+
+.reviewer-panel-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.reviewer-panel-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid;
+  flex-shrink: 0;
+}
+
+.reviewer-panel-card-meta {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.reviewer-panel-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.reviewer-panel-card-role {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.reviewer-panel-card-status {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.reviewer-panel-progress-track {
+  height: 3px;
+  background: var(--surface-line);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.reviewer-panel-progress-fill {
+  height: 100%;
+  transition: width 600ms var(--ease-out-quart);
+}
+
+.reviewer-panel-now-reading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-bottom: 6px;
+}
+
+.reviewer-panel-pulse-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  animation: proto-pulse 1s infinite;
+  flex-shrink: 0;
+}
+
+.reviewer-panel-comment-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.reviewer-panel-comment-empty {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.reviewer-panel-comment {
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+
+.reviewer-panel-comment-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.reviewer-panel-typing {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  animation: proto-blink 1.2s infinite;
+}
+
+.reviewer-panel-verdict {
+  margin-top: 8px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-align: center;
+}
+
+/* Splitter */
+.workbench-splitter {
+  width: 4px;
+  background: var(--surface-line);
+  cursor: col-resize;
+  flex-shrink: 0;
+  transition: background var(--duration-fast) var(--ease-out-quart);
+}
+
+.workbench-splitter:hover {
+  background: var(--accent-action);
+}
+
+/* Canvas wrapper */
+.workbench-canvas-wrap {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ── Constellation canvas ────────────────────────────────────────────────── */
+
+.constellation-canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--surface-base);
+}
+
+.constellation-nebula {
+  position: absolute;
+  width: 600px;
+  height: 600px;
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent-structure) 12%, transparent),
+    transparent 60%
+  );
+  filter: blur(20px);
+}
+
+.constellation-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Agent node */
+.constellation-node-agent {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+.constellation-agent-ring {
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface-line);
+}
+
+.constellation-agent-core {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: var(--surface-elevated);
+  border: 1px solid var(--surface-line);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent-structure) 25%, transparent);
+}
+
+.constellation-agent-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.constellation-agent-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 2px;
+  color: var(--text-primary);
+}
+
+/* Tool node */
+.constellation-node-tool {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+.constellation-tool-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  border: 1px solid var(--surface-line);
+  min-width: 110px;
+  transition:
+    border-color var(--duration-fast) var(--ease-out-quart),
+    box-shadow var(--duration-fast) var(--ease-out-quart);
+}
+
+.constellation-tool-kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-family: var(--font-mono);
+}
+
+.constellation-tool-target {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.constellation-tool-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-top: 2px;
+}
+
+.constellation-diff-badge {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: var(--font-mono);
+  color: var(--accent-signal);
+  background: color-mix(in srgb, var(--accent-signal) 13%, transparent);
+  border-radius: var(--radius-full);
+  padding: 1px 5px;
+  margin-top: 2px;
+}
+
+.constellation-tool-pop {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  background: var(--surface-overlay);
+  border: 1px solid var(--surface-line);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  width: 240px;
+  box-shadow: var(--shadow-floating, 0 8px 24px rgba(0, 0, 0, 0.3));
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.constellation-tool-pop-code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.constellation-diff-btn {
+  display: block;
+  width: 100%;
+  background: color-mix(in srgb, var(--accent-signal) 13%, transparent);
+  color: var(--accent-signal);
+  border: 1px solid color-mix(in srgb, var(--accent-signal) 33%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.constellation-approve-btn {
+  background: var(--accent-action);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 4px 12px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+/* Cluster node */
+.constellation-node-cluster {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+.constellation-cluster-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  border: 1px dashed var(--text-muted);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  min-width: 96px;
+}
+
+.constellation-cluster-glyph {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.constellation-cluster-count {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent-action);
+}
+
+.constellation-cluster-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+/* Reviewer node */
+.constellation-node-reviewer {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+.constellation-reviewer-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  border: 1px solid var(--surface-line);
+  min-width: 96px;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-out-quart),
+    box-shadow var(--duration-fast) var(--ease-out-quart);
+}
+
+.constellation-reviewer-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: var(--radius-lg);
+  pointer-events: none;
+  border: 1.5px solid;
+}
+
+.constellation-reviewer-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid;
+}
+
+.constellation-reviewer-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.constellation-reviewer-verdict-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Equalizer */
+.constellation-equalizer {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 18px;
+}
+
+.constellation-eq-bar {
+  width: 3px;
+  border-radius: 2px;
+}
+
+/* Load hint */
+.constellation-load-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: var(--surface-overlay);
+  border: 1px solid var(--surface-line);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+}
+
+.constellation-load-hint-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent-action);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-decoration: underline;
+}
+
+/* Popovers */
+.constellation-pop-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+/* Cluster popover */
+.constellation-cluster-pop {
+  position: absolute;
+  top: 60px;
+  left: 20px;
+  width: 320px;
+  max-height: 460px;
+  background: var(--surface-overlay);
+  border: 1px solid var(--surface-line);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  box-shadow: var(--shadow-floating, 0 8px 24px rgba(0, 0, 0, 0.3));
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+}
+
+.constellation-cluster-pop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.constellation-cluster-pop-title {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+}
+
+.constellation-cluster-pop-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.constellation-cluster-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.constellation-cluster-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.constellation-cluster-group-count {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.constellation-cluster-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 14px;
+}
+
+.constellation-cluster-group-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.constellation-cluster-group-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.constellation-cluster-group-target {
+  flex: 1;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Diff popover */
+.constellation-diff-pop {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 560px;
+  max-width: calc(100vw - 2rem);
+  max-height: 480px;
+  background: var(--surface-overlay);
+  border: 1px solid var(--surface-line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-floating, 0 8px 24px rgba(0, 0, 0, 0.3));
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+}
+
+.constellation-diff-pop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--surface-line);
+  flex-shrink: 0;
+}
+
+.constellation-diff-pop-head-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.constellation-diff-pop-file {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.constellation-diff-pop-stats {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.constellation-diff-pop-body {
+  flex: 1;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.constellation-diff-pop-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-size-body-sm);
+}
+
+.constellation-diff-line {
+  display: flex;
+  padding: 0 16px;
+  line-height: 1.6;
+}
+
+.constellation-diff-line-sign {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.constellation-diff-line-text {
+  white-space: pre;
+}
+
+/* Reviewer popover */
+.constellation-reviewer-pop {
+  position: absolute;
+  top: 60px;
+  right: 20px;
+  width: 300px;
+  background: var(--surface-overlay);
+  border: 1px solid;
+  border-radius: var(--radius-md);
+  padding: 14px;
+  box-shadow: var(--shadow-floating, 0 8px 24px rgba(0, 0, 0, 0.3));
+  z-index: 10;
+}
+
+.constellation-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.constellation-pop-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.constellation-pop-role {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.constellation-pop-progress {
+  height: 3px;
+  background: var(--surface-line);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.constellation-pop-progress-fill {
+  height: 100%;
+  transition: width 600ms var(--ease-out-quart);
+}
+
+.constellation-pop-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin: 0;
+}
+
+.constellation-pop-comments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.constellation-pop-comment {
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+
+.constellation-pop-comment-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* PROTOTYPE — harness prototype keyframes. Throwaway. */
+@keyframes proto-blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes proto-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.4);
+  }
+}
+@keyframes proto-pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+@keyframes proto-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes proto-eq {
+  from {
+    height: 20%;
+  }
+  to {
+    height: 100%;
   }
 }

@@ -302,10 +302,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   }
                   return {
                     ...turn,
-                    blocks: [
-                      ...turn.blocks,
-                      { kind: "reasoning", id, text, phase: "complete" },
-                    ],
+                    blocks: [...turn.blocks, { kind: "reasoning", id, text, phase: "complete" }],
                   };
                 }
                 if (idx >= 0) {
@@ -322,10 +319,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 }
                 return {
                   ...turn,
-                  blocks: [
-                    ...turn.blocks,
-                    { kind: "reasoning", id, text, phase: "delta" },
-                  ],
+                  blocks: [...turn.blocks, { kind: "reasoning", id, text, phase: "delta" }],
                 };
               });
             })
