@@ -1566,8 +1566,7 @@ summary,
 }
 
 .variant-menu {
-  width: min(22rem, calc(100vw - 2rem));
-  max-height: min(18rem, calc(100vh - 12rem));
+  overscroll-behavior: contain;
 }
 
 .variant-option + .variant-option {

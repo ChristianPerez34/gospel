@@ -1,5 +1,12 @@
 import { ChevronDown, Cpu, GitBranch, Send } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { useSkills } from "../hooks/useSkills";
 import type { ModelOption } from "../types";
@@ -22,6 +29,83 @@ interface InputBarProps {
 }
 
 const SLASH_REGEX = /^\/([a-zA-Z0-9-]+)(?:[ \t]+([\s\S]*))?$/;
+const VARIANT_MENU_MAX_WIDTH = 352;
+const VARIANT_MENU_MAX_HEIGHT = 288;
+const MENU_GAP = 8;
+const MENU_EDGE_INSET = 8;
+const MENU_MIN_USEFUL_HEIGHT = 160;
+
+type VariantMenuPlacement = "above" | "below";
+
+interface VariantMenuLayout {
+  left: number;
+  width: number;
+  maxHeight: number;
+  placement: VariantMenuPlacement;
+}
+
+function clipsOverflow(value: string) {
+  return value
+    .split(" ")
+    .some((part) => part === "auto" || part === "clip" || part === "hidden" || part === "scroll");
+}
+
+function getVisibleBounds(anchor: HTMLElement) {
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft ?? 0;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const bounds = {
+    left: viewportLeft,
+    right: viewportLeft + (viewport?.width ?? window.innerWidth),
+    top: viewportTop,
+    bottom: viewportTop + (viewport?.height ?? window.innerHeight),
+  };
+
+  let ancestor = anchor.parentElement;
+  while (ancestor) {
+    const style = window.getComputedStyle(ancestor);
+    const rect = ancestor.getBoundingClientRect();
+    const clipsX = clipsOverflow(style.overflowX) || clipsOverflow(style.overflow);
+    const clipsY = clipsOverflow(style.overflowY) || clipsOverflow(style.overflow);
+
+    if (clipsX) {
+      bounds.left = Math.max(bounds.left, rect.left);
+      bounds.right = Math.min(bounds.right, rect.right);
+    }
+    if (clipsY) {
+      bounds.top = Math.max(bounds.top, rect.top);
+      bounds.bottom = Math.min(bounds.bottom, rect.bottom);
+    }
+
+    ancestor = ancestor.parentElement;
+  }
+
+  return bounds;
+}
+
+function getVariantMenuLayout(anchor: HTMLElement): VariantMenuLayout {
+  const anchorRect = anchor.getBoundingClientRect();
+  const bounds = getVisibleBounds(anchor);
+  const availableWidth = Math.max(0, bounds.right - bounds.left - MENU_EDGE_INSET * 2);
+  const width = Math.min(VARIANT_MENU_MAX_WIDTH, availableWidth);
+  const minimumLeft = bounds.left + MENU_EDGE_INSET;
+  const maximumLeft = Math.max(minimumLeft, bounds.right - MENU_EDGE_INSET - width);
+  const viewportLeft = Math.min(Math.max(anchorRect.right - width, minimumLeft), maximumLeft);
+  const spaceAbove = Math.max(0, anchorRect.top - MENU_GAP - (bounds.top + MENU_EDGE_INSET));
+  const spaceBelow = Math.max(0, bounds.bottom - MENU_EDGE_INSET - anchorRect.bottom - MENU_GAP);
+  const placement: VariantMenuPlacement =
+    spaceAbove >= Math.min(MENU_MIN_USEFUL_HEIGHT, VARIANT_MENU_MAX_HEIGHT) ||
+    spaceAbove >= spaceBelow
+      ? "above"
+      : "below";
+
+  return {
+    left: viewportLeft - anchorRect.left,
+    width,
+    maxHeight: Math.min(VARIANT_MENU_MAX_HEIGHT, placement === "above" ? spaceAbove : spaceBelow),
+    placement,
+  };
+}
 
 export function InputBar({
   models,
@@ -40,11 +124,13 @@ export function InputBar({
   const [value, setValue] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
+  const [variantMenuLayout, setVariantMenuLayout] = useState<VariantMenuLayout | null>(null);
   const [slashFilter, setSlashFilter] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [unknownSkill, setUnknownSkill] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const variantPickerRef = useRef<HTMLDivElement>(null);
   const selectedFromMenu = useRef(false);
 
   const { skills, reloadSkills } = useSkills(workspacePath);
@@ -103,6 +189,42 @@ export function InputBar({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [modelOpen, variantOpen]);
+
+  useLayoutEffect(() => {
+    if (!variantOpen || !variantPickerRef.current) return;
+
+    const anchor = variantPickerRef.current;
+    const updateLayout = () => setVariantMenuLayout(getVariantMenuLayout(anchor));
+    updateLayout();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateLayout);
+    resizeObserver?.observe(anchor);
+    if (pickerRef.current) resizeObserver?.observe(pickerRef.current);
+
+    window.addEventListener("resize", updateLayout);
+    window.addEventListener("scroll", updateLayout, true);
+    window.visualViewport?.addEventListener("resize", updateLayout);
+    window.visualViewport?.addEventListener("scroll", updateLayout);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateLayout);
+      window.removeEventListener("scroll", updateLayout, true);
+      window.visualViewport?.removeEventListener("resize", updateLayout);
+      window.visualViewport?.removeEventListener("scroll", updateLayout);
+    };
+  }, [variantOpen]);
+
+  const variantMenuStyle: CSSProperties | undefined = variantMenuLayout
+    ? {
+        left: variantMenuLayout.left,
+        width: variantMenuLayout.width,
+        maxHeight: variantMenuLayout.maxHeight,
+        top: variantMenuLayout.placement === "below" ? "calc(100% + 0.5rem)" : "auto",
+        bottom: variantMenuLayout.placement === "above" ? "calc(100% + 0.5rem)" : "auto",
+      }
+    : undefined;
 
   const handleSlashSelect = useCallback((name: string) => {
     selectedFromMenu.current = true;
@@ -311,7 +433,7 @@ export function InputBar({
                 )}
               </div>
               {variants.length > 0 && (
-                <div className="relative min-w-[10rem] flex-1 sm:flex-none">
+                <div ref={variantPickerRef} className="relative min-w-[10rem] flex-1 sm:flex-none">
                   <Button
                     variant="outline"
                     size="default"
@@ -337,7 +459,8 @@ export function InputBar({
                   </Button>
                   {variantOpen && (
                     <div
-                      className="model-menu variant-menu absolute bottom-full right-0 mb-2 overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)"
+                      className="model-menu variant-menu absolute overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)"
+                      style={variantMenuStyle}
                       role="listbox"
                     >
                       {[

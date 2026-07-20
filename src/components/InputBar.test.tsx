@@ -40,16 +40,42 @@ const models = [
 
 function renderInputBar(overrides: Partial<ComponentProps<typeof InputBar>> = {}) {
   return render(
-    <InputBar
-      models={models}
-      selectedModel={modelOptionId("openai", "gpt-5.5")}
-      selectedVariant={null}
-      onModelChange={vi.fn()}
-      onVariantChange={vi.fn()}
-      onSend={vi.fn()}
-      {...overrides}
-    />
+    <div data-testid="input-boundary">
+      <InputBar
+        models={models}
+        selectedModel={modelOptionId("openai", "gpt-5.5")}
+        selectedVariant={null}
+        onModelChange={vi.fn()}
+        onVariantChange={vi.fn()}
+        onSend={vi.fn()}
+        {...overrides}
+      />
+    </div>
   );
+}
+
+function domRect({
+  left,
+  top,
+  width,
+  height,
+}: {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}) {
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 describe("InputBar", () => {
@@ -99,5 +125,28 @@ describe("InputBar", () => {
     fireEvent.click(screen.getByRole("option", { name: /Default/ }));
 
     expect(onVariantChange).toHaveBeenCalledWith(null);
+  });
+
+  it("keeps the variant menu inside its visible overflow boundary", () => {
+    renderInputBar();
+    const boundary = screen.getByTestId("input-boundary");
+    boundary.style.overflow = "hidden";
+    vi.spyOn(boundary, "getBoundingClientRect").mockReturnValue(
+      domRect({ left: 0, top: 100, width: 280, height: 500 })
+    );
+
+    const trigger = screen.getByRole("button", { name: "Select variant" });
+    const anchor = trigger.parentElement as HTMLDivElement;
+    vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue(
+      domRect({ left: 12, top: 500, width: 192, height: 40 })
+    );
+
+    fireEvent.click(trigger);
+
+    const menu = screen.getByRole("listbox");
+    expect(menu.style.left).toBe("-4px");
+    expect(menu.style.width).toBe("264px");
+    expect(menu.style.maxHeight).toBe("288px");
+    expect(menu.style.bottom).toBe("calc(100% + 0.5rem)");
   });
 });
