@@ -30,10 +30,6 @@ interface WorkbenchLayoutProps {
   onSuccess?: (message: string) => void;
   /** Conversation tab content (ChatView + InputBar). */
   conversationSlot: ReactNode;
-  /** Whether to collapse the left column (focus mode). */
-  focusMode: boolean;
-  /** Whether the TopBar Review surface is selected. */
-  reviewSurfaceActive: boolean;
   /** Approval resolver from session manager. */
   onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
 }
@@ -56,8 +52,6 @@ export function WorkbenchLayout({
   onError,
   onSuccess,
   conversationSlot,
-  focusMode,
-  reviewSurfaceActive,
   onResolveApproval,
 }: WorkbenchLayoutProps) {
   const [leftTab, setLeftTab] = useState<LeftTab>("conversation");
@@ -84,10 +78,6 @@ export function WorkbenchLayout({
     }
     if (!constellation.reviewActive) switchedRef.current = false;
   }, [constellation.reviewActive]);
-
-  useEffect(() => {
-    if (reviewSurfaceActive) setLeftTab("reviewers");
-  }, [reviewSurfaceActive]);
 
   // Draggable splitter
   const draggingRef = useRef(false);
@@ -223,21 +213,6 @@ export function WorkbenchLayout({
   const visibleReviewers = constellation.reviewerNodes;
   const verdictCount = visibleReviewers.filter((r) => r.status === "done").length;
   const liveCount = visibleReviewers.filter((r) => r.status === "active").length;
-
-  if (focusMode) {
-    // Focus mode: canvas only, no left column.
-    return (
-      <div className="workbench-layout workbench-focus">
-        <ConstellationCanvas
-          toolNodes={constellation.toolNodes}
-          reviewerNodes={constellation.reviewerNodes}
-          reviewActive={constellation.reviewActive}
-          agentRunning={constellation.agentRunning}
-          onApprove={handleApprove}
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="workbench-layout">

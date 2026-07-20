@@ -81,7 +81,6 @@ function renderPalette(overrides: Partial<ComponentProps<typeof CommandPalette>>
       onOpenSettings={vi.fn()}
       onOpenWorkspaceSwitcher={vi.fn()}
       onToggleSessions={vi.fn()}
-      onSwitchToReview={vi.fn()}
       onSelectModel={vi.fn()}
       onVariantChange={vi.fn()}
       {...overrides}

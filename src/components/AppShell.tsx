@@ -20,7 +20,6 @@ import { InputBar } from "./InputBar";
 import { SessionDrawer } from "./SessionDrawer";
 import { SettingsModal } from "./SettingsModal";
 import { ToastContainer, useToasts } from "./Toast";
-import type { WorkspaceLayoutMode } from "./TopBar";
 import { TopBar } from "./TopBar";
 import { WorkbenchLayout } from "./WorkbenchLayout";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
@@ -103,7 +102,6 @@ export function AppShell() {
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
-  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayoutMode>("evidence");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
@@ -740,10 +738,6 @@ export function AppShell() {
     setSessionDrawerOpen((open) => !open);
   }, []);
 
-  const handleWorkspaceLayoutChange = useCallback((mode: WorkspaceLayoutMode) => {
-    setWorkspaceLayout(mode);
-  }, []);
-
   useEffect(() => {
     const target = chatColumnRef.current as (HTMLDivElement & { inert?: boolean }) | null;
     if (!target) return;
@@ -778,19 +772,12 @@ export function AppShell() {
   }, []);
 
   return (
-    <div
-      className="app-shell"
-      data-theme={resolvedTheme}
-      data-theme-preference={themePreference}
-      data-workspace-layout={workspaceLayout}
-    >
+    <div className="app-shell" data-theme={resolvedTheme} data-theme-preference={themePreference}>
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
         sessionMode={session.activeSessionMode}
-        workspaceLayout={workspaceLayout}
         onSessionModeChange={session.handleSessionModeChange}
-        onWorkspaceLayoutChange={handleWorkspaceLayoutChange}
         model={currentModelName}
         status={session.status}
         onWorkspaceSwitch={() => setWorkspaceSwitcherOpen(true)}
@@ -817,8 +804,6 @@ export function AppShell() {
             onFixFinding={(prompt) => session.handleSend(prompt)}
             onError={showError}
             onSuccess={showSuccess}
-            focusMode={workspaceLayout === "focus"}
-            reviewSurfaceActive={workspaceLayout === "review"}
             onResolveApproval={session.resolveApproval}
             conversationSlot={
               <>
@@ -963,7 +948,6 @@ export function AppShell() {
         onOpenSettings={openSettings}
         onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
         onToggleSessions={toggleSessionDrawer}
-        onSwitchToReview={() => handleWorkspaceLayoutChange("review")}
         onSelectModel={(modelId) => {
           applyModelSelection(modelId);
         }}

@@ -82,8 +82,6 @@ function workbenchProps(
     workspacePath: "/workspace/gospel",
     canSendTurn: true,
     conversationSlot: <div>Conversation content</div>,
-    focusMode: false,
-    reviewSurfaceActive: false,
     ...overrides,
   };
 }
@@ -116,14 +114,13 @@ describe("WorkbenchLayout", () => {
     cleanup();
   });
 
-  it("selects the Reviewers tab when the TopBar Review surface becomes active", async () => {
-    const initialProps = workbenchProps();
-    const view = render(<WorkbenchLayout {...initialProps} />);
+  it("switches to the Reviewers tab when its tab button is clicked", async () => {
+    render(<WorkbenchLayout {...workbenchProps()} />);
 
     expect(screen.getByText("Conversation content")).toBeDefined();
     expect(screen.queryByRole("button", { name: "Run" })).toBeNull();
 
-    view.rerender(<WorkbenchLayout {...initialProps} reviewSurfaceActive />);
+    fireEvent.click(screen.getByRole("button", { name: /Reviewers/ }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Run" })).toBeDefined();
@@ -134,12 +131,9 @@ describe("WorkbenchLayout", () => {
   it("keeps completed findings and their review actions accessible", async () => {
     const onFixFinding = vi.fn().mockResolvedValue(undefined);
     const onSuccess = vi.fn();
-    render(
-      <WorkbenchLayout
-        {...workbenchProps({ reviewSurfaceActive: true, onFixFinding, onSuccess })}
-      />
-    );
+    render(<WorkbenchLayout {...workbenchProps({ onFixFinding, onSuccess })} />);
 
+    fireEvent.click(screen.getByRole("button", { name: /Reviewers/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Run" }));
 
     expect(await screen.findByText("Unsanitized command")).toBeDefined();
