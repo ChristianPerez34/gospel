@@ -208,6 +208,7 @@ export function ReviewResults({
         ...current,
         [outcomeKey(sourceReview, comment)]: outcome,
       }));
+      setError(null);
       onSuccess?.(outcome === "accepted" ? "Finding accepted." : "Finding rejected.");
     } catch (err) {
       reportError(String(err));
@@ -222,6 +223,7 @@ export function ReviewResults({
         return;
       }
       await openPath(filePath);
+      setError(null);
     } catch (err) {
       reportError(`Failed to open ${comment.file}: ${err}`);
     }
@@ -243,6 +245,7 @@ export function ReviewResults({
         throw new Error("Clipboard is unavailable.");
       }
       await navigator.clipboard.writeText(prompt);
+      setError(null);
       onSuccess?.("Finding prompt copied.");
     } catch (err) {
       reportError(`Failed to copy finding prompt: ${err}`);
@@ -262,6 +265,7 @@ export function ReviewResults({
 
     try {
       await onFixFinding(prompt);
+      setError(null);
       onFixStarted?.();
     } catch (err) {
       reportError(`Failed to start fix turn: ${err}`);
@@ -328,6 +332,17 @@ export function ReviewResults({
             );
           })}
         </div>
+      )}
+
+      {multiResult && Object.keys(multiResult.errors).length > 0 && (
+        <ul className="m-0 grid list-none gap-1 rounded-md border border-status-error bg-surface-base p-3 text-body-sm text-status-error">
+          {Object.entries(multiResult.errors).map(([focus, message]) => (
+            <li key={focus} className="font-mono text-caption">
+              <span className="font-medium text-status-error">{focus}:</span>{" "}
+              <span className="text-status-error">{message}</span>
+            </li>
+          ))}
+        </ul>
       )}
 
       {error && (

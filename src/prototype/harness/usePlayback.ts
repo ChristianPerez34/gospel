@@ -63,7 +63,7 @@ export function usePlayback(autoStart = true): PlaybackState & {
       });
       if (advanced) {
         // unblock the pending run_shell after it
-        window.setTimeout(() => {
+        const t0 = window.setTimeout(() => {
           setTurns((cur) =>
             cur.map((turn) => {
               if (!turn.tools) return turn;
@@ -77,7 +77,7 @@ export function usePlayback(autoStart = true): PlaybackState & {
               };
             })
           );
-          window.setTimeout(() => {
+          const t1 = window.setTimeout(() => {
             setTurns((cur) =>
               cur.map((turn) => {
                 if (!turn.tools) return turn;
@@ -92,7 +92,9 @@ export function usePlayback(autoStart = true): PlaybackState & {
               })
             );
           }, 900);
+          timers.current.push(t1);
         }, 500);
+        timers.current.push(t0);
       }
       return next;
     });

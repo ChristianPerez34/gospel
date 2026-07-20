@@ -124,9 +124,12 @@ export function VariantD() {
       });
     });
     if (clusteredTools.length > 0) {
-      // place the cluster node at the top of the left arc
-      const angle = Math.PI - 0.65;
-      const radius = 200;
+      // place the cluster node in the slot immediately after the visible tools,
+      // using the same toolCount-based positioning as visibleTools so it never
+      // overlaps visibleTools[0]
+      const t = visibleTools.length / (toolCount - 1);
+      const angle = Math.PI - 0.65 + t * 1.3; // left arc
+      const radius = 200 + t * 40;
       list.push({
         id: "cluster",
         x: cx + Math.cos(angle) * radius,
