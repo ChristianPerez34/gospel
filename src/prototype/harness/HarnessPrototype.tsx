@@ -45,7 +45,8 @@ export function HarnessPrototype() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
+        return;
       if (e.key === "ArrowLeft") cycle(-1);
       if (e.key === "ArrowRight") cycle(1);
     };
@@ -120,7 +121,12 @@ const arrow: React.CSSProperties = {
   display: "grid",
   placeItems: "center",
 };
-const label: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "0 8px" };
+const label: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "0 8px",
+};
 const labelKey: React.CSSProperties = {
   fontSize: 10,
   textTransform: "uppercase",

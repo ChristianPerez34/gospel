@@ -1,11 +1,11 @@
 // PROTOTYPE — throwaway. Drives the scripted agent run + parallel review playback.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type AgentTurn,
   INITIAL_REVIEWERS,
   REVIEW_SCRIPT,
-  SCRIPT,
-  type AgentTurn,
   type Reviewer,
+  SCRIPT,
   type ToolCall,
 } from "./data";
 
@@ -72,10 +72,10 @@ export function usePlayback(autoStart = true): PlaybackState & {
                 tools: turn.tools.map((tc) =>
                   tc.status === "pending" && tc.kind === "run_shell"
                     ? { ...tc, status: "running" as const }
-                    : tc,
+                    : tc
                 ),
               };
-            }),
+            })
           );
           window.setTimeout(() => {
             setTurns((cur) =>
@@ -86,10 +86,10 @@ export function usePlayback(autoStart = true): PlaybackState & {
                   tools: turn.tools.map((tc) =>
                     tc.status === "running" && tc.kind === "run_shell"
                       ? { ...tc, status: "done" as const, detail: "exit 0 — 18 passed" }
-                      : tc,
+                      : tc
                   ),
                 };
-              }),
+              })
             );
           }, 900);
         }, 500);
@@ -155,7 +155,7 @@ export function usePlayback(autoStart = true): PlaybackState & {
                 verdict: frame.verdict ?? r.verdict,
                 comments,
               };
-            }),
+            })
           );
         }, d);
         timers.current.push(t);
@@ -164,14 +164,14 @@ export function usePlayback(autoStart = true): PlaybackState & {
       // when done, clear nowCommenting
       const end = window.setTimeout(() => {
         setReviewers((prev) =>
-          prev.map((r) => (r.id === reviewer.id ? { ...r, nowCommenting: undefined } : r)),
+          prev.map((r) => (r.id === reviewer.id ? { ...r, nowCommenting: undefined } : r))
         );
       }, d);
       timers.current.push(end);
     }
     // stop "running" once all done
     const total = Math.max(
-      ...INITIAL_REVIEWERS.map((r) => (REVIEW_SCRIPT[r.id]?.length ?? 0) * 1400 + 1200),
+      ...INITIAL_REVIEWERS.map((r) => (REVIEW_SCRIPT[r.id]?.length ?? 0) * 1400 + 1200)
     );
     const stop = window.setTimeout(() => setRunning(false), total);
     timers.current.push(stop);

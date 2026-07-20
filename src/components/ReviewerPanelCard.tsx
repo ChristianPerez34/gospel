@@ -16,12 +16,7 @@ interface ReviewerPanelCardProps {
   onLeave: () => void;
 }
 
-export function ReviewerPanelCard({
-  r,
-  active,
-  onHover,
-  onLeave,
-}: ReviewerPanelCardProps) {
+export function ReviewerPanelCard({ r, active, onHover, onLeave }: ReviewerPanelCardProps) {
   const color = FOCUS_COLOR_HEX[r.focus] ?? "var(--gospel-text-muted)";
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -77,10 +72,7 @@ export function ReviewerPanelCard({
 
       {r.status === "active" && (
         <div className="reviewer-panel-now-reading">
-          <span
-            className="reviewer-panel-pulse-dot"
-            style={{ background: color }}
-          />
+          <span className="reviewer-panel-pulse-dot" style={{ background: color }} />
           <span>analyzing…</span>
         </div>
       )}
@@ -95,10 +87,7 @@ export function ReviewerPanelCard({
           </div>
         ))}
         {r.status === "active" && (
-          <div
-            className="reviewer-panel-typing"
-            style={{ color }}
-          >
+          <div className="reviewer-panel-typing" style={{ color }}>
             typing…
           </div>
         )}
@@ -112,15 +101,10 @@ export function ReviewerPanelCard({
               r.findings > 0
                 ? "color-mix(in srgb, var(--gospel-status-warning) 13%, transparent)"
                 : "color-mix(in srgb, var(--gospel-status-success) 13%, transparent)",
-            color:
-              r.findings > 0
-                ? "var(--gospel-status-warning)"
-                : "var(--gospel-status-success)",
+            color: r.findings > 0 ? "var(--gospel-status-warning)" : "var(--gospel-status-success)",
           }}
         >
-          {r.findings > 0
-            ? `${r.findings} finding${r.findings === 1 ? "" : "s"}`
-            : "✓ clean"}
+          {r.findings > 0 ? `${r.findings} finding${r.findings === 1 ? "" : "s"}` : "✓ clean"}
         </div>
       )}
     </div>

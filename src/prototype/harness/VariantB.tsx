@@ -11,10 +11,10 @@
 // multi-track timeline. Calm charcoal, green-tinted positive accents.
 import { useEffect, useRef, useState } from "react";
 import {
-  REVIEWER_COLOR_VAR,
-  SEVERITY_META,
   type AgentTurn,
+  REVIEWER_COLOR_VAR,
   type Reviewer,
+  SEVERITY_META,
   type ToolCall,
 } from "./data";
 import { allTools, usePlayback } from "./usePlayback";
@@ -45,7 +45,9 @@ export function VariantB() {
           <span style={statusChip(running ? "running" : reviewStarted ? "reviewing" : "idle")}>
             {running ? "agent running" : reviewStarted ? "review in progress" : "idle"}
           </span>
-          <button type="button" style={ghostBtn} onClick={restart}>replay</button>
+          <button type="button" style={ghostBtn} onClick={restart}>
+            replay
+          </button>
         </div>
       </header>
 
@@ -201,9 +203,7 @@ function ReviewerLane({ r }: { r: Reviewer }) {
         {r.nowCommenting && <span style={laneNow}>{r.nowCommenting.split("/").pop()}</span>}
       </div>
       <div style={laneStream} ref={scrollRef}>
-        {r.comments.length === 0 && !r.nowCommenting && (
-          <div style={laneEmpty}>waiting…</div>
-        )}
+        {r.comments.length === 0 && !r.nowCommenting && <div style={laneEmpty}>waiting…</div>}
         {r.comments.map((c, i) => {
           const sev = SEVERITY_META[c.severity];
           return (
@@ -217,9 +217,7 @@ function ReviewerLane({ r }: { r: Reviewer }) {
         {r.nowCommenting && <div style={laneTyping(color)}>typing…</div>}
       </div>
       {r.verdict && (
-        <div style={laneVerdict(r.verdict)}>
-          {r.verdict === "approve" ? "approve" : "changes"}
-        </div>
+        <div style={laneVerdict(r.verdict)}>{r.verdict === "approve" ? "approve" : "changes"}</div>
       )}
     </div>
   );
@@ -267,7 +265,12 @@ const topbar: React.CSSProperties = {
   flexShrink: 0,
 };
 const topTitle: React.CSSProperties = { fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em" };
-const topCrumb: React.CSSProperties = { color: "var(--text-muted)", fontSize: 12, fontFamily: "var(--font-mono)", flex: 1 };
+const topCrumb: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 12,
+  fontFamily: "var(--font-mono)",
+  flex: 1,
+};
 const topRight: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10 };
 const ghostBtn: React.CSSProperties = {
   background: "transparent",
@@ -294,10 +297,30 @@ const statusChip = (s: "running" | "reviewing" | "idle"): React.CSSProperties =>
         ? "var(--status-warning)"
         : "var(--text-muted)",
 });
-const grid: React.CSSProperties = { display: "grid", gridTemplateColumns: "240px 1fr 1fr", flex: 1, minHeight: 0 };
-const leftCol: React.CSSProperties = { borderRight: "1px solid var(--surface-line)", display: "flex", flexDirection: "column", background: "var(--surface-sunken)" };
-const centerCol: React.CSSProperties = { display: "flex", flexDirection: "column", borderRight: "1px solid var(--surface-line)", minWidth: 0 };
-const rightCol: React.CSSProperties = { display: "flex", flexDirection: "column", minWidth: 0, background: "var(--surface-sunken)" };
+const grid: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "240px 1fr 1fr",
+  flex: 1,
+  minHeight: 0,
+};
+const leftCol: React.CSSProperties = {
+  borderRight: "1px solid var(--surface-line)",
+  display: "flex",
+  flexDirection: "column",
+  background: "var(--surface-sunken)",
+};
+const centerCol: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  borderRight: "1px solid var(--surface-line)",
+  minWidth: 0,
+};
+const rightCol: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  minWidth: 0,
+  background: "var(--surface-sunken)",
+};
 const colHead: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
@@ -311,11 +334,33 @@ const colHead: React.CSSProperties = {
   borderBottom: "1px solid var(--surface-line)",
 };
 const colCount: React.CSSProperties = { color: "var(--text-muted)" };
-const promptHistory: React.CSSProperties = { padding: "10px 14px", borderBottom: "1px solid var(--surface-line)" };
-const promptHistoryItem: React.CSSProperties = { display: "flex", gap: 8, alignItems: "flex-start" };
-const promptHistoryGlyph: React.CSSProperties = { color: "var(--status-success)", fontFamily: "var(--font-mono)", fontSize: 12 };
-const promptHistoryText: React.CSSProperties = { fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 };
-const timeline: React.CSSProperties = { flex: 1, overflowY: "auto", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 2 };
+const promptHistory: React.CSSProperties = {
+  padding: "10px 14px",
+  borderBottom: "1px solid var(--surface-line)",
+};
+const promptHistoryItem: React.CSSProperties = {
+  display: "flex",
+  gap: 8,
+  alignItems: "flex-start",
+};
+const promptHistoryGlyph: React.CSSProperties = {
+  color: "var(--status-success)",
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+};
+const promptHistoryText: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--text-secondary)",
+  lineHeight: 1.45,
+};
+const timeline: React.CSSProperties = {
+  flex: 1,
+  overflowY: "auto",
+  padding: "10px 14px",
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+};
 const timelineItem = (_s: ToolCall["status"]): React.CSSProperties => ({
   display: "flex",
   alignItems: "center",
@@ -331,17 +376,52 @@ const timelineItem = (_s: ToolCall["status"]): React.CSSProperties => ({
   color: "var(--text-secondary)",
 });
 const timelineDot = (tc: ToolCall): React.CSSProperties => ({
-  width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
-  background: tc.status === "done" ? "var(--status-success)" : tc.status === "awaiting" ? "var(--status-warning)" : tc.status === "running" ? "var(--accent-action)" : "var(--text-muted)",
+  width: 7,
+  height: 7,
+  borderRadius: "50%",
+  flexShrink: 0,
+  background:
+    tc.status === "done"
+      ? "var(--status-success)"
+      : tc.status === "awaiting"
+        ? "var(--status-warning)"
+        : tc.status === "running"
+          ? "var(--accent-action)"
+          : "var(--text-muted)",
 });
 const timelineLabel: React.CSSProperties = { color: "var(--text-muted)", minWidth: 52 };
-const timelineTarget: React.CSSProperties = { color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const emptyHint: React.CSSProperties = { color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)", padding: "8px" };
+const timelineTarget: React.CSSProperties = {
+  color: "var(--text-primary)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const emptyHint: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+  padding: "8px",
+};
 
 const centerInner: React.CSSProperties = { flex: 1, overflowY: "auto", padding: "16px 24px" };
-const centerHead: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 16 };
-const centerHeadLabel: React.CSSProperties = { fontSize: 11, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "var(--font-mono)", color: "var(--text-muted)" };
-const centerHeadMeta: React.CSSProperties = { color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" };
+const centerHead: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "baseline",
+  marginBottom: 16,
+};
+const centerHeadLabel: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: "uppercase",
+  letterSpacing: "0.12em",
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+};
+const centerHeadMeta: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+};
 const centerTurn = (active: boolean): React.CSSProperties => ({
   marginBottom: 18,
   padding: 14,
@@ -352,81 +432,282 @@ const centerTurn = (active: boolean): React.CSSProperties => ({
 });
 const centerTurnHead = (_isUser: boolean): React.CSSProperties => ({ marginBottom: 8 });
 const centerTurnRole = (isUser: boolean): React.CSSProperties => ({
-  fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "var(--font-mono)",
+  fontSize: 10,
+  textTransform: "uppercase",
+  letterSpacing: "0.12em",
+  fontFamily: "var(--font-mono)",
   color: isUser ? "var(--status-success)" : "var(--accent-structure)",
 });
-const centerReasoning: React.CSSProperties = { margin: "0 0 8px", fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", lineHeight: 1.5 };
-const centerText = (isUser: boolean): React.CSSProperties => ({ margin: 0, fontSize: 14, lineHeight: 1.6, color: isUser ? "var(--text-primary)" : "var(--text-secondary)" });
-const centerTools: React.CSSProperties = { marginTop: 12, display: "flex", flexDirection: "column", gap: 6 };
+const centerReasoning: React.CSSProperties = {
+  margin: "0 0 8px",
+  fontSize: 12,
+  color: "var(--text-muted)",
+  fontStyle: "italic",
+  lineHeight: 1.5,
+};
+const centerText = (isUser: boolean): React.CSSProperties => ({
+  margin: 0,
+  fontSize: 14,
+  lineHeight: 1.6,
+  color: isUser ? "var(--text-primary)" : "var(--text-secondary)",
+});
+const centerTools: React.CSSProperties = {
+  marginTop: 12,
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+};
 const centerTool = (_s: ToolCall["status"]): React.CSSProperties => ({
   background: "var(--surface-sunken)",
   border: "1px solid var(--surface-line)",
   borderRadius: "var(--radius-sm)",
   padding: "8px 10px",
 });
-const centerToolTop: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10, fontFamily: "var(--font-mono)", fontSize: 11 };
+const centerToolTop: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+};
 const centerToolKind = (k: ToolCall["kind"]): React.CSSProperties => ({
-  color: k === "edit" || k === "write" ? "var(--accent-signal)" : k === "run_shell" ? "var(--status-success)" : "var(--text-muted)",
-  fontWeight: 600, minWidth: 64,
+  color:
+    k === "edit" || k === "write"
+      ? "var(--accent-signal)"
+      : k === "run_shell"
+        ? "var(--status-success)"
+        : "var(--text-muted)",
+  fontWeight: 600,
+  minWidth: 64,
 });
-const centerToolTarget: React.CSSProperties = { flex: 1, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const centerToolTarget: React.CSSProperties = {
+  flex: 1,
+  color: "var(--text-primary)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
 const centerToolStatus = (s: ToolCall["status"]): React.CSSProperties => ({
-  fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em",
-  color: s === "done" ? "var(--status-success)" : s === "awaiting" ? "var(--status-warning)" : s === "running" ? "var(--accent-action)" : "var(--text-muted)",
+  fontSize: 9,
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
+  color:
+    s === "done"
+      ? "var(--status-success)"
+      : s === "awaiting"
+        ? "var(--status-warning)"
+        : s === "running"
+          ? "var(--accent-action)"
+          : "var(--text-muted)",
 });
-const centerToolDetail: React.CSSProperties = { display: "block", marginTop: 6, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)" };
+const centerToolDetail: React.CSSProperties = {
+  display: "block",
+  marginTop: 6,
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  color: "var(--text-muted)",
+};
 const approveBtn: React.CSSProperties = {
-  marginTop: 8, background: "var(--status-success)", color: "var(--text-inverse)", border: "none",
-  borderRadius: "var(--radius-sm)", padding: "4px 12px", fontSize: 11, fontFamily: "var(--font-mono)", cursor: "pointer", fontWeight: 600,
+  marginTop: 8,
+  background: "var(--status-success)",
+  color: "var(--text-inverse)",
+  border: "none",
+  borderRadius: "var(--radius-sm)",
+  padding: "4px 12px",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+  cursor: "pointer",
+  fontWeight: 600,
 };
-const liveBar: React.CSSProperties = { padding: "10px 14px", fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--status-success)" };
-const composer: React.CSSProperties = { borderTop: "1px solid var(--surface-line)", padding: 14, background: "var(--surface-elevated)" };
+const liveBar: React.CSSProperties = {
+  padding: "10px 14px",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+  color: "var(--status-success)",
+};
+const composer: React.CSSProperties = {
+  borderTop: "1px solid var(--surface-line)",
+  padding: 14,
+  background: "var(--surface-elevated)",
+};
 const composerInput: React.CSSProperties = {
-  width: "100%", background: "var(--surface-sunken)", border: "1px solid var(--surface-line)", borderRadius: "var(--radius-md)",
-  color: "var(--text-primary)", fontFamily: "var(--font-body)", fontSize: 14, padding: 10, resize: "none", outline: "none",
+  width: "100%",
+  background: "var(--surface-sunken)",
+  border: "1px solid var(--surface-line)",
+  borderRadius: "var(--radius-md)",
+  color: "var(--text-primary)",
+  fontFamily: "var(--font-body)",
+  fontSize: 14,
+  padding: 10,
+  resize: "none",
+  outline: "none",
 };
-const composerFoot: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 };
-const composerHint: React.CSSProperties = { color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" };
+const composerFoot: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginTop: 8,
+};
+const composerHint: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+};
 const sendBtn: React.CSSProperties = {
-  background: "var(--status-success)", color: "var(--text-inverse)", border: "none", borderRadius: "var(--radius-sm)",
-  padding: "6px 16px", fontSize: 12, fontFamily: "var(--font-mono)", cursor: "pointer", fontWeight: 600,
+  background: "var(--status-success)",
+  color: "var(--text-inverse)",
+  border: "none",
+  borderRadius: "var(--radius-sm)",
+  padding: "6px 16px",
+  fontSize: 12,
+  fontFamily: "var(--font-mono)",
+  cursor: "pointer",
+  fontWeight: 600,
 };
 
-const lanesWrap: React.CSSProperties = { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 };
-const lanes: React.CSSProperties = { flex: 1, display: "flex", gap: 1, background: "var(--surface-line)", overflowX: "auto", minHeight: 0 };
+const lanesWrap: React.CSSProperties = {
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+};
+const lanes: React.CSSProperties = {
+  flex: 1,
+  display: "flex",
+  gap: 1,
+  background: "var(--surface-line)",
+  overflowX: "auto",
+  minHeight: 0,
+};
 const lane = (color: string): React.CSSProperties => ({
-  flex: "0 0 240px", display: "flex", flexDirection: "column", background: "var(--surface-base)",
-  borderTop: `2px solid ${color}`, minWidth: 0,
+  flex: "0 0 240px",
+  display: "flex",
+  flexDirection: "column",
+  background: "var(--surface-base)",
+  borderTop: `2px solid ${color}`,
+  minWidth: 0,
 });
-const laneHead = (_color: string): React.CSSProperties => ({ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px" });
+const laneHead = (_color: string): React.CSSProperties => ({
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "10px 12px",
+});
 const laneAvatar = (color: string): React.CSSProperties => ({
-  width: 22, height: 22, borderRadius: "50%", display: "grid", placeItems: "center",
-  background: `${color}22`, color, fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600, border: `1px solid ${color}55`,
+  width: 22,
+  height: 22,
+  borderRadius: "50%",
+  display: "grid",
+  placeItems: "center",
+  background: `${color}22`,
+  color,
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  fontWeight: 600,
+  border: `1px solid ${color}55`,
 });
 const laneName: React.CSSProperties = { fontSize: 12, fontWeight: 600 };
-const laneRole: React.CSSProperties = { fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginLeft: "auto" };
-const laneProgress: React.CSSProperties = { height: 2, background: "var(--surface-line)", margin: "0 12px" };
-const laneProgressFill = (color: string, p: number): React.CSSProperties => ({ height: "100%", width: `${p * 100}%`, background: color, transition: "width 600ms var(--ease-out-quart)" });
-const laneStatusLine: React.CSSProperties = { display: "flex", justifyContent: "space-between", padding: "6px 12px 8px", fontSize: 10, fontFamily: "var(--font-mono)" };
-const laneStatusText = (color: string, s: Reviewer["status"]): React.CSSProperties => ({ color: s === "done" ? "var(--text-muted)" : color, textTransform: "uppercase", letterSpacing: "0.08em" });
-const laneNow: React.CSSProperties = { color: "var(--text-muted)", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const laneStream: React.CSSProperties = { flex: 1, overflowY: "auto", padding: "8px 12px", display: "flex", flexDirection: "column", gap: 8 };
-const laneEmpty: React.CSSProperties = { color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" };
+const laneRole: React.CSSProperties = {
+  fontSize: 10,
+  color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+  marginLeft: "auto",
+};
+const laneProgress: React.CSSProperties = {
+  height: 2,
+  background: "var(--surface-line)",
+  margin: "0 12px",
+};
+const laneProgressFill = (color: string, p: number): React.CSSProperties => ({
+  height: "100%",
+  width: `${p * 100}%`,
+  background: color,
+  transition: "width 600ms var(--ease-out-quart)",
+});
+const laneStatusLine: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  padding: "6px 12px 8px",
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+};
+const laneStatusText = (color: string, s: Reviewer["status"]): React.CSSProperties => ({
+  color: s === "done" ? "var(--text-muted)" : color,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+});
+const laneNow: React.CSSProperties = {
+  color: "var(--text-muted)",
+  maxWidth: 110,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const laneStream: React.CSSProperties = {
+  flex: 1,
+  overflowY: "auto",
+  padding: "8px 12px",
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+};
+const laneEmpty: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+};
 const laneComment = (sev: Reviewer["comments"][number]["severity"]): React.CSSProperties => ({
-  background: "var(--surface-sunken)", borderRadius: "var(--radius-sm)", padding: "8px 10px",
+  background: "var(--surface-sunken)",
+  borderRadius: "var(--radius-sm)",
+  padding: "8px 10px",
   borderLeft: `2px solid ${sev === "blocker" ? "var(--status-error)" : sev === "issue" ? "var(--status-warning)" : sev === "praise" ? "var(--status-success)" : "var(--surface-line)"}`,
 });
-const laneCommentSev = (c: string): React.CSSProperties => ({ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: "var(--font-mono)", color: c, fontWeight: 600 });
-const laneCommentLine: React.CSSProperties = { fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginLeft: 6 };
-const laneCommentText: React.CSSProperties = { margin: "4px 0 0", fontSize: 11, lineHeight: 1.45, color: "var(--text-secondary)" };
-const laneTyping = (color: string): React.CSSProperties => ({ fontSize: 10, fontFamily: "var(--font-mono)", color, animation: "proto-blink 1.2s infinite" });
+const laneCommentSev = (c: string): React.CSSProperties => ({
+  fontSize: 9,
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
+  fontFamily: "var(--font-mono)",
+  color: c,
+  fontWeight: 600,
+});
+const laneCommentLine: React.CSSProperties = {
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+  marginLeft: 6,
+};
+const laneCommentText: React.CSSProperties = {
+  margin: "4px 0 0",
+  fontSize: 11,
+  lineHeight: 1.45,
+  color: "var(--text-secondary)",
+};
+const laneTyping = (color: string): React.CSSProperties => ({
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  color,
+  animation: "proto-blink 1.2s infinite",
+});
 const laneVerdict = (v: Reviewer["verdict"]): React.CSSProperties => ({
-  margin: "0 12px 10px", padding: "6px", borderRadius: "var(--radius-sm)", textAlign: "center", fontSize: 10,
-  fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.1em",
+  margin: "0 12px 10px",
+  padding: "6px",
+  borderRadius: "var(--radius-sm)",
+  textAlign: "center",
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
   background: v === "approve" ? "var(--status-success)22" : "var(--status-warning)22",
   color: v === "approve" ? "var(--status-success)" : "var(--status-warning)",
 });
 const laneAxis: React.CSSProperties = {
-  display: "flex", justifyContent: "space-between", padding: "8px 14px", fontSize: 10, fontFamily: "var(--font-mono)",
-  color: "var(--text-muted)", borderTop: "1px solid var(--surface-line)", textTransform: "uppercase", letterSpacing: "0.1em",
+  display: "flex",
+  justifyContent: "space-between",
+  padding: "8px 14px",
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+  borderTop: "1px solid var(--surface-line)",
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
 };

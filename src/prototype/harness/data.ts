@@ -38,13 +38,7 @@ export interface AgentTurn {
 }
 
 export type ReviewerColor = "cyan" | "violet" | "amber" | "rose";
-export type ReviewerStatus =
-  | "queued"
-  | "reading"
-  | "analyzing"
-  | "commenting"
-  | "verdict"
-  | "done";
+export type ReviewerStatus = "queued" | "reading" | "analyzing" | "commenting" | "verdict" | "done";
 
 export interface ReviewComment {
   file: string;
@@ -122,7 +116,12 @@ export const SCRIPT: AgentTurn[] = [
             oldStart: 80,
             newStart: 80,
             lines: [
-              { type: "ctx", oldNo: 80, newNo: 80, text: "  const controller = new AbortController();" },
+              {
+                type: "ctx",
+                oldNo: 80,
+                newNo: 80,
+                text: "  const controller = new AbortController();",
+              },
               { type: "ctx", oldNo: 81, newNo: 81, text: "" },
               { type: "add", newNo: 82, text: "  function retryWithBackoff(" },
               { type: "add", newNo: 83, text: "    fn: () => Promise<Response>," },
@@ -136,7 +135,11 @@ export const SCRIPT: AgentTurn[] = [
               { type: "add", newNo: 91, text: "      catch (err) {" },
               { type: "add", newNo: 92, text: "        if (!isRetryable(err)) throw err;" },
               { type: "add", newNo: 93, text: "        lastErr = err;" },
-              { type: "add", newNo: 94, text: "        const delay = Math.min(cap, base * 2 ** i)" },
+              {
+                type: "add",
+                newNo: 94,
+                text: "        const delay = Math.min(cap, base * 2 ** i)",
+              },
               { type: "add", newNo: 95, text: "          + Math.random() * base;" },
               { type: "add", newNo: 96, text: "        await sleep(delay);" },
               { type: "add", newNo: 97, text: "      }" },
@@ -144,8 +147,18 @@ export const SCRIPT: AgentTurn[] = [
               { type: "add", newNo: 99, text: "    throw lastErr;" },
               { type: "add", newNo: 100, text: "  }" },
               { type: "ctx", oldNo: 82, newNo: 101, text: "" },
-              { type: "ctx", oldNo: 83, newNo: 102, text: "  const res = await retryWithBackoff(() =>" },
-              { type: "ctx", oldNo: 84, newNo: 103, text: "    fetch(url, { ...opts, signal: controller.signal })," },
+              {
+                type: "ctx",
+                oldNo: 83,
+                newNo: 102,
+                text: "  const res = await retryWithBackoff(() =>",
+              },
+              {
+                type: "ctx",
+                oldNo: 84,
+                newNo: 103,
+                text: "    fetch(url, { ...opts, signal: controller.signal }),",
+              },
               { type: "ctx", oldNo: 85, newNo: 104, text: "  );" },
             ],
           },
@@ -192,10 +205,26 @@ export const SCRIPT: AgentTurn[] = [
               { type: "ctx", oldNo: 108, newNo: 127, text: "  }" },
               { type: "ctx", oldNo: 109, newNo: 128, text: "" },
               { type: "add", newNo: 129, text: "  function isRetryable(err: unknown): boolean {" },
-              { type: "add", newNo: 130, text: "    if (err instanceof DOMException && err.name === 'AbortError') return false;" },
-              { type: "add", newNo: 131, text: "    if (err instanceof TypeError) return true; // network failure" },
-              { type: "add", newNo: 132, text: "    if (err instanceof Response && err.status >= 500) return true;" },
-              { type: "add", newNo: 133, text: "    return false; // 4xx and other errors are not retried" },
+              {
+                type: "add",
+                newNo: 130,
+                text: "    if (err instanceof DOMException && err.name === 'AbortError') return false;",
+              },
+              {
+                type: "add",
+                newNo: 131,
+                text: "    if (err instanceof TypeError) return true; // network failure",
+              },
+              {
+                type: "add",
+                newNo: 132,
+                text: "    if (err instanceof Response && err.status >= 500) return true;",
+              },
+              {
+                type: "add",
+                newNo: 133,
+                text: "    return false; // 4xx and other errors are not retried",
+              },
               { type: "add", newNo: 134, text: "  }" },
             ],
           },
@@ -398,10 +427,7 @@ export const TOOL_KIND_GLYPH: Record<ToolKind, string> = {
   plan: "plan",
 };
 
-export const SEVERITY_META: Record<
-  ReviewComment["severity"],
-  { label: string; color: string }
-> = {
+export const SEVERITY_META: Record<ReviewComment["severity"], { label: string; color: string }> = {
   praise: { label: "praise", color: "var(--status-success)" },
   nit: { label: "nit", color: "var(--text-muted)" },
   issue: { label: "issue", color: "var(--status-warning)" },

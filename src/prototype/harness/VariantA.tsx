@@ -10,9 +10,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   REVIEWER_COLOR_VAR,
+  type Reviewer,
   SEVERITY_META,
   TOOL_KIND_GLYPH,
-  type Reviewer,
   type ToolCall,
 } from "./data";
 import { usePlayback } from "./usePlayback";
@@ -54,9 +54,7 @@ export function VariantA() {
           <div style={feed}>
             <div style={hero}>
               <h1 style={heroTitle}>Terminal Workbench</h1>
-              <p style={heroSub}>
-                prompt in, agent out, every tool call visible on the ladder.
-              </p>
+              <p style={heroSub}>prompt in, agent out, every tool call visible on the ladder.</p>
             </div>
             {turns.map((turn) => (
               <TurnBlock key={turn.id} turn={turn} onApprove={approve} />
@@ -381,7 +379,13 @@ const toolGlyph = (k: ToolCall["kind"]): React.CSSProperties => ({
   minWidth: 36,
   fontWeight: 600,
 });
-const toolTarget: React.CSSProperties = { flex: 1, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const toolTarget: React.CSSProperties = {
+  flex: 1,
+  color: "var(--text-primary)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
 const toolStatus = (s: ToolCall["status"]): React.CSSProperties => ({
   fontSize: 10,
   textTransform: "uppercase",
@@ -443,7 +447,11 @@ const promptBar: React.CSSProperties = {
   borderTop: "1px solid var(--surface-line)",
   flexShrink: 0,
 };
-const promptChevron: React.CSSProperties = { color: "var(--accent-action)", fontFamily: "var(--font-mono)", fontSize: 16 };
+const promptChevron: React.CSSProperties = {
+  color: "var(--accent-action)",
+  fontFamily: "var(--font-mono)",
+  fontSize: 16,
+};
 const promptInput: React.CSSProperties = {
   flex: 1,
   background: "transparent",
@@ -453,7 +461,11 @@ const promptInput: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: 14,
 };
-const promptHint: React.CSSProperties = { color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" };
+const promptHint: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+};
 
 const sideSheet: React.CSSProperties = {
   width: 360,
@@ -470,8 +482,17 @@ const sideHead: React.CSSProperties = {
   padding: "16px 18px 10px",
   borderBottom: "1px solid var(--surface-line)",
 };
-const sideTitle: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.12em" };
-const sideMeta: React.CSSProperties = { color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" };
+const sideTitle: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+  textTransform: "uppercase",
+  letterSpacing: "0.12em",
+};
+const sideMeta: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+};
 const sideSummary: React.CSSProperties = { display: "flex", gap: 8, padding: "10px 18px" };
 const summaryPill = (c: string): React.CSSProperties => ({
   fontSize: 10,
@@ -498,7 +519,12 @@ const reviewerCard = (color: string): React.CSSProperties => ({
   borderRadius: "var(--radius-md)",
   padding: 12,
 });
-const reviewerHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 };
+const reviewerHead: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  marginBottom: 8,
+};
 const reviewerAvatar = (color: string): React.CSSProperties => ({
   width: 26,
   height: 26,
@@ -514,7 +540,11 @@ const reviewerAvatar = (color: string): React.CSSProperties => ({
 });
 const reviewerMeta: React.CSSProperties = { display: "flex", flexDirection: "column", flex: 1 };
 const reviewerName: React.CSSProperties = { fontSize: 13, fontWeight: 600 };
-const reviewerRole: React.CSSProperties = { fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" };
+const reviewerRole: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+};
 const reviewerStatus = (color: string, s: Reviewer["status"]): React.CSSProperties => ({
   fontSize: 10,
   textTransform: "uppercase",
@@ -522,7 +552,12 @@ const reviewerStatus = (color: string, s: Reviewer["status"]): React.CSSProperti
   fontFamily: "var(--font-mono)",
   color: s === "done" ? "var(--text-muted)" : color,
 });
-const progressTrack: React.CSSProperties = { height: 3, background: "var(--surface-line)", borderRadius: 2, overflow: "hidden" };
+const progressTrack: React.CSSProperties = {
+  height: 3,
+  background: "var(--surface-line)",
+  borderRadius: 2,
+  overflow: "hidden",
+};
 const progressFill = (color: string, p: number): React.CSSProperties => ({
   height: "100%",
   width: `${p * 100}%`,
@@ -539,9 +574,18 @@ const nowCommenting: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
 };
 const pulseDot = (color: string): React.CSSProperties => ({
-  width: 6, height: 6, borderRadius: "50%", background: color, animation: "proto-pulse 1s infinite",
+  width: 6,
+  height: 6,
+  borderRadius: "50%",
+  background: color,
+  animation: "proto-pulse 1s infinite",
 });
-const commentList: React.CSSProperties = { marginTop: 10, display: "flex", flexDirection: "column", gap: 8 };
+const commentList: React.CSSProperties = {
+  marginTop: 10,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+};
 const commentItem: React.CSSProperties = {
   background: "var(--surface-sunken)",
   borderRadius: "var(--radius-sm)",
@@ -552,10 +596,25 @@ const commentItem: React.CSSProperties = {
   alignItems: "baseline",
 };
 const commentSev = (c: string): React.CSSProperties => ({
-  fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: "var(--font-mono)", color: c, fontWeight: 600,
+  fontSize: 9,
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
+  fontFamily: "var(--font-mono)",
+  color: c,
+  fontWeight: 600,
 });
-const commentLoc: React.CSSProperties = { fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-muted)" };
-const commentText: React.CSSProperties = { gridColumn: "1 / -1", margin: 0, fontSize: 12, lineHeight: 1.5, color: "var(--text-secondary)" };
+const commentLoc: React.CSSProperties = {
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+};
+const commentText: React.CSSProperties = {
+  gridColumn: "1 / -1",
+  margin: 0,
+  fontSize: 12,
+  lineHeight: 1.5,
+  color: "var(--text-secondary)",
+};
 const verdictBar = (v: Reviewer["verdict"]): React.CSSProperties => ({
   marginTop: 10,
   padding: "6px 10px",

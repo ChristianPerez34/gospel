@@ -2350,7 +2350,8 @@ summary,
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  transition: background var(--duration-fast) var(--ease-out-quart),
+  transition:
+    background var(--duration-fast) var(--ease-out-quart),
     color var(--duration-fast) var(--ease-out-quart);
 }
 
@@ -2442,7 +2443,8 @@ summary,
   border-left-width: 2px;
   border-radius: var(--radius-md);
   padding: 12px;
-  transition: border-color var(--duration-fast) var(--ease-out-quart),
+  transition:
+    border-color var(--duration-fast) var(--ease-out-quart),
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
@@ -2673,7 +2675,8 @@ summary,
   background: var(--surface-elevated);
   border: 1px solid var(--surface-line);
   min-width: 110px;
-  transition: border-color var(--duration-fast) var(--ease-out-quart),
+  transition:
+    border-color var(--duration-fast) var(--ease-out-quart),
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
@@ -2823,7 +2826,8 @@ summary,
   border: 1px solid var(--surface-line);
   min-width: 96px;
   cursor: pointer;
-  transition: border-color var(--duration-fast) var(--ease-out-quart),
+  transition:
+    border-color var(--duration-fast) var(--ease-out-quart),
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
@@ -3163,21 +3167,45 @@ summary,
 
 /* PROTOTYPE — harness prototype keyframes. Throwaway. */
 @keyframes proto-blink {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 @keyframes proto-pulse {
-  0%, 100% { opacity: 0.4; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.4); }
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.4);
+  }
 }
 @keyframes proto-pulse-ring {
-  0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.35); opacity: 0; }
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
 }
 @keyframes proto-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 @keyframes proto-eq {
-  from { height: 20%; }
-  to { height: 100%; }
+  from {
+    height: 20%;
+  }
+  to {
+    height: 100%;
+  }
 }

@@ -19,11 +19,11 @@
 // + Parallel deep research for the activity rail.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  REVIEWER_COLOR_VAR,
-  SEVERITY_META,
   type AgentTurn,
   type DiffLine,
+  REVIEWER_COLOR_VAR,
   type Reviewer,
+  SEVERITY_META,
   type ToolCall,
 } from "./data";
 import { allTools, usePlayback } from "./usePlayback";
@@ -157,7 +157,8 @@ export function VariantD() {
 
   const edges = useMemo(() => {
     const e: { from: string; to: string; color: string; dashed?: boolean }[] = [];
-    for (const tc of visibleTools) e.push({ from: "agent", to: tc.id, color: "var(--surface-line)" });
+    for (const tc of visibleTools)
+      e.push({ from: "agent", to: tc.id, color: "var(--surface-line)" });
     if (clusteredTools.length > 0)
       e.push({ from: "agent", to: "cluster", color: "var(--text-muted)" });
     if (reviewStarted)
@@ -212,18 +213,15 @@ export function VariantD() {
               Reviewers
               {reviewStarted && (
                 <span style={tabBadgeLive}>
-                  {reviewers.filter((r) => r.status !== "done" && r.status !== "queued").length} live
+                  {reviewers.filter((r) => r.status !== "done" && r.status !== "queued").length}{" "}
+                  live
                 </span>
               )}
             </button>
           </div>
 
           {leftTab === "conversation" ? (
-            <ConversationTab
-              turns={turns}
-              running={running}
-              onApprove={approve}
-            />
+            <ConversationTab turns={turns} running={running} onApprove={approve} />
           ) : (
             <ReviewersTab
               reviewers={reviewers}
@@ -264,7 +262,8 @@ export function VariantD() {
             </svg>
 
             {nodes.map((n) => {
-              if (n.kind === "agent") return <AgentNode key={n.id} x={n.x} y={n.y} running={running} />;
+              if (n.kind === "agent")
+                return <AgentNode key={n.id} x={n.x} y={n.y} running={running} />;
               if (n.kind === "tool" && n.ref && "kind" in n.ref)
                 return (
                   <ToolNode
@@ -310,12 +309,9 @@ export function VariantD() {
 
             {clusteredTools.length > 0 && (
               <div style={loadHint}>
-                canvas showing latest {visibleTools.length} · {clusteredTools.length} earlier collapsed
-                <button
-                  type="button"
-                  style={loadHintBtn}
-                  onClick={() => setClusterOpen(true)}
-                >
+                canvas showing latest {visibleTools.length} · {clusteredTools.length} earlier
+                collapsed
+                <button type="button" style={loadHintBtn} onClick={() => setClusterOpen(true)}>
                   view all
                 </button>
               </div>
@@ -326,7 +322,9 @@ export function VariantD() {
             <ReviewerPopover r={reviewers.find((x) => x.id === activeReviewer)!} />
           )}
 
-          {clusterOpen && <ClusterPopover tools={clusteredTools} onClose={() => setClusterOpen(false)} />}
+          {clusterOpen && (
+            <ClusterPopover tools={clusteredTools} onClose={() => setClusterOpen(false)} />
+          )}
 
           {diffTool && <DiffPopover tc={diffTool} onClose={() => setDiffTool(null)} />}
         </div>
@@ -371,9 +369,7 @@ function ConversationTab({
       )}
 
       <div style={convStream} ref={scrollRef}>
-        {turns.length === 0 && (
-          <div style={convEmpty}>waiting for the agent to start…</div>
-        )}
+        {turns.length === 0 && <div style={convEmpty}>waiting for the agent to start…</div>}
         {turns.map((t) => (
           <TranscriptTurn key={t.id} turn={t} />
         ))}
@@ -532,18 +528,10 @@ function Composer({ disabled }: { disabled: boolean }) {
         </div>
         {/* mode toggle — build / plan */}
         <div style={modeToggle}>
-          <button
-            type="button"
-            style={modeBtn(mode === "build")}
-            onClick={() => setMode("build")}
-          >
+          <button type="button" style={modeBtn(mode === "build")} onClick={() => setMode("build")}>
             build
           </button>
-          <button
-            type="button"
-            style={modeBtn(mode === "plan")}
-            onClick={() => setMode("plan")}
-          >
+          <button type="button" style={modeBtn(mode === "plan")} onClick={() => setMode("plan")}>
             plan
           </button>
         </div>
@@ -672,14 +660,8 @@ function ToolNode({
 // Diff popover — shows the actual code changes when a file/tool node is clicked.
 function DiffPopover({ tc, onClose }: { tc: ToolCall; onClose: () => void }) {
   const hunks = tc.diff ?? [];
-  const additions = hunks.reduce(
-    (n, h) => n + h.lines.filter((l) => l.type === "add").length,
-    0,
-  );
-  const deletions = hunks.reduce(
-    (n, h) => n + h.lines.filter((l) => l.type === "del").length,
-    0,
-  );
+  const additions = hunks.reduce((n, h) => n + h.lines.filter((l) => l.type === "add").length, 0);
+  const deletions = hunks.reduce((n, h) => n + h.lines.filter((l) => l.type === "del").length, 0);
   return (
     <div style={diffPop}>
       <div style={diffPopHead}>
@@ -803,11 +785,7 @@ function ReviewerPanelCard({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [r.comments.length]);
   return (
-    <div
-      style={panelCard(color, active)}
-      onMouseEnter={onHover}
-      onMouseLeave={onLeave}
-    >
+    <div style={panelCard(color, active)} onMouseEnter={onHover} onMouseLeave={onLeave}>
       <div style={panelCardHead}>
         <span style={panelAvatar(color)}>{r.name[0]}</span>
         <div style={panelCardMeta}>
@@ -904,9 +882,7 @@ function ReviewerPopover({ r }: { r: Reviewer }) {
         <div style={popProgressFill(color, r.progress)} />
       </div>
       {r.comments.length === 0 ? (
-        <p style={popEmpty}>
-          {r.nowCommenting ? `reading ${r.nowCommenting}` : "queued"}
-        </p>
+        <p style={popEmpty}>{r.nowCommenting ? `reading ${r.nowCommenting}` : "queued"}</p>
       ) : (
         <div style={popComments}>
           {r.comments.map((c, i) => {
@@ -947,7 +923,11 @@ const topbar: React.CSSProperties = {
 const topLeft: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
 const topRight: React.CSSProperties = { display: "flex", gap: 8 };
 const topTitle: React.CSSProperties = { fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em" };
-const topSub: React.CSSProperties = { color: "var(--text-muted)", fontSize: 12, fontFamily: "var(--font-mono)" };
+const topSub: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 12,
+  fontFamily: "var(--font-mono)",
+};
 const ghostBtn: React.CSSProperties = {
   background: "transparent",
   border: "1px solid var(--surface-line)",
@@ -1055,8 +1035,20 @@ const reviewersTab: React.CSSProperties = {
   flexDirection: "column",
   minHeight: 0,
 };
-const panelMeta: React.CSSProperties = { color: "var(--text-muted)", fontSize: 10, fontFamily: "var(--font-mono)", marginLeft: "auto" };
-const panelSummary: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--surface-line)", flexShrink: 0 };
+const panelMeta: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  marginLeft: "auto",
+};
+const panelSummary: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "12px 16px",
+  borderBottom: "1px solid var(--surface-line)",
+  flexShrink: 0,
+};
 const summaryPill = (c: string): React.CSSProperties => ({
   fontSize: 10,
   fontFamily: "var(--font-mono)",
@@ -1086,7 +1078,12 @@ const panelCard = (color: string, active: boolean): React.CSSProperties => ({
   boxShadow: active ? `0 0 12px ${color}33` : "none",
   transition: "border-color 150ms var(--ease-out-quart), box-shadow 150ms var(--ease-out-quart)",
 });
-const panelCardHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 };
+const panelCardHead: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  marginBottom: 8,
+};
 const panelAvatar = (color: string): React.CSSProperties => ({
   width: 26,
   height: 26,
@@ -1101,9 +1098,20 @@ const panelAvatar = (color: string): React.CSSProperties => ({
   border: `1px solid ${color}55`,
   flexShrink: 0,
 });
-const panelCardMeta: React.CSSProperties = { display: "flex", flexDirection: "column", flex: 1, minWidth: 0 };
+const panelCardMeta: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  flex: 1,
+  minWidth: 0,
+};
 const panelCardName: React.CSSProperties = { fontSize: 13, fontWeight: 600 };
-const panelCardRole: React.CSSProperties = { fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em" };
+const panelCardRole: React.CSSProperties = {
+  fontSize: 10,
+  color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+};
 const panelCardStatus = (color: string, s: Reviewer["status"]): React.CSSProperties => ({
   fontSize: 9,
   textTransform: "uppercase",
@@ -1112,7 +1120,13 @@ const panelCardStatus = (color: string, s: Reviewer["status"]): React.CSSPropert
   color: s === "done" ? "var(--text-muted)" : color,
   flexShrink: 0,
 });
-const panelProgressTrack: React.CSSProperties = { height: 3, background: "var(--surface-line)", borderRadius: 2, overflow: "hidden", marginBottom: 8 };
+const panelProgressTrack: React.CSSProperties = {
+  height: 3,
+  background: "var(--surface-line)",
+  borderRadius: 2,
+  overflow: "hidden",
+  marginBottom: 8,
+};
 const panelProgressFill = (color: string, p: number): React.CSSProperties => ({
   height: "100%",
   width: `${p * 100}%`,
@@ -1143,14 +1157,23 @@ const panelCommentStream: React.CSSProperties = {
   maxHeight: 140,
   overflowY: "auto",
 };
-const panelCommentEmpty: React.CSSProperties = { color: "var(--text-muted)", fontSize: 10, fontFamily: "var(--font-mono)" };
+const panelCommentEmpty: React.CSSProperties = {
+  color: "var(--text-muted)",
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+};
 const panelComment = (sev: Reviewer["comments"][number]["severity"]): React.CSSProperties => ({
   background: "var(--surface-sunken)",
   borderRadius: "var(--radius-sm)",
   padding: "6px 8px",
   borderLeft: `2px solid ${sev === "blocker" ? "var(--status-error)" : sev === "issue" ? "var(--status-warning)" : sev === "praise" ? "var(--status-success)" : "var(--surface-line)"}`,
 });
-const panelCommentTop: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, marginBottom: 3 };
+const panelCommentTop: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  marginBottom: 3,
+};
 const panelCommentSev = (c: string): React.CSSProperties => ({
   fontSize: 8,
   textTransform: "uppercase",
@@ -1159,9 +1182,23 @@ const panelCommentSev = (c: string): React.CSSProperties => ({
   color: c,
   fontWeight: 600,
 });
-const panelCommentLine: React.CSSProperties = { fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--text-muted)" };
-const panelCommentText: React.CSSProperties = { margin: 0, fontSize: 11, lineHeight: 1.45, color: "var(--text-secondary)" };
-const panelTyping = (color: string): React.CSSProperties => ({ fontSize: 9, fontFamily: "var(--font-mono)", color, animation: "proto-blink 1.2s infinite" });
+const panelCommentLine: React.CSSProperties = {
+  fontSize: 9,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+};
+const panelCommentText: React.CSSProperties = {
+  margin: 0,
+  fontSize: 11,
+  lineHeight: 1.45,
+  color: "var(--text-secondary)",
+};
+const panelTyping = (color: string): React.CSSProperties => ({
+  fontSize: 9,
+  fontFamily: "var(--font-mono)",
+  color,
+  animation: "proto-blink 1.2s infinite",
+});
 const panelVerdict = (v: Reviewer["verdict"]): React.CSSProperties => ({
   marginTop: 8,
   padding: "5px 10px",
@@ -1175,7 +1212,12 @@ const panelVerdict = (v: Reviewer["verdict"]): React.CSSProperties => ({
 
 /* canvas (C) */
 const canvasWrap: React.CSSProperties = { flex: 1, position: "relative", minWidth: 0 };
-const canvas: React.CSSProperties = { position: "absolute", inset: 0, overflow: "hidden", background: "var(--surface-base)" };
+const canvas: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  overflow: "hidden",
+  background: "var(--surface-base)",
+};
 const nebula = (x: number, y: number): React.CSSProperties => ({
   position: "absolute",
   left: x - 300,
@@ -1207,7 +1249,13 @@ const agentNode: React.CSSProperties = {
   border: "1px solid var(--surface-line)",
   boxShadow: "0 0 24px rgba(120,90,255,0.25)",
 };
-const agentLabel: React.CSSProperties = { fontSize: 9, textTransform: "uppercase", letterSpacing: "0.14em", fontFamily: "var(--font-mono)", color: "var(--text-muted)" };
+const agentLabel: React.CSSProperties = {
+  fontSize: 9,
+  textTransform: "uppercase",
+  letterSpacing: "0.14em",
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+};
 const agentName: React.CSSProperties = { fontSize: 14, fontWeight: 600, marginTop: 2 };
 
 const toolNode = (s: ToolCall["status"], hasDiff?: boolean): React.CSSProperties => ({
@@ -1275,35 +1323,112 @@ const diffPopHead: React.CSSProperties = {
   flexShrink: 0,
 };
 const diffPopHeadLeft: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
-const diffPopFile: React.CSSProperties = { fontSize: 13, fontFamily: "var(--font-mono)", color: "var(--text-primary)" };
-const diffPopStats: React.CSSProperties = { display: "flex", gap: 8, fontSize: 11, fontFamily: "var(--font-mono)" };
-const diffPopClose: React.CSSProperties = { background: "transparent", border: "none", color: "var(--text-muted)", fontSize: 18, cursor: "pointer" };
-const diffPopBody: React.CSSProperties = { flex: 1, overflowY: "auto", padding: 0, fontFamily: "var(--font-mono)", fontSize: 12 };
+const diffPopFile: React.CSSProperties = {
+  fontSize: 13,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-primary)",
+};
+const diffPopStats: React.CSSProperties = {
+  display: "flex",
+  gap: 8,
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+};
+const diffPopClose: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "var(--text-muted)",
+  fontSize: 18,
+  cursor: "pointer",
+};
+const diffPopBody: React.CSSProperties = {
+  flex: 1,
+  overflowY: "auto",
+  padding: 0,
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+};
 const diffHunk: React.CSSProperties = { marginBottom: 4 };
-const diffHunkHeader: React.CSSProperties = { padding: "6px 16px", color: "var(--text-muted)", fontSize: 11, background: "var(--surface-sunken)", borderBottom: "1px solid var(--surface-line)" };
+const diffHunkHeader: React.CSSProperties = {
+  padding: "6px 16px",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  background: "var(--surface-sunken)",
+  borderBottom: "1px solid var(--surface-line)",
+};
 const diffLine = (type: DiffLine["type"]): React.CSSProperties => ({
   display: "flex",
   padding: "0 16px",
-  background: type === "add" ? "var(--status-success)0c" : type === "del" ? "var(--status-error)0c" : "transparent",
+  background:
+    type === "add"
+      ? "var(--status-success)0c"
+      : type === "del"
+        ? "var(--status-error)0c"
+        : "transparent",
   lineHeight: 1.6,
 });
-const diffLineNo: React.CSSProperties = { width: 36, textAlign: "right", color: "var(--text-muted)", fontSize: 10, flexShrink: 0, userSelect: "none" };
-const diffLineSign = (type: DiffLine["type"]): React.CSSProperties => ({ width: 16, textAlign: "center", flexShrink: 0, color: type === "add" ? "var(--status-success)" : type === "del" ? "var(--status-error)" : "var(--text-muted)" });
-const diffLineText = (type: DiffLine["type"]): React.CSSProperties => ({ whiteSpace: "pre", color: type === "add" ? "var(--status-success)" : type === "del" ? "var(--status-error)" : "var(--text-secondary)" });
+const diffLineNo: React.CSSProperties = {
+  width: 36,
+  textAlign: "right",
+  color: "var(--text-muted)",
+  fontSize: 10,
+  flexShrink: 0,
+  userSelect: "none",
+};
+const diffLineSign = (type: DiffLine["type"]): React.CSSProperties => ({
+  width: 16,
+  textAlign: "center",
+  flexShrink: 0,
+  color:
+    type === "add"
+      ? "var(--status-success)"
+      : type === "del"
+        ? "var(--status-error)"
+        : "var(--text-muted)",
+});
+const diffLineText = (type: DiffLine["type"]): React.CSSProperties => ({
+  whiteSpace: "pre",
+  color:
+    type === "add"
+      ? "var(--status-success)"
+      : type === "del"
+        ? "var(--status-error)"
+        : "var(--text-secondary)",
+});
 const toolNodeKind = (k: ToolCall["kind"]): React.CSSProperties => ({
   fontSize: 9,
   textTransform: "uppercase",
   letterSpacing: "0.12em",
   fontFamily: "var(--font-mono)",
-  color: k === "edit" || k === "write" ? "var(--accent-signal)" : k === "run_shell" ? "var(--accent-action)" : "var(--text-muted)",
+  color:
+    k === "edit" || k === "write"
+      ? "var(--accent-signal)"
+      : k === "run_shell"
+        ? "var(--accent-action)"
+        : "var(--text-muted)",
 });
-const toolNodeTarget: React.CSSProperties = { fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-primary)", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const toolNodeTarget: React.CSSProperties = {
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-primary)",
+  maxWidth: 120,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
 const toolNodeStatus = (s: ToolCall["status"]): React.CSSProperties => ({
   width: 6,
   height: 6,
   borderRadius: "50%",
   marginTop: 2,
-  background: s === "done" ? "var(--status-success)" : s === "awaiting" ? "var(--status-warning)" : s === "running" ? "var(--accent-action)" : "var(--text-muted)",
+  background:
+    s === "done"
+      ? "var(--status-success)"
+      : s === "awaiting"
+        ? "var(--status-warning)"
+        : s === "running"
+          ? "var(--accent-action)"
+          : "var(--text-muted)",
 });
 const toolPop: React.CSSProperties = {
   position: "absolute",
@@ -1319,8 +1444,19 @@ const toolPop: React.CSSProperties = {
   boxShadow: "var(--shadow-floating)",
   zIndex: 5,
 };
-const toolPopCode: React.CSSProperties = { display: "block", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-secondary)", wordBreak: "break-all" };
-const toolPopDetail: React.CSSProperties = { margin: "6px 0 0", fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 };
+const toolPopCode: React.CSSProperties = {
+  display: "block",
+  fontFamily: "var(--font-mono)",
+  fontSize: 10,
+  color: "var(--text-secondary)",
+  wordBreak: "break-all",
+};
+const toolPopDetail: React.CSSProperties = {
+  margin: "6px 0 0",
+  fontSize: 11,
+  color: "var(--text-muted)",
+  lineHeight: 1.4,
+};
 const approveBtn: React.CSSProperties = {
   marginTop: 8,
   background: "var(--accent-action)",
@@ -1350,8 +1486,17 @@ const clusterNode = (open: boolean): React.CSSProperties => ({
   minWidth: 96,
 });
 const clusterGlyph: React.CSSProperties = { fontSize: 14, color: "var(--text-muted)" };
-const clusterCount: React.CSSProperties = { fontSize: 16, fontWeight: 600, color: "var(--accent-action)" };
-const clusterLabel: React.CSSProperties = { fontSize: 9, textTransform: "uppercase", letterSpacing: "0.12em", color: "var(--text-muted)" };
+const clusterCount: React.CSSProperties = {
+  fontSize: 16,
+  fontWeight: 600,
+  color: "var(--accent-action)",
+};
+const clusterLabel: React.CSSProperties = {
+  fontSize: 9,
+  textTransform: "uppercase",
+  letterSpacing: "0.12em",
+  color: "var(--text-muted)",
+};
 
 const clusterPop: React.CSSProperties = {
   position: "absolute",
@@ -1368,10 +1513,33 @@ const clusterPop: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
 };
-const clusterPopHead: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 };
-const clusterPopTitle: React.CSSProperties = { fontSize: 12, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-secondary)" };
-const clusterPopClose: React.CSSProperties = { background: "transparent", border: "none", color: "var(--text-muted)", fontSize: 16, cursor: "pointer" };
-const clusterPopBody: React.CSSProperties = { flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 };
+const clusterPopHead: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: 10,
+};
+const clusterPopTitle: React.CSSProperties = {
+  fontSize: 12,
+  fontFamily: "var(--font-mono)",
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
+  color: "var(--text-secondary)",
+};
+const clusterPopClose: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "var(--text-muted)",
+  fontSize: 16,
+  cursor: "pointer",
+};
+const clusterPopBody: React.CSSProperties = {
+  flex: 1,
+  overflowY: "auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+};
 const clusterGroup: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
 const clusterGroupHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const clusterGroupKind = (k: ToolCall["kind"]): React.CSSProperties => ({
@@ -1379,23 +1547,62 @@ const clusterGroupKind = (k: ToolCall["kind"]): React.CSSProperties => ({
   textTransform: "uppercase",
   letterSpacing: "0.1em",
   fontFamily: "var(--font-mono)",
-  color: k === "edit" || k === "write" ? "var(--accent-signal)" : k === "run_shell" ? "var(--accent-action)" : "var(--text-muted)",
+  color:
+    k === "edit" || k === "write"
+      ? "var(--accent-signal)"
+      : k === "run_shell"
+        ? "var(--accent-action)"
+        : "var(--text-muted)",
   fontWeight: 600,
 });
-const clusterGroupCount: React.CSSProperties = { fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-muted)" };
-const clusterGroupList: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 2, marginLeft: 14 };
-const clusterGroupItem: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--font-mono)", fontSize: 10 };
+const clusterGroupCount: React.CSSProperties = {
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+};
+const clusterGroupList: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  marginLeft: 14,
+};
+const clusterGroupItem: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  fontFamily: "var(--font-mono)",
+  fontSize: 10,
+};
 const clusterGroupDot = (s: ToolCall["status"]): React.CSSProperties => ({
   width: 5,
   height: 5,
   borderRadius: "50%",
-  background: s === "done" ? "var(--status-success)" : s === "awaiting" ? "var(--status-warning)" : "var(--text-muted)",
+  background:
+    s === "done"
+      ? "var(--status-success)"
+      : s === "awaiting"
+        ? "var(--status-warning)"
+        : "var(--text-muted)",
 });
-const clusterGroupTarget: React.CSSProperties = { flex: 1, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const clusterGroupStatus = (_s: ToolCall["status"]): React.CSSProperties => ({ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase" });
+const clusterGroupTarget: React.CSSProperties = {
+  flex: 1,
+  color: "var(--text-secondary)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const clusterGroupStatus = (_s: ToolCall["status"]): React.CSSProperties => ({
+  fontSize: 9,
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+});
 
 /* reviewer node + popover (from C) */
-const reviewerNode = (color: string, active: boolean, status: Reviewer["status"]): React.CSSProperties => ({
+const reviewerNode = (
+  color: string,
+  active: boolean,
+  status: Reviewer["status"]
+): React.CSSProperties => ({
   position: "relative",
   display: "flex",
   flexDirection: "column",
@@ -1416,7 +1623,8 @@ const reviewerRing = (color: string, status: Reviewer["status"]): React.CSSPrope
   pointerEvents: "none",
   border: `1.5px solid ${color}`,
   opacity: status === "done" ? 0 : status === "queued" ? 0.2 : 1,
-  animation: status !== "done" && status !== "queued" ? "proto-pulse-ring 1.6s ease-out infinite" : "none",
+  animation:
+    status !== "done" && status !== "queued" ? "proto-pulse-ring 1.6s ease-out infinite" : "none",
 });
 const reviewerAvatar = (color: string): React.CSSProperties => ({
   width: 24,
@@ -1432,7 +1640,13 @@ const reviewerAvatar = (color: string): React.CSSProperties => ({
   border: `1px solid ${color}55`,
 });
 const reviewerNodeName: React.CSSProperties = { fontSize: 12, fontWeight: 600 };
-const reviewerNodeRole: React.CSSProperties = { fontSize: 9, color: "var(--text-muted)", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em" };
+const reviewerNodeRole: React.CSSProperties = {
+  fontSize: 9,
+  color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+};
 const reviewerVerdictDot = (v: Reviewer["verdict"]): React.CSSProperties => ({
   position: "absolute",
   top: 6,
@@ -1455,17 +1669,69 @@ const popover = (color: string): React.CSSProperties => ({
   boxShadow: "var(--shadow-floating)",
   zIndex: 10,
 });
-const popHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 };
+const popHead: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  marginBottom: 10,
+};
 const popName: React.CSSProperties = { fontSize: 13, fontWeight: 600 };
-const popRole: React.CSSProperties = { fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" };
-const popProgress: React.CSSProperties = { height: 3, background: "var(--surface-line)", borderRadius: 2, overflow: "hidden", marginBottom: 10 };
-const popProgressFill = (color: string, p: number): React.CSSProperties => ({ height: "100%", width: `${p * 100}%`, background: color, transition: "width 600ms var(--ease-out-quart)" });
-const popEmpty: React.CSSProperties = { fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", margin: 0 };
-const popComments: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 8, maxHeight: 240, overflowY: "auto" };
-const popComment: React.CSSProperties = { background: "var(--surface-sunken)", borderRadius: "var(--radius-sm)", padding: 8 };
-const popSev = (c: string): React.CSSProperties => ({ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: "var(--font-mono)", color: c, fontWeight: 600 });
-const popLine: React.CSSProperties = { fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginLeft: 6 };
-const popText: React.CSSProperties = { margin: "4px 0 0", fontSize: 11, lineHeight: 1.45, color: "var(--text-secondary)" };
+const popRole: React.CSSProperties = {
+  fontSize: 10,
+  color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+};
+const popProgress: React.CSSProperties = {
+  height: 3,
+  background: "var(--surface-line)",
+  borderRadius: 2,
+  overflow: "hidden",
+  marginBottom: 10,
+};
+const popProgressFill = (color: string, p: number): React.CSSProperties => ({
+  height: "100%",
+  width: `${p * 100}%`,
+  background: color,
+  transition: "width 600ms var(--ease-out-quart)",
+});
+const popEmpty: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+  margin: 0,
+};
+const popComments: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  maxHeight: 240,
+  overflowY: "auto",
+};
+const popComment: React.CSSProperties = {
+  background: "var(--surface-sunken)",
+  borderRadius: "var(--radius-sm)",
+  padding: 8,
+};
+const popSev = (c: string): React.CSSProperties => ({
+  fontSize: 9,
+  textTransform: "uppercase",
+  letterSpacing: "0.1em",
+  fontFamily: "var(--font-mono)",
+  color: c,
+  fontWeight: 600,
+});
+const popLine: React.CSSProperties = {
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text-muted)",
+  marginLeft: 6,
+};
+const popText: React.CSSProperties = {
+  margin: "4px 0 0",
+  fontSize: 11,
+  lineHeight: 1.45,
+  color: "var(--text-secondary)",
+};
 
 /* equalizer + load hint */
 const equalizer = (running: boolean): React.CSSProperties => ({
@@ -1481,7 +1747,12 @@ const equalizer = (running: boolean): React.CSSProperties => ({
 });
 const eqBar = (i: number, running: boolean): React.CSSProperties => ({
   width: 3,
-  background: ["var(--agent-cyan)", "var(--agent-violet)", "var(--agent-amber)", "var(--agent-rose)"][i % 4],
+  background: [
+    "var(--agent-cyan)",
+    "var(--agent-violet)",
+    "var(--agent-amber)",
+    "var(--agent-rose)",
+  ][i % 4],
   borderRadius: 2,
   height: running ? `${30 + Math.abs(Math.sin(i * 0.7)) * 70}%` : "20%",
   animation: running ? `proto-eq ${0.6 + (i % 5) * 0.1}s ease-in-out infinite alternate` : "none",
@@ -1534,7 +1805,11 @@ const approvalDot: React.CSSProperties = {
   boxShadow: "0 0 8px var(--status-warning)",
   flexShrink: 0,
 };
-const approvalText: React.CSSProperties = { fontSize: 12, color: "var(--text-primary)", flexShrink: 0 };
+const approvalText: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--text-primary)",
+  flexShrink: 0,
+};
 const approvalCode: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: 11,

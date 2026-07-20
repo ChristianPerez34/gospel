@@ -1,13 +1,7 @@
 import { useMemo } from "react";
-import type {
-  CurrentTurn,
-  Message,
-  ReviewActivityEntry,
-  ReviewFocus,
-  TurnBlock,
-} from "../types";
-import type { UseReviewProgressState } from "./useReviewProgress";
+import type { CurrentTurn, Message, ReviewActivityEntry, ReviewFocus, TurnBlock } from "../types";
 import { FOCUS_OPTIONS, focusLabel } from "../utils/focus";
+import type { UseReviewProgressState } from "./useReviewProgress";
 
 // ── Canvas node model ──────────────────────────────────────────────────────
 
@@ -143,14 +137,16 @@ function reviewerStatusFromPipeline(
 ): CanvasReviewerStatus {
   if (pipeline.done) return "done";
   if (pipeline.failed) return "failed";
-  if (pipeline.detector.status === "active" || pipeline.validator === "active" || pipeline.finalize === "active")
+  if (
+    pipeline.detector.status === "active" ||
+    pipeline.validator === "active" ||
+    pipeline.finalize === "active"
+  )
     return "active";
   return "idle";
 }
 
-function reviewerProgressFromPipeline(
-  pipeline: UseReviewProgressState["pipeline"]
-): number {
+function reviewerProgressFromPipeline(pipeline: UseReviewProgressState["pipeline"]): number {
   if (pipeline.done) return 1;
   if (pipeline.failed) return 1;
   const det = pipeline.detector;
@@ -222,15 +218,11 @@ export function useConstellation(
 
     // Derive reviewer nodes from review progress perFocus.
     const reviewActive =
-      reviewProgress.runId !== null &&
-      !reviewProgress.done &&
-      !reviewProgress.failed;
+      reviewProgress.runId !== null && !reviewProgress.done && !reviewProgress.failed;
     const reviewerNodes: CanvasReviewerNode[] = FOCUS_OPTIONS.map((option) => {
       const fp = reviewProgress.perFocus[option.value];
       const pipeline = fp?.pipeline ?? reviewProgress.pipeline;
-      const comments = reviewProgress.log.filter(
-        (entry) => entry.focus === option.value
-      );
+      const comments = reviewProgress.log.filter((entry) => entry.focus === option.value);
       return {
         id: option.value,
         focus: option.value,

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReviewFocus } from "../types";
 import {
-  CLUSTER_THRESHOLD,
-  VISIBLE_TOOLS,
   type CanvasReviewerNode,
   type CanvasToolKind,
   type CanvasToolNode,
   type CanvasToolStatus,
+  CLUSTER_THRESHOLD,
+  VISIBLE_TOOLS,
 } from "../hooks/useConstellation";
+import type { ReviewFocus } from "../types";
 
 // ── Review focus → color mapping ────────────────────────────────────────────
 
@@ -72,9 +72,7 @@ export function ConstellationCanvas({
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() =>
-      setSize({ w: el.clientWidth, h: el.clientHeight })
-    );
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -124,8 +122,7 @@ export function ConstellationCanvas({
     }
     if (reviewActive) {
       activeReviewers.forEach((r, i) => {
-        const t =
-          activeReviewers.length <= 1 ? 0.5 : i / (activeReviewers.length - 1);
+        const t = activeReviewers.length <= 1 ? 0.5 : i / (activeReviewers.length - 1);
         const angle = -0.65 + t * 1.3;
         const radius = 230;
         list.push({
@@ -159,19 +156,10 @@ export function ConstellationCanvas({
   return (
     <div className="constellation-canvas" ref={canvasRef}>
       {/* Nebula glow */}
-      <div
-        className="constellation-nebula"
-        style={{ left: cx - 300, top: cy - 300 }}
-        aria-hidden
-      />
+      <div className="constellation-nebula" style={{ left: cx - 300, top: cy - 300 }} aria-hidden />
 
       {/* SVG edges */}
-      <svg
-        className="constellation-svg"
-        width={size.w}
-        height={size.h}
-        aria-hidden
-      >
+      <svg className="constellation-svg" width={size.w} height={size.h} aria-hidden>
         {edges.map((e, i) => {
           const a = posOf(e.from);
           const b = posOf(e.to);
@@ -195,9 +183,7 @@ export function ConstellationCanvas({
       {/* Nodes */}
       {nodes.map((n) => {
         if (n.kind === "agent")
-          return (
-            <AgentNode key={n.id} x={n.x} y={n.y} running={agentRunning} />
-          );
+          return <AgentNode key={n.id} x={n.x} y={n.y} running={agentRunning} />;
         if (n.kind === "tool" && n.ref && "kind" in n.ref)
           return (
             <ToolNode
@@ -236,10 +222,7 @@ export function ConstellationCanvas({
       })}
 
       {/* Equalizer */}
-      <div
-        className="constellation-equalizer"
-        style={{ opacity: agentRunning ? 1 : 0.3 }}
-      >
+      <div className="constellation-equalizer" style={{ opacity: agentRunning ? 1 : 0.3 }}>
         {Array.from({ length: 24 }).map((_, i) => (
           <span
             key={i}
@@ -251,9 +234,7 @@ export function ConstellationCanvas({
                 "var(--gospel-agent-amber)",
                 "var(--gospel-agent-rose)",
               ][i % 4],
-              height: agentRunning
-                ? `${30 + Math.abs(Math.sin(i * 0.7)) * 70}%`
-                : "20%",
+              height: agentRunning ? `${30 + Math.abs(Math.sin(i * 0.7)) * 70}%` : "20%",
               animation: agentRunning
                 ? `proto-eq ${0.6 + (i % 5) * 0.1}s ease-in-out infinite alternate`
                 : "none",
@@ -266,8 +247,7 @@ export function ConstellationCanvas({
       {/* Load hint */}
       {clusteredTools.length > 0 && (
         <div className="constellation-load-hint">
-          canvas showing latest {visibleTools.length} ·{" "}
-          {clusteredTools.length} earlier collapsed
+          canvas showing latest {visibleTools.length} · {clusteredTools.length} earlier collapsed
           <button
             type="button"
             className="constellation-load-hint-btn"
@@ -288,43 +268,23 @@ export function ConstellationCanvas({
         />
       )}
       {clusterOpen && (
-        <ClusterPopover
-          tools={clusteredTools}
-          onClose={() => setClusterOpen(false)}
-        />
+        <ClusterPopover tools={clusteredTools} onClose={() => setClusterOpen(false)} />
       )}
-      {diffTool && (
-        <DiffPopover tc={diffTool} onClose={() => setDiffTool(null)} />
-      )}
+      {diffTool && <DiffPopover tc={diffTool} onClose={() => setDiffTool(null)} />}
     </div>
   );
 }
 
 // ── Agent node ──────────────────────────────────────────────────────────────
 
-function AgentNode({
-  x,
-  y,
-  running,
-}: {
-  x: number;
-  y: number;
-  running: boolean;
-}) {
+function AgentNode({ x, y, running }: { x: number; y: number; running: boolean }) {
   return (
-    <div
-      className="constellation-node-agent"
-      style={{ left: x, top: y }}
-    >
+    <div className="constellation-node-agent" style={{ left: x, top: y }}>
       <div
         className="constellation-agent-ring"
         style={{
-          borderColor: running
-            ? "var(--gospel-accent-action)"
-            : "var(--gospel-surface-line)",
-          animation: running
-            ? "proto-pulse-ring 1.8s ease-out infinite"
-            : "none",
+          borderColor: running ? "var(--gospel-accent-action)" : "var(--gospel-surface-line)",
+          animation: running ? "proto-pulse-ring 1.8s ease-out infinite" : "none",
         }}
       />
       <div className="constellation-agent-core">
@@ -352,10 +312,7 @@ function ToolNode({
 }) {
   const [hover, setHover] = useState(false);
   return (
-    <div
-      className="constellation-node-tool"
-      style={{ left: x, top: y }}
-    >
+    <div className="constellation-node-tool" style={{ left: x, top: y }}>
       <div
         className="constellation-tool-card"
         style={{
@@ -378,24 +335,15 @@ function ToolNode({
         <span className="constellation-tool-kind" style={toolKindStyle(tc.kind)}>
           {tc.label}
         </span>
-        <span className="constellation-tool-target">
-          {tc.target.split("/").pop()}
-        </span>
-        <span
-          className="constellation-tool-status-dot"
-          style={toolStatusStyle(tc.status)}
-        />
+        <span className="constellation-tool-target">{tc.target.split("/").pop()}</span>
+        <span className="constellation-tool-status-dot" style={toolStatusStyle(tc.status)} />
         {tc.hasDiff && <span className="constellation-diff-badge">diff</span>}
       </div>
       {hover && (
         <div className="constellation-tool-pop">
           <code className="constellation-tool-pop-code">{tc.target}</code>
           {tc.hasDiff && (
-            <button
-              type="button"
-              className="constellation-diff-btn"
-              onClick={() => onShowDiff(tc)}
-            >
+            <button type="button" className="constellation-diff-btn" onClick={() => onShowDiff(tc)}>
               view diff
             </button>
           )}
@@ -456,17 +404,12 @@ function ClusterNode({
   onToggle: () => void;
 }) {
   return (
-    <div
-      className="constellation-node-cluster"
-      style={{ left: x, top: y }}
-    >
+    <div className="constellation-node-cluster" style={{ left: x, top: y }}>
       <button
         type="button"
         className="constellation-cluster-btn"
         style={{
-          borderColor: open
-            ? "var(--gospel-accent-action)"
-            : "var(--gospel-text-muted)",
+          borderColor: open ? "var(--gospel-accent-action)" : "var(--gospel-text-muted)",
           borderStyle: "dashed",
         }}
         onClick={onToggle}
@@ -479,13 +422,7 @@ function ClusterNode({
   );
 }
 
-function ClusterPopover({
-  tools,
-  onClose,
-}: {
-  tools: CanvasToolNode[];
-  onClose: () => void;
-}) {
+function ClusterPopover({ tools, onClose }: { tools: CanvasToolNode[]; onClose: () => void }) {
   const byKind = useMemo(() => {
     const m = new Map<CanvasToolKind, CanvasToolNode[]>();
     for (const t of tools) {
@@ -499,14 +436,8 @@ function ClusterPopover({
   return (
     <div className="constellation-cluster-pop">
       <div className="constellation-cluster-pop-head">
-        <span className="constellation-cluster-pop-title">
-          {tools.length} earlier tool calls
-        </span>
-        <button
-          type="button"
-          className="constellation-pop-close"
-          onClick={onClose}
-        >
+        <span className="constellation-cluster-pop-title">{tools.length} earlier tool calls</span>
+        <button type="button" className="constellation-pop-close" onClick={onClose}>
           ×
         </button>
       </div>
@@ -515,9 +446,7 @@ function ClusterPopover({
           <div key={kind} className="constellation-cluster-group">
             <div className="constellation-cluster-group-head">
               <span style={toolKindStyle(kind)}>{kind}</span>
-              <span className="constellation-cluster-group-count">
-                {items.length}
-              </span>
+              <span className="constellation-cluster-group-count">{items.length}</span>
             </div>
             <div className="constellation-cluster-group-list">
               {items.map((tc) => (
@@ -526,9 +455,7 @@ function ClusterPopover({
                     className="constellation-cluster-group-dot"
                     style={toolStatusStyle(tc.status)}
                   />
-                  <span className="constellation-cluster-group-target">
-                    {tc.target}
-                  </span>
+                  <span className="constellation-cluster-group-target">{tc.target}</span>
                 </div>
               ))}
             </div>
@@ -541,13 +468,7 @@ function ClusterPopover({
 
 // ── Diff popover ────────────────────────────────────────────────────────────
 
-function DiffPopover({
-  tc,
-  onClose,
-}: {
-  tc: CanvasToolNode;
-  onClose: () => void;
-}) {
+function DiffPopover({ tc, onClose }: { tc: CanvasToolNode; onClose: () => void }) {
   // Try to extract diff lines from the tool result.
   const diffLines = useMemo(() => parseDiffFromResult(tc.result), [tc.result]);
   const additions = diffLines.filter((l) => l.type === "add").length;
@@ -559,19 +480,11 @@ function DiffPopover({
         <div className="constellation-diff-pop-head-left">
           <span className="constellation-diff-pop-file">{tc.target}</span>
           <span className="constellation-diff-pop-stats">
-            <span style={{ color: "var(--gospel-status-success)" }}>
-              +{additions}
-            </span>
-            <span style={{ color: "var(--gospel-status-error)" }}>
-              −{deletions}
-            </span>
+            <span style={{ color: "var(--gospel-status-success)" }}>+{additions}</span>
+            <span style={{ color: "var(--gospel-status-error)" }}>−{deletions}</span>
           </span>
         </div>
-        <button
-          type="button"
-          className="constellation-pop-close"
-          onClick={onClose}
-        >
+        <button type="button" className="constellation-pop-close" onClick={onClose}>
           ×
         </button>
       </div>
@@ -645,13 +558,10 @@ function parseDiffFromResult(result?: string): ParsedDiffLine[] {
     }
     if (inDiff) {
       if (line.startsWith("+++") || line.startsWith("---")) continue;
-      if (line.startsWith("+"))
-        diffLines.push({ type: "add", text: line.slice(1) });
-      else if (line.startsWith("-"))
-        diffLines.push({ type: "del", text: line.slice(1) });
-      else if (line.startsWith(" "))
-        diffLines.push({ type: "ctx", text: line.slice(1) });
-      else if (line === "" ) continue;
+      if (line.startsWith("+")) diffLines.push({ type: "add", text: line.slice(1) });
+      else if (line.startsWith("-")) diffLines.push({ type: "del", text: line.slice(1) });
+      else if (line.startsWith(" ")) diffLines.push({ type: "ctx", text: line.slice(1) });
+      else if (line === "") continue;
       else {
         // Non-diff line — stop if we were in a diff
         if (diffLines.length > 0) break;
@@ -681,10 +591,7 @@ function ReviewerNode({
   const color = FOCUS_COLOR_HEX[r.focus] ?? "var(--gospel-text-muted)";
   const isActive = r.status === "active";
   return (
-    <div
-      className="constellation-node-reviewer"
-      style={{ left: x, top: y }}
-    >
+    <div className="constellation-node-reviewer" style={{ left: x, top: y }}>
       <div
         className="constellation-reviewer-card"
         style={{
@@ -704,9 +611,7 @@ function ReviewerNode({
           style={{
             borderColor: color,
             opacity: r.status === "done" ? 0 : r.status === "idle" ? 0.2 : 1,
-            animation: isActive
-              ? "proto-pulse-ring 1.6s ease-out infinite"
-              : "none",
+            animation: isActive ? "proto-pulse-ring 1.6s ease-out infinite" : "none",
           }}
         />
         <span
@@ -725,9 +630,7 @@ function ReviewerNode({
             className="constellation-reviewer-verdict-dot"
             style={{
               background:
-                r.findings > 0
-                  ? "var(--gospel-status-warning)"
-                  : "var(--gospel-status-success)",
+                r.findings > 0 ? "var(--gospel-status-warning)" : "var(--gospel-status-success)",
             }}
           />
         )}
@@ -739,10 +642,7 @@ function ReviewerNode({
 function ReviewerPopover({ r }: { r: CanvasReviewerNode }) {
   const color = FOCUS_COLOR_HEX[r.focus] ?? "var(--gospel-text-muted)";
   return (
-    <div
-      className="constellation-reviewer-pop"
-      style={{ borderColor: color }}
-    >
+    <div className="constellation-reviewer-pop" style={{ borderColor: color }}>
       <div className="constellation-pop-head">
         <span
           className="constellation-reviewer-avatar"
@@ -768,9 +668,7 @@ function ReviewerPopover({ r }: { r: CanvasReviewerNode }) {
         />
       </div>
       {r.comments.length === 0 ? (
-        <p className="constellation-pop-empty">
-          {r.status === "active" ? "analyzing…" : "queued"}
-        </p>
+        <p className="constellation-pop-empty">{r.status === "active" ? "analyzing…" : "queued"}</p>
       ) : (
         <div className="constellation-pop-comments">
           {r.comments.slice(-8).map((c, i) => (
