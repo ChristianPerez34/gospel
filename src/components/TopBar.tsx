@@ -1,20 +1,16 @@
-import { Activity, Cpu, Frame, Hammer, Lock, Shield } from "lucide-react";
+import { Cpu, Hammer, Lock } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import type { AgentStatus, SessionMode, Workspace } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
-
-export type WorkspaceLayoutMode = "focus" | "evidence" | "review";
 
 interface TopBarProps {
   workspace: Workspace;
   sessionTitle: string;
   sessionMode: SessionMode;
-  workspaceLayout?: WorkspaceLayoutMode;
   model: string;
   status: AgentStatus;
   onWorkspaceSwitch: () => void;
   onSessionModeChange: (mode: SessionMode) => Promise<void>;
-  onWorkspaceLayoutChange?: (mode: WorkspaceLayoutMode) => void;
   onToggleSessions: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
@@ -25,12 +21,10 @@ export function TopBar({
   workspace,
   sessionTitle,
   sessionMode,
-  workspaceLayout = "evidence",
   model,
   status,
   onWorkspaceSwitch,
   onSessionModeChange,
-  onWorkspaceLayoutChange,
   onToggleSessions,
   onOpenSettings,
   sessionsOpen,
@@ -187,39 +181,6 @@ export function TopBar({
           </button>
         </div>
       </div>
-      <fieldset className="topbar-surface-controls">
-        <legend className="sr-only">Workspace surfaces</legend>
-        <button
-          type="button"
-          className={`topbar-surface-button ${workspaceLayout === "focus" ? "is-active" : ""}`}
-          onClick={() => onWorkspaceLayoutChange?.("focus")}
-          aria-pressed={workspaceLayout === "focus"}
-          title="Hide evidence rail"
-        >
-          <Frame aria-hidden="true" />
-          <span>Focus</span>
-        </button>
-        <button
-          type="button"
-          className={`topbar-surface-button ${workspaceLayout === "evidence" ? "is-active" : ""}`}
-          onClick={() => onWorkspaceLayoutChange?.("evidence")}
-          aria-pressed={workspaceLayout === "evidence"}
-          title="Show evidence rail"
-        >
-          <Activity aria-hidden="true" />
-          <span>Evidence</span>
-        </button>
-        <button
-          type="button"
-          className={`topbar-surface-button ${workspaceLayout === "review" ? "is-active" : ""}`}
-          onClick={() => onWorkspaceLayoutChange?.("review")}
-          aria-pressed={workspaceLayout === "review"}
-          title="Open review inspector"
-        >
-          <Shield aria-hidden="true" />
-          <span>Review</span>
-        </button>
-      </fieldset>
       <div className="topbar-actions flex items-center gap-3 shrink-0">
         <div
           className={`topbar-compute-graph ${computeActive ? "is-active" : ""}`}

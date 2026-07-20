@@ -29,7 +29,6 @@ interface CommandPaletteProps {
   onOpenSettings: (tab?: "general" | "models") => void;
   onOpenWorkspaceSwitcher: () => void;
   onToggleSessions: () => void;
-  onSwitchToReview: () => void;
   onSelectModel: (modelId: string) => void;
   onVariantChange: (variant: string | null) => void;
   restoreFocusRef?: RefObject<HTMLElement>;
@@ -75,7 +74,6 @@ export function CommandPalette({
   onOpenSettings,
   onOpenWorkspaceSwitcher,
   onToggleSessions,
-  onSwitchToReview,
   onSelectModel,
   onVariantChange,
   restoreFocusRef,
@@ -214,15 +212,6 @@ export function CommandPalette({
         action: closeAfter(onToggleSessions),
       },
       {
-        id: "switch-to-review",
-        group: "Commands",
-        icon: "R",
-        label: "Switch to review layout",
-        detail: "Open security review view",
-        keywords: "security review panel findings layout",
-        action: closeAfter(onSwitchToReview),
-      },
-      {
         id: "switch-workspace",
         group: "Commands",
         icon: "W",
@@ -251,7 +240,6 @@ export function CommandPalette({
     onSelectModel,
     onSelectSession,
     onVariantChange,
-    onSwitchToReview,
     onToggleSessions,
     query,
     selectedModelId,
