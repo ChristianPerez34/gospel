@@ -7,6 +7,7 @@ pub mod approval_broker;
 pub mod context_search;
 mod conversation;
 pub mod corpus;
+mod harness_plan;
 mod harness_profile;
 mod json_utils;
 pub mod keychain;
@@ -1926,6 +1927,60 @@ fn get_active_workspace(
     get_active_workspace_response(app_config.inner(), session_store.inner())
 }
 
+/// Read-only Tauri command that returns the parsed contents of
+/// `.gospel/PLAN.md` for the active workspace. If the file does not exist,
+/// returns a `PlanFile` sentinel with `has_plan_file == false` and all other
+/// fields empty/None — callers render a "No plan yet" state.
+///
+/// The active workspace is resolved from `AppConfigState` (same pattern as
+/// `get_corpus_status`). The plan file path is bounded by the workspace root
+/// via the corpus `symlink_guard` helpers, so symlink-escape attacks against
+/// `.gospel/PLAN.md` are rejected the same way `write_harness_file` already
+/// guards writes.
+#[tauri::command]
+fn read_harness_plan(
+    app_config: tauri::State<'_, AppConfigState>,
+) -> Result<harness_plan::PlanFile, String> {
+    let workspace = match &app_config.store {
+        Some(store) => store
+            .get_active_workspace()
+            .map_err(|e| format!("Failed to get active workspace: {}", e))?,
+        None => return Err("App config store is unavailable".to_string()),
+    }
+    .ok_or_else(|| "No active workspace selected".to_string())?;
+
+    let workspace_root = PathBuf::from(&workspace.path);
+    let workspace_root =
+        corpus::symlink_guard::canonical(&workspace_root).map_err(|e| e.to_string())?;
+    let plan_path = workspace_root.join(".gospel").join("PLAN.md");
+
+    if !plan_path.exists() {
+        return Ok(harness_plan::PlanFile {
+            has_plan_file: false,
+            ..Default::default()
+        });
+    }
+
+    // Re-validate the resolved path stays under the workspace root, in case
+    // `.gospel/` or `PLAN.md` is a symlink that escapes (matches the write
+    // path's `validate_harness_write_target` guard).
+    corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &plan_path)
+        .map_err(|e| e.to_string())?;
+    let canonical_plan =
+        corpus::symlink_guard::canonical(&plan_path).map_err(|e| e.to_string())?;
+    if !corpus::symlink_guard::is_within(&workspace_root, &canonical_plan) {
+        return Err(format!(
+            "Resolved plan path {} escapes the workspace root",
+            canonical_plan.display()
+        ));
+    }
+
+    let content = std::fs::read_to_string(&canonical_plan).map_err(|e| e.to_string())?;
+    let mut plan = harness_plan::parse_plan_markdown(&content);
+    plan.has_plan_file = true;
+    Ok(plan)
+}
+
 #[tauri::command]
 fn list_skills(
     app_config: tauri::State<'_, AppConfigState>,
@@ -2795,6 +2850,7 @@ pub fn run() {
             context_search,
             gospel_reject_review_comment,
             gospel_record_review_outcome,
+            read_harness_plan,
         ])
         .setup(|app| {
             let emitter = Arc::new(TauriApprovalEventEmitter {
