@@ -422,6 +422,26 @@ export interface Workspace {
   sessionCount: number;
 }
 
+/**
+ * Parsed contents of `.gospel/PLAN.md`. Mirrors the Rust `PlanFile` struct in
+ * `src-tauri/src/harness_plan.rs`. Returned by the `read_harness_plan` Tauri
+ * command. When `hasPlanFile === false`, all other fields are empty/`null`
+ * and the UI should render a "No plan yet" state.
+ */
+export interface PlanStep {
+  text: string;
+  done: boolean;
+}
+
+export interface PlanFile {
+  goal: string | null;
+  steps: PlanStep[];
+  evidence: string[];
+  openQuestions: string[];
+  nextAction: string | null;
+  hasPlanFile: boolean;
+}
+
 export interface AvailableModelVariant {
   id: string;
   name: string;
