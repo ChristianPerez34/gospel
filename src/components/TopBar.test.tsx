@@ -108,7 +108,7 @@ describe("TopBar", () => {
     renderTopBar({ sessionTitle: "Streaming session", isStreaming: true, onSessionTitleChange });
 
     const editButton = screen.getByRole("button", { name: "Edit session title" });
-    expect(editButton.hasAttribute("disabled")).toBe(true);
+    expect(editButton.hasAttribute("disabled")).toBe(false);
     expect(editButton.getAttribute("aria-disabled")).toBe("true");
     expect(editButton.getAttribute("title")).toBe(
       "Session title can't be edited while streaming"
