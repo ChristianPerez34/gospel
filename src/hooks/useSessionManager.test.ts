@@ -1139,4 +1139,127 @@ describe("useSessionManager", () => {
       expect(result.current.status).toBe("connected");
     });
   });
+
+  describe("streaming lifecycle races", () => {
+    it("workspace switch mid-stream is a no-op on the active session", async () => {
+      // AppShell gates the workspace switcher + TopBar switch button while
+      // `session.isStreaming`. The guard relies on this hook's workspace-reset
+      // effect being a no-op when the active workspace changes mid-stream:
+      // `activeSessionId`, `messages`, and the streamed `currentTurn` must
+      // stay bound to the original session until the turn completes.
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "backend-stream" };
+        return undefined;
+      });
+
+      let activeWorkspaceId = "ws-a";
+      const { result, rerender } = renderHook(() => {
+        const [sessions, setSessions] = useState<Session[]>([]);
+        return useSessionManager({
+          models: SAMPLE_MODELS,
+          selectedModel: { provider: "openai", model: "gpt-4o" },
+          sessions,
+          onSessionsChange: setSessions,
+          activeWorkspaceId,
+        });
+      });
+
+      await act(async () => {
+        await result.current.handleSend("streaming prompt");
+      });
+
+      const originalSessionId = result.current.activeSessionId;
+      expect(originalSessionId).toBe("backend-stream");
+
+      act(() => {
+        triggerEvent<string>("llm-token", "live token");
+      });
+
+      expect(result.current.status).toBe("thinking");
+      expect(result.current.isStreaming).toBe(true);
+      expect(result.current.currentTurn).not.toBeNull();
+      const streamedTurnId = result.current.currentTurn!.id;
+
+      // AppShell-equivalent workspace switch fires a new activeWorkspaceId
+      // while the turn is still live. The hook's reset effect must defer it.
+      act(() => {
+        activeWorkspaceId = "ws-b";
+        rerender();
+      });
+
+      expect(result.current.activeSessionId).toBe(originalSessionId);
+      expect(result.current.messages.map((m) => m.role)).toEqual(["user"]);
+      expect(result.current.currentTurn?.id).toBe(streamedTurnId);
+      expect(result.current.currentTurn?.blocks).toEqual([
+        { kind: "text", id: "text-0", text: "live token" },
+      ]);
+
+      // The workspace change is deferred until the turn completes. When the
+      // status returns to "connected" (via llm-done), the deferred-reset
+      // effect fires and clears `activeSessionId` + `messages` — the
+      // snap-to-empty the AppShell guard prevents by blocking the switch in
+      // the first place. The streamed turn still finalized into the original
+      // session record before the reset wiped the active-session view, so
+      // the user's tokens are not lost (the regression net for plan 014).
+      act(() => {
+        triggerEvent("llm-done", { response: "live token" });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      const originalSession = result.current.sessions.find(
+        (s) => s.id === originalSessionId,
+      );
+      expect(originalSession?.messages.map((m) => m.role)).toEqual([
+        "user",
+        "agent",
+      ]);
+      expect(originalSession?.messages[1]?.id).toBe(streamedTurnId);
+      // The deferred reset wiped the active-session view — the leak the
+      // AppShell guard prevents. Plan 014 will revisit this deferred path.
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.messages).toEqual([]);
+    });
+
+    it("late llm-token after handleNewSession does not create a phantom turn", async () => {
+      // Characterization guard for the deeper race plan 014 addresses:
+      // `handleNewSession` resets the stream, but a token already in flight
+      // from the prior turn must not rehydrate a fresh turn in the new
+      // (empty) session. The current behavior is to lazily create a new
+      // turn — this test pins that behavior so plan 014 can flip it.
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("first turn");
+      });
+
+      act(() => {
+        triggerEvent<string>("llm-token", "before reset");
+      });
+      expect(result.current.currentTurn).not.toBeNull();
+      const preResetTurnId = result.current.currentTurn!.id;
+
+      act(() => {
+        result.current.handleNewSession();
+      });
+
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.messages).toEqual([]);
+
+      // Late token arrives after the reset. Current behavior: a new turn is
+      // lazily created against the now-empty session. This is the leak
+      // plan 014 closes; assert the current behavior so the change is
+      // intentional when it lands.
+      act(() => {
+        triggerEvent<string>("llm-token", "late arrival");
+      });
+
+      // TODO(plan 014): once late tokens are dropped post-reset, this should
+      // assert `currentTurn` is null and no agent message lands.
+      expect(result.current.currentTurn).not.toBeNull();
+      expect(result.current.currentTurn!.id).not.toBe(preResetTurnId);
+      expect(result.current.currentTurn!.blocks).toEqual([
+        { kind: "text", id: "text-0", text: "late arrival" },
+      ]);
+    });
+  });
 });
