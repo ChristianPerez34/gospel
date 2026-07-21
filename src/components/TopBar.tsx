@@ -11,6 +11,7 @@ interface TopBarProps {
   status: AgentStatus;
   onWorkspaceSwitch: () => void;
   onSessionModeChange: (mode: SessionMode) => Promise<void>;
+  onSessionTitleChange: (title: string) => void;
   onToggleSessions: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
@@ -25,6 +26,7 @@ export function TopBar({
   status,
   onWorkspaceSwitch,
   onSessionModeChange,
+  onSessionTitleChange,
   onToggleSessions,
   onOpenSettings,
   sessionsOpen,
@@ -46,6 +48,10 @@ export function TopBar({
   }, [editing]);
 
   const handleSubmit = () => {
+    const next = title.trim();
+    if (next.length > 0 && next !== sessionTitle) {
+      onSessionTitleChange(next);
+    }
     setEditing(false);
   };
 

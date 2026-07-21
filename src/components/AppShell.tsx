@@ -734,6 +734,32 @@ export function AppShell() {
     setSessionDrawerOpen(false);
   }, []);
 
+  const handleSessionTitleChange = useCallback(
+    async (title: string) => {
+      const current = activeSessionRef.current;
+      if (!current || !current.backendCreated || session.isStreaming) return;
+
+      const previous = current.title;
+      setSessions((prev) =>
+        prev.map((item) => (item.id === current.id ? { ...item, title } : item))
+      );
+      activeSessionRef.current = { ...current, title };
+
+      try {
+        await invoke<void>("update_session_title", { sessionId: current.id, title });
+      } catch (e) {
+        setSessions((prev) =>
+          prev.map((item) =>
+            item.id === current.id ? { ...item, title: previous } : item
+          )
+        );
+        activeSessionRef.current = { ...current, title: previous };
+        showError(`Failed to rename session: ${e}`);
+      }
+    },
+    [session.isStreaming, setSessions, showError]
+  );
+
   const toggleSessionDrawer = useCallback(() => {
     setSessionDrawerOpen((open) => !open);
   }, []);
@@ -778,6 +804,7 @@ export function AppShell() {
         sessionTitle={sessionTitle}
         sessionMode={session.activeSessionMode}
         onSessionModeChange={session.handleSessionModeChange}
+        onSessionTitleChange={handleSessionTitleChange}
         model={currentModelName}
         status={session.status}
         onWorkspaceSwitch={() => setWorkspaceSwitcherOpen(true)}
