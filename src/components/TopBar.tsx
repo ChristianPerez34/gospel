@@ -53,6 +53,8 @@ export function TopBar({
     const next = title.trim();
     if (next.length > 0 && next !== sessionTitle) {
       onSessionTitleChange(next);
+    } else {
+      setTitle(sessionTitle);
     }
     setEditing(false);
   };

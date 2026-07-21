@@ -79,6 +79,28 @@ describe("TopBar", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(onSessionTitleChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByLabelText("Edit session title"));
+    expect((screen.getByRole("textbox", { name: "Session title" }) as HTMLInputElement).value).toBe(
+      "Same"
+    );
+  });
+
+  it("restores the current title when the trimmed title is empty", () => {
+    const onSessionTitleChange = vi.fn();
+    renderTopBar({ sessionTitle: "Current", onSessionTitleChange });
+
+    fireEvent.click(screen.getByLabelText("Edit session title"));
+    const input = screen.getByRole("textbox", { name: "Session title" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSessionTitleChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByLabelText("Edit session title"));
+    expect((screen.getByRole("textbox", { name: "Session title" }) as HTMLInputElement).value).toBe(
+      "Current"
+    );
   });
 
   it("disables the session title editor while streaming", () => {
