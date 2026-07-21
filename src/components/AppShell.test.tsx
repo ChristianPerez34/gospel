@@ -132,7 +132,9 @@ describe("AppShell session title editing", () => {
 
     // Now edit session title in TopBar
     fireEvent.click(screen.getByRole("button", { name: "Edit session title" }));
-    const input = (await screen.findByRole("textbox", { name: "Session title" })) as HTMLInputElement;
+    const input = (await screen.findByRole("textbox", {
+      name: "Session title",
+    })) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "Renamed Fallback Session" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -203,7 +205,9 @@ describe("AppShell session title editing", () => {
 
     // Edit title
     fireEvent.click(screen.getByRole("button", { name: "Edit session title" }));
-    const input = (await screen.findByRole("textbox", { name: "Session title" })) as HTMLInputElement;
+    const input = (await screen.findByRole("textbox", {
+      name: "Session title",
+    })) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "Persisted Session Title" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -218,6 +222,72 @@ describe("AppShell session title editing", () => {
       sessionId: "sess-backend-1",
       title: "Persisted Session Title",
     });
+  });
+
+  it("rolls back the current rename and shows an error when update_session_title fails", async () => {
+    let rejectRename: ((error: Error) => void) | null = null;
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_workspaces") return [sampleWorkspace];
+      if (cmd === "get_active_workspace") return sampleWorkspace;
+      if (cmd === "get_model_availability") return sampleAvailability;
+      if (cmd === "get_archive_policy") {
+        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
+      }
+      if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
+      if (cmd === "list_sessions") return [];
+      if (cmd === "list_archived_sessions") return [];
+      if (cmd === "create_session") return { id: "sess-backend-1" };
+      if (cmd === "update_session_title") {
+        return new Promise<void>((_resolve, reject) => {
+          rejectRename = reject;
+        });
+      }
+      return undefined;
+    });
+
+    render(<AppShell />);
+
+    const textarea = await screen.findByRole("textbox", { name: "Message input" });
+    await waitFor(() => {
+      expect(textarea.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: "Backend session prompt" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    });
+
+    await act(async () => {
+      triggerEvent("llm-done", { response: "Hello back" });
+    });
+
+    const editButton = () => screen.getByRole("button", { name: "Edit session title" });
+    await waitFor(() => {
+      expect(editButton().hasAttribute("disabled")).toBe(false);
+    });
+
+    fireEvent.click(editButton());
+    const input = (await screen.findByRole("textbox", {
+      name: "Session title",
+    })) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Rejected Rename" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(editButton().textContent).toBe("Rejected Rename");
+    });
+
+    await act(async () => {
+      rejectRename?.(new Error("database write failed"));
+    });
+
+    await waitFor(() => {
+      expect(editButton().textContent).toBe("Backend session prompt");
+    });
+    expect(
+      await screen.findByText("Failed to rename session: Error: database write failed")
+    ).toBeDefined();
   });
 
   it("does not roll back a newer rename when an older update_session_title fails", async () => {

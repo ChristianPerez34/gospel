@@ -80,8 +80,8 @@ specifies "session title (editable inline)" in §3 Top bar). No ADR covers this.
 |-----------|--------------------------------------------------------------------------|---------------------|
 | Typecheck | `bun run typecheck`                                                       | exit 0, no errors   |
 | Lint      | `bun run lint`                                                            | exit 0 (warnings allowed) |
-| Frontend tests | `bun run test -- src/components/TopBar.test.tsx`                    | all pass            |
-| Backend tests | `cargo test --manifest-path src-tauri/Cargo.toml -- sess_store`       | all pass            |
+| Frontend tests | `bun run test -- src/components/TopBar.test.tsx src/components/AppShell.test.tsx` | all pass            |
+| Backend tests | `cargo test --manifest-path src-tauri/Cargo.toml -- update_session_title` | all pass            |
 | Rust lint | `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`       | exit 0, no warnings |
 
 ## Scope
@@ -92,6 +92,7 @@ specifies "session title (editable inline)" in §3 Top bar). No ADR covers this.
 - `src/components/TopBar.tsx` (add `onSessionTitleChange: (title: string) => void` prop; call it from `handleSubmit` when the trimmed title differs from `sessionTitle`)
 - `src/components/AppShell.tsx` (pass the new prop; optimistic update + rollback on error)
 - `src/components/TopBar.test.tsx` (add a test asserting the callback fires; update an existing test if it asserted the no-op)
+- `src/components/AppShell.test.tsx` (cover optimistic persistence, local-only fallback sessions, and rollback/error behavior)
 
 **Out of scope**:
 - Bulk rename, rename from SessionDrawer context menu, undo/redo
@@ -114,24 +115,26 @@ In `src-tauri/src/session_store.rs`, add (immediately after `update_session_mode
 pub fn update_session_title(&self, id: &str, title: &str) -> Result<(), SessionStoreError> {
     let trimmed = title.trim();
     if trimmed.is_empty() {
-        return Err(SessionStoreError::InvalidInput(
+        return Err(SessionStoreError::InvalidTitle(
             "session title must not be empty".to_string(),
         ));
     }
-    self.conn
-        .execute(
-            "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-            params![trimmed, now_rfc3339(), id],
-        )
-        .map_err(|e| SessionStoreError::from(e))?;
+    let conn = self.conn.lock().unwrap();
+    let rows = conn.execute(
+        "UPDATE sessions SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
+        params![trimmed, id],
+    )?;
+    if rows == 0 {
+        return Err(SessionStoreError::NotFound(id.to_string()));
+    }
     Ok(())
 }
 ```
 
-If `SessionStoreError::InvalidInput` does not exist, use the closest existing
-variant by grepping `enum SessionStoreError` in the same file; if none fits,
-add the variant. Mirror the `now_rfc3339()` helper already used by sibling
-updates (search `now_rfc3339`).
+This deliberately mirrors the mutex-backed connection access, SQL timestamp,
+and affected-row handling in `update_session_mode`. Preserve the existing
+`InvalidTitle` validation and return `SessionStoreError::NotFound` when the
+`UPDATE` affects no rows.
 
 Add a unit test next to `update_session_mode_round_trips_through_get_and_list`
 (line 1447) named `update_session_title_round_trips_through_get_and_list`,
@@ -193,33 +196,50 @@ In `src/components/TopBar.tsx`:
 ### Step 4: Wire AppShell to the backend
 
 In `src/components/AppShell.tsx`, find the `<TopBar ... />` render. Add a new
-handler that optimistically updates the local session list, calls the backend,
-and rolls back on error:
+handler that uses AppShell's existing `activeSessionRef`, optimistically
+updates the session state that feeds `allSessions`, skips persistence for a
+local fallback session, and rolls back on persistence errors:
 
 ```tsx
-const handleSessionTitleChange = async (sessionId: string, title: string) => {
-  const prev = allSessions;
-  setAllSessions((curr) =>
-    curr.map((s) => (s.id === sessionId ? { ...s, title } : s)),
+const handleSessionTitleChange = async (title: string) => {
+  const current = activeSessionRef.current;
+  if (!current || session.isStreaming) return;
+
+  const previous = current.title;
+  setSessions((sessions) =>
+    sessions.map((item) => (item.id === current.id ? { ...item, title } : item)),
   );
+  activeSessionRef.current = { ...current, title };
+
+  if (!current.backendCreated) return;
+
   try {
-    await invoke<void>("update_session_title", { sessionId, title });
+    await invoke<void>("update_session_title", { sessionId: current.id, title });
   } catch (e) {
-    setAllSessions(prev);
+    const latest = activeSessionRef.current;
+    if (latest?.id === current.id && latest.title === title) {
+      setSessions((sessions) =>
+        sessions.map((item) =>
+          item.id === current.id && item.title === title
+            ? { ...item, title: previous }
+            : item,
+        ),
+      );
+      activeSessionRef.current = { ...latest, title: previous };
+    }
     showError(`Failed to rename session: ${e}`);
   }
 };
 ```
 
-`showError` is already used in AppShell (see line ~893). Pass
-`onSessionTitleChange={(title) => activeSession?.id
-  ? void handleSessionTitleChange(activeSession.id, title)
-  : undefined}` to TopBar. Adjust the destructured `activeSession` reference to
-match whatever AppShell actually names the current session object (search
-`TopBar` in AppShell and read the prop values it already passes).
+`showError` is already used in AppShell. Pass the handler directly as
+`onSessionTitleChange={handleSessionTitleChange}`; it resolves the current
+session through AppShell's existing `activeSessionRef` rather than capturing a
+potentially stale render value.
 
-**Verify**: `bun run typecheck` → exit 0. Then `bun run test -- src/components/TopBar.test.tsx`
-→ all existing tests pass.
+**Verify**: `bun run typecheck` → exit 0. Then
+`bun run test -- src/components/TopBar.test.tsx src/components/AppShell.test.tsx`
+→ all title-edit tests pass.
 
 ### Step 5: Update TopBar tests
 
@@ -244,17 +264,20 @@ In `src/components/TopBar.test.tsx`:
 
 - New `update_session_title_round_trips_through_get_and_list` Rust unit test
   in `src-tauri/src/session_store.rs` (Step 1).
-- New `update_session_title_*` Tauri command smoke behavior is covered
-  transitively by the FE test (full FE→BE path is not in scope; the unit test
-  + FE test together cover the contract).
+- AppShell tests assert the `update_session_title` invoke name and arguments;
+  the Rust store test verifies persistence. There is no full FE→BE integration
+  test in this scope.
 - Two new TopBar tests in `src/components/TopBar.test.tsx` (Step 5).
+- AppShell tests cover the optimistic update and callback persistence path,
+  the `backendCreated: false` local-only path, and rollback plus user-visible
+  error behavior when persistence fails.
 
 ## Done criteria
 
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml -- sess_store` exits 0; the new `update_session_title_round_trips_through_get_and_list` test passes
+- [ ] `cargo test --manifest-path src-tauri/Cargo.toml -- update_session_title` exits 0; the new `update_session_title_round_trips_through_get_and_list` test passes
 - [ ] `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` exits 0
 - [ ] `bun run typecheck` exits 0
-- [ ] `bun run test` exits 0; the two new TopBar tests pass
+- [ ] `bun run test` exits 0; the TopBar and AppShell session-title tests pass
 - [ ] `rg "setEditing\(false\)$" src/components/TopBar.tsx` returns no matches where the call is the sole body of `handleSubmit` (i.e. there is now a guarded call to `onSessionTitleChange`)
 - [ ] No files outside the in-scope list are modified (`git status`)
 - [ ] `plans/README.md` status row for plan 011 updated

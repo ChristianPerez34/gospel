@@ -138,7 +138,7 @@ options.
 Add a `describe("token and done listeners")` block:
 
 1. `llm-token appends a token to currentTurn.blocks`
-   - `triggerEvent("llm-token", { content: "Hello" })`
+   - `triggerEvent("llm-token", "Hello")`
    - Assert `result.current.currentTurn` is non-null and its `blocks` contains
      the streamed content. Inspect the actual block shape by reading
      `createTurn` + `updateCurrentTurn` in `useChatStream.ts` first; the test

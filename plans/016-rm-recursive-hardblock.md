@@ -148,7 +148,13 @@ struct RmFlags { recursive: bool, force: bool, dir: bool }
 
 fn parse_rm_flags(args: &[String]) -> RmFlags {
     let mut f = RmFlags { recursive: false, force: false, dir: false };
+    let mut parsing_options = true;
     for arg in args {
+        if !parsing_options { continue; }
+        if arg == "--" {
+            parsing_options = false;
+            continue;
+        }
         if arg == "--recursive" { f.recursive = true; continue; }
         if arg == "--force"     { f.force     = true; continue; }
         if arg == "--dir" || arg == "-d" { f.dir = true; continue; }
@@ -177,8 +183,10 @@ fn parse_rm_flags(args: &[String]) -> RmFlags {
 }
 ```
 
-If `--` (end-of-options) appears, parse flags only before it; operands after
-`--` must be considered for `root_target`.
+The standalone `--` ends option parsing. `parse_rm_flags` must ignore it and
+all subsequent arguments for flag detection, while the caller's operand pass
+continues to treat every later argument as an operand. Thus
+`rm -- -rf /` does not set `recursive` or `force`.
 
 ### Step 2: Tighten `is_blocked_shell_pattern` for rm
 

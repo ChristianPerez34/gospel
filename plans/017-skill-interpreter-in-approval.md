@@ -117,14 +117,25 @@ do not change `detect_interpreter_from_content`'s return contract).
 
 **Verify**: `cargo build --manifest-path src-tauri/Cargo.toml` → exit 0.
 
-### Step 2: Include interpreter tokens in label + reason
+### Step 2: Include a sanitized interpreter summary in label + reason
 
 In the `CommandApprovalRequest` construction, interpolate the interpreter
-token list. Examples (use the live format conventions of the original
-strings — single quotes inside are surrounding):
+summary. The current detector returns a `String`; split it into display tokens
+the same way execution does, but sanitize every token before rendering it:
+
+- Escape `\n`, `\r`, `\t`, and other control characters so they cannot add
+  lines or terminal control sequences to the approval dialog.
+- Bound the full rendered interpreter summary to 160 characters and append a
+  visible `...` marker when truncated.
+- Render tokens made only of letters, digits, `_`, `-`, `.`, `/`, `:`, and `+`
+  without quotes. Render every other token with deterministic JSON-style
+  double quoting and escaping. This is a human-readable label, not an
+  executable command string.
+
+Examples (use the live format conventions of the original strings):
 
 ```rust
-let interpreter = interpreter_parts.join(" ");
+let interpreter = render_interpreter_for_approval(&interpreter_parts);
 let command_label = format!(
     "Execute skill script '{script}' ({interpreter}) for skill '{skill}'",
 );
@@ -137,12 +148,9 @@ If `interpreter_parts` is empty (no shebang, default path used), fall back
 to the existing strings — keep the label/reason unchanged in that branch so
 the regression test for default-interpreter skills still matches.
 
-Format the interpreter list as a shell-quoted string if any token contains
-a space; use the existing repo quoting helper if one exists (search `rg "fn
-quote|shell_quote" src-tauri/src`); if none exists, the simplest safe
-rendering is to join with spaces and let the user read it as-is (the label
-is informative, not a command to be re-execed). Do NOT construct runnable CLI
-strings in the label — only a human-readable summary.
+Never join raw interpreter content directly into `command_label` or `reason`.
+Keep the existing fallback strings unchanged if the interpreter token list is
+empty.
 
 **Verify**: `cargo build --manifest-path src-tauri/Cargo.toml` → exit 0.
 
@@ -162,6 +170,10 @@ Add `#[test]` functions next to the existing skills tests (search
    default interpreter path).
 4. `approval_request_reproduces_script_name` — confirm the script name is
    still in the label (regression for the existing assertion form).
+5. `approval_request_sanitizes_interpreter_for_display` — include control
+   characters, whitespace/special characters, and an overlong token; assert
+   escaped controls, deterministic quoting, and the length bound in both
+   rendered strings.
 
 To drive the approval request construction in a test without going through
 the full Tauri dialog, extract the label/reason builder into a small pure

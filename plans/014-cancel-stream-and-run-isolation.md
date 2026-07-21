@@ -104,7 +104,8 @@ Both fixes share a single change to the backend stream event emitter.
 - `src-tauri/src/lib.rs` (add `cancel_streaming` Tauri command + register)
 - `src/hooks/useChatStream.ts` (track active run id; ignore events with
   non-matching `run_id`; add a `cancelStream` callback that invokes
-  `cancel_streaming` and finalizes the turn as cancelled)
+  `cancel_streaming`; cancelled-turn finalization remains owned by the
+  idempotent `llm-error` event path)
 - `src/hooks/useSessionManager.ts` (expose `cancelStream` from the manager)
 - `src/components/InputBar.tsx` (render a Stop control when `isStreaming`)
 - `src/hooks/useChatStream.test.ts` (update the `TODO(plan 014)` test to
@@ -162,8 +163,8 @@ Search `src-tauri/src/llm.rs` and `src-tauri/src/session_turn.rs` for the
 `tokio::spawn` site that owns the LLM generation task. The standard
 cancellation surface is a `CancellationToken` (tokio utilities) or an
 `Abortable`/`JoinHandle::abort` registered in a per-turn state map keyed by
-session id (or by the `run_id` from Step 1). Read the existing structure and
-pick whichever the existing code uses; do not introduce a new async
+the `run_id` from Step 1. Read the existing structure and pick whichever the
+existing code uses; do not introduce a new async
 primitive if the codebase already chose one.
 
 In `src-tauri/src/lib.rs`, add a `cancel_streaming` command mirroring the
@@ -173,15 +174,15 @@ shape of other state-mutating commands in the file:
 #[tauri::command]
 fn cancel_streaming(
     state: tauri::State<AppState>,
-    session_id: String,
+    run_id: String,
 ) -> Result<(), String> {
-    // Abort the in-flight run for this session id.
+    // Abort the in-flight run for this exact run id.
     // If none is in flight, return Ok(()) cleanly (idempotent).
     state
         .session_turn_handles  // or whatever AppState field holds the in-flight tasks
         .write()
         .map_err(|e| e.to_string())?
-        .remove(&session_id)
+        .remove(&run_id)
         .map(|handle| handle.abort());
     Ok(())
 }
@@ -189,6 +190,26 @@ fn cancel_streaming(
 
 Register it in `generate_handler!` after `complete_streaming` (search that
 keyword in `lib.rs`).
+
+As part of this backend step, define the stream-start response contract and
+update `complete_streaming` to return it:
+
+```rust
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamStartResponse {
+    run_id: String,
+}
+```
+
+Generate the run id before starting the owned streaming task, register that
+task under the same id, and return immediately with
+`Ok(StreamStartResponse { run_id })` serialized to the frontend as
+`{ runId: string }`. The command must not wait for the full stream before
+returning the id. Update the command return type, Tauri command tests, and an
+exact serialization test for the camelCase response. The per-run registry and
+`cancel_streaming` command must both key cancellation by `run_id`, not only by
+session id, so local fallback streams are cancellable too.
 
 If `AppState` has no per-session handle map yet, add one (read the existing
 `AppState` definition; this is the surface the plan adds — be conservative:
@@ -206,11 +227,12 @@ In `src/hooks/useChatStream.ts`:
 
 1. Add `const activeRunIdRef = useRef<string | null>(null);` next to
    `currentTurnRef`.
-2. In `startStream`: capture the `run_id` (the backend returns it from
-   `complete_streaming` — if it doesn't currently, the backend Step 2 must
-   also return it; update the `complete_streaming` command's return type to
-   `{ runId: string }` and have the FE consume it). Store it on
-   `activeRunIdRef.current = runId`.
+2. Add a frontend response type such as
+   `type StreamStartResponse = { runId: string };`. In `startStream`, consume
+   `const { runId } = await invoke<StreamStartResponse>("complete_streaming", ...);`
+   and assign `activeRunIdRef.current = runId`. Update invoke mocks and tests
+   to return `{ runId }`; active-run tracking must rely on this documented
+   backend response rather than a locally inferred session id.
 3. In `resetStream` and the `llm-done` / `llm-error` finalize handlers: null
    `activeRunIdRef.current = null` at the same point `currentTurnRef.current`
    is nulled.
@@ -240,24 +262,19 @@ const cancelStream = useCallback(async () => {
   const runId = activeRunIdRef.current;
   if (!runId) return;
   try {
-    await invoke<void>("cancel_streaming", { sessionId: /* from options */ });
+    await invoke<void>("cancel_streaming", { runId });
   } catch {
     // best-effort; the backend may already have finalized
   }
-  // finalize the current turn as cancelled locally
-  const finalTurn = currentTurnRef.current;
-  if (finalTurn) {
-    onTurnComplete?.(/* pass through a "cancelled" final state */);
-  }
-  activeRunIdRef.current = null;
-  currentTurnRef.current = null;
-}, [onTurnComplete]);
+}, []);
 ```
 
-Read the `onTurnComplete` payload shape to feed the cancellation reason
-consistently (mirror the existing `llm-error` finalize path). `sessionId`
-must come from the `useChatStream` options (add it to
-`UseChatStreamOptions` if not already present — search the type definition).
+Do not finalize the turn or clear `currentTurnRef` in `cancelStream`. The
+backend emits one cancellation payload through the existing `llm-error`-style
+event, and that event handler is the single idempotent owner that appends the
+cancelled turn and clears `currentTurnRef` plus `activeRunIdRef`. Guard that
+handler by the captured `runId` so a late cancellation event can never clear a
+newer run. If cancellation is already finalized, the handler is a no-op.
 
 Return `cancelStream` from the hook alongside `startStream` /
 `resetStream` / `resolveApproval`.
@@ -307,31 +324,31 @@ In `src/hooks/useChatStream.test.ts` (created by plan 012):
 - Update the `TODO(plan 014)` test: change it from "asserts the late event
   lazily re-creates a turn" to "asserts the late event is ignored because
   its `run_id` does not match the active run id". Remove the TODO marker.
-- Add a test: `cancelStream invokes cancel_streaming and finalizes the
-  current turn as cancelled`, asserting:
-  - `invoke` was called with `"cancel_streaming"` and the session id.
-  - `onTurnComplete` was called once with a cancelled final state.
-  - Subsequent `llm-token` events do *not* create a new turn (the run id
-    is now null).
+- Add a test: `cancelStream targets the active run and cancellation finalizes once`, asserting:
+  - `invoke` was called with `"cancel_streaming"` and the captured `runId`.
+  - `cancelStream` does not append/finalize the turn locally.
+  - The matching backend `llm-error` cancellation event finalizes the turn and
+    clears local run state exactly once; a duplicate event is a no-op.
+  - Subsequent `llm-token` events do *not* create a new turn (the run id is
+    now null).
 
 In `src/hooks/useSessionManager.test.ts`:
 
 - Add a test: `cancelStream stops the in-flight turn and frees the workspace
-  switch path` — render manager, start stream, call `cancelStream`, then
-  trigger a session select, assert the session switch is honored (the
-  SessionDrawer `if (session.isStreaming) return` gate now passes because
-  the manager cleared the streaming state on cancel). The end state of the
-  cancelled turn must be persisted to the original session, not the new one.
+  switch path` — render manager, start stream, call `cancelStream`, trigger the
+  matching backend cancellation event, then select another session. Assert the
+  switch is honored only after the event-owned finalizer clears streaming
+  state. The cancelled turn must be persisted to the original session, not the
+  new one.
 
 **Verify**: `bun run test` → all pass, including the new tests and the
 updated plan-012 test.
 
 ## Test plan
 
-- New backend tests: if the existing `session_turn` tests assert event
-  payloads, update them to include `runId`. Add a unit test for the new
-  `cancel_streaming` command's idempotency ( cancelling a non-running stream
-  returns `Ok(())`).
+- New backend tests: update event payload assertions to include `runId`, assert
+  `complete_streaming` serializes `{ runId }`, and test `cancel_streaming`
+  idempotency (cancelling a non-running run returns `Ok(())`).
 - New FE tests in `useChatStream.test.ts` (updated plan-012 test + cancel test).
 - New FE tests in `useSessionManager.test.ts` (cancel-unblocks-workspace-switch).
 - New `InputBar.test.tsx` test (Stop control renders + click handler).
@@ -374,8 +391,9 @@ Stop and report back if:
 ## Maintenance notes
 
 - The cancellation reason becomes part of the finalized turn; when adding
-  new Turn states (e.g. tool-failed vs llm-failed), update the
-  `onTurnComplete` payload shape that Step 4 uses.
+  new Turn states (e.g. tool-failed vs llm-failed), update the single
+  idempotent `llm-error` finalizer rather than adding completion logic to
+  `cancelStream`.
 - The `run_id` is the SSOT for "is this event from the active run?" Any
   future event type added to `llm-*` family must include `runId` (add a
   test that asserts this invariant).

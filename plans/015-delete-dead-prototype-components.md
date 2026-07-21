@@ -111,20 +111,18 @@ deletion is in the same spirit.
 
 ### Step 1: Confirm zero non-test importers for each component
 
-Run these and STOP if any returns an unexpected match (a live production
-importer would mean the component is NOT dead):
+Search only import statements and component definitions, and STOP if any
+returns an unexpected match (a live production importer would mean the
+component is NOT dead):
 
 ```
-rg "ReviewPanel\b" src
-rg "ReviewProgressView" src
-rg "TitleBar" src
-rg "ContextPill" src
-rg "WorkspaceStage" src
+rg '^\s*import\b.*\b(ReviewPanel|ReviewProgressView|TitleBar|ContextPill|WorkspaceStage)\b|^\s*export\s+(default\s+)?(function|class|const)\s+(ReviewPanel|ReviewProgressView|TitleBar|ContextPill|WorkspaceStage)\b' src
 ```
 
-For each, the only match should be the component's own `.tsx` file (and for
-`ReviewPanel`, its `.test.tsx`). If anything else is returned, STOP and
-report.
+Before deletion, matches should be limited to each component's definition and
+the known component/test imports. The intentional WorkbenchLayout comments
+containing `ReviewPanel` are not imports or definitions and must not fail this
+check. If any production importer is returned, STOP and report.
 
 ### Step 2: Delete the five component files + the ReviewPanel test
 
@@ -185,7 +183,7 @@ surface a typecheck error caught at Step 3's verification.
 ## Done criteria
 
 - [ ] `ls src/components/ReviewPanel.tsx src/components/ReviewPanel.test.tsx src/components/ReviewProgressView.tsx src/components/TitleBar.tsx src/components/ContextPill.tsx src/components/WorkspaceStage.tsx 2>&1` reports all as missing
-- [ ] `rg "ReviewPanel\b|ReviewProgressView|TitleBar\b|ContextPill|WorkspaceStage" src` returns zero matches (deletion complete)
+- [ ] The import/definition-only `rg` command from Step 1 returns zero matches after deletion; intentional WorkbenchLayout comments containing `ReviewPanel` may remain
 - [ ] `rg "onArchiveSession\b|onRestoreSession\b|onDeleteArchivedSession\b" src` returns zero matches
 - [ ] `bun run typecheck` exits 0
 - [ ] `bun run test` exits 0 with the test count reduced by ReviewPanel.test.tsx's test count (record before/after in commit body)

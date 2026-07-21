@@ -89,7 +89,7 @@ predictable block is preferred over silent partial behavior.
 | Purpose   | Command                                                                  | Expected on success |
 |-----------|--------------------------------------------------------------------------|---------------------|
 | Typecheck | `bun run typecheck`                                                       | exit 0             |
-| Frontend tests | `bun run test -- src/components/TopBar.test.tsx src/hooks/useSessionManager.test.ts` | all pass |
+| Frontend tests | `bun run test -- src/components/TopBar.test.tsx src/components/AppShell.test.tsx` | all pass |
 | Full suite | `bun run test`                                                          | all pass           |
 | Lint | `bun run lint`                                                              | exit 0 (warnings ok) |
 
@@ -98,8 +98,8 @@ predictable block is preferred over silent partial behavior.
 **In scope**:
 - `src/components/AppShell.tsx` (gate `WorkspaceSwitcher` open + select during streaming)
 - `src/components/TopBar.tsx` (disable the workspace-switch button during streaming)
-- `src/hooks/useSessionManager.test.ts` (add a race-condition test that asserts the workspace switch is a no-op during streaming)
-- `src/hooks/useSessionManager.ts` (only if test reveals actual caller order places `switchWorkspace` outside AppShell — confirm during implementation; see Step 3)
+- `src/components/AppShell.test.tsx` (exercise AppShell's guarded WorkspaceSwitcher selection while streaming)
+- `src/components/TopBar.test.tsx` (assert the workspace-switch button is disabled while streaming)
 
 **Out of scope**:
 - Building a "finish turn in background" UX
@@ -176,52 +176,40 @@ In `src/components/TopBar.tsx`:
 enabled during `"thinking"`/`"acting"` states; if one does, stop and report
 per STOP condition).
 
-### Step 3: Add a regression test for the workspace-switch leak
+### Step 3: Add a regression test for AppShell's guarded switch path
 
-In `src/hooks/useSessionManager.test.ts`:
+In `src/components/AppShell.test.tsx`, use the existing `invoke`/`listen`
+harness and render the real AppShell seam with two workspaces:
 
-- Add a `describe("streaming lifecycle races")` block (or extend an existing
-  one if a similar block already exists). Pattern: reuse `triggerEvent`, the
-  `capturedListeners` harness, and the existing `renderSessionManager`
-  helper at the top of the file.
-- Test 1: `workspace switch mid-stream is a no-op on the ative session`
-  - Render `useSessionManager` with two sessions and the existing one active.
-  - Start a stream: trigger `llm-token` so `currentTurn` is non-null and the
-    session status is `"thinking"` or `"acting"` (read `useSessionManager`
-    status transitions to know which event flips it; mirror the existing
-    "connecting → thinking" tests).
-  - Invoke the workspace-switch path that AppShell would call — at the test
-    layer this is `useWorkspaces.switchWorkspace` (mocked) or a direct
-    `setActiveWorkspaceId` equivalent (read the existing
-    `useSessionManager.test.ts` for whichever seam is used).
-  - Assert that the active session id does NOT change to the new workspace's
-    session while `isStreaming` is true, and that the streamed `currentTurn`
-    is still associated with the original session.
-- Test 2: `late llm-token after handleNewSession does not create a phantom turn`
-  (this is the characterization guard against the deeper race plan 014
-  fixes; keep it as a marker, assert the *current* behavior, and add
-  `// TODO(plan 014): …` if needed).
+- Open the `WorkspaceSwitcher` before streaming starts, then start a turn and
+  trigger `llm-token` so `currentTurn` belongs to the original session and
+  `isStreaming` is true.
+- Click the second workspace through the rendered WorkspaceSwitcher action.
+  Do not call `useWorkspaces.switchWorkspace`, `setActiveWorkspaceId`, or a
+  mocked equivalent directly; the test must execute AppShell's exact guarded
+  `onSelect` callback.
+- Assert that no `set_active_workspace` invoke occurs, the active session does
+  not change, and the streamed `currentTurn` content remains rendered for the
+  original session.
 
-Match the structure of `useSessionManager.test.ts:81-1142` (the `describe`
-and `it` nesting, the `await act(async () => …)` pattern). Do not extract a
-new helper — keep the test in the existing file's style.
+Also add a focused `TopBar.test.tsx` assertion that the workspace-switch
+button is disabled when `isStreaming` is true.
 
-**Verify**: `bun run test -- src/hooks/useSessionManager.test.ts` → all pass,
-including the two new tests.
+**Verify**:
+`bun run test -- src/components/TopBar.test.tsx src/components/AppShell.test.tsx`
+→ both guarded-path tests pass.
 
 ## Test plan
 
-- The AppShell guard logic is too UI-plumbing-heavy to unit-test in isolation;
-  the `useSessionManager.test.ts` regression test in Step 3 covers the
-  behavior the guard relies on (no workspace switch mid-stream).
-- Existing `TopBar.test.tsx` tests should pass unchanged; if they assert the
-  button is always enabled they need updates. Do not add new TopBar tests —
-  the `useSessionManager` race test is the regression net.
+- The AppShell test exercises the actual WorkspaceSwitcher selection callback
+  and proves the active session/current turn stay attached to the original
+  workspace while streaming.
+- The TopBar test separately pins the disabled affordance.
 
 ## Done criteria
 
 - [ ] `bun run typecheck` exits 0
-- [ ] `bun run test` exits 0; the two new tests in `useSessionManager.test.ts` pass
+- [ ] `bun run test` exits 0; the AppShell guarded-switch and TopBar disabled-state tests pass
 - [ ] `rg "if \(session\.isStreaming\) return;" src/components/AppShell.tsx` returns at least 3 matches (SessionDrawer, CommandPalette existing + WorkspaceSwitcher new)
 - [ ] `rg "disabled=\{computeActive\}" src/components/TopBar.tsx` returns 1 match on the workspace-switch button
 - [ ] No files outside the in-scope list are modified (`git status`)

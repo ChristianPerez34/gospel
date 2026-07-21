@@ -22,6 +22,8 @@
 - **Depends on**: none
 - **Category**: direction
 - **Planned at**: commit `72819cd`, 2026-07-20
+- **Execution status**: IN PROGRESS — the current checkout does not contain
+  the parser, command, panel, Spike Findings, or green verification evidence
 
 ## Why this matters
 
@@ -99,7 +101,7 @@ CONTEXT.md vocabulary to reuse in any FE or backend module name:
 - A small Rust parser function in `workspace_tools.rs` that splits the
   `PLAN.md` body into the 5 documented sections (Goal / Steps / Evidence
   / Open Questions / Next Action) and returns a typed struct
-  `PlanFile { goal: Option<String>, steps: Vec<Step>, evidence: Vec<String>, open_questions: Vec<String>, next_action: Option<String> }`.
+  `PlanFile { goal: Option<String>, steps: Vec<PlanStep>, evidence: Vec<String>, open_questions: Vec<String>, next_action: Option<String>, has_plan_file: bool }`.
 - Register the command in `generate_handler!`.
 - `src-tauri/src/harness_plan.rs` (new module) — keep the parser
   isolated so its surface is testable without the Tauri command plumbing.
@@ -182,31 +184,41 @@ Add tests in `harness_plan.rs` covering:
 ### Step 2: Add the Tauri read-only command
 
 In `src-tauri/src/lib.rs` (or wherever the workspace read-only commands
-live — search `read_file`'s command definition for placement), add:
+live — search `read_file`'s command definition for placement), add a command
+that accepts no caller-supplied workspace path:
 
 ```rust
 #[tauri::command]
 fn read_harness_plan(
-    active_workspace_path: String,  // mirror the existing workspace-aware read cmds
+    app_config: tauri::State<'_, AppConfigState>,
 ) -> Result<PlanFile, String> {
-    let plan_path = PathBuf::from(&active_workspace_path)
-        .join(".gospel")
-        .join("PLAN.md");
-    if !plan_path.exists() {
-        return Ok(PlanFile { has_plan_file: false, ..Default::default() });
+    let workspace = app_config
+        .store
+        .as_ref()
+        .ok_or_else(|| "App config store is unavailable".to_string())?
+        .get_active_workspace()
+        .map_err(|e| format!("Failed to get active workspace: {e}"))?
+        .ok_or_else(|| "No active workspace selected".to_string())?;
+
+    match workspace_tools::read_workspace_text(
+        Path::new(&workspace.path),
+        Path::new(".gospel/PLAN.md"),
+    )? {
+        Some(content) => Ok(parse_plan_markdown(&content)),
+        None => Ok(PlanFile { has_plan_file: false, ..Default::default() }),
     }
-    let content = std::fs::read_to_string(&plan_path)
-        .map_err(|e| e.to_string())?;
-    Ok(parse_plan_markdown(&content))
 }
 ```
 
-Match the existing workspace-aware read commands' shape exactly: how
-they get the workspace path (an `active_workspace_path` argument, a
-state field, or a registry lookup — read one). Apply the workspace
-security boundary already enforced for `read_file` (path traversal,
-symlink escape — reuse the existing safe-read path in
-`workspace_tools.rs` if there is one).
+Extract or expose a crate-private `read_workspace_text` helper from the safe
+target-resolution and UTF-8 read path used by `ReadFileTool::call` in
+`workspace_tools.rs`. It must construct `WorkspaceAccess` from the trusted
+active workspace, resolve only the relative `.gospel/PLAN.md` target, and
+preserve the existing canonicalization, traversal rejection, symlink-escape
+rejection, regular-file check, size cap, binary/UTF-8 checks, and missing-file
+distinction. Do not route this command through an arbitrary path received from
+the frontend and do not replace the safe-read path with raw
+`std::fs::read_to_string`.
 
 Register `read_harness_plan` in `generate_handler!`.
 
@@ -223,16 +235,16 @@ parallel `?panel=plan` (or equivalent) debug gate.
 Create `src/components/PlanPanel.tsx`:
 
 ```tsx
-export function PlanPanel({ workspacePath }: { workspacePath: string }) {
+export function PlanPanel({ workspaceId }: { workspaceId: string | null }) {
   const [plan, setPlan] = useState<PlanFile | null>(null);
   const refresh = useCallback(async () => {
-    if (!workspacePath) return;
-    const p = await invoke<PlanFile>("read_harness_plan", { activeWorkspacePath: workspacePath });
+    if (!workspaceId) return;
+    const p = await invoke<PlanFile>("read_harness_plan");
     setPlan(p);
-  }, [workspacePath]);
+  }, [workspaceId]);
   useEffect(() => { void refresh(); }, [refresh]);
   // Render the 5 sections (read-only) with a "Refresh" button.
-  // If plan.has_planFile === false, render "No plan yet".
+  // If plan.has_plan_file === false, render "No plan yet".
 }
 ```
 
@@ -297,10 +309,17 @@ artifacts (gated by a debug flag, so they don't affect production runs).
 
 ## Done criteria
 
+Completion reconciliation (2026-07-21): all criteria remain unchecked in the
+current checkout. The prior worktree/branch record is not sufficient evidence:
+the checked-out tree lacks the required artifacts and no successful full
+command/test verification is recorded here. Keep this plan and the index `IN
+PROGRESS` until every item below is implemented, verified, and accompanied by
+the Spike Findings appendix.
+
 - [ ] `src-tauri/src/harness_plan.rs` exists with `parse_plan_markdown` + ≥4 unit tests passing
 - [ ] `read_harness_plan` Tauri command registered in `generate_handler!`
 - [ ] `rg "read_harness_plan" src-tauri/src/lib.rs` returns the command definition
-- [ ] `src/components/PlanPanel.tsx` exists, gated behind the debug flag, calling `invoke<PlanFile>("read_harness_plan", { ... })`
+- [ ] `src/components/PlanPanel.tsx` exists, gated behind the debug flag, calling `invoke<PlanFile>("read_harness_plan")` without a caller-supplied workspace path
 - [ ] `rg "PlanPanel" src/App.tsx` returns the gated render
 - [ ] `cargo test --manifest-path src-tauri/Cargo.toml` exits 0
 - [ ] `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` exits 0

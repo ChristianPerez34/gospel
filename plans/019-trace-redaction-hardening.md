@@ -138,15 +138,19 @@ In `redact_sensitive_value` (lines 239–252):
 - New: when the value is parseable as JSON (try `serde_json::from_str` within
   a graceful fallback), recurse into the parsed structure regardless of the
   leading character. When parsing fails, fall back to a free-form string
-  scan (Step 3). Do not change the成功的-parsing branches; just widen them.
+  scan (Step 3). Do not change the successful parsing branches; just widen
+  them.
 
-This closes the case where a free-form string contains a JSON substring
-with pretty-printed spacing.
+This closes the case where a string value is itself standalone JSON with
+leading whitespace or pretty-printed spacing. Embedded JSON inside surrounding
+free-form text is handled by Step 1's whitespace-tolerant substring scanner,
+not by whole-string JSON parsing.
 
-**Verify**: Add a test `redacts_pretty_printed_json_in_freeform_string` —
-feed `"Got error: { \"api_key\": \"REDACTED_FAKE\" }"` (note the space after
-the colon) and assert the output redacts the `REDACTED_FAKE` value (replace
-with the repo's actual placeholder).
+**Verify**: Add a test `redacts_pretty_printed_json_string_value` whose string
+content is the standalone parseable value
+`"  {\n  \"api_key\": \"REDACTED_FAKE\"\n}"`. Assert the output no longer
+contains `REDACTED_FAKE` and uses the repository's actual placeholder,
+`[REDACTED]`.
 
 ### Step 3: Free-form scan for known secret-token shapes
 
@@ -200,7 +204,7 @@ of new tests added in Steps 2 and 3.
 ## Test plan
 
 - New tests in `src-tauri/src/trace.rs`:
-  - `redacts_pretty_printed_json_in_freeform_string` (Step 2)
+  - `redacts_pretty_printed_json_string_value` (Step 2)
   - `redacts_bearer_token_in_error_message` (Step 3)
   - `redacts_openai_key_in_query_string` (Step 3)
   - `redacts_github_oauth_token` (Step 3)

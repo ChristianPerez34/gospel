@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 72819cd..HEAD -- src-tauri/src/verification.rs src-tauri/src/review/detector.rs src-tauri/src/review/validator.rs src-tauri/src/review/mod.rs`
+> **Drift check (run first)**: `git diff --stat 72819cd..HEAD -- src-tauri/src/text_utils.rs src-tauri/src/verification.rs src-tauri/src/review/detector.rs src-tauri/src/review/validator.rs src-tauri/src/review/mod.rs`
 > If any in-scope file changed since this plan was written, compare the
 > "Current state" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition.
@@ -81,12 +81,15 @@ Conventions:
 
 | Purpose   | Command                                                                  | Expected on success |
 |-----------|--------------------------------------------------------------------------|---------------------|
-| Backend tests | `cargo test --manifest-path src-tauri/Cargo.toml -- review:: verification::` | all pass |
+| Review tests | `cargo test --manifest-path src-tauri/Cargo.toml -- review::`              | all pass |
+| Verification tests | `cargo test --manifest-path src-tauri/Cargo.toml -- verification::` | all pass |
+| Text utility tests | `cargo test --manifest-path src-tauri/Cargo.toml -- text_utils::`    | all pass |
 | Backend lint | `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`     | exit 0             |
 
 ## Scope
 
 **In scope**:
+- `src-tauri/src/text_utils.rs` (add `wrap_untrusted` and its unit test)
 - `src-tauri/src/verification.rs` (fence `user_prompt` / `response_to_verify`)
 - `src-tauri/src/review/detector.rs` (fence `review_context`, `files[].diff`, file lists)
 - `src-tauri/src/review/validator.rs` (fence the same untrusted content)
@@ -246,8 +249,12 @@ Match the ADR's existing tone (read the doc first).
 - New `review::mod` test asserting the verdict-mirroring downgrade
   (Step 4).
 - Pattern: existing `#[test]` cohort in `review/mod.rs` and `verification.rs`.
-- Verification: `cargo test --manifest-path src-tauri/Cargo.toml -- "review::|verification::|text_utils::"`
-  → all pass.
+- Verification uses three fail-fast commands because Cargo accepts one test
+  filter per invocation:
+  - `cargo test --manifest-path src-tauri/Cargo.toml -- review::`
+  - `cargo test --manifest-path src-tauri/Cargo.toml -- verification::`
+  - `cargo test --manifest-path src-tauri/Cargo.toml -- text_utils::`
+  Each command must pass before running the next.
 
 ## Done criteria
 
@@ -256,7 +263,7 @@ Match the ADR's existing tone (read the doc first).
 - [ ] `rg "BEGIN UNTRUSTED DATA" src-tauri/src/verification.rs src-tauri/src/review/detector.rs src-tauri/src/review/validator.rs` returns ≥1 match in each file
 - [ ] `rg "wrap_untrusted" src-tauri/src/text_utils.rs` returns the definition + tests
 - [ ] `rg "Security considerations" docs/adr/0007-multi-focus-code-review.md` returns ≥1 match
-- [ ] No files outside the in-scope list are modified (`git status`)
+- [ ] `git diff --name-only` contains no files outside `src-tauri/src/text_utils.rs`, `src-tauri/src/verification.rs`, `src-tauri/src/review/detector.rs`, `src-tauri/src/review/validator.rs`, `src-tauri/src/review/mod.rs`, and `docs/adr/0007-multi-focus-code-review.md`
 - [ ] `plans/README.md` status row for plan 018 updated
 
 ## STOP conditions
