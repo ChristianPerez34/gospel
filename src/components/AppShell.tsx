@@ -780,7 +780,10 @@ export function AppShell() {
         onSessionModeChange={session.handleSessionModeChange}
         model={currentModelName}
         status={session.status}
-        onWorkspaceSwitch={() => setWorkspaceSwitcherOpen(true)}
+        onWorkspaceSwitch={() => {
+          if (session.isStreaming) return;
+          setWorkspaceSwitcherOpen(true);
+        }}
         onToggleSessions={toggleSessionDrawer}
         onOpenSettings={openSettings}
         sessionsOpen={sessionDrawerOpen}
@@ -881,6 +884,7 @@ export function AppShell() {
           workspaces={workspaces}
           activeWorkspaceId={activeWorkspace?.id ?? ""}
           onSelect={(ws) => {
+            if (session.isStreaming) return;
             void switchWorkspace(ws.id);
           }}
           onAdd={() => {
@@ -946,7 +950,10 @@ export function AppShell() {
           session.handleNewSession();
         }}
         onOpenSettings={openSettings}
-        onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
+        onOpenWorkspaceSwitcher={() => {
+          if (session.isStreaming) return;
+          setWorkspaceSwitcherOpen(true);
+        }}
         onToggleSessions={toggleSessionDrawer}
         onSelectModel={(modelId) => {
           applyModelSelection(modelId);

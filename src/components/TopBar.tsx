@@ -111,8 +111,9 @@ export function TopBar({
         </button>
         <button
           type="button"
-          className="hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
+          className={`hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary${computeActive ? " text-text-muted cursor-not-allowed" : ""}`}
           onClick={onWorkspaceSwitch}
+          disabled={computeActive}
           aria-label="Switch workspace"
           title="Switch workspace"
         >
