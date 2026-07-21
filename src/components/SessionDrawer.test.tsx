@@ -80,33 +80,33 @@ describe("SessionDrawer", () => {
     expect(onSelect).toHaveBeenCalledWith(sessions[0]);
   });
 
-  it("calls onArchiveSession for the row archive action", () => {
-    const onArchiveSession = vi.fn();
-    renderDrawer({ onArchiveSession });
+  it("calls onArchiveSessions for the row archive action", () => {
+    const onArchiveSessions = vi.fn();
+    renderDrawer({ onArchiveSessions });
 
     fireEvent.click(screen.getByRole("button", { name: "Archive Current workspace" }));
 
-    expect(onArchiveSession).toHaveBeenCalledTimes(1);
-    expect(onArchiveSession).toHaveBeenCalledWith(sessions[0]);
+    expect(onArchiveSessions).toHaveBeenCalledTimes(1);
+    expect(onArchiveSessions).toHaveBeenCalledWith([sessions[0]]);
   });
 
   it("shows archived sessions with restore and permanent delete actions", () => {
-    const onRestoreSession = vi.fn();
-    const onDeleteArchivedSession = vi.fn();
+    const onRestoreArchivedSessions = vi.fn();
+    const onDeleteArchivedSessions = vi.fn();
     renderDrawer({
       sessions: [],
       archivedSessions: [sessions[1]],
       showArchived: true,
       onShowArchivedChange: vi.fn(),
-      onRestoreSession,
-      onDeleteArchivedSession,
+      onRestoreArchivedSessions,
+      onDeleteArchivedSessions,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Restore Other workspace" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete Other workspace permanently" }));
 
-    expect(onRestoreSession).toHaveBeenCalledWith(sessions[1]);
-    expect(onDeleteArchivedSession).toHaveBeenCalledWith(sessions[1]);
+    expect(onRestoreArchivedSessions).toHaveBeenCalledWith([sessions[1]]);
+    expect(onDeleteArchivedSessions).toHaveBeenCalledWith([sessions[1]]);
   });
 
   it("archives selected visible sessions", () => {
