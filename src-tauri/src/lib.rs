@@ -1158,6 +1158,7 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
         &self,
         session_id: &str,
         role: &str,
+        run_id: &str,
         event: &session_turn::SessionTurnEvent,
     ) {
         if let Some(trace_event) = session_turn::trace_event_for_session_turn_event(
@@ -1169,7 +1170,7 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
             self.trace_state.write_event(&trace_event);
         }
 
-        let ui_event = session_turn::ui_event_payload(event);
+        let ui_event = session_turn::ui_event_payload(event, run_id);
         let _ = self.app.emit(ui_event.name, ui_event.payload);
     }
 
@@ -1205,12 +1206,14 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
 
     fn emit_done(
         &self,
+        run_id: &str,
         response: &str,
         prompt_tokens: usize,
         response_tokens: usize,
         tool_calls: usize,
     ) {
         let payload = serde_json::json!({
+            "runId": run_id,
             "response": response,
             "prompt_tokens": prompt_tokens,
             "response_tokens": response_tokens,
@@ -1219,8 +1222,14 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
         let _ = self.app.emit("llm-done", payload);
     }
 
-    fn emit_error(&self, error: &LlmError) {
-        let _ = self.app.emit("llm-error", error.to_dto());
+    fn emit_error(&self, run_id: &str, error: &LlmError) {
+        let dto = error.to_dto();
+        let payload = serde_json::json!({
+            "runId": run_id,
+            "code": dto.code,
+            "message": dto.message,
+        });
+        let _ = self.app.emit("llm-error", payload);
     }
 }
 
@@ -1286,7 +1295,7 @@ async fn complete_streaming(
     variant: Option<String>,
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
-) -> Result<(), llm::LlmErrorDto> {
+) -> Result<String, llm::LlmErrorDto> {
     let (delegate_provider, delegate_model, delegate_api_key) =
         resolve_delegate_completion_config(app_config.inner(), &provider, &model);
 
