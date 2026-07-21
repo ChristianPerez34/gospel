@@ -1,8 +1,9 @@
+use regex::Regex;
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_TRACE_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB per file
@@ -220,6 +221,48 @@ const SENSITIVE_KEYS: &[&str] = &[
     "stderr",
 ];
 
+/// Token-prefix patterns used by major providers. Add new providers here —
+/// this table is the deduplication seam for free-form secret scanning.
+/// Patterns use bounded character classes with minimum lengths to avoid
+/// over-redacting legitimate short text.
+const SECRET_TOKEN_PATTERNS: &[&str] = &[
+    r"sk-[A-Za-z0-9_-]{20,}", // OpenAI
+    r"sk-ant-[A-Za-z0-9_-]{20,}", // Anthropic
+    r"ghp_[A-Za-z0-9]{36,}", // GitHub personal access token
+    r"gho_[A-Za-z0-9]{36,}", // GitHub OAuth token
+    r"ghs_[A-Za-z0-9]{36,}", // GitHub server-to-server token
+];
+
+static KEY_VALUE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    let alternation = SENSITIVE_KEYS
+        .iter()
+        .map(|k| regex::escape(k))
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&format!(
+        r#""({alternation})"\s*:\s*"((?:[^"\\]|\\.)*)""#
+    ))
+    .expect("key-value regex is valid")
+});
+
+static BEARER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(Bearer )(\S{20,})").expect("bearer regex is valid"));
+
+static QUERY_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    let alternation = SENSITIVE_KEYS
+        .iter()
+        .map(|k| regex::escape(k))
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&format!(r"([?&])({alternation})=([^&\s]+)"))
+        .expect("query token regex is valid")
+});
+
+static TOKEN_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    let combined = SECRET_TOKEN_PATTERNS.join("|");
+    Regex::new(&combined).expect("token prefix regex is valid")
+});
+
 fn redact_sensitive_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
@@ -237,14 +280,15 @@ fn redact_sensitive_value(value: &mut serde_json::Value) {
             }
         }
         serde_json::Value::String(text) => {
-            let trimmed = text.trim_start();
-            if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                if let Ok(mut nested) = serde_json::from_str::<serde_json::Value>(text) {
-                    redact_sensitive_value(&mut nested);
-                    if let Ok(redacted) = serde_json::to_string(&nested) {
-                        *text = redacted;
-                        return;
-                    }
+            // If the string parses as JSON, recurse and re-serialize. This
+            // catches pretty-printed JSON (`"api_key": "…"`) regardless of
+            // the leading character, and the substring scan below will catch
+            // any JSON embedded in free-form error strings.
+            if let Ok(mut nested) = serde_json::from_str::<serde_json::Value>(text) {
+                redact_sensitive_value(&mut nested);
+                if let Ok(redacted) = serde_json::to_string(&nested) {
+                    *text = redacted;
+                    return;
                 }
             }
 
@@ -255,21 +299,86 @@ fn redact_sensitive_value(value: &mut serde_json::Value) {
 }
 
 fn redact_sensitive(json_str: &mut String) {
-    for pattern in SENSITIVE_KEYS {
-        let search = format!("\"{}\":\"", pattern);
-        let mut search_from = 0;
-        while let Some(relative_start) = json_str[search_from..].find(&search) {
-            let start = search_from + relative_start;
-            let value_start = start + search.len();
-            if let Some(end) = json_str[value_start..].find('"') {
-                let redacted = format!("\"{}\":\"[REDACTED]\"", pattern);
-                json_str.replace_range(start..value_start + end + 1, &redacted);
-                search_from = start + redacted.len();
-            } else {
-                break;
-            }
-        }
+    // Whitespace-tolerant JSON key/value scan: matches `"key"\s*:\s*"value"`
+    // for every key in SENSITIVE_KEYS, preserving the key and surrounding
+    // structure while replacing only the value with the redaction placeholder.
+    let mut last_end = 0;
+    let mut rebuilt = String::with_capacity(json_str.len());
+    let captures: Vec<(usize, usize, String)> = KEY_VALUE_RE
+        .captures_iter(json_str)
+        .map(|cap| {
+            let m = cap.get(0).expect("capture has match");
+            let key = cap.get(1).expect("capture has key group").as_str().to_string();
+            (m.start(), m.end(), format!("\"{key}\":\"[REDACTED]\""))
+        })
+        .collect();
+    for (start, end, replacement) in captures {
+        rebuilt.push_str(&json_str[last_end..start]);
+        rebuilt.push_str(&replacement);
+        last_end = end;
     }
+    rebuilt.push_str(&json_str[last_end..]);
+    *json_str = rebuilt;
+
+    // Free-form secret-token scan for HTTP error strings.
+    redact_freeform_secrets(json_str);
+}
+
+fn redact_freeform_secrets(s: &mut String) {
+    // Bearer <token> — keep the `Bearer ` label, redact the token.
+    let mut last_end = 0;
+    let mut rebuilt = String::with_capacity(s.len());
+    let bearer_caps: Vec<(usize, usize, String)> = BEARER_RE
+        .captures_iter(s)
+        .map(|cap| {
+            let m = cap.get(0).expect("bearer capture has match");
+            let label = cap.get(1).expect("bearer label group").as_str();
+            (m.start(), m.end(), format!("{label}[REDACTED]"))
+        })
+        .collect();
+    for (start, end, replacement) in bearer_caps {
+        rebuilt.push_str(&s[last_end..start]);
+        rebuilt.push_str(&replacement);
+        last_end = end;
+    }
+    rebuilt.push_str(&s[last_end..]);
+    *s = rebuilt;
+
+    // query-string-style `?key=…` / `&key=…` — preserve the leading delimiter.
+    let mut last_end = 0;
+    let mut rebuilt = String::with_capacity(s.len());
+    let q_caps: Vec<(usize, usize, String)> = QUERY_TOKEN_RE
+        .captures_iter(s)
+        .map(|cap| {
+            let m = cap.get(0).expect("query capture has match");
+            let key = cap.get(2).expect("query key group").as_str().to_string();
+            // group 1 is the delimiter (? or &); preserve it in the output.
+            let delim = cap.get(1).expect("query delimiter group").as_str();
+            (m.start(), m.end(), format!("{delim}{key}=[REDACTED]"))
+        })
+        .collect();
+    for (start, end, replacement) in q_caps {
+        rebuilt.push_str(&s[last_end..start]);
+        rebuilt.push_str(&replacement);
+        last_end = end;
+    }
+    rebuilt.push_str(&s[last_end..]);
+    *s = rebuilt;
+
+    // Provider token-prefix patterns (sk-…, ghp_…, gho_…, ghs_…, sk-ant-…).
+    let mut last_end = 0;
+    let mut rebuilt = String::with_capacity(s.len());
+    let t_caps: Vec<(usize, usize)> = TOKEN_PREFIX_RE
+        .find_iter(s)
+        .map(|m| (m.start(), m.end()))
+        .collect();
+    for (start, end) in t_caps {
+        rebuilt.push_str(&s[last_end..start]);
+        rebuilt.push_str("[REDACTED]");
+        last_end = end;
+    }
+    rebuilt.push_str(&s[last_end..]);
+    *s = rebuilt;
 }
 
 pub struct TraceState {
@@ -373,5 +482,56 @@ mod tests {
         assert_eq!(value["new_text"], "[REDACTED]");
         assert!(!redacted.contains("raw old"));
         assert!(!redacted.contains("raw new"));
+    }
+
+    #[test]
+    fn redacts_pretty_printed_json_with_whitespace() {
+        let mut s = "{\"api_key\": \"sk-REDACTEDFAKE123456789\", \"other\": \"value\"}"
+            .to_string();
+        redact_sensitive(&mut s);
+        assert!(s.contains("[REDACTED]"));
+        assert!(!s.contains("sk-REDACTEDFAKE123456789"));
+        assert!(s.contains("\"other\""));
+    }
+
+    #[test]
+    fn redacts_pretty_printed_json_in_freeform_string() {
+        let mut s = "Got error: { \"api_key\": \"sk-REDACTEDFAKE123456789\" }".to_string();
+        redact_sensitive(&mut s);
+        assert!(s.contains("[REDACTED]"));
+        assert!(!s.contains("sk-REDACTEDFAKE123456789"));
+    }
+
+    #[test]
+    fn redacts_bearer_token_in_error_message() {
+        let mut s =
+            "HTTP 401: Authorization: Bearer ghp_REDACTEDFAKE0123456789ABCDEFGHIJKLMN".to_string();
+        redact_sensitive(&mut s);
+        assert!(s.contains("Bearer "));
+        assert!(s.contains("[REDACTED]"));
+        assert!(!s.contains("ghp_REDACTEDFAKE0123456789ABCDEFGHIJKLMN"));
+    }
+
+    #[test]
+    fn redacts_openai_key_in_query_string() {
+        let mut s = "GET /v1/completions?key=sk-REDACTEDFAKE123456789XYZ failed".to_string();
+        redact_sensitive(&mut s);
+        assert!(s.contains("[REDACTED]"));
+        assert!(!s.contains("sk-REDACTEDFAKE123456789XYZ"));
+    }
+
+    #[test]
+    fn redacts_github_oauth_token() {
+        let mut s = "gho_REDACTEDFAKE0123456789ABCDEFGHIJKLMN".to_string();
+        redact_sensitive(&mut s);
+        assert!(s.contains("[REDACTED]"));
+        assert!(!s.contains("gho_REDACTEDFAKE0123456789ABCDEFGHIJKLMN"));
+    }
+
+    #[test]
+    fn does_not_redact_short_non_secret_strings() {
+        let mut s = "Bearer abc".to_string();
+        redact_sensitive(&mut s);
+        assert_eq!(s, "Bearer abc");
     }
 }
