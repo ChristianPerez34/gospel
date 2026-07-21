@@ -9,6 +9,7 @@ interface TopBarProps {
   sessionMode: SessionMode;
   model: string;
   status: AgentStatus;
+  isStreaming?: boolean;
   onWorkspaceSwitch: () => void;
   onSessionModeChange: (mode: SessionMode) => Promise<void>;
   onSessionTitleChange: (title: string) => void;
@@ -24,6 +25,7 @@ export function TopBar({
   sessionMode,
   model,
   status,
+  isStreaming = false,
   onWorkspaceSwitch,
   onSessionModeChange,
   onSessionTitleChange,
@@ -146,8 +148,9 @@ export function TopBar({
         {editing ? (
           <input
             ref={inputRef}
-            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay"
+            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay disabled:cursor-not-allowed disabled:opacity-60"
             value={title}
+            disabled={isStreaming}
             onChange={(e) => setTitle(e.target.value)}
             onBlur={handleSubmit}
             onKeyDown={(e) => {
@@ -162,9 +165,12 @@ export function TopBar({
         ) : (
           <button
             type="button"
-            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary"
+            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-text-muted"
             onClick={() => setEditing(true)}
+            disabled={isStreaming}
             aria-label="Edit session title"
+            aria-disabled={isStreaming}
+            title={isStreaming ? "Session title can't be edited while streaming" : "Edit session title"}
           >
             {sessionTitle || "New session"}
           </button>

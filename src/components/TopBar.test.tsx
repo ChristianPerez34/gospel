@@ -80,4 +80,21 @@ describe("TopBar", () => {
 
     expect(onSessionTitleChange).not.toHaveBeenCalled();
   });
+
+  it("disables the session title editor while streaming", () => {
+    const onSessionTitleChange = vi.fn();
+    renderTopBar({ sessionTitle: "Streaming session", isStreaming: true, onSessionTitleChange });
+
+    const editButton = screen.getByRole("button", { name: "Edit session title" });
+    expect(editButton.hasAttribute("disabled")).toBe(true);
+    expect(editButton.getAttribute("aria-disabled")).toBe("true");
+    expect(editButton.getAttribute("title")).toBe(
+      "Session title can't be edited while streaming"
+    );
+
+    // Clicking a disabled button does not enter edit mode.
+    fireEvent.click(editButton);
+    expect(screen.queryByRole("textbox", { name: "Session title" })).toBeNull();
+    expect(onSessionTitleChange).not.toHaveBeenCalled();
+  });
 });

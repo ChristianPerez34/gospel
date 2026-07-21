@@ -219,4 +219,98 @@ describe("AppShell session title editing", () => {
       title: "Persisted Session Title",
     });
   });
+
+  it("does not roll back a newer rename when an older update_session_title fails", async () => {
+    // Controllable pending promises for each rename request, resolved in order.
+    let firstReject: ((error: Error) => void) | null = null;
+    let secondResolve: (() => void) | null = null;
+    const titleInvokes: string[] = [];
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "list_workspaces") return [sampleWorkspace];
+      if (cmd === "get_active_workspace") return sampleWorkspace;
+      if (cmd === "get_model_availability") return sampleAvailability;
+      if (cmd === "get_archive_policy") {
+        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
+      }
+      if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
+      if (cmd === "list_sessions") return [];
+      if (cmd === "list_archived_sessions") return [];
+      if (cmd === "create_session") return { id: "sess-backend-1" };
+      if (cmd === "update_session_title") {
+        const title = (args as { title: string }).title;
+        titleInvokes.push(title);
+        if (title === "First Rename") {
+          return new Promise<void>((_resolve, reject) => {
+            firstReject = reject;
+          });
+        }
+        if (title === "Second Rename") {
+          return new Promise<void>((resolve) => {
+            secondResolve = resolve;
+          });
+        }
+        return undefined;
+      }
+      return undefined;
+    });
+
+    render(<AppShell />);
+
+    const textarea = await screen.findByRole("textbox", { name: "Message input" });
+    await waitFor(() => {
+      expect(textarea.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: "Backend session prompt" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    });
+
+    // Complete the stream so session.isStreaming becomes false.
+    await act(async () => {
+      triggerEvent("llm-done", { response: "Hello back" });
+    });
+
+    const editButton = () => screen.getByRole("button", { name: "Edit session title" });
+    await waitFor(() => {
+      expect(editButton().hasAttribute("disabled")).toBe(false);
+    });
+
+    // First rename — request stays in flight.
+    fireEvent.click(editButton());
+    let input = (await screen.findByRole("textbox", {
+      name: "Session title",
+    })) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "First Rename" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(titleInvokes).toContain("First Rename"));
+
+    // Second rename supersedes the first before the first settles.
+    await waitFor(() => {
+      expect(editButton().hasAttribute("disabled")).toBe(false);
+    });
+    fireEvent.click(editButton());
+    input = (await screen.findByRole("textbox", {
+      name: "Session title",
+    })) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Second Rename" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(titleInvokes).toContain("Second Rename"));
+
+    // The first request fails. The newer optimistic title must be preserved.
+    await act(async () => {
+      firstReject?.(new Error("network down"));
+    });
+    const resolveSecond = secondResolve as (() => void) | null;
+    if (resolveSecond) {
+      await act(async () => {
+        resolveSecond();
+      });
+    }
+
+    await waitFor(() => {
+      expect(editButton().textContent).toBe("Second Rename");
+    });
+  });
 });
