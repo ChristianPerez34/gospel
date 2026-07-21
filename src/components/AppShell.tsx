@@ -737,13 +737,15 @@ export function AppShell() {
   const handleSessionTitleChange = useCallback(
     async (title: string) => {
       const current = activeSessionRef.current;
-      if (!current || !current.backendCreated || session.isStreaming) return;
+      if (!current || session.isStreaming) return;
 
       const previous = current.title;
       setSessions((prev) =>
         prev.map((item) => (item.id === current.id ? { ...item, title } : item))
       );
       activeSessionRef.current = { ...current, title };
+
+      if (!current.backendCreated) return;
 
       try {
         await invoke<void>("update_session_title", { sessionId: current.id, title });
