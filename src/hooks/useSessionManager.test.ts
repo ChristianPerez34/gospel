@@ -88,6 +88,7 @@ describe("useSessionManager", () => {
     });
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === "list_sessions") return [];
+      if (cmd === "complete_streaming") return "run-active";
       return undefined;
     });
   });
@@ -1137,6 +1138,68 @@ describe("useSessionManager", () => {
       expect(agentMessages).toHaveLength(1);
       expect(agentMessages[0]!.content).toBe("metadata-aware reply");
       expect(result.current.status).toBe("connected");
+    });
+  });
+
+  describe("cancelStream", () => {
+    it("cancelStream stops the in-flight turn and frees the workspace switch path", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "s-cancel-target" };
+        if (cmd === "complete_streaming") return "run-1";
+        if (cmd === "cancel_streaming") return undefined;
+        if (cmd === "get_session") {
+          return {
+            id: "s-other",
+            display_transcript: JSON.stringify([
+              { role: "user", content: "other workspace msg" },
+            ]),
+          };
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      // Start a stream so the manager enters the streaming state.
+      await act(async () => {
+        await result.current.handleSend("working");
+      });
+      expect(result.current.isStreaming).toBe(true);
+      expect(result.current.activeSessionId).toBe("s-cancel-target");
+
+      // Cancel the in-flight turn.
+      await act(async () => {
+        await result.current.cancelStream();
+      });
+
+      expect(invoke).toHaveBeenCalledWith("cancel_streaming", {
+        sessionId: "s-cancel-target",
+      });
+      // Streaming is cleared; status returns to connected.
+      expect(result.current.isStreaming).toBe(false);
+
+      // The cancelled turn is finalized as an agent message in the original
+      // session, not a new one.
+      const originalMessages = result.current.messages;
+      expect(originalMessages.some((m) => m.role === "agent")).toBe(true);
+
+      // A session select is now honored (the streaming gate has passed).
+      const otherSession = makeSession({
+        id: "s-other",
+        title: "Other session",
+        messages: [],
+        backendCreated: true,
+      });
+      await act(async () => {
+        await result.current.handleSessionSelect(otherSession);
+      });
+
+      expect(result.current.activeSessionId).toBe("s-other");
+      // The new session's messages replaced the cancelled session's view.
+      expect(result.current.messages).not.toBe(originalMessages);
+      expect(result.current.messages.map((m) => m.content)).toEqual([
+        "other workspace msg",
+      ]);
     });
   });
 });

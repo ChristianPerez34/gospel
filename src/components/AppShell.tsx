@@ -821,6 +821,8 @@ export function AppShell() {
                   onModelChange={applyModelSelection}
                   onVariantChange={applyVariantSelection}
                   onSend={session.handleSend}
+                  onCancelStream={() => void session.cancelStream()}
+                  isStreaming={session.isStreaming}
                   disabled={session.isStreaming || models.length === 0}
                   unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
                   unavailableDetail={noModels.detail}

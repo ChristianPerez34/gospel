@@ -28,6 +28,7 @@ interface RenderChatStreamOptions {
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
   onResolveApproval?: (id: string, decision: string) => Promise<unknown>;
+  sessionId?: string | null;
 }
 
 function renderChatStream(options: RenderChatStreamOptions = {}) {
@@ -58,7 +59,10 @@ describe("useChatStream", () => {
       registeredUnlisteners.push(unlisten);
       return unlisten;
     });
-    vi.mocked(invoke).mockImplementation(async () => undefined as unknown);
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "complete_streaming") return "run-active";
+      return undefined as unknown;
+    });
   });
 
   afterEach(() => {
@@ -332,29 +336,107 @@ describe("useChatStream", () => {
       expect(unlistenCalls).toBe(registeredCount);
     });
 
-    it("late llm-token after resetStream lazily re-creates a turn", async () => {
+    it("late llm-token with a non-matching run_id is ignored (per-run isolation)", async () => {
       const { result } = renderChatStream();
       await act(async () => {});
 
+      // Start a run: the active run id is registered. Simulate tokens from the
+      // active run to build up a turn.
       await act(async () => {
-        triggerEvent("llm-token", "first");
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "s-1",
+        });
+      });
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: "run-active",
+          token: "first",
+        });
       });
       expect(result.current.currentTurn).not.toBeNull();
+      expect(result.current.currentTurn!.blocks).toHaveLength(1);
 
-      act(() => {
-        result.current.resetStream();
-      });
-      expect(result.current.currentTurn).toBeNull();
-
-      // TODO(plan 014): after per-run isolation lands, this test must change to assert the late event is ignored.
+      // A late token from a *previous* run (different run_id) must be ignored,
+      // not appended to the active turn.
       await act(async () => {
-        triggerEvent("llm-token", "stale");
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: "run-stale",
+          token: "stale",
+        });
       });
 
       expect(result.current.currentTurn).not.toBeNull();
       const turn = result.current.currentTurn!;
       expect(turn.blocks).toHaveLength(1);
-      expect(turn.blocks[0]).toMatchObject({ kind: "text", text: "stale" });
+      expect(turn.blocks[0]).toMatchObject({ kind: "text", text: "first" });
+    });
+  });
+
+  describe("cancelStream", () => {
+    it("cancelStream invokes cancel_streaming and finalizes the current turn as cancelled", async () => {
+      const onMessages = vi.fn();
+      const onStatusChange = vi.fn();
+      const { result } = renderChatStream({
+        onMessages,
+        onStatusChange,
+        sessionId: "s-cancel",
+      });
+      await act(async () => {});
+
+      await act(async () => {
+        await result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "s-cancel",
+        });
+      });
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: "run-active",
+          token: "partial",
+        });
+      });
+      expect(result.current.currentTurn).not.toBeNull();
+
+      await act(async () => {
+        await result.current.cancelStream();
+      });
+
+      expect(invoke).toHaveBeenCalledWith("cancel_streaming", { sessionId: "s-cancel" });
+      expect(onStatusChange).toHaveBeenCalledWith("connected");
+      expect(result.current.currentTurn).toBeNull();
+      expect(onMessages).toHaveBeenCalledTimes(1);
+      const setter = onMessages.mock.calls[0][0] as (prev: Message[]) => Message[];
+      const message = setter([])[0];
+      expect(message.role).toBe("agent");
+      expect(message.content).toBe("partial");
+
+      // Subsequent tokens do not create a new turn (run id is now null but the
+      // stale guard drops events whose runId doesn't match null active).
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: "run-active",
+          token: "after-cancel",
+        });
+      });
+      expect(result.current.currentTurn).toBeNull();
+    });
+
+    it("cancelStream without an active run is a no-op", async () => {
+      const onMessages = vi.fn();
+      const { result } = renderChatStream({ onMessages, sessionId: "s-2" });
+      await act(async () => {});
+
+      await act(async () => {
+        await result.current.cancelStream();
+      });
+
+      expect(onMessages).not.toHaveBeenCalled();
+      expect(result.current.currentTurn).toBeNull();
     });
   });
 });
