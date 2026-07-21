@@ -24,3 +24,7 @@ Scope rejected-finding hashes by Review Focus and bump the hash domain from v1 t
 - Review prompts, comments, results, run records, metrics, and outcome recording can carry focus metadata before non-security detector knowledge is added.
 - Existing `.gospel/review_config.json` files remain valid because flat `signal_rules` keep their merge semantics.
 - Existing rejected-finding hashes are not rewritten in place; new rejections use the focus-scoped v2 hash.
+
+## Security considerations
+
+The review prompts concatenate untrusted content (git diffs, file bodies, review_context from the user prompt) into the detector/validator LLM prompts. As of plan advisor/018, untrusted content is wrapped in `BEGIN/END UNTRUSTED DATA` fences and the JSON output contract appears above the data; a post-parse validator downgrades verdicts that mirror likely injected instructions. This is defense-in-depth, not complete isolation — a sufficiently crafted diff may still influence reviewer output. The residual risk is accepted because the alternative (model-level instruction hierarchies outside the prompt) is out of scope for the v1 review feature.
