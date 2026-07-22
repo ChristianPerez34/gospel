@@ -165,8 +165,9 @@ In `src/components/TopBar.tsx`:
    `<div onClick={...}>` (check first), convert to a `<button type="button">`
    so `disabled` works (this is also better for keyboard accessibility per
    DESIGN.md §Accessibility — keyboard-reachable). Add a `disabled` styling
-   branch using the existing `text-text-muted` utility class for disabled
-   state (the same token SessionDrawer uses for its disabled affordance).
+   branch using both the existing `text-text-muted` utility class and
+   `cursor-not-allowed` for disabled state (matching SessionDrawer's disabled
+   affordance).
 3. Do NOT add a tooltip explaining why it's disabled (PRODUCT.md "no tooltips
    on first visit" + the disabled state is self-explanatory in the same way
    the SessionDrawer's archive actions are).

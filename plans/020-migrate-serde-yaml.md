@@ -121,14 +121,14 @@ in the file — verify with `rg "serde_yaml" src-tauri/src`):
 
 ### Step 3: Regenerate the lockfile + verify the build
 
-```
+```text
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
 This regenerates `Cargo.lock`: `serde_yaml` entries disappear; `yaml_serde`
 and its transitive deps appear. Confirm:
 
-```
+```text
 rg "^name = \"serde_yaml\"" src-tauri/Cargo.lock
 # should return zero matches
 rg "^name = \"yaml_serde\"" src-tauri/Cargo.lock

@@ -115,7 +115,7 @@ Search only import statements and component definitions, and STOP if any
 returns an unexpected match (a live production importer would mean the
 component is NOT dead):
 
-```
+```sh
 rg '^\s*import\b.*\b(ReviewPanel|ReviewProgressView|TitleBar|ContextPill|WorkspaceStage)\b|^\s*export\s+(default\s+)?(function|class|const)\s+(ReviewPanel|ReviewProgressView|TitleBar|ContextPill|WorkspaceStage)\b' src
 ```
 
