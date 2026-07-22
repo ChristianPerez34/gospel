@@ -88,7 +88,7 @@ CONTEXT.md vocabulary to reuse in any FE or backend module name:
 
 | Purpose   | Command                                                                  | Expected on success |
 |-----------|--------------------------------------------------------------------------|---------------------|
-| Backend build/test | `cargo build --manifest-path src-tauri/Cargo.toml` ; `cargo test --manifest-path src-tauri/Cargo.toml -- workspace_tools::` | both exit 0 |
+| Backend build/test | First run `cargo build --manifest-path src-tauri/Cargo.toml`, then run `cargo test --manifest-path src-tauri/Cargo.toml -- workspace_tools::` | both exit 0 |
 | Frontend typecheck/tests | `bun run typecheck`, `bun run test`                           | both exit 0 |
 
 ## Scope

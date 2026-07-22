@@ -556,6 +556,7 @@ export function AppShell() {
   const activeSessionVariant = activeSession?.variant ?? null;
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
+  const sessionTitleUpdateChainRef = useRef<Promise<void> | null>(null);
   const selectedModelRef = useRef(selectedModel);
   selectedModelRef.current = selectedModel;
   const sessionTitle = activeSession?.title || "New session";
@@ -747,29 +748,33 @@ export function AppShell() {
 
       if (!current.backendCreated) return;
 
-      try {
-        await invoke<void>("update_session_title", { sessionId: current.id, title });
-      } catch (e) {
-        // Only roll back if the session still shows the title this request
-        // submitted. A newer rename may have superseded it (or already
-        // persisted); blindly restoring `previous` would clobber that newer
-        // title and leave the UI out of sync with the database. Mirrors the
-        // model-selection rollback guard above.
-        const latest = activeSessionRef.current;
-        if (latest?.id === current.id && latest.title === title) {
-          setSessions((prev) =>
-            prev.map((item) =>
-              item.id === current.id && item.title === title
-                ? { ...item, title: previous }
-                : item
-            )
-          );
-          activeSessionRef.current = { ...latest, title: previous };
+      const persistTitle = async () => {
+        try {
+          await invoke<void>("update_session_title", { sessionId: current.id, title });
+        } catch (e) {
+          // Only roll back if the session still shows the title this request
+          // submitted. A newer rename may have superseded it (or already
+          // persisted); blindly restoring `previous` would clobber that newer
+          // title and leave the UI out of sync with the database. Mirrors the
+          // model-selection rollback guard above.
+          const latest = activeSessionRef.current;
+          if (latest?.id === current.id && latest.title === title) {
+            setSessions((prev) =>
+              prev.map((item) =>
+                item.id === current.id && item.title === title
+                  ? { ...item, title: previous }
+                  : item
+              )
+            );
+            activeSessionRef.current = { ...latest, title: previous };
+          }
+          showError(`Failed to rename session: ${e}`);
         }
-        showError(`Failed to rename session: ${e}`);
-      }
+      };
+      const previousUpdate = sessionTitleUpdateChainRef.current ?? Promise.resolve();
+      sessionTitleUpdateChainRef.current = previousUpdate.then(persistTitle, persistTitle);
     },
-    [session.isStreaming, setSessions, showError]
+    [session.isStreaming, showError]
   );
 
   const toggleSessionDrawer = useCallback(() => {

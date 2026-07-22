@@ -163,7 +163,9 @@ In `src/components/SessionDrawer.tsx`:
 Run the full gate that `package.json`'s `check` script runs:
 
 ```
-bun run typecheck && biome check . && bun run clippy
+bun run typecheck
+biome check .
+bun run clippy
 ```
 
 Per `AGENTS.md`: use `bun run test` (Vitest), not `bun test` (Bun runner).
@@ -182,7 +184,7 @@ surface a typecheck error caught at Step 3's verification.
 
 ## Done criteria
 
-- [ ] `ls src/components/ReviewPanel.tsx src/components/ReviewPanel.test.tsx src/components/ReviewProgressView.tsx src/components/TitleBar.tsx src/components/ContextPill.tsx src/components/WorkspaceStage.tsx 2>&1` reports all as missing
+- [ ] `ls src/components/ReviewPanel.tsx src/components/ReviewPanel.test.tsx src/components/ReviewProgressView.tsx src/components/TitleBar.tsx src/components/ContextPill.tsx src/components/WorkspaceStage.tsx` reports all as missing
 - [ ] The import/definition-only `rg` command from Step 1 returns zero matches after deletion; intentional WorkbenchLayout comments containing `ReviewPanel` may remain
 - [ ] `rg "onArchiveSession\b|onRestoreSession\b|onDeleteArchivedSession\b" src` returns zero matches
 - [ ] `bun run typecheck` exits 0

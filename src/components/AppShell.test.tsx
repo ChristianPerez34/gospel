@@ -68,6 +68,7 @@ describe("AppShell session title editing", () => {
       }
       if (cmd === "list_sessions") return [];
       if (cmd === "list_archived_sessions") return [];
+      if (cmd === "list_skills") return [];
       return undefined;
     });
   });
@@ -96,6 +97,7 @@ describe("AppShell session title editing", () => {
       }
       if (cmd === "list_sessions") return [];
       if (cmd === "list_archived_sessions") return [];
+      if (cmd === "list_skills") return [];
       if (cmd === "create_session") {
         throw new Error("backend database error");
       }
@@ -171,6 +173,7 @@ describe("AppShell session title editing", () => {
       }
       if (cmd === "list_sessions") return [];
       if (cmd === "list_archived_sessions") return [];
+      if (cmd === "list_skills") return [];
       if (cmd === "create_session") {
         return { id: "sess-backend-1" };
       }
@@ -237,6 +240,7 @@ describe("AppShell session title editing", () => {
       if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
       if (cmd === "list_sessions") return [];
       if (cmd === "list_archived_sessions") return [];
+      if (cmd === "list_skills") return [];
       if (cmd === "create_session") return { id: "sess-backend-1" };
       if (cmd === "update_session_title") {
         return new Promise<void>((_resolve, reject) => {
@@ -290,7 +294,7 @@ describe("AppShell session title editing", () => {
     ).toBeDefined();
   });
 
-  it("does not roll back a newer rename when an older update_session_title fails", async () => {
+  it("serializes newer renames after an older update_session_title failure", async () => {
     // Controllable pending promises for each rename request, resolved in order.
     let firstReject: ((error: Error) => void) | null = null;
     let secondResolve: (() => void) | null = null;
@@ -306,6 +310,7 @@ describe("AppShell session title editing", () => {
       if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
       if (cmd === "list_sessions") return [];
       if (cmd === "list_archived_sessions") return [];
+      if (cmd === "list_skills") return [];
       if (cmd === "create_session") return { id: "sess-backend-1" };
       if (cmd === "update_session_title") {
         const title = (args as { title: string }).title;
@@ -366,12 +371,13 @@ describe("AppShell session title editing", () => {
     })) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "Second Rename" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(titleInvokes).toContain("Second Rename"));
+    expect(titleInvokes).toEqual(["First Rename"]);
 
     // The first request fails. The newer optimistic title must be preserved.
     await act(async () => {
       firstReject?.(new Error("network down"));
     });
+    await waitFor(() => expect(titleInvokes).toEqual(["First Rename", "Second Rename"]));
     const resolveSecond = secondResolve as (() => void) | null;
     if (resolveSecond) {
       await act(async () => {

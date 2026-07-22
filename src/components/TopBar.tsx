@@ -167,7 +167,7 @@ export function TopBar({
         ) : (
           <button
             type="button"
-            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent aria-disabled:hover:text-text-muted"
+            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart truncate max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent aria-disabled:hover:text-text-muted"
             onClick={() => {
               if (!isStreaming) setEditing(true);
             }}
