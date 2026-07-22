@@ -176,17 +176,20 @@ Add a `describe("tool and approval lifecycle")` block:
      by a tool call; assert `console.warn` was called (use the existing
      log-capture pattern from the repo or `vi.spyOn(console, "warn")`); assert
      the block was appended as completed.
-8. `approval-requested emits the request; resolveApproval transitions the card`
-   - Trigger `approval-requested`; assert `result.current` exposes an
-     `approvalRequest` (or whatever the hook's state shape is — read and
-     match). Call `result.current.resolveApproval(decision)` and verify the
-     corresponding `approval-resolved` event would have been the equivalent
-     manual trigger (i.e. the card transitions the same way as if
-     `triggerEvent("approval-resolved", { id, decision })` had been fired).
-9. `resolveApproval is idempotent when called twice`
+8. `approval-requested adds a pending card; approval-resolved transitions it`
+   - Trigger `approval-requested`; assert the current turn contains a pending
+     approval block. Call `result.current.resolveApproval(id, decision)` and
+     verify the resolver receives the approval id and decision. Then trigger
+     the corresponding `approval-resolved` event and assert the card
+     transitions.
+     The backend event is authoritative for the card state; `resolveApproval`
+     only delegates the decision.
+9. `resolveApproval delegates every call; approval-resolved does not duplicate the card`
    - Same setup; call `resolveApproval` twice with the same decision; assert
-     no second invoke of `complete_streaming` or double-resolution of the
-     card.
+     the resolver is called twice, then trigger one `approval-resolved` event
+     and assert the single card is resolved once. This pins the current
+     non-idempotent transport behavior; changing it belongs to a separate
+     production-code plan.
 
 **Verify**: `bun run test -- src/hooks/useChatStream.test.ts` → all 9 pass.
 
