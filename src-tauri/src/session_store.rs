@@ -19,6 +19,8 @@ pub enum SessionStoreError {
     InvalidStatus(String),
     #[error("invalid session mode: {0}")]
     InvalidMode(String),
+    #[error("invalid session title: {0}")]
+    InvalidTitle(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -570,6 +572,24 @@ impl SessionStore {
         let rows = conn.execute(
             "UPDATE sessions SET mode = ?1, updated_at = datetime('now') WHERE id = ?2",
             params![mode, id],
+        )?;
+        if rows == 0 {
+            return Err(SessionStoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn update_session_title(&self, id: &str, title: &str) -> Result<(), SessionStoreError> {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return Err(SessionStoreError::InvalidTitle(
+                "session title must not be empty".to_string(),
+            ));
+        }
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE sessions SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![trimmed, id],
         )?;
         if rows == 0 {
             return Err(SessionStoreError::NotFound(id.to_string()));
@@ -1457,6 +1477,35 @@ mod tests {
 
         let listed = store.list_sessions_for_workspace(Some("ws1")).unwrap();
         assert_eq!(listed[0].mode, "ReadOnly");
+    }
+
+    #[test]
+    fn update_session_title_round_trips_through_get_and_list() {
+        let store = test_store();
+        let session = store
+            .create_session("Original", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        store.update_status(&session.id, "active").unwrap();
+
+        // 1. Title changes and round-trips through get/list.
+        store
+            .update_session_title(&session.id, "  Renamed  ")
+            .unwrap();
+        let detail = store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(detail.title, "Renamed");
+        let listed = store.list_sessions_for_workspace(Some("ws1")).unwrap();
+        assert_eq!(listed[0].title, "Renamed");
+
+        // 2. Empty/whitespace input errors.
+        let empty_err = store.update_session_title(&session.id, "   ");
+        assert!(matches!(empty_err, Err(SessionStoreError::InvalidTitle(_))));
+
+        let blank_err = store.update_session_title(&session.id, "");
+        assert!(matches!(blank_err, Err(SessionStoreError::InvalidTitle(_))));
+
+        // 3. The failed update did not mutate the row.
+        let after = store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(after.title, "Renamed");
     }
 
     #[test]

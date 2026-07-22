@@ -9,8 +9,10 @@ interface TopBarProps {
   sessionMode: SessionMode;
   model: string;
   status: AgentStatus;
+  isStreaming?: boolean;
   onWorkspaceSwitch: () => void;
   onSessionModeChange: (mode: SessionMode) => Promise<void>;
+  onSessionTitleChange: (title: string) => void;
   onToggleSessions: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
@@ -23,8 +25,10 @@ export function TopBar({
   sessionMode,
   model,
   status,
+  isStreaming = false,
   onWorkspaceSwitch,
   onSessionModeChange,
+  onSessionTitleChange,
   onToggleSessions,
   onOpenSettings,
   sessionsOpen,
@@ -46,6 +50,12 @@ export function TopBar({
   }, [editing]);
 
   const handleSubmit = () => {
+    const next = title.trim();
+    if (next.length > 0 && next !== sessionTitle) {
+      onSessionTitleChange(next);
+    } else {
+      setTitle(sessionTitle);
+    }
     setEditing(false);
   };
 
@@ -140,8 +150,9 @@ export function TopBar({
         {editing ? (
           <input
             ref={inputRef}
-            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay"
+            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay disabled:cursor-not-allowed disabled:opacity-60"
             value={title}
+            disabled={isStreaming}
             onChange={(e) => setTitle(e.target.value)}
             onBlur={handleSubmit}
             onKeyDown={(e) => {
@@ -156,9 +167,13 @@ export function TopBar({
         ) : (
           <button
             type="button"
-            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary"
-            onClick={() => setEditing(true)}
+            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart truncate max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent aria-disabled:hover:text-text-muted"
+            onClick={() => {
+              if (!isStreaming) setEditing(true);
+            }}
             aria-label="Edit session title"
+            aria-disabled={isStreaming}
+            title={isStreaming ? "Session title can't be edited while streaming" : "Edit session title"}
           >
             {sessionTitle || "New session"}
           </button>
