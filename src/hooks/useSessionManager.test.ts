@@ -1141,7 +1141,7 @@ describe("useSessionManager", () => {
   });
 
   describe("streaming lifecycle races", () => {
-    it("workspace switch mid-stream is a no-op on the active session", async () => {
+    it("workspace switch mid-stream defers reset until turn completion", async () => {
       // AppShell gates the workspace switcher + TopBar switch button while
       // `session.isStreaming`. The guard relies on this hook's workspace-reset
       // effect being a no-op when the active workspace changes mid-stream:
@@ -1220,7 +1220,7 @@ describe("useSessionManager", () => {
       expect(result.current.messages).toEqual([]);
     });
 
-    it("late llm-token after handleNewSession does not create a phantom turn", async () => {
+    it("late llm-token after handleNewSession creates a phantom turn (plan 014 characterization)", async () => {
       // Characterization guard for the deeper race plan 014 addresses:
       // `handleNewSession` resets the stream, but a token already in flight
       // from the prior turn must not rehydrate a fresh turn in the new

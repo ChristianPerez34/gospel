@@ -66,7 +66,7 @@ export function TopBar({
   const sessionToggleClass = sessionsOpen
     ? "bg-surface-overlay text-accent-structure"
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
-  const computeActive = status === "thinking" || status === "acting";
+  const computeActive = isStreaming;
 
   return (
     <header className="app-topbar spatial-topbar px-4 bg-surface-base shrink-0">
