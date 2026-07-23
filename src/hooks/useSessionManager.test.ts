@@ -1150,9 +1150,7 @@ describe("useSessionManager", () => {
         if (cmd === "get_session") {
           return {
             id: "s-other",
-            display_transcript: JSON.stringify([
-              { role: "user", content: "other workspace msg" },
-            ]),
+            display_transcript: JSON.stringify([{ role: "user", content: "other workspace msg" }]),
           };
         }
         return undefined;
@@ -1197,9 +1195,7 @@ describe("useSessionManager", () => {
       expect(result.current.activeSessionId).toBe("s-other");
       // The new session's messages replaced the cancelled session's view.
       expect(result.current.messages).not.toBe(originalMessages);
-      expect(result.current.messages.map((m) => m.content)).toEqual([
-        "other workspace msg",
-      ]);
+      expect(result.current.messages.map((m) => m.content)).toEqual(["other workspace msg"]);
     });
   });
 

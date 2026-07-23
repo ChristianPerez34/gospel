@@ -295,8 +295,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               if (isStale(payload?.runId)) return;
               updateCurrentTurn((turn) => {
                 const idx = turn.blocks.findIndex(
-                  (b): b is TurnBlock & { kind: "tool" } =>
-                    b.kind === "tool" && b.id === payload.id
+                  (b): b is TurnBlock & { kind: "tool" } => b.kind === "tool" && b.id === payload.id
                 );
                 if (idx >= 0) {
                   const blocks = [...turn.blocks];
@@ -467,15 +466,17 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   }, [updateCurrentTurn, generateTurnId, clearCurrentTurn]);
 
   const startStream = useCallback(async (opts: StartStreamOptions) => {
-    const runId = await invoke<string>("complete_streaming", {
+    const runId = crypto.randomUUID();
+    activeRunIdRef.current = runId;
+    await invoke<string>("complete_streaming", {
       provider: opts.provider,
       prompt: opts.prompt,
       model: opts.model,
       variant: opts.variant ?? null,
       sessionId: opts.sessionId ?? null,
       invokedSkill: opts.invokedSkill ?? null,
+      runId,
     });
-    activeRunIdRef.current = runId;
   }, []);
 
   const cancelStream = useCallback(async () => {
@@ -497,9 +498,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     const blocks = dropReasoningBlocks(rawBlocks);
     const derivedContent = joinTextBlocks(blocks);
     const messageId = finalTurn?.id ?? generateTurnId();
-    const cancelContent = derivedContent
-      ? derivedContent
-      : "Stream cancelled by user.";
+    const cancelContent = derivedContent ? derivedContent : "Stream cancelled by user.";
     optionsRef.current.onMessages?.((prev) => [
       ...prev,
       {

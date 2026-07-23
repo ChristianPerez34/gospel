@@ -35,6 +35,15 @@ function renderChatStream(options: RenderChatStreamOptions = {}) {
   return renderHook(() => useChatStream(options));
 }
 
+function latestCompleteStreamingRunId(): string {
+  const call = [...vi.mocked(invoke).mock.calls]
+    .reverse()
+    .find(([command]) => command === "complete_streaming");
+  const runId = (call?.[1] as { runId?: string } | undefined)?.runId;
+  if (!runId) throw new Error("complete_streaming was not invoked with a runId");
+  return runId;
+}
+
 const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   id: "approval-1",
   kind: "command",
@@ -334,6 +343,63 @@ describe("useChatStream", () => {
       expect(unlistenCalls).toBe(registeredCount);
     });
 
+    it("accepts events for the active run before complete_streaming resolves", async () => {
+      const onMessages = vi.fn();
+      const onStatusChange = vi.fn();
+      let resolveStreaming: ((runId: string) => void) | undefined;
+      vi.mocked(invoke).mockImplementation((cmd: string) => {
+        if (cmd === "complete_streaming") {
+          return new Promise<string>((resolve) => {
+            resolveStreaming = resolve;
+          });
+        }
+        return Promise.resolve(undefined as unknown);
+      });
+
+      const { result } = renderChatStream({ onMessages, onStatusChange });
+      await act(async () => {});
+
+      let streamingPromise: Promise<void> | undefined;
+      act(() => {
+        streamingPromise = result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "s-pending",
+        });
+      });
+
+      const runId = latestCompleteStreamingRunId();
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId,
+          token: "arrived while invoke is pending",
+        });
+      });
+
+      expect(result.current.currentTurn?.blocks[0]).toMatchObject({
+        kind: "text",
+        text: "arrived while invoke is pending",
+      });
+
+      await act(async () => {
+        triggerEvent("llm-done", {
+          runId,
+          response: "completed while invoke is pending",
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      expect(onStatusChange).toHaveBeenCalledWith("connected");
+      const setter = onMessages.mock.calls[0][0] as (prev: Message[]) => Message[];
+      expect(setter([])[0]?.content).toBe("completed while invoke is pending");
+
+      await act(async () => {
+        resolveStreaming?.(runId);
+        await streamingPromise;
+      });
+    });
+
     it("late llm-token with a non-matching run_id is ignored (per-run isolation)", async () => {
       const { result } = renderChatStream();
       await act(async () => {});
@@ -348,9 +414,10 @@ describe("useChatStream", () => {
           sessionId: "s-1",
         });
       });
+      const runId = latestCompleteStreamingRunId();
       await act(async () => {
         triggerEvent<{ runId: string; token: string }>("llm-token", {
-          runId: "run-active",
+          runId,
           token: "first",
         });
       });
@@ -377,6 +444,15 @@ describe("useChatStream", () => {
     it("cancelStream invokes cancel_streaming and finalizes the current turn as cancelled", async () => {
       const onMessages = vi.fn();
       const onStatusChange = vi.fn();
+      let resolveStreaming: ((runId: string) => void) | undefined;
+      vi.mocked(invoke).mockImplementation((cmd: string) => {
+        if (cmd === "complete_streaming") {
+          return new Promise<string>((resolve) => {
+            resolveStreaming = resolve;
+          });
+        }
+        return Promise.resolve(undefined as unknown);
+      });
       const { result } = renderChatStream({
         onMessages,
         onStatusChange,
@@ -384,17 +460,19 @@ describe("useChatStream", () => {
       });
       await act(async () => {});
 
-      await act(async () => {
-        await result.current.startStream({
+      let streamingPromise: Promise<void> | undefined;
+      act(() => {
+        streamingPromise = result.current.startStream({
           provider: "openai",
           prompt: "hi",
           model: "gpt-4o",
           sessionId: "s-cancel",
         });
       });
+      const runId = latestCompleteStreamingRunId();
       await act(async () => {
         triggerEvent<{ runId: string; token: string }>("llm-token", {
-          runId: "run-active",
+          runId,
           token: "partial",
         });
       });
@@ -417,11 +495,16 @@ describe("useChatStream", () => {
       // stale guard drops events whose runId doesn't match null active).
       await act(async () => {
         triggerEvent<{ runId: string; token: string }>("llm-token", {
-          runId: "run-active",
+          runId,
           token: "after-cancel",
         });
       });
       expect(result.current.currentTurn).toBeNull();
+
+      await act(async () => {
+        resolveStreaming?.(runId);
+        await streamingPromise;
+      });
     });
 
     it("cancelStream without an active run is a no-op", async () => {

@@ -1346,6 +1346,7 @@ async fn complete_streaming(
     variant: Option<String>,
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
+    run_id: String,
 ) -> Result<String, llm::LlmErrorDto> {
     let (delegate_provider, delegate_model, delegate_api_key) =
         resolve_delegate_completion_config(app_config.inner(), &provider, &model);
@@ -1365,6 +1366,7 @@ async fn complete_streaming(
     // completion. The command awaits the spawned task so the IPC resolves when
     // the turn finishes (errors surface via `llm-error` events regardless).
     let session_key = session_id.clone();
+    let cancelled_run_id = run_id.clone();
     let turn_future = session_turn::run_streaming_turn(
         session_turn::StreamingTurnDependencies {
             workspace: &adapters,
@@ -1377,6 +1379,7 @@ async fn complete_streaming(
             verification: &adapters,
         },
         session_turn::StreamingTurnRequest {
+            run_id,
             provider,
             prompt,
             model,
@@ -1397,12 +1400,10 @@ async fn complete_streaming(
     let abortable = futures::future::Abortable::new(turn_future, abort_registration);
     let result = match abortable.await {
         Ok(turn_result) => turn_result,
-        // Aborted by `cancel_streaming`. Surface a controlled-stop error so
-        // the frontend finalize path treats this as a user-initiated stop.
-        Err(_) => Err(llm::LlmError::ControlledStop(
-            "Stream cancelled by user.".to_string(),
-        )
-        .to_dto()),
+        // Cancellation is already finalized by the frontend. Resolve the
+        // original invoke successfully so its caller cannot overwrite the
+        // restored connected state with a generic command error.
+        Err(_) => Ok(cancelled_run_id),
     };
 
     if let Some(sid) = &session_key {

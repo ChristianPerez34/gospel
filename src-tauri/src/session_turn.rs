@@ -25,6 +25,7 @@ pub struct InvokedSkillRequest {
 }
 
 pub struct StreamingTurnRequest {
+    pub run_id: String,
     pub provider: String,
     pub prompt: String,
     pub model: String,
@@ -249,7 +250,7 @@ pub async fn run_streaming_turn(
     let trace_role = "main";
     let events = deps.events;
     let workspace_for_verify = workspace_context.clone();
-    let run_id = uuid::Uuid::new_v4().to_string();
+    let run_id = request.run_id;
     let run_id_for_closure = run_id.clone();
     let result = deps
         .llm
@@ -2127,6 +2128,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-success".to_string(),
                 provider: "openai".to_string(),
                 prompt: "write code".to_string(),
                 model: "gpt-test".to_string(),
@@ -2139,9 +2141,11 @@ mod tests {
             },
         )
         .await;
-        if let Err(err) = result {
-            panic!("turn failed: {} {}", err.code, err.message);
-        }
+        let completed_run_id = match result {
+            Ok(run_id) => run_id,
+            Err(err) => panic!("turn failed: {} {}", err.code, err.message),
+        };
+        assert_eq!(completed_run_id, "run-success");
 
         assert_eq!(
             *adapters.validated_bindings.lock().unwrap(),
@@ -2200,6 +2204,10 @@ mod tests {
         assert_eq!(
             adapters.done_responses.lock().unwrap().len(),
             1
+        );
+        assert_eq!(
+            adapters.done_responses.lock().unwrap()[0].0,
+            "run-success".to_string()
         );
         assert_eq!(
             adapters.done_responses.lock().unwrap()[0].1,
@@ -2263,6 +2271,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-variant-fallback".to_string(),
                 provider: "openai".to_string(),
                 prompt: "hello".to_string(),
                 model: "gpt-5.2".to_string(),
@@ -2314,6 +2323,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-read-only".to_string(),
                 provider: "openai".to_string(),
                 prompt: "inspect".to_string(),
                 model: "gpt-test".to_string(),
@@ -2355,6 +2365,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-source-edit".to_string(),
                 provider: "openai".to_string(),
                 prompt: "edit it".to_string(),
                 model: "gpt-test".to_string(),
@@ -2394,6 +2405,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-unsuccessful-edit".to_string(),
                 provider: "openai".to_string(),
                 prompt: "edit it".to_string(),
                 model: "gpt-test".to_string(),
@@ -2426,6 +2438,7 @@ mod tests {
         let err = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-controlled-stop".to_string(),
                 provider: "openai".to_string(),
                 prompt: "hi".to_string(),
                 model: "gpt-test".to_string(),
