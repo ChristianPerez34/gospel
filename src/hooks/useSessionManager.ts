@@ -61,6 +61,7 @@ export interface UseSessionManagerResult {
   activeSessionMode: SessionMode;
   handleSessionModeChange: (mode: SessionMode) => Promise<void>;
   resolveApproval: (id: string, decision: "approve" | "deny") => Promise<void>;
+  cancelStream: () => Promise<void>;
 }
 
 export function useSessionManager({
@@ -135,13 +136,14 @@ export function useSessionManager({
     [onModelVariantFallback, onSessionsChange]
   );
 
-  const { currentTurn, startStream, resetStream, resolveApproval } = useChatStream({
+  const { currentTurn, startStream, resetStream, cancelStream, resolveApproval } = useChatStream({
     onMessages: setMessages,
     onStatusChange: setStatus,
     onErrorToast: onError,
     onSuccessToast: onSuccess,
     onOpenSettings,
     onModelVariantWarning: handleModelVariantWarning,
+    sessionId: activeSessionId,
   });
 
   const isStreaming = status === "thinking" || status === "acting";
@@ -423,5 +425,6 @@ export function useSessionManager({
     activeSessionMode,
     handleSessionModeChange,
     resolveApproval,
+    cancelStream,
   };
 }

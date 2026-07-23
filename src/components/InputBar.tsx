@@ -1,4 +1,4 @@
-import { ChevronDown, Cpu, GitBranch, Send } from "lucide-react";
+import { ChevronDown, Cpu, GitBranch, Send, Square } from "lucide-react";
 import {
   type CSSProperties,
   useCallback,
@@ -20,6 +20,8 @@ interface InputBarProps {
   onModelChange: (modelId: string) => void;
   onVariantChange: (variant: string | null) => void;
   onSend: (message: string, invokedSkill?: { name: string; args?: string }) => void;
+  onCancelStream?: () => void;
+  isStreaming?: boolean;
   disabled?: boolean;
   unavailableMessage?: string;
   unavailableDetail?: string;
@@ -114,6 +116,8 @@ export function InputBar({
   onModelChange,
   onVariantChange,
   onSend,
+  onCancelStream,
+  isStreaming = false,
   disabled = false,
   unavailableMessage = "No available models",
   unavailableDetail,
@@ -541,20 +545,34 @@ export function InputBar({
               rows={1}
               aria-label="Message input"
             />
-            <Button
-              variant="default"
-              size="icon"
-              className="size-10 rounded-md bg-accent-action text-text-inverse hover:opacity-90 disabled:opacity-30"
-              disabled={sendDisabled || !value.trim()}
-              onClick={() => {
-                if (value.trim() && !sendDisabled) {
-                  doSend(value.trim());
-                }
-              }}
-              aria-label="Send message"
-            >
-              <Send className="size-4" aria-hidden="true" />
-            </Button>
+            {isStreaming && onCancelStream ? (
+              <Button
+                variant="default"
+                size="icon"
+                className="size-10 rounded-md bg-status-error text-text-inverse hover:opacity-90"
+                onClick={() => {
+                  onCancelStream();
+                }}
+                aria-label="Stop streaming"
+              >
+                <Square className="size-4" aria-hidden="true" />
+              </Button>
+            ) : (
+              <Button
+                variant="default"
+                size="icon"
+                className="size-10 rounded-md bg-accent-action text-text-inverse hover:opacity-90 disabled:opacity-30"
+                disabled={sendDisabled || !value.trim()}
+                onClick={() => {
+                  if (value.trim() && !sendDisabled) {
+                    doSend(value.trim());
+                  }
+                }}
+                aria-label="Send message"
+              >
+                <Send className="size-4" aria-hidden="true" />
+              </Button>
+            )}
           </div>
         </div>
       </div>

@@ -108,6 +108,58 @@ pub struct ApprovalBrokerState {
     inner: Mutex<Option<Arc<ApprovalBroker>>>,
 }
 
+/// Tauri-managed state holding the in-flight streaming turn abort handles keyed
+/// by session id. Used by `cancel_streaming` to abort a runaway or user-stopped
+/// turn. A run that completes cleanly removes its own handle.
+pub struct StreamingRunHandles {
+    inner: Mutex<HashMap<String, (String, futures::future::AbortHandle)>>,
+}
+
+impl StreamingRunHandles {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Insert an abort handle for the given session id, replacing any prior
+    /// handle (which is aborted to avoid orphan tasks).
+    fn insert(&self, session_id: &str, run_id: &str, handle: futures::future::AbortHandle) {
+        if let Some((_, prev)) = self
+            .inner
+            .lock()
+            .expect("streaming handles poisoned")
+            .insert(session_id.to_string(), (run_id.to_string(), handle))
+        {
+            prev.abort();
+        }
+    }
+
+    /// Remove and abort the handle for the given session id. Idempotent: returns
+    /// silently if no handle is registered.
+    fn cancel(&self, session_id: &str) {
+        if let Some((_, handle)) = self
+            .inner
+            .lock()
+            .expect("streaming handles poisoned")
+            .remove(session_id)
+        {
+            handle.abort();
+        }
+    }
+
+    /// Remove the handle only if it still belongs to the completing run.
+    fn remove_if_run_matches(&self, session_id: &str, run_id: &str) {
+        let mut handles = self.inner.lock().expect("streaming handles poisoned");
+        if handles
+            .get(session_id)
+            .is_some_and(|(stored_run_id, _)| stored_run_id == run_id)
+        {
+            handles.remove(session_id);
+        }
+    }
+}
+
 impl ApprovalBrokerState {
     fn new() -> Self {
         Self {
@@ -1158,6 +1210,7 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
         &self,
         session_id: &str,
         role: &str,
+        run_id: &str,
         event: &session_turn::SessionTurnEvent,
     ) {
         if let Some(trace_event) = session_turn::trace_event_for_session_turn_event(
@@ -1169,7 +1222,7 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
             self.trace_state.write_event(&trace_event);
         }
 
-        let ui_event = session_turn::ui_event_payload(event);
+        let ui_event = session_turn::ui_event_payload(event, run_id);
         let _ = self.app.emit(ui_event.name, ui_event.payload);
     }
 
@@ -1205,12 +1258,14 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
 
     fn emit_done(
         &self,
+        run_id: &str,
         response: &str,
         prompt_tokens: usize,
         response_tokens: usize,
         tool_calls: usize,
     ) {
         let payload = serde_json::json!({
+            "runId": run_id,
             "response": response,
             "prompt_tokens": prompt_tokens,
             "response_tokens": response_tokens,
@@ -1219,8 +1274,14 @@ impl session_turn::SessionTurnEvents for TauriSessionTurnAdapters<'_> {
         let _ = self.app.emit("llm-done", payload);
     }
 
-    fn emit_error(&self, error: &LlmError) {
-        let _ = self.app.emit("llm-error", error.to_dto());
+    fn emit_error(&self, run_id: &str, error: &LlmError) {
+        let dto = error.to_dto();
+        let payload = serde_json::json!({
+            "runId": run_id,
+            "code": dto.code,
+            "message": dto.message,
+        });
+        let _ = self.app.emit("llm-error", payload);
     }
 }
 
@@ -1280,13 +1341,15 @@ async fn complete_streaming(
     session_store_state: tauri::State<'_, SessionStoreState>,
     trace_state: tauri::State<'_, TraceState>,
     skill_cache: tauri::State<'_, SkillCache>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     provider: String,
     prompt: String,
     model: String,
     variant: Option<String>,
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
-) -> Result<(), llm::LlmErrorDto> {
+    run_id: String,
+) -> Result<String, llm::LlmErrorDto> {
     let (delegate_provider, delegate_model, delegate_api_key) =
         resolve_delegate_completion_config(app_config.inner(), &provider, &model);
 
@@ -1299,7 +1362,14 @@ async fn complete_streaming(
         skill_cache: skill_cache.inner(),
     };
 
-    session_turn::run_streaming_turn(
+    // Cancellation is provided by the `Abortable`/`AbortHandle` pair. When a
+    // session id is present, register the handle so cancel can find it;
+    // local-only turns cannot be cancelled but still run to completion. The
+    // command awaits `abortable.await`; it does not return while a turn runs
+    // independently (errors surface via `llm-error` events regardless).
+    let session_key = session_id.clone();
+    let cancelled_run_id = run_id.clone();
+    let turn_future = session_turn::run_streaming_turn(
         session_turn::StreamingTurnDependencies {
             workspace: &adapters,
             credentials: &adapters,
@@ -1311,6 +1381,7 @@ async fn complete_streaming(
             verification: &adapters,
         },
         session_turn::StreamingTurnRequest {
+            run_id,
             provider,
             prompt,
             model,
@@ -1321,8 +1392,39 @@ async fn complete_streaming(
             session_id,
             invoked_skill,
         },
-    )
-    .await
+    );
+
+    let (abort_handle, abort_registration) = futures::future::AbortHandle::new_pair();
+    if let Some(sid) = &session_key {
+        streaming_handles.insert(sid, &cancelled_run_id, abort_handle);
+    }
+
+    let abortable = futures::future::Abortable::new(turn_future, abort_registration);
+    let result = abortable.await;
+
+    if let Some(sid) = &session_key {
+        streaming_handles.remove_if_run_matches(sid, &cancelled_run_id);
+    }
+
+    match result {
+        Ok(turn_result) => turn_result,
+        // Cancellation is already finalized by the frontend. Resolve the
+        // original invoke successfully so its caller cannot overwrite the
+        // restored connected state with a generic command error.
+        Err(_) => Ok(cancelled_run_id),
+    }
+}
+
+/// Cancel the in-flight streaming turn for the given session id. Idempotent:
+/// returns `Ok(())` if no turn is in flight. Only backend-tracked turns (those
+/// with a session id) can be cancelled.
+#[tauri::command]
+fn cancel_streaming(
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
+    session_id: String,
+) -> Result<(), String> {
+    streaming_handles.cancel(&session_id);
+    Ok(())
 }
 
 fn resolve_delegate_completion_config(
@@ -2729,6 +2831,7 @@ pub fn run() {
         .manage(trace_state)
         .manage(SkillCache::new())
         .manage(ApprovalBrokerState::new())
+        .manage(StreamingRunHandles::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -2753,6 +2856,7 @@ pub fn run() {
             apply_import_mcp_servers,
             complete,
             complete_streaming,
+            cancel_streaming,
             clear_conversation_history,
             export_conversation,
             test_connection,
@@ -3040,5 +3144,64 @@ mod workspace_response_tests {
         assert!(fallback_workspaces
             .iter()
             .all(|workspace| workspace.session_count == 0));
+    }
+}
+
+#[cfg(test)]
+mod streaming_run_handles_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_with_no_in_flight_handle_is_idempotent() {
+        let handles = StreamingRunHandles::new();
+        // Cancelling a session that was never streamed must not error.
+        handles.cancel("never-streamed");
+        // The map stays empty.
+        assert!(handles
+            .inner
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn remove_if_run_matches_with_no_in_flight_handle_is_idempotent() {
+        let handles = StreamingRunHandles::new();
+        handles.remove_if_run_matches("never-streamed", "run-1");
+        assert!(handles.inner.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_then_cancel_aborts_and_clears() {
+        let handles = StreamingRunHandles::new();
+        let (abort_handle, _reg) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-1", abort_handle);
+        assert!(handles.inner.lock().unwrap().contains_key("session-1"));
+        handles.cancel("session-1");
+        assert!(!handles.inner.lock().unwrap().contains_key("session-1"));
+    }
+
+    #[test]
+    fn older_run_cleanup_retains_newer_handle() {
+        let handles = StreamingRunHandles::new();
+        let (old_handle, old_registration) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-1", old_handle);
+
+        let (new_handle, _new_registration) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-2", new_handle);
+        handles.remove_if_run_matches("session-1", "run-1");
+
+        assert_eq!(
+            handles.inner.lock().unwrap().get("session-1").unwrap().0,
+            "run-2"
+        );
+        assert!(futures::executor::block_on(futures::future::Abortable::new(
+            futures::future::pending::<()>(),
+            old_registration,
+        ))
+        .is_err());
+
+        handles.remove_if_run_matches("session-1", "run-2");
+        assert!(!handles.inner.lock().unwrap().contains_key("session-1"));
     }
 }
