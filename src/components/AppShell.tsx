@@ -761,9 +761,7 @@ export function AppShell() {
           if (latest?.id === current.id && latest.title === title) {
             setSessions((prev) =>
               prev.map((item) =>
-                item.id === current.id && item.title === title
-                  ? { ...item, title: previous }
-                  : item
+                item.id === current.id && item.title === title ? { ...item, title: previous } : item
               )
             );
             activeSessionRef.current = { ...latest, title: previous };
@@ -824,7 +822,6 @@ export function AppShell() {
         onSessionTitleChange={handleSessionTitleChange}
         model={currentModelName}
         status={session.status}
-        isStreaming={session.isStreaming}
         onWorkspaceSwitch={() => {
           if (session.isStreaming) return;
           setWorkspaceSwitcherOpen(true);

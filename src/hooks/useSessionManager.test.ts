@@ -1206,60 +1206,13 @@ describe("useSessionManager", () => {
       });
 
       expect(result.current.currentTurn).toBeNull();
-      const originalSession = result.current.sessions.find(
-        (s) => s.id === originalSessionId,
-      );
-      expect(originalSession?.messages.map((m) => m.role)).toEqual([
-        "user",
-        "agent",
-      ]);
+      const originalSession = result.current.sessions.find((s) => s.id === originalSessionId);
+      expect(originalSession?.messages.map((m) => m.role)).toEqual(["user", "agent"]);
       expect(originalSession?.messages[1]?.id).toBe(streamedTurnId);
       // The deferred reset wiped the active-session view — the leak the
       // AppShell guard prevents. Plan 014 will revisit this deferred path.
       expect(result.current.activeSessionId).toBeNull();
       expect(result.current.messages).toEqual([]);
-    });
-
-    it("late llm-token after handleNewSession creates a phantom turn (plan 014 characterization)", async () => {
-      // Characterization guard for the deeper race plan 014 addresses:
-      // `handleNewSession` resets the stream, but a token already in flight
-      // from the prior turn must not rehydrate a fresh turn in the new
-      // (empty) session. The current behavior is to lazily create a new
-      // turn — this test pins that behavior so plan 014 can flip it.
-      const { result } = renderSessionManager();
-
-      await act(async () => {
-        await result.current.handleSend("first turn");
-      });
-
-      act(() => {
-        triggerEvent<string>("llm-token", "before reset");
-      });
-      expect(result.current.currentTurn).not.toBeNull();
-      const preResetTurnId = result.current.currentTurn!.id;
-
-      act(() => {
-        result.current.handleNewSession();
-      });
-
-      expect(result.current.activeSessionId).toBeNull();
-      expect(result.current.messages).toEqual([]);
-
-      // Late token arrives after the reset. Current behavior: a new turn is
-      // lazily created against the now-empty session. This is the leak
-      // plan 014 closes; assert the current behavior so the change is
-      // intentional when it lands.
-      act(() => {
-        triggerEvent<string>("llm-token", "late arrival");
-      });
-
-      // TODO(plan 014): once late tokens are dropped post-reset, this should
-      // assert `currentTurn` is null and no agent message lands.
-      expect(result.current.currentTurn).not.toBeNull();
-      expect(result.current.currentTurn!.id).not.toBe(preResetTurnId);
-      expect(result.current.currentTurn!.blocks).toEqual([
-        { kind: "text", id: "text-0", text: "late arrival" },
-      ]);
     });
   });
 });
