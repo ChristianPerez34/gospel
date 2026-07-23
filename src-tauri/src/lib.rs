@@ -112,7 +112,7 @@ pub struct ApprovalBrokerState {
 /// by session id. Used by `cancel_streaming` to abort a runaway or user-stopped
 /// turn. A run that completes cleanly removes its own handle.
 pub struct StreamingRunHandles {
-    inner: Mutex<HashMap<String, futures::future::AbortHandle>>,
+    inner: Mutex<HashMap<String, (String, futures::future::AbortHandle)>>,
 }
 
 impl StreamingRunHandles {
@@ -124,12 +124,12 @@ impl StreamingRunHandles {
 
     /// Insert an abort handle for the given session id, replacing any prior
     /// handle (which is aborted to avoid orphan tasks).
-    fn insert(&self, session_id: &str, handle: futures::future::AbortHandle) {
-        if let Some(prev) = self
+    fn insert(&self, session_id: &str, run_id: &str, handle: futures::future::AbortHandle) {
+        if let Some((_, prev)) = self
             .inner
             .lock()
             .expect("streaming handles poisoned")
-            .insert(session_id.to_string(), handle)
+            .insert(session_id.to_string(), (run_id.to_string(), handle))
         {
             prev.abort();
         }
@@ -138,7 +138,7 @@ impl StreamingRunHandles {
     /// Remove and abort the handle for the given session id. Idempotent: returns
     /// silently if no handle is registered.
     fn cancel(&self, session_id: &str) {
-        if let Some(handle) = self
+        if let Some((_, handle)) = self
             .inner
             .lock()
             .expect("streaming handles poisoned")
@@ -148,13 +148,15 @@ impl StreamingRunHandles {
         }
     }
 
-    /// Remove the handle for the given session id without aborting (used when a
-    /// run completes cleanly so the map doesn't grow without bound).
-    fn remove(&self, session_id: &str) {
-        self.inner
-            .lock()
-            .expect("streaming handles poisoned")
-            .remove(session_id);
+    /// Remove the handle only if it still belongs to the completing run.
+    fn remove_if_run_matches(&self, session_id: &str, run_id: &str) {
+        let mut handles = self.inner.lock().expect("streaming handles poisoned");
+        if handles
+            .get(session_id)
+            .is_some_and(|(stored_run_id, _)| stored_run_id == run_id)
+        {
+            handles.remove(session_id);
+        }
     }
 }
 
@@ -1360,11 +1362,11 @@ async fn complete_streaming(
         skill_cache: skill_cache.inner(),
     };
 
-    // Spawn the turn so `cancel_streaming` can abort its task. When a session
-    // id is present, register the handle keyed by it so cancel can find it;
-    // local-only turns (no session id) cannot be cancelled but still run to
-    // completion. The command awaits the spawned task so the IPC resolves when
-    // the turn finishes (errors surface via `llm-error` events regardless).
+    // Cancellation is provided by the `Abortable`/`AbortHandle` pair. When a
+    // session id is present, register the handle so cancel can find it;
+    // local-only turns cannot be cancelled but still run to completion. The
+    // command awaits `abortable.await`; it does not return while a turn runs
+    // independently (errors surface via `llm-error` events regardless).
     let session_key = session_id.clone();
     let cancelled_run_id = run_id.clone();
     let turn_future = session_turn::run_streaming_turn(
@@ -1394,22 +1396,23 @@ async fn complete_streaming(
 
     let (abort_handle, abort_registration) = futures::future::AbortHandle::new_pair();
     if let Some(sid) = &session_key {
-        streaming_handles.insert(sid, abort_handle);
+        streaming_handles.insert(sid, &cancelled_run_id, abort_handle);
     }
 
     let abortable = futures::future::Abortable::new(turn_future, abort_registration);
-    let result = match abortable.await {
+    let result = abortable.await;
+
+    if let Some(sid) = &session_key {
+        streaming_handles.remove_if_run_matches(sid, &cancelled_run_id);
+    }
+
+    match result {
         Ok(turn_result) => turn_result,
         // Cancellation is already finalized by the frontend. Resolve the
         // original invoke successfully so its caller cannot overwrite the
         // restored connected state with a generic command error.
         Err(_) => Ok(cancelled_run_id),
-    };
-
-    if let Some(sid) = &session_key {
-        streaming_handles.remove(sid);
     }
-    result
 }
 
 /// Cancel the in-flight streaming turn for the given session id. Idempotent:
@@ -3162,9 +3165,9 @@ mod streaming_run_handles_tests {
     }
 
     #[test]
-    fn remove_with_no_in_flight_handle_is_idempotent() {
+    fn remove_if_run_matches_with_no_in_flight_handle_is_idempotent() {
         let handles = StreamingRunHandles::new();
-        handles.remove("never-streamed");
+        handles.remove_if_run_matches("never-streamed", "run-1");
         assert!(handles.inner.lock().unwrap().is_empty());
     }
 
@@ -3172,18 +3175,33 @@ mod streaming_run_handles_tests {
     fn insert_then_cancel_aborts_and_clears() {
         let handles = StreamingRunHandles::new();
         let (abort_handle, _reg) = futures::future::AbortHandle::new_pair();
-        handles.insert("session-1", abort_handle);
+        handles.insert("session-1", "run-1", abort_handle);
         assert!(handles.inner.lock().unwrap().contains_key("session-1"));
         handles.cancel("session-1");
         assert!(!handles.inner.lock().unwrap().contains_key("session-1"));
     }
 
     #[test]
-    fn remove_after_insert_keeps_handle_unaborted() {
+    fn older_run_cleanup_retains_newer_handle() {
         let handles = StreamingRunHandles::new();
-        let (abort_handle, _reg) = futures::future::AbortHandle::new_pair();
-        handles.insert("session-1", abort_handle);
-        handles.remove("session-1");
+        let (old_handle, old_registration) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-1", old_handle);
+
+        let (new_handle, _new_registration) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-2", new_handle);
+        handles.remove_if_run_matches("session-1", "run-1");
+
+        assert_eq!(
+            handles.inner.lock().unwrap().get("session-1").unwrap().0,
+            "run-2"
+        );
+        assert!(futures::executor::block_on(futures::future::Abortable::new(
+            futures::future::pending::<()>(),
+            old_registration,
+        ))
+        .is_err());
+
+        handles.remove_if_run_matches("session-1", "run-2");
         assert!(!handles.inner.lock().unwrap().contains_key("session-1"));
     }
 }
