@@ -114,9 +114,7 @@ describe("useChatStream", () => {
         triggerEvent("llm-reasoning", { id: "r1", text: "secret thoughts", phase: "delta" });
       });
 
-      expect(
-        result.current.currentTurn!.blocks.some((b) => b.kind === "reasoning")
-      ).toBe(true);
+      expect(result.current.currentTurn!.blocks.some((b) => b.kind === "reasoning")).toBe(true);
 
       await act(async () => {
         triggerEvent<string>("llm-done", "final-answer");

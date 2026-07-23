@@ -2122,6 +2122,23 @@ fn update_session_mode(
 }
 
 #[tauri::command]
+fn update_session_title(
+    session_store: tauri::State<'_, SessionStoreState>,
+    session_id: String,
+    title: String,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => store
+            .update_session_title(&session_id, &title)
+            .map_err(|e| e.to_string()),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
 fn get_session(
     session_store: tauri::State<'_, SessionStoreState>,
     conversation_state: tauri::State<'_, ConversationState>,
@@ -2862,6 +2879,7 @@ pub fn run() {
             create_session,
             update_session_model_selection,
             update_session_mode,
+            update_session_title,
             get_session,
             list_sessions,
             list_archived_sessions,
