@@ -761,9 +761,7 @@ export function AppShell() {
           if (latest?.id === current.id && latest.title === title) {
             setSessions((prev) =>
               prev.map((item) =>
-                item.id === current.id && item.title === title
-                  ? { ...item, title: previous }
-                  : item
+                item.id === current.id && item.title === title ? { ...item, title: previous } : item
               )
             );
             activeSessionRef.current = { ...latest, title: previous };
@@ -824,8 +822,10 @@ export function AppShell() {
         onSessionTitleChange={handleSessionTitleChange}
         model={currentModelName}
         status={session.status}
-        isStreaming={session.isStreaming}
-        onWorkspaceSwitch={() => setWorkspaceSwitcherOpen(true)}
+        onWorkspaceSwitch={() => {
+          if (session.isStreaming) return;
+          setWorkspaceSwitcherOpen(true);
+        }}
         onToggleSessions={toggleSessionDrawer}
         onOpenSettings={openSettings}
         sessionsOpen={sessionDrawerOpen}
@@ -926,6 +926,7 @@ export function AppShell() {
           workspaces={workspaces}
           activeWorkspaceId={activeWorkspace?.id ?? ""}
           onSelect={(ws) => {
+            if (session.isStreaming) return;
             void switchWorkspace(ws.id);
           }}
           onAdd={() => {
@@ -991,7 +992,10 @@ export function AppShell() {
           session.handleNewSession();
         }}
         onOpenSettings={openSettings}
-        onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
+        onOpenWorkspaceSwitcher={() => {
+          if (session.isStreaming) return;
+          setWorkspaceSwitcherOpen(true);
+        }}
         onToggleSessions={toggleSessionDrawer}
         onSelectModel={(modelId) => {
           applyModelSelection(modelId);

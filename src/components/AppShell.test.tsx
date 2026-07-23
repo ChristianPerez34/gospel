@@ -20,6 +20,13 @@ const sampleWorkspace = {
   sessionCount: 1,
 };
 
+const otherWorkspace = {
+  id: "ws-2",
+  name: "Other Workspace",
+  path: "/path/to/other",
+  sessionCount: 0,
+};
+
 const sampleAvailability = {
   providers: [
     {
@@ -152,6 +159,81 @@ describe("AppShell session title editing", () => {
       .mocked(invoke)
       .mock.calls.filter(([cmd]) => cmd === "update_session_title");
     expect(updateTitleCalls).toHaveLength(0);
+  });
+
+  it("blocks WorkspaceSwitcher selection while a turn is streaming", async () => {
+    let activeWorkspace = sampleWorkspace;
+    const workspaces = [sampleWorkspace, otherWorkspace];
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "list_workspaces") return workspaces;
+      if (cmd === "get_active_workspace") return activeWorkspace;
+      if (cmd === "get_model_availability") return sampleAvailability;
+      if (cmd === "get_archive_policy") {
+        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
+      }
+      if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
+      if (cmd === "list_sessions") return [];
+      if (cmd === "list_archived_sessions") return [];
+      if (cmd === "list_skills") return [];
+      if (cmd === "create_session") return { id: "stream-session" };
+      if (cmd === "complete_streaming") return undefined;
+      if (cmd === "set_active_workspace") {
+        const id = (args as { id: string }).id;
+        activeWorkspace = workspaces.find((workspace) => workspace.id === id) ?? activeWorkspace;
+        return undefined;
+      }
+      return undefined;
+    });
+
+    render(<AppShell />);
+
+    const workspaceSwitchButton = (await screen.findByRole("button", {
+      name: "Switch workspace",
+    })) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(workspaceSwitchButton.disabled).toBe(false);
+    });
+    fireEvent.click(workspaceSwitchButton);
+    const otherWorkspaceButton = await screen.findByRole("button", { name: /Other Workspace/ });
+
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Message input",
+    })) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(textarea.disabled).toBe(false);
+    });
+
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: "streaming prompt" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    });
+    act(() => {
+      triggerEvent<string>("llm-token", "live token");
+    });
+    expect(await screen.findByText("live token")).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(otherWorkspaceButton);
+    });
+
+    const setActiveWorkspaceCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "set_active_workspace");
+    expect(setActiveWorkspaceCalls).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+      "Test Workspace"
+    );
+    expect(screen.getByText("live token")).toBeDefined();
+
+    await act(async () => {
+      triggerEvent("llm-done", { response: "live token" });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe(
+        "streaming prompt"
+      );
+    });
   });
 
   it("updates local session title and calls update_session_title invoke when backendCreated is true", async () => {
