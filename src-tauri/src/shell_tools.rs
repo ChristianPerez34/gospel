@@ -30,7 +30,7 @@ You can run shell, git, and GitHub CLI commands in the active workspace.
 - Read-only commands run directly.
 - Mutating or destructive commands require one-time user approval before execution.
 - The following are always blocked:
-  - `rm -rf /` or `rm -rf /*`
+  - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
   - Any command containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
   - `git push --force`, `git push -f`, `git reset --hard`, `git clean`
   - `gh repo delete`
@@ -653,8 +653,9 @@ struct RmFlags {
 }
 
 /// Parse the flag arguments recognized by `rm` (`--recursive`, `--force`, and
-/// the `-r`/`-f` short-flag clusters). Unknown long/short flags are ignored —
-/// this parser only tracks the flags that matter for the destructive contract.
+/// the `-r`/`-f` short-flag clusters, as well as GNU long-option abbreviations like
+/// `--rec` or `--for`). Unknown long/short flags are ignored — this parser only
+/// tracks the flags that matter for the destructive contract.
 /// Arguments following a literal `--` are end-of-options markers/operands and
 /// are left for the caller to handle.
 fn parse_rm_flags(args: &[String]) -> RmFlags {
@@ -663,15 +664,13 @@ fn parse_rm_flags(args: &[String]) -> RmFlags {
         if arg == "--" {
             break;
         }
-        if arg == "--recursive" {
-            flags.recursive = true;
-            continue;
-        }
-        if arg == "--force" {
-            flags.force = true;
-            continue;
-        }
-        if arg.strip_prefix("--").is_some() {
+        if let Some(long) = arg.strip_prefix("--") {
+            let opt = long.split('=').next().unwrap_or("");
+            if !opt.is_empty() && opt.starts_with('r') && "recursive".starts_with(opt) {
+                flags.recursive = true;
+            } else if !opt.is_empty() && opt.starts_with('f') && "force".starts_with(opt) {
+                flags.force = true;
+            }
             continue;
         }
         if let Some(rest) = arg.strip_prefix('-') {
@@ -1722,11 +1721,45 @@ mod tests {
     }
 
     #[test]
+    fn rm_abbreviated_long_recursive_root_blocked() {
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &[
+                "--rec".to_string(),
+                "--no-preserve-root".to_string(),
+                "/".to_string()
+            ],
+        ));
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &["--r".to_string(), "/".to_string()],
+        ));
+    }
+
+    #[test]
     fn rm_preserve_root_long_flag_does_not_set_recursive() {
         assert!(!is_blocked_shell_pattern(
             "rm",
-            &["--preserve-root".to_string(), "/".to_string()],
+            &[
+                "--preserve-root".to_string(),
+                "--force".to_string(),
+                "/".to_string()
+            ],
         ));
+        assert!(!parse_rm_flags(&["--preserve-root".to_string()]).recursive);
+    }
+
+    #[test]
+    fn rm_dir_long_flag_does_not_set_recursive() {
+        assert!(!is_blocked_shell_pattern(
+            "rm",
+            &[
+                "--dir".to_string(),
+                "--force".to_string(),
+                "/".to_string()
+            ],
+        ));
+        assert!(!parse_rm_flags(&["--dir".to_string(), "-d".to_string()]).recursive);
     }
 
     #[test]
