@@ -214,11 +214,13 @@ impl Tool for RunSkillScriptTool {
             });
         };
 
-        let pre_interpreter = resolve_skill_script(skill, &args.script, self.workspace_path.as_deref())
+        let resolved = resolve_skill_script(skill, &args.script, self.workspace_path.as_deref());
+        let interpreter = resolved
+            .as_ref()
             .ok()
-            .map(|resolved| resolved.interpreter);
+            .map(|resolved| resolved.interpreter.as_str());
         let (command_label, reason) =
-            build_script_approval_label(&args.skill, &args.script, pre_interpreter.as_deref());
+            build_script_approval_label(&args.skill, &args.script, interpreter);
         let approved = approval
             .request_approval(CommandApprovalRequest {
                 tool_name: Self::NAME,
@@ -239,7 +241,28 @@ impl Tool for RunSkillScriptTool {
             });
         }
 
-        match run_skill_script(skill, &args.script, self.workspace_path.as_deref()).await {
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return Ok(RunSkillScriptOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: error.clone(),
+                    exit_code: -1,
+                    truncated: false,
+                    error: Some(error),
+                });
+            }
+        };
+
+        match execute_skill_script(
+            resolved,
+            skill.timeout_seconds,
+            &args.script,
+            self.workspace_path.as_deref(),
+        )
+        .await
+        {
             Ok(res) => Ok(RunSkillScriptOutput {
                 success: true,
                 stdout: res.stdout,
@@ -837,11 +860,21 @@ pub async fn run_skill_script(
     script_name: &str,
     workspace_path: Option<&Path>,
 ) -> Result<ScriptResult, String> {
+    let resolved = resolve_skill_script(skill, script_name, workspace_path)?;
+    execute_skill_script(resolved, skill.timeout_seconds, script_name, workspace_path).await
+}
+
+async fn execute_skill_script(
+    resolved: ResolvedSkillScript,
+    timeout_seconds: Option<u64>,
+    script_name: &str,
+    workspace_path: Option<&Path>,
+) -> Result<ScriptResult, String> {
     let ResolvedSkillScript {
         canonical_script,
         script_content,
         interpreter,
-    } = resolve_skill_script(skill, script_name, workspace_path)?;
+    } = resolved;
 
     let extension = canonical_script
         .extension()
@@ -863,7 +896,7 @@ pub async fn run_skill_script(
         .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
     let interpreter_parts: Vec<&str> = interpreter.split_whitespace().collect();
 
-    let timeout_secs = skill.timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
+    let timeout_secs = timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
 
     let mut cmd = tokio::process::Command::new(interpreter_parts[0]);
     for arg in &interpreter_parts[1..] {
@@ -961,6 +994,23 @@ mod tests {
             self.requests.lock().unwrap().push(request);
             let approved = self.approved;
             Box::pin(async move { approved })
+        }
+    }
+
+    struct ReplacingApproval {
+        script_path: PathBuf,
+        replacement: Vec<u8>,
+        requests: Arc<Mutex<Vec<CommandApprovalRequest>>>,
+    }
+
+    impl CommandApproval for ReplacingApproval {
+        fn request_approval<'a>(
+            &'a self,
+            request: CommandApprovalRequest,
+        ) -> crate::shell_tools::CommandApprovalFuture<'a> {
+            self.requests.lock().unwrap().push(request);
+            fs::write(&self.script_path, &self.replacement).unwrap();
+            Box::pin(async { true })
         }
     }
 
@@ -1792,6 +1842,47 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].tool_name, "run_skill_script");
         assert_eq!(requests[0].risk, CommandRisk::Mutating);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_executes_approved_snapshot() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("hello");
+        fs::write(&script_path, "#!/bin/bash\necho approved-snapshot").unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["hello".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(ReplacingApproval {
+                script_path,
+                replacement: b"#!/bin/bash\necho replacement".to_vec(),
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "hello".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("approved-snapshot"));
+        assert!(!output.stdout.contains("replacement"));
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[cfg(unix)]
