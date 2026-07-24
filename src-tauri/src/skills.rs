@@ -895,11 +895,17 @@ async fn execute_skill_script(
         .flush()
         .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
     let interpreter_parts: Vec<&str> = interpreter.split_whitespace().collect();
+    let Some((interpreter_command, interpreter_args)) = interpreter_parts.split_first() else {
+        return Err(format!(
+            "Cannot execute script '{}': resolved interpreter does not contain a command",
+            script_name
+        ));
+    };
 
     let timeout_secs = timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
 
-    let mut cmd = tokio::process::Command::new(interpreter_parts[0]);
-    for arg in &interpreter_parts[1..] {
+    let mut cmd = tokio::process::Command::new(interpreter_command);
+    for arg in interpreter_args {
         cmd.arg(arg);
     }
     // The staged copy prevents a workspace replacement from changing the
@@ -1622,6 +1628,29 @@ mod tests {
             assert!(result.stdout.contains("hello from script"));
             assert!(!result.truncated);
         }
+    }
+
+    #[tokio::test]
+    async fn execute_skill_script_rejects_interpreter_without_a_command() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("test.sh");
+        let script_content = b"echo hello".to_vec();
+        fs::write(&script, &script_content).unwrap();
+
+        let resolved = ResolvedSkillScript {
+            canonical_script: script,
+            script_content,
+            interpreter: " \t ".to_string(),
+        };
+
+        let error = execute_skill_script(resolved, None, "test.sh", None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Cannot execute script 'test.sh': resolved interpreter does not contain a command"
+        );
     }
 
     #[cfg(unix)]
