@@ -214,15 +214,16 @@ impl Tool for RunSkillScriptTool {
             });
         };
 
-        let script_path = format!("{}/scripts/{}", args.skill, args.script);
+        let pre_interpreter = resolve_skill_script(skill, &args.script, self.workspace_path.as_deref())
+            .ok()
+            .map(|resolved| resolved.interpreter);
+        let (command_label, reason) =
+            build_script_approval_label(&args.skill, &args.script, pre_interpreter.as_deref());
         let approved = approval
             .request_approval(CommandApprovalRequest {
                 tool_name: Self::NAME,
-                command_label: format!(
-                    "Execute skill script '{}' for skill '{}'",
-                    args.script, args.skill
-                ),
-                reason: format!("Run script at {}", script_path),
+                command_label,
+                reason,
                 risk: CommandRisk::Mutating,
             })
             .await;
@@ -738,11 +739,18 @@ fn read_verified_script(script_path: &Path) -> Result<Vec<u8>, String> {
     Ok(content)
 }
 
-pub async fn run_skill_script(
+#[derive(Debug, Clone)]
+struct ResolvedSkillScript {
+    canonical_script: PathBuf,
+    script_content: Vec<u8>,
+    interpreter: String,
+}
+
+fn resolve_skill_script(
     skill: &Skill,
     script_name: &str,
     workspace_path: Option<&Path>,
-) -> Result<ScriptResult, String> {
+) -> Result<ResolvedSkillScript, String> {
     let skill_dir = {
         let base = if skill.source == SkillSource::Workspace {
             workspace_path
@@ -794,7 +802,47 @@ pub async fn run_skill_script(
 
     let script_content = read_verified_script(&canonical_script)?;
     let interpreter = detect_interpreter_from_content(&canonical_script, &script_content)?;
-    
+
+    Ok(ResolvedSkillScript {
+        canonical_script,
+        script_content,
+        interpreter,
+    })
+}
+
+fn build_script_approval_label(
+    skill: &str,
+    script: &str,
+    interpreter: Option<&str>,
+) -> (String, String) {
+    let script_path = format!("{}/scripts/{}", skill, script);
+    match interpreter {
+        Some(interp) if !interp.is_empty() => {
+            let command_label = format!(
+                "Execute skill script '{}' ({}) for skill '{}'",
+                script, interp, skill
+            );
+            let reason = format!("Run script at {} via `{}`", script_path, interp);
+            (command_label, reason)
+        }
+        _ => (
+            format!("Execute skill script '{}' for skill '{}'", script, skill),
+            format!("Run script at {}", script_path),
+        ),
+    }
+}
+
+pub async fn run_skill_script(
+    skill: &Skill,
+    script_name: &str,
+    workspace_path: Option<&Path>,
+) -> Result<ScriptResult, String> {
+    let ResolvedSkillScript {
+        canonical_script,
+        script_content,
+        interpreter,
+    } = resolve_skill_script(skill, script_name, workspace_path)?;
+
     let extension = canonical_script
         .extension()
         .and_then(|e| e.to_str())
@@ -1432,6 +1480,52 @@ mod tests {
     }
 
     #[test]
+    fn build_script_approval_label_includes_interpreter_for_bash_shebang() {
+        let (label, reason) = build_script_approval_label("my-skill", "hello", Some("bash"));
+        assert!(
+            label.contains("bash"),
+            "expected interpreter in label, got: {label}"
+        );
+        assert!(
+            reason.contains("bash"),
+            "expected interpreter in reason, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn build_script_approval_label_includes_interpreter_args_for_python() {
+        let (label, reason) =
+            build_script_approval_label("my-skill", "release.py", Some("/usr/bin/python3 -u"));
+        assert!(
+            label.contains("-u"),
+            "expected interpreter args in label, got: {label}"
+        );
+        assert!(
+            reason.contains("/usr/bin/python3 -u"),
+            "expected interpreter args in reason, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn build_script_approval_label_falls_back_when_no_interpreter() {
+        let (label, reason) = build_script_approval_label("my-skill", "hello", None);
+        assert_eq!(
+            label,
+            "Execute skill script 'hello' for skill 'my-skill'"
+        );
+        assert_eq!(reason, "Run script at my-skill/scripts/hello");
+    }
+
+    #[test]
+    fn build_script_approval_label_reproduces_script_name() {
+        let (label, _) = build_script_approval_label("diagnose-skill", "load-context", Some("bash"));
+        assert!(
+            label.contains("load-context"),
+            "expected script name in label, got: {label}"
+        );
+    }
+
+    #[test]
     fn truncate_bytes_to_string_within_limit() {
         let (result, truncated) = truncate_bytes_to_string(b"hello", 100);
         assert_eq!(result, "hello");
@@ -1784,5 +1878,108 @@ mod tests {
             Some("Execution denied: approval broker unavailable")
         );
         assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_approval_label_includes_resolved_interpreter() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("interp-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(
+            scripts_dir.join("runner"),
+            "#!/usr/bin/env bash\necho interpreter-surfaced",
+        )
+        .unwrap();
+
+        let mut skill = make_skill("interp-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["runner".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: true,
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "interp-skill".to_string(),
+                script: "runner".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let label = &requests[0].command_label;
+        let reason = &requests[0].reason;
+        assert!(
+            label.contains("bash"),
+            "expected resolved interpreter 'bash' in label, got: {label}"
+        );
+        assert!(
+            label.contains("runner"),
+            "expected script name in label, got: {label}"
+        );
+        assert!(
+            label.contains("interp-skill"),
+            "expected skill name in label, got: {label}"
+        );
+        assert!(
+            reason.contains("bash"),
+            "expected resolved interpreter in reason, got: {reason}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_approval_label_falls_back_when_interpreter_unresolvable() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(scripts_dir.join("weird"), "no shebang, unknown ext body").unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["weird".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: false,
+                requests: requests.clone(),
+            })),
+        };
+
+        let _ = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "weird".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let label = &requests[0].command_label;
+        assert_eq!(
+            label,
+            "Execute skill script 'weird' for skill 'test-skill'",
+            "expected fallback label without interpreter, got: {label}"
+        );
     }
 }
