@@ -27,7 +27,8 @@ The interpreter is determined by reading the first line of the script:
 ## Script Size Cap
 
 - **1 MiB** (1,048,576 bytes) maximum size cap for skill scripts.
-- Scripts larger than 1 MiB are rejected during pre-approval script resolution before any approval request is issued or content read into memory.
+- The cap is enforced during pre-approval script resolution, so oversized scripts are rejected before any approval request is issued.
+- Enforcement is two-stage: the file's metadata length is checked first, then the read itself is bounded to `SCRIPT_SIZE_CAP + 1` bytes and re-checked. This bounds memory use and also rejects files that grow after metadata validation.
 
 ## Path Guard
 
