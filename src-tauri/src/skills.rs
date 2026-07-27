@@ -214,15 +214,27 @@ impl Tool for RunSkillScriptTool {
             });
         };
 
-        let script_path = format!("{}/scripts/{}", args.skill, args.script);
+        let resolved = match resolve_skill_script(skill, &args.script, self.workspace_path.as_deref()) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return Ok(RunSkillScriptOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: error.clone(),
+                    exit_code: -1,
+                    truncated: false,
+                    error: Some(error),
+                });
+            }
+        };
+
+        let (command_label, reason) =
+            build_script_approval_label(&args.skill, &args.script, Some(&resolved.interpreter));
         let approved = approval
             .request_approval(CommandApprovalRequest {
                 tool_name: Self::NAME,
-                command_label: format!(
-                    "Execute skill script '{}' for skill '{}'",
-                    args.script, args.skill
-                ),
-                reason: format!("Run script at {}", script_path),
+                command_label,
+                reason,
                 risk: CommandRisk::Mutating,
             })
             .await;
@@ -238,7 +250,14 @@ impl Tool for RunSkillScriptTool {
             });
         }
 
-        match run_skill_script(skill, &args.script, self.workspace_path.as_deref()).await {
+        match execute_skill_script(
+            resolved,
+            skill.timeout_seconds,
+            &args.script,
+            self.workspace_path.as_deref(),
+        )
+        .await
+        {
             Ok(res) => Ok(RunSkillScriptOutput {
                 success: true,
                 stdout: res.stdout,
@@ -719,6 +738,8 @@ fn detect_interpreter_from_content(script_path: &Path, content: &[u8]) -> Result
     }
 }
 
+const SCRIPT_SIZE_CAP: u64 = 1024 * 1024;
+
 fn read_verified_script(script_path: &Path) -> Result<Vec<u8>, String> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -728,21 +749,50 @@ fn read_verified_script(script_path: &Path) -> Result<Vec<u8>, String> {
         options.custom_flags(nix::libc::O_NOFOLLOW);
     }
 
-    let mut script = options
+    let script = options
         .open(script_path)
         .map_err(|error| format!("Failed to read script: {}", error))?;
+
+    let metadata = script
+        .metadata()
+        .map_err(|error| format!("Failed to inspect script metadata: {}", error))?;
+    if metadata.len() > SCRIPT_SIZE_CAP {
+        return Err(format!(
+            "Script '{}' exceeds maximum allowed size of {} bytes",
+            script_path.display(),
+            SCRIPT_SIZE_CAP
+        ));
+    }
+
     let mut content = Vec::new();
     script
+        .take(SCRIPT_SIZE_CAP + 1)
         .read_to_end(&mut content)
         .map_err(|error| format!("Failed to read script: {}", error))?;
+
+    if content.len() as u64 > SCRIPT_SIZE_CAP {
+        return Err(format!(
+            "Script '{}' exceeds maximum allowed size of {} bytes",
+            script_path.display(),
+            SCRIPT_SIZE_CAP
+        ));
+    }
+
     Ok(content)
 }
 
-pub async fn run_skill_script(
+#[derive(Debug, Clone)]
+struct ResolvedSkillScript {
+    canonical_script: PathBuf,
+    script_content: Vec<u8>,
+    interpreter: String,
+}
+
+fn resolve_skill_script(
     skill: &Skill,
     script_name: &str,
     workspace_path: Option<&Path>,
-) -> Result<ScriptResult, String> {
+) -> Result<ResolvedSkillScript, String> {
     let skill_dir = {
         let base = if skill.source == SkillSource::Workspace {
             workspace_path
@@ -794,7 +844,57 @@ pub async fn run_skill_script(
 
     let script_content = read_verified_script(&canonical_script)?;
     let interpreter = detect_interpreter_from_content(&canonical_script, &script_content)?;
-    
+
+    Ok(ResolvedSkillScript {
+        canonical_script,
+        script_content,
+        interpreter,
+    })
+}
+
+fn build_script_approval_label(
+    skill: &str,
+    script: &str,
+    interpreter: Option<&str>,
+) -> (String, String) {
+    let script_path = format!("{}/scripts/{}", skill, script);
+    match interpreter {
+        Some(interp) if !interp.is_empty() => {
+            let command_label = format!(
+                "Execute skill script '{}' ({}) for skill '{}'",
+                script, interp, skill
+            );
+            let reason = format!("Run script at {} via `{}`", script_path, interp);
+            (command_label, reason)
+        }
+        _ => (
+            format!("Execute skill script '{}' for skill '{}'", script, skill),
+            format!("Run script at {}", script_path),
+        ),
+    }
+}
+
+pub async fn run_skill_script(
+    skill: &Skill,
+    script_name: &str,
+    workspace_path: Option<&Path>,
+) -> Result<ScriptResult, String> {
+    let resolved = resolve_skill_script(skill, script_name, workspace_path)?;
+    execute_skill_script(resolved, skill.timeout_seconds, script_name, workspace_path).await
+}
+
+async fn execute_skill_script(
+    resolved: ResolvedSkillScript,
+    timeout_seconds: Option<u64>,
+    script_name: &str,
+    workspace_path: Option<&Path>,
+) -> Result<ScriptResult, String> {
+    let ResolvedSkillScript {
+        canonical_script,
+        script_content,
+        interpreter,
+    } = resolved;
+
     let extension = canonical_script
         .extension()
         .and_then(|e| e.to_str())
@@ -814,11 +914,17 @@ pub async fn run_skill_script(
         .flush()
         .map_err(|error| format!("Failed to stage script '{}': {}", script_name, error))?;
     let interpreter_parts: Vec<&str> = interpreter.split_whitespace().collect();
+    let Some((interpreter_command, interpreter_args)) = interpreter_parts.split_first() else {
+        return Err(format!(
+            "Cannot execute script '{}': resolved interpreter does not contain a command",
+            script_name
+        ));
+    };
 
-    let timeout_secs = skill.timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
+    let timeout_secs = timeout_seconds.unwrap_or(DEFAULT_SCRIPT_TIMEOUT);
 
-    let mut cmd = tokio::process::Command::new(interpreter_parts[0]);
-    for arg in &interpreter_parts[1..] {
+    let mut cmd = tokio::process::Command::new(interpreter_command);
+    for arg in interpreter_args {
         cmd.arg(arg);
     }
     // The staged copy prevents a workspace replacement from changing the
@@ -913,6 +1019,23 @@ mod tests {
             self.requests.lock().unwrap().push(request);
             let approved = self.approved;
             Box::pin(async move { approved })
+        }
+    }
+
+    struct ReplacingApproval {
+        script_path: PathBuf,
+        replacement: Vec<u8>,
+        requests: Arc<Mutex<Vec<CommandApprovalRequest>>>,
+    }
+
+    impl CommandApproval for ReplacingApproval {
+        fn request_approval<'a>(
+            &'a self,
+            request: CommandApprovalRequest,
+        ) -> crate::shell_tools::CommandApprovalFuture<'a> {
+            self.requests.lock().unwrap().push(request);
+            fs::write(&self.script_path, &self.replacement).unwrap();
+            Box::pin(async { true })
         }
     }
 
@@ -1432,6 +1555,52 @@ mod tests {
     }
 
     #[test]
+    fn build_script_approval_label_includes_interpreter_for_bash_shebang() {
+        let (label, reason) = build_script_approval_label("my-skill", "hello", Some("bash"));
+        assert!(
+            label.contains("bash"),
+            "expected interpreter in label, got: {label}"
+        );
+        assert!(
+            reason.contains("bash"),
+            "expected interpreter in reason, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn build_script_approval_label_includes_interpreter_args_for_python() {
+        let (label, reason) =
+            build_script_approval_label("my-skill", "release.py", Some("/usr/bin/python3 -u"));
+        assert!(
+            label.contains("-u"),
+            "expected interpreter args in label, got: {label}"
+        );
+        assert!(
+            reason.contains("/usr/bin/python3 -u"),
+            "expected interpreter args in reason, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn build_script_approval_label_falls_back_when_no_interpreter() {
+        let (label, reason) = build_script_approval_label("my-skill", "hello", None);
+        assert_eq!(
+            label,
+            "Execute skill script 'hello' for skill 'my-skill'"
+        );
+        assert_eq!(reason, "Run script at my-skill/scripts/hello");
+    }
+
+    #[test]
+    fn build_script_approval_label_reproduces_script_name() {
+        let (label, _) = build_script_approval_label("diagnose-skill", "load-context", Some("bash"));
+        assert!(
+            label.contains("load-context"),
+            "expected script name in label, got: {label}"
+        );
+    }
+
+    #[test]
     fn truncate_bytes_to_string_within_limit() {
         let (result, truncated) = truncate_bytes_to_string(b"hello", 100);
         assert_eq!(result, "hello");
@@ -1478,6 +1647,29 @@ mod tests {
             assert!(result.stdout.contains("hello from script"));
             assert!(!result.truncated);
         }
+    }
+
+    #[tokio::test]
+    async fn execute_skill_script_rejects_interpreter_without_a_command() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("test.sh");
+        let script_content = b"echo hello".to_vec();
+        fs::write(&script, &script_content).unwrap();
+
+        let resolved = ResolvedSkillScript {
+            canonical_script: script,
+            script_content,
+            interpreter: " \t ".to_string(),
+        };
+
+        let error = execute_skill_script(resolved, None, "test.sh", None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Cannot execute script 'test.sh': resolved interpreter does not contain a command"
+        );
     }
 
     #[cfg(unix)]
@@ -1702,6 +1894,47 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn run_skill_script_tool_executes_approved_snapshot() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("hello");
+        fs::write(&script_path, "#!/bin/bash\necho approved-snapshot").unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["hello".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(ReplacingApproval {
+                script_path,
+                replacement: b"#!/bin/bash\necho replacement".to_vec(),
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "hello".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("approved-snapshot"));
+        assert!(!output.stdout.contains("replacement"));
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn run_skill_script_tool_does_not_execute_after_denial() {
         let dir = tempdir().unwrap();
         let marker = dir.path().join("executed");
@@ -1784,5 +2017,176 @@ mod tests {
             Some("Execution denied: approval broker unavailable")
         );
         assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_approval_label_includes_resolved_interpreter() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("interp-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(
+            scripts_dir.join("runner"),
+            "#!/usr/bin/env bash\necho interpreter-surfaced",
+        )
+        .unwrap();
+
+        let mut skill = make_skill("interp-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["runner".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: true,
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "interp-skill".to_string(),
+                script: "runner".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let label = &requests[0].command_label;
+        let reason = &requests[0].reason;
+        assert!(
+            label.contains("bash"),
+            "expected resolved interpreter 'bash' in label, got: {label}"
+        );
+        assert!(
+            label.contains("runner"),
+            "expected script name in label, got: {label}"
+        );
+        assert!(
+            label.contains("interp-skill"),
+            "expected skill name in label, got: {label}"
+        );
+        assert!(
+            reason.contains("bash"),
+            "expected resolved interpreter in reason, got: {reason}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_rejects_unresolvable_interpreter_before_approval() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(scripts_dir.join("weird"), "no shebang, unknown ext body").unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["weird".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: false,
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "weird".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output
+            .error
+            .unwrap()
+            .contains("No shebang and unrecognized extension"));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_rejects_oversized_script_before_approval() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("big.sh");
+
+        let file = fs::File::create(&script_path).unwrap();
+        file.set_len(SCRIPT_SIZE_CAP + 1).unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["big.sh".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: true,
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "big.sh".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output
+            .error
+            .unwrap()
+            .contains("exceeds maximum allowed size"));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_skill_script_rejects_oversized_script() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("big.sh");
+
+        let file = fs::File::create(&script_path).unwrap();
+        file.set_len(SCRIPT_SIZE_CAP + 1).unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["big.sh".to_string()];
+
+        let err = run_skill_script(&skill, "big.sh", Some(dir.path()))
+            .await
+            .unwrap_err();
+        assert!(err.contains("exceeds maximum allowed size"));
     }
 }
