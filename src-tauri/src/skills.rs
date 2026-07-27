@@ -214,13 +214,22 @@ impl Tool for RunSkillScriptTool {
             });
         };
 
-        let resolved = resolve_skill_script(skill, &args.script, self.workspace_path.as_deref());
-        let interpreter = resolved
-            .as_ref()
-            .ok()
-            .map(|resolved| resolved.interpreter.as_str());
+        let resolved = match resolve_skill_script(skill, &args.script, self.workspace_path.as_deref()) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return Ok(RunSkillScriptOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: error.clone(),
+                    exit_code: -1,
+                    truncated: false,
+                    error: Some(error),
+                });
+            }
+        };
+
         let (command_label, reason) =
-            build_script_approval_label(&args.skill, &args.script, interpreter);
+            build_script_approval_label(&args.skill, &args.script, Some(&resolved.interpreter));
         let approved = approval
             .request_approval(CommandApprovalRequest {
                 tool_name: Self::NAME,
@@ -240,20 +249,6 @@ impl Tool for RunSkillScriptTool {
                 error: Some("Execution denied by user".to_string()),
             });
         }
-
-        let resolved = match resolved {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                return Ok(RunSkillScriptOutput {
-                    success: false,
-                    stdout: String::new(),
-                    stderr: error.clone(),
-                    exit_code: -1,
-                    truncated: false,
-                    error: Some(error),
-                });
-            }
-        };
 
         match execute_skill_script(
             resolved,
@@ -743,6 +738,8 @@ fn detect_interpreter_from_content(script_path: &Path, content: &[u8]) -> Result
     }
 }
 
+const SCRIPT_SIZE_CAP: u64 = 1024 * 1024;
+
 fn read_verified_script(script_path: &Path) -> Result<Vec<u8>, String> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -752,13 +749,35 @@ fn read_verified_script(script_path: &Path) -> Result<Vec<u8>, String> {
         options.custom_flags(nix::libc::O_NOFOLLOW);
     }
 
-    let mut script = options
+    let script = options
         .open(script_path)
         .map_err(|error| format!("Failed to read script: {}", error))?;
+
+    let metadata = script
+        .metadata()
+        .map_err(|error| format!("Failed to inspect script metadata: {}", error))?;
+    if metadata.len() > SCRIPT_SIZE_CAP {
+        return Err(format!(
+            "Script '{}' exceeds maximum allowed size of {} bytes",
+            script_path.display(),
+            SCRIPT_SIZE_CAP
+        ));
+    }
+
     let mut content = Vec::new();
     script
+        .take(SCRIPT_SIZE_CAP + 1)
         .read_to_end(&mut content)
         .map_err(|error| format!("Failed to read script: {}", error))?;
+
+    if content.len() as u64 > SCRIPT_SIZE_CAP {
+        return Err(format!(
+            "Script '{}' exceeds maximum allowed size of {} bytes",
+            script_path.display(),
+            SCRIPT_SIZE_CAP
+        ));
+    }
+
     Ok(content)
 }
 
@@ -2062,7 +2081,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn run_skill_script_tool_approval_label_falls_back_when_interpreter_unresolvable() {
+    async fn run_skill_script_tool_rejects_unresolvable_interpreter_before_approval() {
         let dir = tempdir().unwrap();
         let scripts_dir = dir
             .path()
@@ -2085,7 +2104,7 @@ mod tests {
             })),
         };
 
-        let _ = tool
+        let output = tool
             .call(RunSkillScriptArgs {
                 skill: "test-skill".to_string(),
                 script: "weird".to_string(),
@@ -2093,13 +2112,81 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(!output.success);
+        assert!(output
+            .error
+            .unwrap()
+            .contains("No shebang and unrecognized extension"));
         let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        let label = &requests[0].command_label;
-        assert_eq!(
-            label,
-            "Execute skill script 'weird' for skill 'test-skill'",
-            "expected fallback label without interpreter, got: {label}"
-        );
+        assert_eq!(requests.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_tool_rejects_oversized_script_before_approval() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("big.sh");
+
+        let file = fs::File::create(&script_path).unwrap();
+        file.set_len(SCRIPT_SIZE_CAP + 1).unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["big.sh".to_string()];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = RunSkillScriptTool {
+            available_skills: vec![skill],
+            workspace_path: Some(dir.path().to_path_buf()),
+            command_approval: Some(Arc::new(RecordingApproval {
+                approved: true,
+                requests: requests.clone(),
+            })),
+        };
+
+        let output = tool
+            .call(RunSkillScriptArgs {
+                skill: "test-skill".to_string(),
+                script: "big.sh".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert!(output
+            .error
+            .unwrap()
+            .contains("exceeds maximum allowed size"));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_skill_script_rejects_oversized_script() {
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("test-skill")
+            .join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script_path = scripts_dir.join("big.sh");
+
+        let file = fs::File::create(&script_path).unwrap();
+        file.set_len(SCRIPT_SIZE_CAP + 1).unwrap();
+
+        let mut skill = make_skill("test-skill", "test", SkillSource::Workspace);
+        skill.scripts = vec!["big.sh".to_string()];
+
+        let err = run_skill_script(&skill, "big.sh", Some(dir.path()))
+            .await
+            .unwrap_err();
+        assert!(err.contains("exceeds maximum allowed size"));
     }
 }

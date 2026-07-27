@@ -24,6 +24,11 @@ The interpreter is determined by reading the first line of the script:
 - **16 KiB** per-stream cap on stdout and stderr.
 - If output exceeds the cap, it is truncated and the `truncated` flag in the response is `true`.
 
+## Script Size Cap
+
+- **1 MiB** (1,048,576 bytes) maximum size cap for skill scripts.
+- Scripts larger than 1 MiB are rejected during pre-approval script resolution before any approval request is issued or content read into memory.
+
 ## Path Guard
 
 The script path is resolved via `canonicalize()`. The canonical script path must start with the canonical skill directory. This prevents symlink escapes:
