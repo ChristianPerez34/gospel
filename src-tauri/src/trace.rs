@@ -249,7 +249,7 @@ static KEY_VALUE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static BEARER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(Bearer )(\S{20,})").expect("bearer regex is valid"));
+    LazyLock::new(|| Regex::new(r"(?i)(Bearer\s+)(\S{20,})").expect("bearer regex is valid"));
 
 static QUERY_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
     let alternation = SENSITIVE_KEYS
@@ -559,5 +559,18 @@ mod tests {
         let mut s = "Bearer abc".to_string();
         redact_sensitive(&mut s);
         assert_eq!(s, "Bearer abc");
+    }
+
+    #[test]
+    fn redacts_bearer_token_case_insensitive_and_multiple_spaces() {
+        let generic_token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9";
+
+        let mut s1 = format!("authorization: bearer {generic_token}");
+        redact_sensitive(&mut s1);
+        assert_eq!(s1, "authorization: bearer [REDACTED]");
+
+        let mut s2 = format!("authorization: Bearer  {generic_token}");
+        redact_sensitive(&mut s2);
+        assert_eq!(s2, "authorization: Bearer  [REDACTED]");
     }
 }
