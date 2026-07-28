@@ -226,11 +226,14 @@ const SENSITIVE_KEYS: &[&str] = &[
 /// Patterns use bounded character classes with minimum lengths to avoid
 /// over-redacting legitimate short text.
 const SECRET_TOKEN_PATTERNS: &[&str] = &[
-    r"sk-[A-Za-z0-9_-]{20,}", // OpenAI
-    r"sk-ant-[A-Za-z0-9_-]{20,}", // Anthropic
-    r"ghp_[A-Za-z0-9]{36,}", // GitHub personal access token
-    r"gho_[A-Za-z0-9]{36,}", // GitHub OAuth token
-    r"ghs_[A-Za-z0-9]{36,}", // GitHub server-to-server token
+    r"sk-[A-Za-z0-9_-]{20,}",        // OpenAI
+    r"sk-ant-[A-Za-z0-9_-]{20,}",    // Anthropic
+    r"github_pat_[A-Za-z0-9_]{20,}", // GitHub fine-grained personal access token
+    r"ghp_[A-Za-z0-9]{36,}",         // GitHub classic personal access token
+    r"gho_[A-Za-z0-9]{36,}",         // GitHub OAuth token
+    r"ghu_[A-Za-z0-9]{36,}",         // GitHub App user access token
+    r"ghs_[A-Za-z0-9_.-]{20,}",      // GitHub App installation token (legacy or stateless)
+    r"ghr_[A-Za-z0-9]{36,}",         // GitHub App refresh token
 ];
 
 static KEY_VALUE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -365,7 +368,7 @@ fn redact_freeform_secrets(s: &mut String) {
     rebuilt.push_str(&s[last_end..]);
     *s = rebuilt;
 
-    // Provider token-prefix patterns (sk-…, ghp_…, gho_…, ghs_…, sk-ant-…).
+    // Provider token-prefix patterns (sk-…, GitHub tokens, sk-ant-…).
     let mut last_end = 0;
     let mut rebuilt = String::with_capacity(s.len());
     let t_caps: Vec<(usize, usize)> = TOKEN_PREFIX_RE
@@ -526,6 +529,29 @@ mod tests {
         redact_sensitive(&mut s);
         assert!(s.contains("[REDACTED]"));
         assert!(!s.contains("gho_REDACTEDFAKE0123456789ABCDEFGHIJKLMN"));
+    }
+
+    #[test]
+    fn redacts_current_github_token_formats() {
+        let tokens = [
+            format!("github_pat_{}", "REDACTED_FAKE_".repeat(3)),
+            format!("ghp_{}", "A".repeat(36)),
+            format!("gho_{}", "B".repeat(36)),
+            format!("ghu_{}", "C".repeat(36)),
+            format!("ghs_{}", "D".repeat(36)),
+            format!(
+                "ghs_12345_{}.{}.{}",
+                "E".repeat(20),
+                "F".repeat(20),
+                "G".repeat(20)
+            ),
+            format!("ghr_{}", "H".repeat(36)),
+        ];
+
+        for token in tokens {
+            let redacted = redacted_text(&format!("provider error: {token}"));
+            assert_eq!(redacted, "provider error: [REDACTED]");
+        }
     }
 
     #[test]
