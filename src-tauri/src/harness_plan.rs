@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 /// One checklist step under `## Steps`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanStep {
     pub text: String,
     pub done: bool,
@@ -36,6 +37,7 @@ pub struct PlanStep {
 /// `PlanFile` with `has_plan_file == false` and all other fields empty/None.
 /// Callers should treat that as the "no plan yet" sentinel.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanFile {
     pub goal: Option<String>,
     pub steps: Vec<PlanStep>,
@@ -284,6 +286,7 @@ fn parse_checklist_item(line: &str) -> Option<(bool, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn full_plan() -> &'static str {
         "# Plan
@@ -351,6 +354,49 @@ Ready for review. Future phases can add overrides.
         assert!(plan.evidence.is_empty());
         assert!(plan.open_questions.is_empty());
         assert!(plan.next_action.is_none());
+    }
+
+    #[test]
+    fn serializes_for_the_typescript_consumer_in_camel_case() {
+        let mut plan = parse_plan_markdown(full_plan());
+        plan.has_plan_file = true;
+
+        let value = serde_json::to_value(plan).expect("plan should serialize");
+
+        assert_eq!(
+            value,
+            json!({
+                "goal": "Implement Phase 1 of the shell tools.",
+                "steps": [
+                    {
+                        "text": "Read the handoff and explore the codebase.",
+                        "done": true
+                    },
+                    {
+                        "text": "Implement shell_tools.rs.",
+                        "done": true
+                    },
+                    {
+                        "text": "Wire the tools into llm.rs.",
+                        "done": false
+                    },
+                    {
+                        "text": "Verify with cargo test.",
+                        "done": false
+                    }
+                ],
+                "evidence": [
+                    "`cargo test shell_tools` — 21 tests passed.",
+                    "`bun run build` — Vite frontend build succeeded."
+                ],
+                "openQuestions": [
+                    "Approval timeout set to 60 seconds.",
+                    "Classification engine is conservative."
+                ],
+                "nextAction": "Ready for review. Future phases can add overrides.",
+                "hasPlanFile": true
+            })
+        );
     }
 
     #[test]

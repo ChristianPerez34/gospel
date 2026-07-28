@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  createElement,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 import type { Workspace } from "../types";
 
 interface UseWorkspacesReturn {
@@ -12,7 +20,9 @@ interface UseWorkspacesReturn {
   refresh: () => Promise<void>;
 }
 
-export function useWorkspaces(): UseWorkspacesReturn {
+const WorkspacesContext = createContext<UseWorkspacesReturn | null>(null);
+
+export function WorkspacesProvider({ children }: { children: ReactNode }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,7 +88,7 @@ export function useWorkspaces(): UseWorkspacesReturn {
     [refresh]
   );
 
-  return {
+  const value: UseWorkspacesReturn = {
     workspaces,
     activeWorkspace,
     loading,
@@ -87,4 +97,14 @@ export function useWorkspaces(): UseWorkspacesReturn {
     switchWorkspace,
     refresh,
   };
+
+  return createElement(WorkspacesContext.Provider, { value }, children);
+}
+
+export function useWorkspaces(): UseWorkspacesReturn {
+  const context = useContext(WorkspacesContext);
+  if (context === null) {
+    throw new Error("useWorkspaces must be used within a WorkspacesProvider");
+  }
+  return context;
 }
