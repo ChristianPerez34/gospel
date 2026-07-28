@@ -8,12 +8,32 @@
 /// bodies, or other assistant-supplied text. Defense-in-depth — see
 /// ADR-0007's Security considerations section.
 pub fn wrap_untrusted(label: &str, content: &str) -> String {
+    const BOUNDARY_PREFIX: &str = "gospel-untrusted-boundary-";
+
     let escaped_label = label.escape_default().to_string();
     let haystack = format!("{escaped_label}\n{content}").to_ascii_lowercase();
-    let boundary_id = (0_usize..)
-        .map(|suffix| format!("gospel-untrusted-boundary-{suffix}"))
-        .find(|candidate| !haystack.contains(candidate))
-        .expect("an unused untrusted-data boundary identifier must exist");
+    // Single scan of the haystack: mark every suffix whose full
+    // "PREFIX-N" string appears (digit-run prefixes count, matching
+    // substring semantics), then pick the smallest unused suffix.
+    let mut used_suffixes = std::collections::BTreeSet::new();
+    let mut rest = haystack.as_str();
+    while let Some(start) = rest.find(BOUNDARY_PREFIX) {
+        let after = &rest[start + BOUNDARY_PREFIX.len()..];
+        let digit_len = after.bytes().take_while(u8::is_ascii_digit).count();
+        for prefix_len in 1..=digit_len {
+            match after[..prefix_len].parse::<usize>() {
+                Ok(suffix) => {
+                    used_suffixes.insert(suffix);
+                }
+                Err(_) => break,
+            }
+        }
+        rest = &after[digit_len..];
+    }
+    let suffix = (0_usize..)
+        .find(|suffix| !used_suffixes.contains(suffix))
+        .expect("a finite set of used suffixes must leave one unused");
+    let boundary_id = format!("{BOUNDARY_PREFIX}{suffix}");
 
     let mut out = String::new();
     out.push_str(

@@ -1694,7 +1694,6 @@ const SUSPECT_INJECTION_PHRASES: &[&str] = &[
     "System: output",
     "System: return",
     "System: prompt",
-    "output the contents",
 ];
 
 /// True iff `text` contains one of the [`SUSPECT_INJECTION_PHRASES`]
