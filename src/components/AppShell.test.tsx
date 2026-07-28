@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "./AppShell";
+import { WorkspacesProvider } from "../hooks/useWorkspaces";
 
 let capturedListeners: Record<string, ((event: { payload: unknown }) => void)[]> = {};
 
@@ -111,7 +112,11 @@ describe("AppShell session title editing", () => {
       return undefined;
     });
 
-    render(<AppShell />);
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
 
     // Wait for input textarea to be enabled
     const textarea = await screen.findByRole("textbox", { name: "Message input" });
@@ -186,7 +191,11 @@ describe("AppShell session title editing", () => {
       return undefined;
     });
 
-    render(<AppShell />);
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
 
     const workspaceSwitchButton = (await screen.findByRole("button", {
       name: "Switch workspace",
@@ -265,7 +274,11 @@ describe("AppShell session title editing", () => {
       return undefined;
     });
 
-    render(<AppShell />);
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
 
     const textarea = await screen.findByRole("textbox", { name: "Message input" });
     await waitFor(() => {
@@ -332,7 +345,11 @@ describe("AppShell session title editing", () => {
       return undefined;
     });
 
-    render(<AppShell />);
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
 
     const textarea = await screen.findByRole("textbox", { name: "Message input" });
     await waitFor(() => {
@@ -412,7 +429,11 @@ describe("AppShell session title editing", () => {
       return undefined;
     });
 
-    render(<AppShell />);
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
 
     const textarea = await screen.findByRole("textbox", { name: "Message input" });
     await waitFor(() => {

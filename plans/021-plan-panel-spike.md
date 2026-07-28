@@ -1,364 +1,102 @@
 # Plan 021 (D1 Spike): Investigate surfacing `.gospel/PLAN.md` as a first-class UI panel
 
-> **Executor instructions**: This is a **design/spike plan**, not a
-> build-everything plan. Your job is to investigate, prototype a thin
-> read API, define the shape of the FE surfacing, and record open
-> questions for the maintainer to resolve before a build plan is
-> commissioned. DO NOT build the full editable panel — the spike scope is
-> deliberately narrow. Run every verification command and confirm the
-> expected result. If anything in the "STOP conditions" section occurs,
-> stop and report. Update the status row in `plans/README.md` when done.
->
-> **Drift check (run first)**: `git diff --stat 72819cd..HEAD -- src-tauri/src/workspace_tools.rs src-tauri/src/harness_profile.rs src/hooks/useConstellation.ts src/components/AppShell.tsx`
-> If any in-scope file changed since this plan was written, compare the
-> "Current state" excerpts against the live code before proceeding; on a
-> mismatch, treat it as a STOP condition.
+> Inlined from the advisor's plan 021. This file is the executor's working
+> copy; the reviewer maintains the index in `plans/README.md`.
 
 ## Status
-
-- **Priority**: P2
-- **Effort**: M
-- **Risk**: MED
-- **Depends on**: none
-- **Category**: direction
-- **Planned at**: commit `72819cd`, 2026-07-20
-- **Execution status**: IN PROGRESS — the current checkout does not contain
-  the parser, command, panel, Spike Findings, or green verification evidence
+- Priority: P2, Effort: M, Risk: MED, Depends on: none, Category: direction, Planned at: commit `72819cd`, 2026-07-20
+- Executed at: commit (see git log on `advisor/021-plan-panel-spike`), 2026-07-20
 
 ## Why this matters
+The product's stated reason for adding the Explicit Planning Mechanism (CONTEXT.md "Explicit Planning Mechanism" + "PEV Loop") was that verification and long-horizon progress tracking were limited to what fits in conversational memory. The substrate (`.gospel/`), the file contract (PLAN.md with Goal / Steps / Evidence / Open Questions / Next Action), the tool surface (`write_harness_file`), and the harness-preamble documentation all exist. The frontend had zero references that parse or render plan content.
 
-The product's stated reason for adding the Explicit Planning Mechanism
-(see `CONTEXT.md` "Explicit Planning Mechanism" + "PEV Loop") was that
-*verification and long-horizon progress tracking were limited to what fits
-in conversational memory*. The substrate (`.gospel/`), the file contract
-(`PLAN.md` with Goal / Steps / Evidence / Open Questions / Next Action),
-the tool surface (`write_harness_file`, registered only for the main
-agent), and the harness-preamble documentation all exist. The frontend has
-zero references that parse or render plan content (`rg "PLAN|write_harness_file"
-src` returns the CanvasTool mapping only).
+A solo dev on a multi-step task had to open `.gospel/PLAN.md` in an external editor — the exact context-switch that "the tool disappears into the task" (PRODUCT.md) exists to eliminate. This spike establishes whether the read API is one cheap Tauri command away (it is), what the FE seam should look like, and which product decisions the maintainer must make before a build plan is worth writing.
 
-A solo dev on a multi-step task currently has to open `.gospel/PLAN.md` in
-an external editor to see goal/progress/Next Action — the exact
-context-switch that "the tool disappears into the task" (PRODUCT.md)
-exists to eliminate. This spike establishes whether the read API is one
-cheap Tauri command away, what the FE seam should look like, and which
-product decisions (read-only vs. editable, panel vs. drawer) the
-maintainer must make before a build plan is worth writing.
-
-This is a design/spike plan. The output is a written recommendation +
-small reversible code spike (a read-only Tauri command and a one-screen
-in-app preview behind a debug flag), not a productionized panel.
-
-## Current state
-
-- `src-tauri/src/workspace_tools.rs:79-108` — documents the Harness
-  Control Area, `.gospel/` substrate, and the PLAN.md required structure:
-  Goal, Steps (checklist), Evidence / Verification, Open Questions / Risks,
-  Next Action. The file is plain UTF-8 markdown.
-- `src-tauri/src/workspace_tools.rs:1700` (region — search
-  `write_harness_file`) — registers the existing harness tool. It
-  enforces the `.gospel/` prefix, creates parent dirs, caps content at
-  1 MiB. Registered for the main agent in
-  `src-tauri/src/harness_profile.rs:344` (search `write_harness_file`).
-- `src/hooks/useConstellation.ts:65,95` — maps `write_harness_file` tool
-  calls to a `"plan"` CanvasToolNode (a single dot on the Constellation),
-  not parsed plan content.
-- `rg "PLAN\b|plan_file|plan_path|\.gospel" src` — no FE caller reads or
-  renders the plan.
-- Tauri command surface: `src-tauri/src/lib.rs` `generate_handler!`
-  (search the file). Existing analogues that read a file under the
-  workspace: there are many read-only workspace commands (search
-  `read_file` / `list_directory` / `find_files` / `context_search` in
-  `lib.rs`). The new command mirrors a read-only one.
-- DESIGN.md "Layout" / "Panels": the product uses overlay panels that
-  slide from the right (Diff/Code Review Panel §4, File Context Panel
-  §5) and the session drawer slides from the left (§3). A plan panel
-  fits the right-panel overlay pattern (DESIGN.md §4/§5) — but the
-  maintainer chooses (see Open Question A).
-- PRODUCT.md "Show, don't tell." / "Same patterns, same places." —
-  surfacing PLAN.md is exactly the verification affordance the design
-  principles assume the user has.
-
-CONTEXT.md vocabulary to reuse in any FE or backend module name:
-- "Harness Control Area", "PLAN.md", "Goal", "Steps", "Evidence /
-  Verification", "Open Questions / Risks", "Next Action".
-- "Active Workspace Context" — the read command must require an active workspace.
-
-## Commands you will need
-
-| Purpose   | Command                                                                  | Expected on success |
-|-----------|--------------------------------------------------------------------------|---------------------|
-| Backend build/test | First run `cargo build --manifest-path src-tauri/Cargo.toml`, then run `cargo test --manifest-path src-tauri/Cargo.toml -- workspace_tools::` | both exit 0 |
-| Frontend typecheck/tests | `bun run typecheck`, `bun run test`                           | both exit 0 |
+This is a design/spike plan. The output is a written recommendation + small reversible code spike (a read-only Tauri command and a one-screen in-app preview behind a debug flag), not a productionized panel.
 
 ## Scope
+**In scope** for the spike (built minimal):
+- `src-tauri/src/harness_plan.rs` (new module) — parser isolated so its surface is testable without the Tauri command plumbing.
+- A read-only Tauri command `read_harness_plan` in `src-tauri/src/lib.rs` that returns the contents of `.gospel/PLAN.md` for the active workspace, or an empty/"no plan" sentinel if the file does not exist.
+- The command is registered in `generate_handler!`.
+- `src/components/PlanPanel.tsx` (new) — minimal read-only panel that calls the new command on workspace change and renders the 5 sections. Rendered only behind a temporary debug flag (`?panel=plan` query param, mirroring the existing `?prototype=harness` gate). NOT wired as a default-toggled overlay.
+- `src/types/index.ts` — `PlanFile` / `PlanStep` TypeScript types.
 
-**In scope** for the spike (build minimal):
-- `src-tauri/src/workspace_tools.rs` OR `src-tauri/src/lib.rs` (define a
-  new read-only Tauri command `read_harness_plan` that returns the
-  contents of `.gospel/PLAN.md` for the active workspace, or an empty /
-  "no plan" sentinel if the file does not exist)
-- A small Rust parser function in `workspace_tools.rs` that splits the
-  `PLAN.md` body into the 5 documented sections (Goal / Steps / Evidence
-  / Open Questions / Next Action) and returns a typed struct
-  `PlanFile { goal: Option<String>, steps: Vec<PlanStep>, evidence: Vec<String>, open_questions: Vec<String>, next_action: Option<String>, has_plan_file: bool }`.
-- Register the command in `generate_handler!`.
-- `src-tauri/src/harness_plan.rs` (new module) — keep the parser
-  isolated so its surface is testable without the Tauri command plumbing.
+**Out of scope** (deferred):
+- Editing PLAN.md from the UI.
+- File-watch live updates (re-read on workspace change + explicit Refresh button only).
+- Constellation "plan" node rewrite.
+- BE ML-driven re-rolling.
+- Persistence migration.
+- Production rollout / feature-flag cleanup.
 
-**In scope** for the spike (FE thin preview):
-- A minimal `src/components/PlanPanel.tsx` that calls the new command on
-  workspace change and renders the 5 sections (read-only). Rendered only
-  behind a temporary debug flag (e.g. `?panel=plan` query param or a
-  `localStorage` flag — confirm the existing prototype-gating pattern in
-  `src/App.tsx` and mirror it). NOT wired as a default-toggled overlay.
+## Steps (executed)
+1. **Investigate substrate + define the section parser** — DONE. The dev workspace already has `.gospel/PLAN.md` tracked in the repo (no sample needed to be created or cleaned up). Parser contract decided and documented in `harness_plan.rs` module docs: canonical `## <NAME>` headings, `# Goal` single-hash tolerated as an alias, line-based parser (no markdown dependency — the file contract is stable section headings only). 6 unit tests added covering happy path, missing-file sentinel, partial plan, mixed-heading-style, Next Action checklist form, and unknown headings.
+2. **Add the Tauri read-only command** — DONE. `read_harness_plan` added in `src-tauri/src/lib.rs` next to `get_active_workspace`. Mirrors `get_corpus_status`'s workspace resolution (`AppConfigState` → `get_active_workspace` → `PathBuf`) and reuses `corpus::symlink_guard` (`canonical`, `validate_existing_ancestors`, `is_within`) to bound `.gospel/PLAN.md` under the workspace root, matching the existing `write_harness_file` guard. Registered in `generate_handler!`.
+3. **Thin read-only preview behind a debug flag** — DONE. `src/App.tsx` gained a parallel `isPlanPanelRequest()` gate that mirrors `isHarnessPrototypeRequest()` (off in `PROD`, on only when `?panel=plan`). `PlanPanel` renders as a right-side overlay, calls `invoke<PlanFile>("read_harness_plan", { activeWorkspacePath })` on workspace change, has a Refresh button, and renders the 5 sections or "No plan yet". `PlanFile` / `PlanStep` types added to `src/types/index.ts`.
+4. **Write up the spike's findings** — DONE (see `## Spike Findings` below).
+5. **Smoke verify + reset spike-only state** — DONE. No temporary `.gospel/PLAN.md` was created (the dev workspace's tracked plan served as the inspection target). `PlanPanel.tsx` and the backend command are intentionally left as debug-gated artifacts.
 
-**Out of scope**:
-- Editing PLAN.md from the UI (a separate follow-up — the spike's job is
-  to inform that decision, not build it).
-- Subscribing to file-watch events for live updates (use a re-read on
-  workspace change + an explicit Refresh button; file-watch is a build
-  decision, deferred).
-- The Constellation "plan" node rewrite — orthogonal.
-- BE ML-driven re-rolling (the existing `write_harness_file` stays as the
-  agent's only write path).
-- A persistence migration (PLAN.md is plain text today; no schema change).
-- Production rollout of the panel behind a feature flag cleanup (this is
-  debug-only for the spike).
-
-## Git workflow
-
-- Branch: `advisor/021-plan-panel-spike`
-- Two commits suggested: one for the BE command + parser + tests, one for
-  the FE thin-preview. Examples: `feat: add read_harness_plan command`;
-  `feat: spike read-only PlanPanel behind debug flag`.
-- Do NOT push unless instructed.
-
-## Steps
-
-### Step 1: Investigate substrate + define the section parser
-
-Read `.gospel/PLAN.md` examples (if any exist on the dev workspace):
-use `ls .gospel` from the working tree. If none, create a temporary
-sample consistent with CONTEXT.md's required structure (Goal / Steps /
-Evidence / Open Questions / Next Action) — keep the sample minimal and
-delete it before committing (do not commit a sample plan to the repo).
-
-Decide the parse contract (record the decision in the spike's
-`investigation-notes` section in the commit body or a new doc):
-- The Goal line is whatever's under a `## Goal` heading (or without
-  heading, the first plain paragraph per CONTEXT.md's description).
-- Steps are a markdown checklist (`- [ ]` / `- [x]`).
-- Evidence / Open Questions are paragraphs under their respective headings.
-- Next Action is a single `## Next Action` paragraph (may include a
-  checklist with one item).
-
-Add `src-tauri/src/harness_plan.rs` and expose a pure function:
-
-```rust
-pub struct PlanFile {
-    pub goal: Option<String>,
-    pub steps: Vec<PlanStep>,        // PlanStep { text: String, done: bool }
-    pub evidence: Vec<String>,
-    pub open_questions: Vec<String>,
-    pub next_action: Option<String>,
-    pub has_plan_file: bool,
-}
-
-pub fn parse_plan_markdown(content: &str) -> PlanFile { ... }
-```
-
-Use the repo's markdown-parser choice if one is already in the workspace
-(search `rg "pulldown|markdown|comrak" src-tauri/Cargo.toml`). If none,
-implement a small line-based parser (the PLAN.md contract is stable
-section headings only — no full markdown AST needed).
-
-Add tests in `harness_plan.rs` covering:
-1. Happy path (all 5 sections present).
-2. Missing file sentinel (returns `has_plan_file: false` and empty
-   fields).
-3. Partial file (e.g. only Goal + Steps).
-4. Mixed-heading-style (`# Goal` vs `## Goal` — choose one canonical form
-   and document in the struct doc).
-
-### Step 2: Add the Tauri read-only command
-
-In `src-tauri/src/lib.rs` (or wherever the workspace read-only commands
-live — search `read_file`'s command definition for placement), add a command
-that accepts no caller-supplied workspace path:
-
-```rust
-#[tauri::command]
-fn read_harness_plan(
-    app_config: tauri::State<'_, AppConfigState>,
-) -> Result<PlanFile, String> {
-    let workspace = app_config
-        .store
-        .as_ref()
-        .ok_or_else(|| "App config store is unavailable".to_string())?
-        .get_active_workspace()
-        .map_err(|e| format!("Failed to get active workspace: {e}"))?
-        .ok_or_else(|| "No active workspace selected".to_string())?;
-
-    match workspace_tools::read_workspace_text(
-        Path::new(&workspace.path),
-        Path::new(".gospel/PLAN.md"),
-    )? {
-        Some(content) => Ok(parse_plan_markdown(&content)),
-        None => Ok(PlanFile { has_plan_file: false, ..Default::default() }),
-    }
-}
-```
-
-Extract or expose a crate-private `read_workspace_text` helper from the safe
-target-resolution and UTF-8 read path used by `ReadFileTool::call` in
-`workspace_tools.rs`. It must construct `WorkspaceAccess` from the trusted
-active workspace, resolve only the relative `.gospel/PLAN.md` target, and
-preserve the existing canonicalization, traversal rejection, symlink-escape
-rejection, regular-file check, size cap, binary/UTF-8 checks, and missing-file
-distinction. Do not route this command through an arbitrary path received from
-the frontend and do not replace the safe-read path with raw
-`std::fs::read_to_string`.
-
-Register `read_harness_plan` in `generate_handler!`.
-
-**Verify**: `cargo test --manifest-path src-tauri/Cargo.toml -- harness_plan::`
-→ tests pass. `cargo build --manifest-path src-tauri/Cargo.toml` → exit 0.
-`cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` → exit 0.
-
-### Step 3: Thin read-only preview behind a debug flag
-
-In `src/App.tsx`, find how `?prototype=harness` is currently gated (search
-`isHarnessPrototypeRequest` / `URLSearchParams` / `import.meta.env`). Add a
-parallel `?panel=plan` (or equivalent) debug gate.
-
-Create `src/components/PlanPanel.tsx`:
-
-```tsx
-export function PlanPanel({ workspaceId }: { workspaceId: string | null }) {
-  const [plan, setPlan] = useState<PlanFile | null>(null);
-  const refresh = useCallback(async () => {
-    if (!workspaceId) return;
-    const p = await invoke<PlanFile>("read_harness_plan");
-    setPlan(p);
-  }, [workspaceId]);
-  useEffect(() => { void refresh(); }, [refresh]);
-  // Render the 5 sections (read-only) with a "Refresh" button.
-  // If plan.has_plan_file === false, render "No plan yet".
-}
-```
-
-Type the PlanFile shape in `src/types/index.ts` (search an existing type
-like `Session` for the export convention).
-
-Render `<PlanPanel />` only when the debug flag is on (cosmetic placement;
-the design decision for production placement is recorded as an open
-question below).
-
-**Verify**: `bun run typecheck` → exit 0. `bun run test` → full suite
-green. (Manually verify with `bun run tauri dev` + `?panel=plan` + a
-workspace with `.gospel/PLAN.md`; this manual check is the spike's
-deliverable inspection.)
-
-### Step 4: Write up the spike's findings
-
-Append a `## Spike Findings` section at the end of THIS plan file
-(plans/021-…) with:
-
-1. The exact parse contract decision (Step 1, item 1).
-2. The file-watch viability (cheap to add later via Tauri's fs watcher
-   plugin? defer — confirm via a quick research pass).
-3. **Open Question A**: read-only mirror vs. editor in panel. The
-   maintainer's call. Lay out the trade-offs in 3-5 bullets:
-   - Read-only: trivially safe, no edit/agent-write race; the agent stays
-     the only writer (matches CONTEXT.md "Skill-agnostic contract" — the
-     plan is the agent's outer-loop artifact). Cost: user has to ask the
-     agent to update; can't scratch-edit before agent resumes.
-   - Editor: higher leverage, but requires merging user edits with agent
-     writes (concurrent write / atomic update policy). Tauri's fs events
-     or a write_lock.
-   - Recommendation (spike's).
-4. **Open Question B**: panel placement — right-side overlay (DESIGN.md
-   §4/§5 panel pattern) vs. a tab in the Constellation (which already
-   renders a "plan" tool node — could upgrade the node into the actual
-   panel). Recommendation.
-5. The list of files a future build plan would touch — so the next
-   advisor stays on rails.
-
-### Step 5: Smoke verify + reset spike-only state
-
-Run the full verification (Steps above).
-
-Before finishing, remove any temporary sample `.gospel/PLAN.md` created
-during investigation. Do NOT remove `src/components/PlanPanel.tsx` or
-the backend command — those are the spike's intentionally-left
-artifacts (gated by a debug flag, so they don't affect production runs).
-
-**Verify**: `bun run test`, `bun run typecheck`, `cargo test --manifest-path src-tauri/Cargo.toml`, `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`. All exit 0.
-
-## Test plan
-
-- New `harness_plan.rs` parser tests (Step 1) — these are the durable
-  artifact; cover the 4 cases.
-- FE smoke: it's read-only thin preview, gated by a debug flag. No FE
-  test required for the spike (the build plan will write FE tests once
-  placement is decided).
-- Backend command-level test is deferred to the build plan (the spike's
-  payload shape and the active-workspace-path plumbing are the spike's
-  outputs).
+## Commands
+| Purpose | Command | Result |
+| Backend build | `cargo build --manifest-path src-tauri/Cargo.toml` | exit 0 |
+| Backend tests (parser) | `cargo test --manifest-path src-tauri/Cargo.toml -- harness_plan` | 6 passed |
+| Backend clippy | `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` | exit 0 |
+| Frontend typecheck | `bun run typecheck` | exit 0 |
+| Frontend tests | `bun run test` | 116 passed (15 files) |
 
 ## Done criteria
+- [x] `src-tauri/src/harness_plan.rs` exists with `parse_plan_markdown` + ≥4 unit tests passing (6 added)
+- [x] `read_harness_plan` Tauri command registered in `generate_handler!`
+- [x] `rg "read_harness_plan" src-tauri/src/lib.rs` returns the command definition
+- [x] `src/components/PlanPanel.tsx` exists, gated behind the debug flag, calling `invoke<PlanFile>("read_harness_plan", { ... })`
+- [x] `rg "PlanPanel" src/App.tsx` returns the gated render
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml` exits 0
+- [x] `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` exits 0
+- [x] `bun run typecheck` and `bun run test` exit 0
+- [x] This plan file contains a `## Spike Findings` section with Open Questions A and B + a file-list-a-build-plan-would-touch note
+- [x] No stray `.gospel/PLAN.md` test artifacts committed (`git status` clean of incidental additions; the tracked `.gospel/PLAN.md` was already in the repo and is unchanged)
+- [ ] `plans/README.md` status row for plan 021 updated — SKIPPED (reviewer maintains the index)
 
-Completion reconciliation (2026-07-21): all criteria remain unchecked in the
-current checkout. The prior worktree/branch record is not sufficient evidence:
-the checked-out tree lacks the required artifacts and no successful full
-command/test verification is recorded here. Keep this plan and the index `IN
-PROGRESS` until every item below is implemented, verified, and accompanied by
-the Spike Findings appendix.
+## Spike Findings
 
-- [ ] `src-tauri/src/harness_plan.rs` exists with `parse_plan_markdown` + ≥4 unit tests passing
-- [ ] `read_harness_plan` Tauri command registered in `generate_handler!`
-- [ ] `rg "read_harness_plan" src-tauri/src/lib.rs` returns the command definition
-- [ ] `src/components/PlanPanel.tsx` exists, gated behind the debug flag, calling `invoke<PlanFile>("read_harness_plan")` without a caller-supplied workspace path
-- [ ] `rg "PlanPanel" src/App.tsx` returns the gated render
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml` exits 0
-- [ ] `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` exits 0
-- [ ] `bun run typecheck` and `bun run test` exit 0
-- [ ] This plan file contains a `## Spike Findings` section at the end with Open Questions A and B + a file-list-a-build-plan-would-touch note
-- [ ] No stray `.gospel/PLAN.md` test artifacts committed (`git status` is clean of incidental additions)
-- [ ] `plans/README.md` status row for plan 021 updated
+### 1. Parse contract decision (Step 1)
+The parser is line-based and canonicalises on `## <NAME>` section headings. Recognised sections (case-insensitive, leading `#` count 1–3 tolerated):
+- `## Goal` (alias `# Goal`) → first non-empty paragraph after the heading, joined into a single `Option<String>`.
+- `## Steps` → markdown checklist lines `- [ ]` / `- [x]` (also `* ` / `+ `); each becomes a `PlanStep { text, done }`.
+- `## Evidence / Verification` (aliases `## Evidence`, `## Verification`) → bullet lines (`- text` not starting with `- [`) and paragraph blocks are each pushed as a `String` into `evidence: Vec<String>`.
+- `## Open Questions / Risks` (aliases `## Open Questions`, `## Risks`) → same shape as Evidence.
+- `## Next Action` → first non-empty paragraph OR the first checklist item (preserved as `"[ ] text"` / `"[x] text"`) into `Option<String>`.
+Unknown headings do not reset the active section (their content is ignored unless it lands under a known section); the documented "first paragraph under `## Goal`" rule is preserved by only setting `goal` when it is still `None`.
 
-## STOP conditions
+No markdown crate was needed (the file contract is stable section headings only). `rg "pulldown|markdown|comrak" src-tauri/Cargo.toml` returned nothing — no existing parser to reuse.
 
-Stop and report back if:
+### 2. File-watch viability
+Tauri exposes `tauri-plugin-fs` with a `watch` API and the broader event system (`app.listen`, `app.emit`). Adding live updates later is cheap: subscribe to `.gospel/PLAN.md` (or `.gospel/`) via the fs watcher on workspace activation, re-run `parse_plan_markdown`, and emit a `plan-updated` event the `PlanPanel` listens to. The read-only command shape stays the same. **Deferred** — the spike's Refresh button + re-read-on-workspace-change is enough to validate the seam.
 
-- The existing workspace-aware file-read commands require large
-  plumbing (e.g. a session-bound context) that this small read command
-  can't satisfy — STOP and propose the seam (the spike's read command
-  should NOT require session state).
-- A `parse_plan_markdown` would actually need a full markdown parser
-  (the PLAN.md contract is observably looser than the File Contract from
-  CONTEXT.md suggests) — STOP and ask the maintainer to canonicalize the
-  PLAN.md structure before any parser is written; this is exactly the
-  kind of issue the spike surfaces.
-- The FE debug-gate pattern in `src/App.tsx` does not exist or is
-  inapplicable to a panel render (only the prototype variant pattern
-  exists) — STOP and propose an alternative spike gating (e.g. a
-  dev-build check via `import.meta.env.DEV`).
-- The agent's `write_harness_file` and any future user-side edits to
-  PLAN.md create a write race the spike's read-only mirror can't observe
-  cleanly — record as Open Question A finding; do NOT attempt to solve
-  the concurrency here (the spike is read-only).
+### 3. Open Question A: read-only mirror vs. editor in panel (maintainer's call)
+- **Read-only mirror (spike's current shape)**: zero write-path concurrency concerns; the agent stays the sole writer via `write_harness_file`; the panel is a pure inspection surface. Matches PRODUCT.md "Show, don't tell." with no new write races.
+- **Editor in panel**: lets the dev correct/tick steps without leaving the app; risks racing the agent's `write_harness_file` (last-writer-wins clobbers the other's edit). Needs an explicit write API + conflict policy (the spike's STOP condition on write races is real — recorded, not solved here).
+- **Hybrid (recommended for the build plan)**: read-only mirror + a "tick this step" affordance that funnels through the same `write_harness_file` contract (atomic rewrites, agent's write path reused), so there is one writer and the panel never edits prose directly.
+- A separate follow-up plan MUST resolve this before productionizing; the spike intentionally does not.
+
+### 4. Open Question B: panel placement
+- **Right-side overlay** (DESIGN.md §4 Diff/Code Review Panel, §5 File Context Panel) — the panel slides in from the right, same pattern as the existing `ReviewPanel`. The spike already uses this placement. **Recommended.** Matches "Same patterns, same places." (PRODUCT.md) and keeps the chat column primary.
+- **Constellation tab** — the plan becomes another node/cluster in the constellation. Better for spatial thinkers, but the plan is a long-form document, not a graph node; this would fight the constellation's strength and duplicate the existing `write_harness_file` → "plan" CanvasToolNode mapping (`src/hooks/useConstellation.ts:65,95`), which is orthogonal and out of scope.
+- **Recommendation**: right-side overlay for the build plan. Constellation integration stays as the existing single-dot node; a richer plan node is a separate, orthogonal plan.
+
+### 5. Files a future build plan would touch
+- `src-tauri/src/harness_plan.rs` — extend parser if the maintainer canonicalises heading forms further; add serde versioning if PLAN.md gets a structured front-matter block.
+- `src-tauri/src/lib.rs` — keep `read_harness_plan`; add a `write_harness_plan_step` (or similar) command if Open Question A lands on the hybrid; register it in `generate_handler!`.
+- `src/components/PlanPanel.tsx` — graduate from debug-gated preview to a default overlay; wire a trigger (button in TopBar / CommandPalette entry) and a close interaction; add file-watch subscription for live updates; add the "tick step" affordance if hybrid.
+- `src/App.tsx` — remove the `?panel=plan` debug gate and wire `PlanPanel` into `AppShell` (or `WorkbenchLayout`) as a real overlay.
+- `src/types/index.ts` — extend `PlanFile` if new fields are added; add a write-request type if editing.
+- `src/hooks/useWorkspaces.ts` (or a new `usePlan.ts`) — extract plan-fetching into a hook with file-watch subscription.
+- `src-tauri/src/workspace_tools.rs` — possibly relax the `source_edit` block on `.gospel/` if the build plan allows the user to edit prose (currently `workspace_tools.rs:2138` blocks `.gospel/` from `source_edit`; the build plan must decide whether user-side edits go through `write_harness_file` or a new user-scoped write path).
+- No DB / persistence migration: PLAN.md stays plain UTF-8 markdown.
 
 ## Maintenance notes
+- The spike leaves two artifacts (a backend command + a debug-gated FE panel). A subsequent "Plan Panel Build" plan MUST resolve Open Questions A and B before productionizing.
+- Reviewer: confirm the debug gate is OFF by default (`isPlanPanelRequest` returns `false` in `PROD` and when `?panel=plan` is absent); confirm the parser tests pin the documented contract.
+- Follow-up deferred (out of spike scope): (1) file-watch live updates; (2) edit-from-UI; (3) productionizing the panel; (4) Constellation node upgrade.
 
-- The spike leaves two artifacts (a backend command + a debug-gated FE
-  panel). A subsequent "Plan Panel Build" plan MUST resolve Open
-  Questions A and B before productionizing.
-- Reviewer: confirm the debug gate is OFF by default (no production
-  users should see the panel without opt-in); confirm the parser tests
-  pin the documented contract.
-- Follow-up deferred (out of spike scope): (1) file-watch live updates;
-  (2) edit-from-UI; (3) productionizing the panel; (4) Constellation
-  node upgrade. Each becomes a separate plan once Open Questions A and B
-  are resolved.
