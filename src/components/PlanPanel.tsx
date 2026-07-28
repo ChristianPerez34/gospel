@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { PlanFile } from "../types";
 
@@ -22,6 +22,8 @@ export function PlanPanel({ workspacePath, onClose }: PlanPanelProps) {
   const [plan, setPlan] = useState<PlanFile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Token used to ignore stale responses from earlier refresh invocations.
+  const latestRefresh = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!workspacePath) {
@@ -29,18 +31,24 @@ export function PlanPanel({ workspacePath, onClose }: PlanPanelProps) {
       setError(null);
       return;
     }
+    const token = ++latestRefresh.current;
     setLoading(true);
     setError(null);
+    setPlan(null);
     try {
       const p = await invoke<PlanFile>("read_harness_plan", {
         activeWorkspacePath: workspacePath,
       });
+      if (token !== latestRefresh.current) return;
       setPlan(p);
     } catch (e) {
+      if (token !== latestRefresh.current) return;
       setError(String(e));
       setPlan(null);
     } finally {
-      setLoading(false);
+      if (token === latestRefresh.current) {
+        setLoading(false);
+      }
     }
   }, [workspacePath]);
 

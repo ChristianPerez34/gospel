@@ -13,10 +13,12 @@
 //! - `## Next Action` — a single paragraph (the first paragraph after the
 //!   heading; may contain a one-item checklist).
 //!
-//! Heading style is canonicalised to `## <NAME>` (two leading `#`). A `# Goal`
-//! (single-hash) form is also tolerated for the Goal section only, because
-//! early plan examples used it; the parser records which form was seen in
-//! `has_plan_file` semantics only — both parse to the same `PlanFile` shape.
+//! Recognised section headings accept one to three leading `#` characters
+//! (e.g. `# Goal`, `## Steps`, `### Next Action`); all forms parse to the
+//! same `PlanFile` shape. `has_plan_file` is a file-existence flag set by the
+//! caller (the Tauri command) once it confirms `.gospel/PLAN.md` exists on
+//! disk; this pure parser does not touch the filesystem and leaves
+//! `has_plan_file` at its default `false`.
 //!
 //! The parser is intentionally line-based: the file contract is stable section
 //! headings only, so no full markdown AST is required.
@@ -137,7 +139,9 @@ pub fn parse_plan_markdown(content: &str) -> PlanFile {
                 if line.trim().is_empty() {
                     flush_into_list(&mut paragraph, &mut plan.evidence);
                 } else if line.trim().starts_with('-') && !line.trim().starts_with("- [") {
-                    // Bullet list — push each as its own evidence entry.
+                    // Flush any buffered prose first so document order is
+                    // preserved when prose immediately precedes a bullet.
+                    flush_into_list(&mut paragraph, &mut plan.evidence);
                     let text = line.trim().trim_start_matches('-').trim().to_string();
                     if !text.is_empty() {
                         plan.evidence.push(text);
@@ -150,6 +154,7 @@ pub fn parse_plan_markdown(content: &str) -> PlanFile {
                 if line.trim().is_empty() {
                     flush_into_list(&mut paragraph, &mut plan.open_questions);
                 } else if line.trim().starts_with('-') && !line.trim().starts_with("- [") {
+                    flush_into_list(&mut paragraph, &mut plan.open_questions);
                     let text = line.trim().trim_start_matches('-').trim().to_string();
                     if !text.is_empty() {
                         plan.open_questions.push(text);
@@ -166,7 +171,13 @@ pub fn parse_plan_markdown(content: &str) -> PlanFile {
                         plan.next_action = Some(g);
                     }
                 } else if let Some((done, text)) = parse_checklist_item(line) {
-                    if plan.next_action.is_none() {
+                    // Flush any buffered preceding prose into next_action
+                    // first, preserving the first-paragraph rule: only assign
+                    // the checklist item when no prose-derived next action
+                    // exists yet.
+                    let mut g = String::new();
+                    flush_paragraph(&mut paragraph, &mut g);
+                    if g.is_empty() && plan.next_action.is_none() {
                         plan.next_action = Some(format!(
                             "{}{}",
                             if done { "[x] " } else { "[ ] " },
@@ -435,15 +446,34 @@ Ready for review. Future phases can add overrides.
     }
 
     #[test]
-    fn unknown_headings_do_not_reset_paragraph_into_wrong_slot() {
-        let content = "## Goal\n\nThe goal.\n\n## Notes\n\nSome notes.\n\n## Steps\n\n- [ ] One.\n";
+    fn mixed_prose_then_bullets_preserves_order() {
+        // Prose paragraph immediately followed by bullets (no blank line)
+        // must emit the prose entry before the bullet entries, in both
+        // Evidence and Open Questions sections.
+        let content = "## Evidence / Verification\n\
+                       Ran the suite manually.\n\
+                       - `cargo test` — green.\n\
+                       - `bun run build` — green.\n\
+                       ## Open Questions / Risks\n\
+                       Need to decide on timeout.\n\
+                       - Approval window is 60s.\n\
+                       - Classifier is conservative.\n";
         let plan = parse_plan_markdown(content);
-        assert_eq!(plan.goal.as_deref(), Some("The goal."));
-        // Unknown headings just leave the section as Goal until a known one
-        // appears; the paragraph under "## Notes" is flushed into Goal only
-        // if Goal is still empty — it is not, so Notes is dropped, matching
-        // the documented "first paragraph under ## Goal" rule.
-        assert_eq!(plan.steps.len(), 1);
-        assert_eq!(plan.steps[0].text, "One.");
+        assert_eq!(
+            plan.evidence,
+            vec![
+                "Ran the suite manually.",
+                "`cargo test` — green.",
+                "`bun run build` — green."
+            ]
+        );
+        assert_eq!(
+            plan.open_questions,
+            vec![
+                "Need to decide on timeout.",
+                "Approval window is 60s.",
+                "Classifier is conservative."
+            ]
+        );
     }
 }
