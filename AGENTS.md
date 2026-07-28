@@ -45,7 +45,7 @@ Gospel exposes three agent-facing tools for workspace command execution:
 - Read-only commands run directly.
 - Mutating or destructive commands require one-time user approval via a native Tauri dialog.
 - Hard-blocked commands always fail without approval:
-  - `rm -rf /` or `rm -rf /*`
+  - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
   - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
   - `git push --force`, `git reset --hard`, `git clean`
   - `gh repo delete`

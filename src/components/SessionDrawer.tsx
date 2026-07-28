@@ -22,9 +22,6 @@ interface SessionDrawerProps {
   onClose: () => void;
   showArchived?: boolean;
   onShowArchivedChange?: (showArchived: boolean) => void;
-  onArchiveSession?: (session: Session) => void;
-  onRestoreSession?: (session: Session) => void;
-  onDeleteArchivedSession?: (session: Session) => void;
   onArchiveSessions?: (sessions: Session[]) => void;
   onRestoreArchivedSessions?: (sessions: Session[]) => void;
   onDeleteArchivedSessions?: (sessions: Session[]) => void;
@@ -84,9 +81,6 @@ export function SessionDrawer({
   onClose,
   showArchived = false,
   onShowArchivedChange,
-  onArchiveSession,
-  onRestoreSession,
-  onDeleteArchivedSession,
   onArchiveSessions,
   onRestoreArchivedSessions,
   onDeleteArchivedSessions,
@@ -519,20 +513,14 @@ export function SessionDrawer({
                         role="toolbar"
                         aria-label={`Actions for ${title}`}
                       >
-                        {(onRestoreSession || onRestoreArchivedSessions) && (
+                        {onRestoreArchivedSessions && (
                           <button
                             type="button"
                             className="session-row-action"
                             aria-label={`Restore ${title}`}
                             title="Restore"
                             disabled={archiveActionsDisabled}
-                            onClick={() => {
-                              if (onRestoreSession) {
-                                onRestoreSession(session);
-                              } else {
-                                onRestoreArchivedSessions?.([session]);
-                              }
-                            }}
+                            onClick={() => onRestoreArchivedSessions([session])}
                           >
                             <RotateCcw aria-hidden="true" />
                           </button>
@@ -549,40 +537,28 @@ export function SessionDrawer({
                             <Download aria-hidden="true" />
                           </button>
                         )}
-                        {(onDeleteArchivedSession || onDeleteArchivedSessions) && (
+                        {onDeleteArchivedSessions && (
                           <button
                             type="button"
                             className="session-row-action is-danger"
                             aria-label={`Delete ${title} permanently`}
                             title="Delete permanently"
                             disabled={archiveActionsDisabled}
-                            onClick={() => {
-                              if (onDeleteArchivedSession) {
-                                onDeleteArchivedSession(session);
-                              } else {
-                                onDeleteArchivedSessions?.([session]);
-                              }
-                            }}
+                            onClick={() => onDeleteArchivedSessions([session])}
                           >
                             <Trash2 aria-hidden="true" />
                           </button>
                         )}
                       </div>
                     ) : (
-                      (onArchiveSession || onArchiveSessions) && (
+                      onArchiveSessions && (
                         <button
                           type="button"
                           className="session-row-action"
                           aria-label={`Archive ${title}`}
                           title="Archive"
                           disabled={archiveActionsDisabled}
-                          onClick={() => {
-                            if (onArchiveSession) {
-                              onArchiveSession(session);
-                            } else {
-                              onArchiveSessions?.([session]);
-                            }
-                          }}
+                          onClick={() => onArchiveSessions([session])}
                         >
                           <Archive aria-hidden="true" />
                         </button>

@@ -25,6 +25,7 @@ pub struct InvokedSkillRequest {
 }
 
 pub struct StreamingTurnRequest {
+    pub run_id: String,
     pub provider: String,
     pub prompt: String,
     pub model: String,
@@ -137,7 +138,13 @@ pub trait SessionTurnLlm: Send + Sync {
 }
 
 pub trait SessionTurnEvents: Send + Sync {
-    fn emit_stream_event(&self, session_id: &str, role: &str, event: &SessionTurnEvent);
+    fn emit_stream_event(
+        &self,
+        session_id: &str,
+        role: &str,
+        run_id: &str,
+        event: &SessionTurnEvent,
+    );
     fn trace_done(
         &self,
         session_id: &str,
@@ -150,12 +157,13 @@ pub trait SessionTurnEvents: Send + Sync {
     fn trace_error(&self, session_id: &str, role: &str, error: &LlmError);
     fn emit_done(
         &self,
+        run_id: &str,
         response: &str,
         prompt_tokens: usize,
         response_tokens: usize,
         tool_calls: usize,
     );
-    fn emit_error(&self, error: &LlmError);
+    fn emit_error(&self, run_id: &str, error: &LlmError);
 }
 
 pub trait SessionTurnVerification: Send + Sync {
@@ -165,7 +173,7 @@ pub trait SessionTurnVerification: Send + Sync {
 pub async fn run_streaming_turn(
     deps: StreamingTurnDependencies<'_>,
     request: StreamingTurnRequest,
-) -> Result<(), llm::LlmErrorDto> {
+) -> Result<String, llm::LlmErrorDto> {
     let active_workspace = deps.workspace.active_workspace_selection();
     let workspace_resolution =
         resolve_streaming_active_workspace(deps.workspace, active_workspace).await;
@@ -242,6 +250,8 @@ pub async fn run_streaming_turn(
     let trace_role = "main";
     let events = deps.events;
     let workspace_for_verify = workspace_context.clone();
+    let run_id = request.run_id;
+    let run_id_for_closure = run_id.clone();
     let result = deps
         .llm
         .stream_completion(
@@ -261,7 +271,7 @@ pub async fn run_streaming_turn(
                 skill_script_tool,
             },
             Box::new(move |event| {
-                events.emit_stream_event(&trace_sid, trace_role, &event);
+                events.emit_stream_event(&trace_sid, trace_role, &run_id_for_closure, &event);
             }),
         )
         .await;
@@ -297,6 +307,7 @@ pub async fn run_streaming_turn(
 
             let response_for_verify = stream_result.full_response.clone();
             deps.events.emit_done(
+                &run_id,
                 &response_for_verify,
                 stream_result.prompt_tokens,
                 stream_result.response_tokens,
@@ -316,7 +327,7 @@ pub async fn run_streaming_turn(
                 deps.verification.schedule_verification(job);
             }
 
-            Ok(())
+            Ok(run_id.clone())
         }
         Err(e) => {
             deps.events
@@ -335,7 +346,7 @@ pub async fn run_streaming_turn(
                     );
                 }
             }
-            deps.events.emit_error(&e);
+            deps.events.emit_error(&run_id, &e);
             Err(e.to_dto())
         }
     }
@@ -741,11 +752,11 @@ pub struct UiEventPayload {
     pub payload: serde_json::Value,
 }
 
-pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
+pub fn ui_event_payload(event: &SessionTurnEvent, run_id: &str) -> UiEventPayload {
     match event {
         SessionTurnEvent::TextToken(token) => UiEventPayload {
             name: "llm-token",
-            payload: serde_json::Value::String(token.clone()),
+            payload: json!({ "runId": run_id, "token": token }),
         },
         SessionTurnEvent::ToolCall {
             id,
@@ -754,6 +765,7 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
         } => UiEventPayload {
             name: "llm-tool-call",
             payload: json!({
+                "runId": run_id,
                 "id": id,
                 "name": name,
                 "arguments": observable_tool_arguments(name, arguments)
@@ -761,11 +773,12 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
         },
         SessionTurnEvent::ToolResult { id, name, result } => UiEventPayload {
             name: "llm-tool-result",
-            payload: json!({ "id": id, "name": name, "result": result }),
+            payload: json!({ "runId": run_id, "id": id, "name": name, "result": result }),
         },
         SessionTurnEvent::Reasoning { id, text, phase } => UiEventPayload {
             name: "llm-reasoning",
             payload: json!({
+                "runId": run_id,
                 "id": id,
                 "text": text,
                 "phase": phase,
@@ -773,7 +786,7 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
         },
         SessionTurnEvent::LoopWarning { count, tool_name } => UiEventPayload {
             name: "llm-loop-warning",
-            payload: json!({ "count": count, "toolName": tool_name }),
+            payload: json!({ "runId": run_id, "count": count, "toolName": tool_name }),
         },
         SessionTurnEvent::LoopStopped {
             count,
@@ -781,7 +794,7 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
             message,
         } => UiEventPayload {
             name: "llm-loop-stopped",
-            payload: json!({ "count": count, "toolName": tool_name, "message": message }),
+            payload: json!({ "runId": run_id, "count": count, "toolName": tool_name, "message": message }),
         },
         SessionTurnEvent::ModelVariantWarning {
             kind,
@@ -792,6 +805,7 @@ pub fn ui_event_payload(event: &SessionTurnEvent) -> UiEventPayload {
         } => UiEventPayload {
             name: "llm-model-variant-warning",
             payload: json!({
+                "runId": run_id,
                 "kind": kind,
                 "provider": provider,
                 "model": model,
@@ -1229,8 +1243,8 @@ mod tests {
         stream_events: Mutex<Vec<(String, String, SessionTurnEvent)>>,
         done_traces: Mutex<Vec<(String, String, usize, usize, usize, usize)>>,
         error_traces: Mutex<Vec<(String, String, String)>>,
-        done_responses: Mutex<Vec<String>>,
-        emitted_errors: Mutex<Vec<String>>,
+        done_responses: Mutex<Vec<(String, String)>>,
+        emitted_errors: Mutex<Vec<(String, String)>>,
         verifications: Mutex<Vec<VerificationJobRequest>>,
     }
 
@@ -1427,7 +1441,13 @@ mod tests {
     }
 
     impl SessionTurnEvents for FakeSessionTurnAdapters {
-        fn emit_stream_event(&self, session_id: &str, role: &str, event: &SessionTurnEvent) {
+        fn emit_stream_event(
+            &self,
+            session_id: &str,
+            role: &str,
+            _run_id: &str,
+            event: &SessionTurnEvent,
+        ) {
             self.stream_events.lock().unwrap().push((
                 session_id.to_string(),
                 role.to_string(),
@@ -1464,6 +1484,7 @@ mod tests {
 
         fn emit_done(
             &self,
+            run_id: &str,
             response: &str,
             _prompt_tokens: usize,
             _response_tokens: usize,
@@ -1472,14 +1493,14 @@ mod tests {
             self.done_responses
                 .lock()
                 .unwrap()
-                .push(response.to_string());
+                .push((run_id.to_string(), response.to_string()));
         }
 
-        fn emit_error(&self, error: &LlmError) {
+        fn emit_error(&self, run_id: &str, error: &LlmError) {
             self.emitted_errors
                 .lock()
                 .unwrap()
-                .push(error.to_dto().code);
+                .push((run_id.to_string(), error.to_dto().code));
         }
     }
 
@@ -1730,21 +1751,22 @@ mod tests {
 
     #[test]
     fn ui_event_contract_matches_existing_tauri_names_and_payloads() {
-        let token = ui_event_payload(&SessionTurnEvent::TextToken("hello".to_string()));
+        let run_id = "run-1";
+        let token = ui_event_payload(&SessionTurnEvent::TextToken("hello".to_string()), run_id);
         assert_eq!(token.name, "llm-token");
-        assert_eq!(token.payload, json!("hello"));
+        assert_eq!(token.payload, json!({ "runId": "run-1", "token": "hello" }));
 
         let tool_event = SessionTurnEvent::ToolCall {
             id: "call-1".to_string(),
             name: "read_file".to_string(),
             arguments: json!({ "path": "src/lib.rs" }),
         };
-        let payload = ui_event_payload(&tool_event);
+        let payload = ui_event_payload(&tool_event, run_id);
 
         assert_eq!(payload.name, "llm-tool-call");
         assert_eq!(
             payload.payload,
-            json!({ "id": "call-1", "name": "read_file", "arguments": { "path": "src/lib.rs" } })
+            json!({ "runId": "run-1", "id": "call-1", "name": "read_file", "arguments": { "path": "src/lib.rs" } })
         );
 
         let edit_payload = ui_event_payload(&SessionTurnEvent::ToolCall {
@@ -1755,11 +1777,12 @@ mod tests {
                 "old_text": "secret old snippet",
                 "new_text": "secret new snippet"
             }),
-        });
+        }, run_id);
         assert_eq!(edit_payload.name, "llm-tool-call");
         assert_eq!(
             edit_payload.payload,
             json!({
+                "runId": "run-1",
                 "id": "call-2",
                 "name": "source_edit",
                 "arguments": {
@@ -1774,57 +1797,58 @@ mod tests {
             id: "call-1".to_string(),
             name: "read_file".to_string(),
             result: "contents".to_string(),
-        });
+        }, run_id);
         assert_eq!(result.name, "llm-tool-result");
         assert_eq!(
             result.payload,
-            json!({ "id": "call-1", "name": "read_file", "result": "contents" })
+            json!({ "runId": "run-1", "id": "call-1", "name": "read_file", "result": "contents" })
         );
 
         let warning = ui_event_payload(&SessionTurnEvent::LoopWarning {
             count: 3,
             tool_name: "read_file".to_string(),
-        });
+        }, run_id);
         assert_eq!(warning.name, "llm-loop-warning");
         assert_eq!(
             warning.payload,
-            json!({ "count": 3, "toolName": "read_file" })
+            json!({ "runId": "run-1", "count": 3, "toolName": "read_file" })
         );
 
         let stopped = ui_event_payload(&SessionTurnEvent::LoopStopped {
             count: 5,
             tool_name: "read_file".to_string(),
             message: "Agent stopped".to_string(),
-        });
+        }, run_id);
         assert_eq!(stopped.name, "llm-loop-stopped");
         assert_eq!(
             stopped.payload,
-            json!({ "count": 5, "toolName": "read_file", "message": "Agent stopped" })
+            json!({ "runId": "run-1", "count": 5, "toolName": "read_file", "message": "Agent stopped" })
         );
     }
 
     #[test]
     fn reasoning_event_emits_ephemeral_payload_and_no_trace() {
+        let run_id = "run-1";
         let delta = ui_event_payload(&SessionTurnEvent::Reasoning {
             id: "rs-1".to_string(),
             text: "thinking ".to_string(),
             phase: crate::llm::ReasoningPhase::Delta,
-        });
+        }, run_id);
         assert_eq!(delta.name, "llm-reasoning");
         assert_eq!(
             delta.payload,
-            json!({ "id": "rs-1", "text": "thinking ", "phase": "delta" })
+            json!({ "runId": "run-1", "id": "rs-1", "text": "thinking ", "phase": "delta" })
         );
 
         let complete = ui_event_payload(&SessionTurnEvent::Reasoning {
             id: "rs-1".to_string(),
             text: "thinking done".to_string(),
             phase: crate::llm::ReasoningPhase::Complete,
-        });
+        }, run_id);
         assert_eq!(complete.name, "llm-reasoning");
         assert_eq!(
             complete.payload,
-            json!({ "id": "rs-1", "text": "thinking done", "phase": "complete" })
+            json!({ "runId": "run-1", "id": "rs-1", "text": "thinking done", "phase": "complete" })
         );
 
         // Reasoning must never produce a trace event — the trace is intended
@@ -2104,6 +2128,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-success".to_string(),
                 provider: "openai".to_string(),
                 prompt: "write code".to_string(),
                 model: "gpt-test".to_string(),
@@ -2116,9 +2141,11 @@ mod tests {
             },
         )
         .await;
-        if let Err(err) = result {
-            panic!("turn failed: {} {}", err.code, err.message);
-        }
+        let completed_run_id = match result {
+            Ok(run_id) => run_id,
+            Err(err) => panic!("turn failed: {} {}", err.code, err.message),
+        };
+        assert_eq!(completed_run_id, "run-success");
 
         assert_eq!(
             *adapters.validated_bindings.lock().unwrap(),
@@ -2175,8 +2202,16 @@ mod tests {
             )]
         );
         assert_eq!(
-            *adapters.done_responses.lock().unwrap(),
-            vec!["```rust\nfn main() {}\n```".to_string()]
+            adapters.done_responses.lock().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            adapters.done_responses.lock().unwrap()[0].0,
+            "run-success".to_string()
+        );
+        assert_eq!(
+            adapters.done_responses.lock().unwrap()[0].1,
+            "```rust\nfn main() {}\n```".to_string()
         );
 
         let stored_histories = adapters.stored_histories.lock().unwrap();
@@ -2236,6 +2271,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-variant-fallback".to_string(),
                 provider: "openai".to_string(),
                 prompt: "hello".to_string(),
                 model: "gpt-5.2".to_string(),
@@ -2287,6 +2323,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-read-only".to_string(),
                 provider: "openai".to_string(),
                 prompt: "inspect".to_string(),
                 model: "gpt-test".to_string(),
@@ -2328,6 +2365,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-source-edit".to_string(),
                 provider: "openai".to_string(),
                 prompt: "edit it".to_string(),
                 model: "gpt-test".to_string(),
@@ -2367,6 +2405,7 @@ mod tests {
         let result = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-unsuccessful-edit".to_string(),
                 provider: "openai".to_string(),
                 prompt: "edit it".to_string(),
                 model: "gpt-test".to_string(),
@@ -2399,6 +2438,7 @@ mod tests {
         let err = run_streaming_turn(
             adapters.deps(),
             StreamingTurnRequest {
+                run_id: "run-controlled-stop".to_string(),
                 provider: "openai".to_string(),
                 prompt: "hi".to_string(),
                 model: "gpt-test".to_string(),
@@ -2422,9 +2462,10 @@ mod tests {
                 "CONTROLLED_STOP".to_string(),
             )]
         );
+        assert_eq!(adapters.emitted_errors.lock().unwrap().len(), 1);
         assert_eq!(
-            *adapters.emitted_errors.lock().unwrap(),
-            vec!["CONTROLLED_STOP".to_string()]
+            adapters.emitted_errors.lock().unwrap()[0].1,
+            "CONTROLLED_STOP".to_string()
         );
         assert!(adapters.done_responses.lock().unwrap().is_empty());
         assert!(adapters.verifications.lock().unwrap().is_empty());

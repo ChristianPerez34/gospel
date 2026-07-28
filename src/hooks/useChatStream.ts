@@ -28,9 +28,18 @@ interface UseChatStreamOptions {
    *  in-app card asks the backend to approve/deny). Resolves with the
    *  backend's acknowledgement. */
   onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<unknown>;
+  /** Active session id; used by `cancelStream` to target the in-flight run.
+   *  May be null for local-only sessions (cancel is a no-op then). */
+  sessionId?: string | null;
+}
+
+interface LlmTokenPayload {
+  runId?: string;
+  token: string;
 }
 
 interface LlmDonePayloadObject {
+  runId?: string;
   response: string;
   prompt_tokens?: number;
   response_tokens?: number;
@@ -48,9 +57,30 @@ export interface ModelVariantWarningPayload {
 }
 
 interface LlmReasoningPayload {
+  runId?: string;
   id: string;
   text: string;
   phase: "delta" | "complete";
+}
+
+interface LlmToolCallPayload {
+  runId?: string;
+  id: string;
+  name: string;
+  arguments?: unknown;
+}
+
+interface LlmToolResultPayload {
+  runId?: string;
+  id: string;
+  name: string;
+  result: string;
+}
+
+interface LlmErrorPayload {
+  runId?: string;
+  code: string;
+  message: string;
 }
 
 function joinTextBlocks(blocks: TurnBlock[]): string {
@@ -79,6 +109,7 @@ interface StartStreamOptions {
 export function useChatStream(options: UseChatStreamOptions = {}) {
   const [currentTurn, setCurrentTurn] = useState<CurrentTurn | null>(null);
   const currentTurnRef = useRef<CurrentTurn | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
   const turnSequenceRef = useRef(0);
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -109,6 +140,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
   const clearCurrentTurn = useCallback(() => {
     currentTurnRef.current = null;
+    activeRunIdRef.current = null;
     setCurrentTurn(null);
   }, []);
 
@@ -128,23 +160,34 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           }
           return u;
         });
+
+      // Stale-event guard: ignore events whose runId does not match the active
+      // run. An event with a runId when there is no active run (e.g. after cancel
+      // or reset) is also stale. Events with no runId (e.g. approval-* from the
+      // broker) pass through as defense in depth.
+      const isStale = (runId: unknown): boolean =>
+        runId != null && runId !== activeRunIdRef.current;
       try {
         await Promise.all([
           track(
-            listen<string>("llm-token", (event) => {
+            listen<LlmTokenPayload>("llm-token", (event) => {
+              const payload = event.payload;
+              const token = typeof payload === "string" ? payload : payload?.token;
+              const runId = typeof payload === "string" ? null : payload?.runId;
+              if (isStale(runId)) return;
               updateCurrentTurn((turn) => {
                 const blocks = [...turn.blocks];
                 const last = blocks[blocks.length - 1];
                 if (last && last.kind === "text") {
                   blocks[blocks.length - 1] = {
                     ...last,
-                    text: last.text + event.payload,
+                    text: last.text + token,
                   };
                 } else {
                   blocks.push({
                     kind: "text",
                     id: `text-${blocks.length}`,
-                    text: event.payload,
+                    text: token,
                   });
                 }
                 return { ...turn, blocks };
@@ -154,6 +197,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           track(
             listen<LlmDonePayload>("llm-done", (event) => {
               const payload = event.payload;
+              if (typeof payload !== "string" && isStale(payload?.runId)) return;
               const finalTurn = currentTurnRef.current;
               const payloadContent =
                 typeof payload === "string" ? payload : (payload?.response ?? "");
@@ -186,8 +230,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             })
           ),
           track(
-            listen<{ code: string; message: string }>("llm-error", (event) => {
+            listen<LlmErrorPayload>("llm-error", (event) => {
               const err = event.payload;
+              if (isStale(err?.runId)) return;
               const finalTurn = currentTurnRef.current;
               const messageId = finalTurn?.id ?? generateTurnId();
               const rawBlocks = finalTurn?.blocks ?? [];
@@ -225,16 +270,18 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             })
           ),
           track(
-            listen<{ id: string; name: string; arguments?: unknown }>("llm-tool-call", (event) => {
+            listen<LlmToolCallPayload>("llm-tool-call", (event) => {
+              const payload = event.payload;
+              if (isStale(payload?.runId)) return;
               updateCurrentTurn((turn) => ({
                 ...turn,
                 blocks: [
                   ...turn.blocks,
                   {
                     kind: "tool",
-                    id: event.payload.id,
-                    name: event.payload.name,
-                    arguments: event.payload.arguments,
+                    id: payload.id,
+                    name: payload.name,
+                    arguments: payload.arguments,
                     status: "calling" as const,
                   },
                 ],
@@ -243,11 +290,12 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             })
           ),
           track(
-            listen<{ id: string; name: string; result: string }>("llm-tool-result", (event) => {
+            listen<LlmToolResultPayload>("llm-tool-result", (event) => {
+              const payload = event.payload;
+              if (isStale(payload?.runId)) return;
               updateCurrentTurn((turn) => {
                 const idx = turn.blocks.findIndex(
-                  (b): b is TurnBlock & { kind: "tool" } =>
-                    b.kind === "tool" && b.id === event.payload.id
+                  (b): b is TurnBlock & { kind: "tool" } => b.kind === "tool" && b.id === payload.id
                 );
                 if (idx >= 0) {
                   const blocks = [...turn.blocks];
@@ -255,15 +303,15 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   if (existing.kind === "tool") {
                     blocks[idx] = {
                       ...existing,
-                      result: event.payload.result,
+                      result: payload.result,
                       status: "completed",
                     };
                   }
                   return { ...turn, blocks };
                 }
                 console.warn(
-                  `[useChatStream] Received llm-tool-result for id "${event.payload.id}" with no matching llm-tool-call; appending as completed.`,
-                  { name: event.payload.name }
+                  `[useChatStream] Received llm-tool-result for id "${payload.id}" with no matching llm-tool-call; appending as completed.`,
+                  { name: payload.name }
                 );
                 return {
                   ...turn,
@@ -271,9 +319,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                     ...turn.blocks,
                     {
                       kind: "tool",
-                      id: event.payload.id,
-                      name: event.payload.name,
-                      result: event.payload.result,
+                      id: payload.id,
+                      name: payload.name,
+                      result: payload.result,
                       status: "completed" as const,
                     },
                   ],
@@ -284,7 +332,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
           track(
             listen<LlmReasoningPayload>("llm-reasoning", (event) => {
-              const { id, text, phase } = event.payload;
+              const { runId, id, text, phase } = event.payload;
+              if (isStale(runId)) return;
               updateCurrentTurn((turn) => {
                 const idx = turn.blocks.findIndex(
                   (b): b is Extract<TurnBlock, { kind: "reasoning" }> =>
@@ -417,15 +466,52 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   }, [updateCurrentTurn, generateTurnId, clearCurrentTurn]);
 
   const startStream = useCallback(async (opts: StartStreamOptions) => {
-    await invoke("complete_streaming", {
+    const runId = crypto.randomUUID();
+    activeRunIdRef.current = runId;
+    await invoke<string>("complete_streaming", {
       provider: opts.provider,
       prompt: opts.prompt,
       model: opts.model,
       variant: opts.variant ?? null,
       sessionId: opts.sessionId ?? null,
       invokedSkill: opts.invokedSkill ?? null,
+      runId,
     });
   }, []);
+
+  const cancelStream = useCallback(async () => {
+    const runId = activeRunIdRef.current;
+    if (!runId) return;
+    const sessionId = optionsRef.current.sessionId;
+    if (sessionId) {
+      try {
+        await invoke<void>("cancel_streaming", { sessionId });
+      } catch {
+        // best-effort; the backend may already have finalized
+      }
+    }
+    // Finalize the current turn as cancelled locally. Mirror the llm-error
+    // finalize path: persist a plain-language "cancelled" assistant message so
+    // the transcript records the controlled stop, and clear streaming state.
+    const finalTurn = currentTurnRef.current;
+    const rawBlocks = finalTurn?.blocks ?? [];
+    const blocks = dropReasoningBlocks(rawBlocks);
+    const derivedContent = joinTextBlocks(blocks);
+    const messageId = finalTurn?.id ?? generateTurnId();
+    const cancelContent = derivedContent ? derivedContent : "Stream cancelled by user.";
+    optionsRef.current.onMessages?.((prev) => [
+      ...prev,
+      {
+        id: messageId,
+        role: "agent",
+        content: cancelContent,
+        timestamp: new Date(),
+        blocks: blocks.length > 0 ? blocks : undefined,
+      },
+    ]);
+    clearCurrentTurn();
+    optionsRef.current.onStatusChange?.("connected");
+  }, [clearCurrentTurn, generateTurnId]);
 
   const resolveApproval = useCallback(async (id: string, decision: ApprovalDecision) => {
     // Default to invoking the Tauri command if the consumer did not supply
@@ -446,6 +532,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     currentTurn,
     startStream,
     resetStream,
+    cancelStream,
     resolveApproval,
   };
 }

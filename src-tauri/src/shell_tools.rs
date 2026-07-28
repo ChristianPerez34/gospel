@@ -30,7 +30,7 @@ You can run shell, git, and GitHub CLI commands in the active workspace.
 - Read-only commands run directly.
 - Mutating or destructive commands require one-time user approval before execution.
 - The following are always blocked:
-  - `rm -rf /` or `rm -rf /*`
+  - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
   - Any command containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
   - `git push --force`, `git push -f`, `git reset --hard`, `git clean`
   - `gh repo delete`
@@ -646,25 +646,74 @@ fn argument_path_value(arg: &str) -> Option<&str> {
     value.filter(|v| is_path_like_extended(v))
 }
 
-fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
-    // rm -rf / or rm -rf /*
-    if program == "rm" {
-        let mut recursive = false;
-        let mut force = false;
-        let mut root_target = false;
-        for arg in args {
-            if arg.starts_with('-') {
-                if arg.contains('r') {
-                    recursive = true;
+#[derive(Debug, Clone, Copy, Default)]
+struct RmFlags {
+    recursive: bool,
+    force: bool,
+}
+
+/// Parse the flag arguments recognized by `rm` (`--recursive`, `--force`, and
+/// the `-r`/`-f` short-flag clusters, as well as GNU long-option abbreviations like
+/// `--rec` or `--for`). Unknown long/short flags are ignored — this parser only
+/// tracks the flags that matter for the destructive contract.
+/// Arguments following a literal `--` are end-of-options markers/operands and
+/// are left for the caller to handle.
+fn parse_rm_flags(args: &[String]) -> RmFlags {
+    let mut flags = RmFlags::default();
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let opt = long.split('=').next().unwrap_or("");
+            if !opt.is_empty() && opt.starts_with('r') && "recursive".starts_with(opt) {
+                flags.recursive = true;
+            } else if !opt.is_empty() && opt.starts_with('f') && "force".starts_with(opt) {
+                flags.force = true;
+            }
+            continue;
+        }
+        if let Some(rest) = arg.strip_prefix('-') {
+            for c in rest.chars() {
+                match c {
+                    'r' | 'R' => flags.recursive = true,
+                    'f' => flags.force = true,
+                    _ => {}
                 }
-                if arg.contains('f') {
-                    force = true;
-                }
-            } else if arg == "/" || arg == "/*" {
-                root_target = true;
             }
         }
-        if recursive && force && root_target {
+    }
+    flags
+}
+
+fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
+    // rm -rf / or rm -rf /*  — and the equivalent long-form invocations
+    // (`rm --recursive /`, with or without `--force`). The previous substring
+    // matcher flagged `--preserve-root` as recursive (false positive) and
+    // missed `rm --recursive /` without `--force` (false negative).
+    if program == "rm" {
+        let mut operands: Vec<&str> = Vec::new();
+        let mut past_dashdash = false;
+        for arg in args {
+            if past_dashdash {
+                operands.push(arg);
+                continue;
+            }
+            if arg == "--" {
+                past_dashdash = true;
+                continue;
+            }
+            if arg.starts_with('-') {
+                continue;
+            }
+            operands.push(arg);
+        }
+        let flags = parse_rm_flags(args);
+        let root_target = operands.iter().any(|s| *s == "/" || *s == "/*");
+        // `--force` is not required for the destructive contract: `rm --recursive /`
+        // alone performs the same irreversible action. AGENTS.md hard-blocks
+        // `rm -rf /` / `rm -rf /*`; this reuses the parser to cover the long form.
+        if flags.recursive && root_target {
             return true;
         }
     }
@@ -1635,6 +1684,106 @@ mod tests {
             &workspace(),
         );
         assert!(matches!(safety, CommandSafety::Blocked(_)));
+    }
+
+    #[test]
+    fn rm_rf_root_blocked() {
+        assert!(is_blocked_shell_pattern("rm", &["-rf".to_string(), "/".to_string()]));
+    }
+
+    #[test]
+    fn rm_fr_root_blocked() {
+        assert!(is_blocked_shell_pattern("rm", &["-fr".to_string(), "/".to_string()]));
+    }
+
+    #[test]
+    fn rm_long_recursive_force_root_blocked() {
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &["--recursive".to_string(), "--force".to_string(), "/".to_string()],
+        ));
+    }
+
+    #[test]
+    fn rm_long_recursive_root_blocked() {
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &["--recursive".to_string(), "/".to_string()],
+        ));
+    }
+
+    #[test]
+    fn rm_long_recursive_no_root_not_blocked_by_pattern() {
+        assert!(!is_blocked_shell_pattern(
+            "rm",
+            &["--recursive".to_string(), "subdir/".to_string()],
+        ));
+    }
+
+    #[test]
+    fn rm_abbreviated_long_recursive_root_blocked() {
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &[
+                "--rec".to_string(),
+                "--no-preserve-root".to_string(),
+                "/".to_string()
+            ],
+        ));
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &["--r".to_string(), "/".to_string()],
+        ));
+    }
+
+    #[test]
+    fn rm_preserve_root_long_flag_does_not_set_recursive() {
+        assert!(!is_blocked_shell_pattern(
+            "rm",
+            &[
+                "--preserve-root".to_string(),
+                "--force".to_string(),
+                "/".to_string()
+            ],
+        ));
+        assert!(!parse_rm_flags(&["--preserve-root".to_string()]).recursive);
+    }
+
+    #[test]
+    fn rm_dir_long_flag_does_not_set_recursive() {
+        assert!(!is_blocked_shell_pattern(
+            "rm",
+            &[
+                "--dir".to_string(),
+                "--force".to_string(),
+                "/".to_string()
+            ],
+        ));
+        assert!(!parse_rm_flags(&["--dir".to_string(), "-d".to_string()]).recursive);
+    }
+
+    #[test]
+    fn rm_dashdash_does_not_treat_operands_as_flags() {
+        assert!(!is_blocked_shell_pattern(
+            "rm",
+            &["--".to_string(), "--recursive".to_string(), "/".to_string()],
+        ));
+    }
+
+    #[test]
+    fn rm_glob_root_target_blocked() {
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &["-rf".to_string(), "/*".to_string()],
+        ));
+    }
+
+    #[test]
+    fn rm_glob_subdir_target_not_blocked() {
+        assert!(!is_blocked_shell_pattern(
+            "rm",
+            &["-rf".to_string(), "/tmp/*".to_string()],
+        ));
     }
 
     #[test]

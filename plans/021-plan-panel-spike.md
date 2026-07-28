@@ -99,3 +99,4 @@ Tauri exposes `tauri-plugin-fs` with a `watch` API and the broader event system 
 - The spike leaves two artifacts (a backend command + a debug-gated FE panel). A subsequent "Plan Panel Build" plan MUST resolve Open Questions A and B before productionizing.
 - Reviewer: confirm the debug gate is OFF by default (`isPlanPanelRequest` returns `false` in `PROD` and when `?panel=plan` is absent); confirm the parser tests pin the documented contract.
 - Follow-up deferred (out of spike scope): (1) file-watch live updates; (2) edit-from-UI; (3) productionizing the panel; (4) Constellation node upgrade.
+

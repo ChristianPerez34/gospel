@@ -149,4 +149,24 @@ describe("InputBar", () => {
     expect(menu.style.maxHeight).toBe("288px");
     expect(menu.style.bottom).toBe("calc(100% + 0.5rem)");
   });
+
+  it("renders Stop control when isStreaming is true and calls onCancelStream on click", () => {
+    const onCancelStream = vi.fn();
+    renderInputBar({ isStreaming: true, onCancelStream });
+
+    expect(screen.queryByRole("button", { name: "Send message" })).toBeNull();
+    const stopButton = screen.getByRole("button", { name: "Stop streaming" });
+    expect(stopButton).toBeTruthy();
+
+    fireEvent.click(stopButton);
+    expect(onCancelStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders Send (not Stop) when not streaming", () => {
+    const onCancelStream = vi.fn();
+    renderInputBar({ isStreaming: false, onCancelStream });
+
+    expect(screen.getByRole("button", { name: "Send message" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Stop streaming" })).toBeNull();
+  });
 });

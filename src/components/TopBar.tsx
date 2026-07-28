@@ -11,6 +11,7 @@ interface TopBarProps {
   status: AgentStatus;
   onWorkspaceSwitch: () => void;
   onSessionModeChange: (mode: SessionMode) => Promise<void>;
+  onSessionTitleChange: (title: string) => void;
   onToggleSessions: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
@@ -25,6 +26,7 @@ export function TopBar({
   status,
   onWorkspaceSwitch,
   onSessionModeChange,
+  onSessionTitleChange,
   onToggleSessions,
   onOpenSettings,
   sessionsOpen,
@@ -46,6 +48,12 @@ export function TopBar({
   }, [editing]);
 
   const handleSubmit = () => {
+    const next = title.trim();
+    if (next.length > 0 && next !== sessionTitle) {
+      onSessionTitleChange(next);
+    } else {
+      setTitle(sessionTitle);
+    }
     setEditing(false);
   };
 
@@ -57,6 +65,10 @@ export function TopBar({
     ? "bg-surface-overlay text-accent-structure"
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
   const computeActive = status === "thinking" || status === "acting";
+  const titleEditingDisabled = computeActive;
+  const workspaceSwitchClass = computeActive
+    ? "text-text-muted cursor-not-allowed"
+    : "text-text-secondary hover:bg-surface-overlay hover:text-text-primary";
 
   return (
     <header className="app-topbar spatial-topbar px-4 bg-surface-base shrink-0">
@@ -111,8 +123,9 @@ export function TopBar({
         </button>
         <button
           type="button"
-          className="hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
+          className={`hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body ${workspaceSwitchClass}`}
           onClick={onWorkspaceSwitch}
+          disabled={computeActive}
           aria-label="Switch workspace"
           title="Switch workspace"
         >
@@ -140,8 +153,9 @@ export function TopBar({
         {editing ? (
           <input
             ref={inputRef}
-            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay"
+            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay disabled:cursor-not-allowed disabled:opacity-60"
             value={title}
+            disabled={titleEditingDisabled}
             onChange={(e) => setTitle(e.target.value)}
             onBlur={handleSubmit}
             onKeyDown={(e) => {
@@ -156,9 +170,17 @@ export function TopBar({
         ) : (
           <button
             type="button"
-            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary"
-            onClick={() => setEditing(true)}
+            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart truncate max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent aria-disabled:hover:text-text-muted"
+            onClick={() => {
+              if (!titleEditingDisabled) setEditing(true);
+            }}
             aria-label="Edit session title"
+            aria-disabled={titleEditingDisabled}
+            title={
+              titleEditingDisabled
+                ? "Session title can't be edited while streaming"
+                : "Edit session title"
+            }
           >
             {sessionTitle || "New session"}
           </button>
