@@ -380,7 +380,7 @@ export function ProviderSelector({
             </div>
 
             {(provider.visible || !provider.credentialed) && (
-              <div className="px-4 pb-3 flex flex-col gap-2 animate-appear-body">
+              <div className="px-4 pb-3 flex flex-col gap-2">
                 {provider.isOAuth ? (
                   <div className="flex items-center justify-between gap-2 py-1">
                     {provider.isAuthenticated ? (

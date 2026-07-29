@@ -221,29 +221,6 @@ export function ConstellationCanvas({
         return null;
       })}
 
-      {/* Equalizer */}
-      <div className="constellation-equalizer" style={{ opacity: agentRunning ? 1 : 0.3 }}>
-        {Array.from({ length: 24 }).map((_, i) => (
-          <span
-            key={i}
-            className="constellation-eq-bar"
-            style={{
-              background: [
-                "var(--gospel-agent-cyan)",
-                "var(--gospel-agent-violet)",
-                "var(--gospel-agent-amber)",
-                "var(--gospel-agent-rose)",
-              ][i % 4],
-              height: agentRunning ? `${30 + Math.abs(Math.sin(i * 0.7)) * 70}%` : "20%",
-              animation: agentRunning
-                ? `proto-eq ${0.6 + (i % 5) * 0.1}s ease-in-out infinite alternate`
-                : "none",
-              animationDelay: `${i * 0.05}s`,
-            }}
-          />
-        ))}
-      </div>
-
       {/* Load hint */}
       {clusteredTools.length > 0 && (
         <div className="constellation-load-hint">
@@ -284,7 +261,6 @@ function AgentNode({ x, y, running }: { x: number; y: number; running: boolean }
         className="constellation-agent-ring"
         style={{
           borderColor: running ? "var(--gospel-accent-action)" : "var(--gospel-surface-line)",
-          animation: running ? "proto-pulse-ring 1.8s ease-out infinite" : "none",
         }}
       />
       <div className="constellation-agent-core">
@@ -611,7 +587,6 @@ function ReviewerNode({
           style={{
             borderColor: color,
             opacity: r.status === "done" ? 0 : r.status === "idle" ? 0.2 : 1,
-            animation: isActive ? "proto-pulse-ring 1.6s ease-out infinite" : "none",
           }}
         />
         <span
@@ -664,7 +639,7 @@ function ReviewerPopover({ r }: { r: CanvasReviewerNode }) {
       <div className="constellation-pop-progress">
         <div
           className="constellation-pop-progress-fill"
-          style={{ width: `${r.progress * 100}%`, background: color }}
+          style={{ transform: `scaleX(${r.progress})`, background: color }}
         />
       </div>
       {r.comments.length === 0 ? (

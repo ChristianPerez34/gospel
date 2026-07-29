@@ -84,9 +84,12 @@ describe("ActivityStep", () => {
   it("starts collapsed and does not auto-open when a running step completes", () => {
     const { rerender } = renderStep(readFileCard("calling"));
     const button = screen.getByRole("button", { name: /read file/i });
+    const waitingDisclosure = screen
+      .getByText("Waiting for tool result...")
+      .closest(".activity-step-disclosure");
 
     expect(button.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("Waiting for tool result...")).toBeNull();
+    expect(waitingDisclosure?.getAttribute("aria-hidden")).toBe("true");
 
     rerender(
       <ol>
@@ -97,16 +100,42 @@ describe("ActivityStep", () => {
     expect(screen.getByRole("button", { name: /read file/i }).getAttribute("aria-expanded")).toBe(
       "false"
     );
-    expect(screen.queryByText("file contents")).toBeNull();
+    expect(
+      screen
+        .getByText("file contents")
+        .closest(".activity-step-disclosure")
+        ?.getAttribute("aria-hidden")
+    ).toBe("true");
   });
 
   it("reveals details only after the step is clicked", () => {
     renderStep(readFileCard("completed"));
+    const button = screen.getByRole("button", { name: /read file/i });
+    const disclosure = screen.getByText("file contents").closest(".activity-step-disclosure");
 
-    expect(screen.queryByText("file contents")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /read file/i }));
+    expect(disclosure?.getAttribute("aria-hidden")).toBe("true");
+    fireEvent.click(button);
 
-    expect(screen.getByText("file contents")).not.toBeNull();
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(disclosure?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  it("reverses repeated disclosure toggles without remounting its content", () => {
+    renderStep(readFileCard("completed"));
+    const button = screen.getByRole("button", { name: /read file/i });
+    const disclosure = screen.getByText("file contents").closest(".activity-step-disclosure");
+
+    expect(disclosure?.getAttribute("data-open")).toBe("false");
+
+    fireEvent.click(button);
+    expect(disclosure?.getAttribute("data-open")).toBe("true");
+
+    fireEvent.click(button);
+    expect(disclosure?.getAttribute("data-open")).toBe("false");
+
+    fireEvent.click(button);
+    expect(disclosure?.getAttribute("data-open")).toBe("true");
+    expect(screen.getByText("file contents").closest(".activity-step-disclosure")).toBe(disclosure);
   });
 
   it("labels a running step for assistive tech without a visible 'Running' badge", () => {

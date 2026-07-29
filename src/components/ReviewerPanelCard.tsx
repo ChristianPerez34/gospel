@@ -66,7 +66,7 @@ export function ReviewerPanelCard({ r, active, onHover, onLeave }: ReviewerPanel
       <div className="reviewer-panel-progress-track">
         <div
           className="reviewer-panel-progress-fill"
-          style={{ width: `${r.progress * 100}%`, background: color }}
+          style={{ transform: `scaleX(${r.progress})`, background: color }}
         />
       </div>
 

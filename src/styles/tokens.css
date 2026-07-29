@@ -54,6 +54,7 @@
   --gospel-radius-full: 9999px;
 
   --gospel-ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --gospel-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --gospel-duration-fast: 150ms;
   --gospel-duration-normal: 250ms;
   --gospel-duration-slow: 400ms;
@@ -130,6 +131,7 @@
   --radius-full: var(--gospel-radius-full);
 
   --ease-out-quart: var(--gospel-ease-out-quart);
+  --ease-in-out: var(--gospel-ease-in-out);
   --duration-fast: var(--gospel-duration-fast);
   --duration-normal: var(--gospel-duration-normal);
   --duration-slow: var(--gospel-duration-slow);

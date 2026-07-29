@@ -119,7 +119,10 @@ describe("ChatView block timeline rendering", () => {
 
     expect(screen.getByText("Read file...")).not.toBeNull();
     expect(screen.getByTestId("inline-tool-activity-list").className).toContain("max-w-[960px]");
-    expect(screen.queryByText("Waiting for tool result...")).toBeNull();
+    const waitingDisclosure = screen
+      .getByText("Waiting for tool result...")
+      .closest(".activity-step-disclosure");
+    expect(waitingDisclosure?.getAttribute("aria-hidden")).toBe("true");
 
     const readRow = screen.getByRole("button", { name: /read file.*running/i });
     expect(readRow.getAttribute("aria-expanded")).toBe("false");
@@ -131,7 +134,7 @@ describe("ChatView block timeline rendering", () => {
     fireEvent.click(readRow);
 
     expect(readRow.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Waiting for tool result...")).not.toBeNull();
+    expect(waitingDisclosure?.getAttribute("aria-hidden")).toBe("false");
   });
 
   it("renders finalized tool blocks inline and collapsed by default", () => {
@@ -164,7 +167,10 @@ describe("ChatView block timeline rendering", () => {
 
     expect(screen.queryByRole("button", { name: /tool activity/i })).toBeNull();
     expect(screen.queryByText("Running")).toBeNull();
-    expect(screen.queryByText("pub fn main() {}")).toBeNull();
+    const resultDisclosure = screen
+      .getByText("pub fn main() {}")
+      .closest(".activity-step-disclosure");
+    expect(resultDisclosure?.getAttribute("aria-hidden")).toBe("true");
 
     const text = container.textContent ?? "";
     expect(text.indexOf("Before read.")).toBeLessThan(text.indexOf("Read file"));
@@ -176,7 +182,7 @@ describe("ChatView block timeline rendering", () => {
     fireEvent.click(readRow);
 
     expect(readRow.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("pub fn main() {}")).not.toBeNull();
+    expect(resultDisclosure?.getAttribute("aria-hidden")).toBe("false");
   });
 
   it("renders consecutive tool blocks inside a single shared timeline", () => {
