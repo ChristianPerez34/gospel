@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { ActionCardSection, ActionCard as ActionCardType } from "../types";
 
@@ -268,6 +268,7 @@ function RawPayload({ payload }: { payload: string }) {
  */
 export function ActivityStep({ card, className }: ActivityStepProps) {
   const [expanded, setExpanded] = useState(card.expanded ?? false);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   const accentClass = TYPE_ACCENT[card.type] || TYPE_ACCENT.file;
   const isRunning = card.status === "calling";
@@ -281,6 +282,10 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
   }
   ariaLabelParts.push(isRunning ? "Running" : "Done");
   const ariaLabel = ariaLabelParts.join(" ");
+
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.inert = !expanded;
+  }, [expanded]);
 
   return (
     <li className={classNames("activity-step relative", className)} data-type={card.type}>
@@ -347,21 +352,30 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
           </svg>
         )}
       </button>
-      {expanded && hasBody && (
-        <div className="activity-step-body ml-6 grid max-h-[520px] gap-3 overflow-y-auto rounded-sm p-3 animate-fade-slide-in-fast motion-reduce:animate-none">
-          {card.passes
-            ? card.passes.map((pass, index) => (
-                <div className="grid gap-2 border-l border-surface-overlay pl-3" key={pass.id}>
-                  <h4 className="font-mono text-caption font-semibold uppercase tracking-[0.04em] text-text-muted">
-                    Pass {index + 1}
-                    {pass.detail ? ` · ${pass.detail}` : ""}
-                  </h4>
-                  {pass.sections?.map((section) => renderSection(section, `${pass.id}-`))}
-                  {pass.rawPayload && <RawPayload payload={pass.rawPayload} />}
-                </div>
-              ))
-            : card.sections?.map((section) => renderSection(section))}
-          {!card.passes && card.rawPayload && <RawPayload payload={card.rawPayload} />}
+      {hasBody && (
+        <div
+          ref={bodyRef}
+          className="activity-step-disclosure"
+          data-open={expanded ? "true" : "false"}
+          aria-hidden={!expanded}
+        >
+          <div className="activity-step-disclosure-clip">
+            <div className="activity-step-body ml-6 grid max-h-[520px] gap-3 overflow-y-auto rounded-sm p-3">
+              {card.passes
+                ? card.passes.map((pass, index) => (
+                    <div className="grid gap-2 border-l border-surface-overlay pl-3" key={pass.id}>
+                      <h4 className="font-mono text-caption font-semibold uppercase tracking-[0.04em] text-text-muted">
+                        Pass {index + 1}
+                        {pass.detail ? ` · ${pass.detail}` : ""}
+                      </h4>
+                      {pass.sections?.map((section) => renderSection(section, `${pass.id}-`))}
+                      {pass.rawPayload && <RawPayload payload={pass.rawPayload} />}
+                    </div>
+                  ))
+                : card.sections?.map((section) => renderSection(section))}
+              {!card.passes && card.rawPayload && <RawPayload payload={card.rawPayload} />}
+            </div>
+          </div>
         </div>
       )}
     </li>
