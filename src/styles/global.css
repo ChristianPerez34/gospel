@@ -3,7 +3,6 @@
 @import "./tokens.css";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(:root:not([data-theme="light"]) *));
 

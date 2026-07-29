@@ -64,9 +64,7 @@ export function PlanPanel({ workspacePath, onClose }: PlanPanelProps) {
       <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
         <div className="flex flex-col">
           <h2 className="text-sm font-semibold">Plan</h2>
-          <p className="text-xs text-muted-foreground">
-            .gospel/PLAN.md (read-only spike)
-          </p>
+          <p className="text-xs text-muted-foreground">.gospel/PLAN.md (read-only spike)</p>
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -80,12 +78,7 @@ export function PlanPanel({ workspacePath, onClose }: PlanPanelProps) {
             Refresh
           </Button>
           {onClose && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onClose}
-              aria-label="Close plan panel"
-            >
+            <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close plan panel">
               <X size={16} />
             </Button>
           )}
@@ -93,28 +86,20 @@ export function PlanPanel({ workspacePath, onClose }: PlanPanelProps) {
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 text-sm">
-        {!workspacePath && (
-          <p className="text-muted-foreground">
-            No active workspace selected.
-          </p>
-        )}
+        {!workspacePath && <p className="text-muted-foreground">No active workspace selected.</p>}
         {error && (
           <p className="text-destructive" role="alert">
             Failed to read plan: {error}
           </p>
         )}
-        {plan && !plan.hasPlanFile && (
-          <p className="text-muted-foreground">No plan yet.</p>
-        )}
+        {plan && !plan.hasPlanFile && <p className="text-muted-foreground">No plan yet.</p>}
         {plan && plan.hasPlanFile && (
           <div className="space-y-5">
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Goal
               </h3>
-              <p className="mt-1 whitespace-pre-wrap">
-                {plan.goal ?? "—"}
-              </p>
+              <p className="mt-1 whitespace-pre-wrap">{plan.goal ?? "—"}</p>
             </section>
 
             <section>
@@ -128,11 +113,7 @@ export function PlanPanel({ workspacePath, onClose }: PlanPanelProps) {
                   {plan.steps.map((step, i) => (
                     <li key={step.text + i} className="flex gap-2">
                       <span aria-hidden>{step.done ? "☑" : "☐"}</span>
-                      <span
-                        className={
-                          step.done ? "line-through text-muted-foreground" : ""
-                        }
-                      >
+                      <span className={step.done ? "line-through text-muted-foreground" : ""}>
                         {step.text}
                       </span>
                     </li>
@@ -179,9 +160,7 @@ export function PlanPanel({ workspacePath, onClose }: PlanPanelProps) {
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Next Action
               </h3>
-              <p className="mt-1 whitespace-pre-wrap">
-                {plan.nextAction ?? "—"}
-              </p>
+              <p className="mt-1 whitespace-pre-wrap">{plan.nextAction ?? "—"}</p>
             </section>
           </div>
         )}

@@ -406,10 +406,11 @@ impl ModelRegistry {
         model: &str,
         variant: Option<&str>,
     ) -> ResolvedModelVariant {
+        let default_additional_params = Self::reasoning_stream_params(provider, model);
         let Some(variant) = variant.map(str::trim).filter(|value| !value.is_empty()) else {
             return ResolvedModelVariant {
                 variant: None,
-                additional_params: None,
+                additional_params: default_additional_params,
                 warning: None,
             };
         };
@@ -436,7 +437,7 @@ impl ModelRegistry {
 
         ResolvedModelVariant {
             variant: None,
-            additional_params: None,
+            additional_params: default_additional_params,
             warning: Some(ModelVariantWarning {
                 kind: "missing".to_string(),
                 variant: variant.to_string(),
@@ -446,6 +447,22 @@ impl ModelRegistry {
                 ),
             }),
         }
+    }
+
+    fn reasoning_stream_params(provider: &str, model: &str) -> Option<serde_json::Value> {
+        let supports_reasoning_summary = match provider {
+            "openai" => openai_reasoning_effort_supported(model),
+            "chatgpt" => chatgpt_reasoning_effort_supported(model),
+            _ => false,
+        };
+
+        supports_reasoning_summary.then(|| {
+            json!({
+                "reasoning": {
+                    "summary": "auto"
+                }
+            })
+        })
     }
 
     fn variant_definition(
@@ -503,7 +520,8 @@ impl ModelRegistry {
                 deprecated: false,
                 additional_params: json!({
                     "reasoning": {
-                        "effort": effort
+                        "effort": effort,
+                        "summary": "auto"
                     }
                 }),
             }
@@ -866,7 +884,24 @@ mod tests {
             resolved.additional_params,
             Some(json!({
                 "reasoning": {
-                    "effort": "high"
+                    "effort": "high",
+                    "summary": "auto"
+                }
+            }))
+        );
+        assert!(resolved.warning.is_none());
+    }
+
+    #[test]
+    fn openai_default_reasoning_model_requests_streamable_summary() {
+        let resolved = ModelRegistry::resolve_model_variant("openai", "gpt-5.2", None);
+
+        assert_eq!(resolved.variant, None);
+        assert_eq!(
+            resolved.additional_params,
+            Some(json!({
+                "reasoning": {
+                    "summary": "auto"
                 }
             }))
         );
@@ -908,7 +943,24 @@ mod tests {
             resolved.additional_params,
             Some(json!({
                 "reasoning": {
-                    "effort": "xhigh"
+                    "effort": "xhigh",
+                    "summary": "auto"
+                }
+            }))
+        );
+        assert!(resolved.warning.is_none());
+    }
+
+    #[test]
+    fn chatgpt_default_reasoning_model_requests_streamable_summary() {
+        let resolved = ModelRegistry::resolve_model_variant("chatgpt", "gpt-5.6-sol", None);
+
+        assert_eq!(resolved.variant, None);
+        assert_eq!(
+            resolved.additional_params,
+            Some(json!({
+                "reasoning": {
+                    "summary": "auto"
                 }
             }))
         );
@@ -921,7 +973,14 @@ mod tests {
             ModelRegistry::resolve_model_variant("openai", "gpt-5.2", Some("missing-variant"));
 
         assert_eq!(resolved.variant, None);
-        assert_eq!(resolved.additional_params, None);
+        assert_eq!(
+            resolved.additional_params,
+            Some(json!({
+                "reasoning": {
+                    "summary": "auto"
+                }
+            }))
+        );
         assert_eq!(
             resolved
                 .warning

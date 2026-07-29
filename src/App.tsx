@@ -1,7 +1,8 @@
-import { useWorkspaces } from "./hooks/useWorkspaces";
+import "@fontsource-variable/geist";
 import { AppShell } from "./components/AppShell";
-import { HarnessPrototype } from "./prototype/harness/HarnessPrototype";
 import { PlanPanel } from "./components/PlanPanel";
+import { useWorkspaces } from "./hooks/useWorkspaces";
+import { HarnessPrototype } from "./prototype/harness/HarnessPrototype";
 import "./styles/global.css";
 
 function isHarnessPrototypeRequest(): boolean {
