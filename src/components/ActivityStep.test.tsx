@@ -138,6 +138,25 @@ describe("ActivityStep", () => {
     expect(screen.getByText("file contents").closest(".activity-step-disclosure")).toBe(disclosure);
   });
 
+  it("makes details inert when they arrive while the step remains collapsed", () => {
+    const cardWithoutBody = { ...readFileCard("calling"), sections: [] };
+    const { rerender } = renderStep(cardWithoutBody);
+
+    expect(document.querySelector(".activity-step-disclosure")).toBeNull();
+
+    rerender(
+      <ol>
+        <ActivityStep card={readFileCard("completed")} />
+      </ol>
+    );
+
+    const disclosure = screen
+      .getByText("file contents")
+      .closest(".activity-step-disclosure") as HTMLDivElement | null;
+    expect(disclosure?.getAttribute("aria-hidden")).toBe("true");
+    expect(disclosure?.inert).toBe(true);
+  });
+
   it("labels a running step for assistive tech without a visible 'Running' badge", () => {
     renderStep(readFileCard("calling"));
 
