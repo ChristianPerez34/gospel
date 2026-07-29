@@ -10,9 +10,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from version_semver import parse_semver
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CARGO_TOML = ROOT / "src-tauri" / "Cargo.toml"
+CARGO_LOCK = ROOT / "src-tauri" / "Cargo.lock"
 PACKAGE_JSON = ROOT / "package.json"
 TAURI_CONFIG = ROOT / "src-tauri" / "tauri.conf.json"
 
@@ -37,6 +40,21 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def read_cargo_lock_version(path: Path = CARGO_LOCK) -> str:
+    cargo_lock = path.read_text(encoding="utf-8")
+    for package_match in re.finditer(
+        r"(?ms)^\[\[package\]\]\s*(.*?)(?=^\[\[package\]\]|\Z)",
+        cargo_lock,
+    ):
+        package = package_match.group(1)
+        if re.search(r'(?m)^name\s*=\s*"gospel"\s*$', package):
+            version_match = re.search(r'(?m)^version\s*=\s*"([^"]+)"\s*$', package)
+            if version_match is not None:
+                return version_match.group(1)
+
+    raise ValueError(f"Could not find gospel package version in {path}")
+
+
 def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
@@ -57,10 +75,31 @@ def sync_json_version(path: Path, version: str) -> bool:
 def target_version(base_version: str, dev: bool) -> str:
     if dev:
         if base_version.endswith("-dev"):
-            raise ValueError("Cargo.toml must store a clean version without a -dev suffix")
+            raise ValueError("Cargo.toml must not use the reserved -dev suffix")
         return f"{base_version}-dev"
 
     return base_version
+
+
+def check_release_versions(version: str, tag: str | None) -> None:
+    parse_semver(version)
+    versions = {
+        CARGO_LOCK: read_cargo_lock_version(),
+        PACKAGE_JSON: read_json(PACKAGE_JSON).get("version"),
+        TAURI_CONFIG: read_json(TAURI_CONFIG).get("version"),
+    }
+    mismatches = [
+        f"{path.relative_to(ROOT)} has {actual!r}"
+        for path, actual in versions.items()
+        if actual != version
+    ]
+    if mismatches:
+        details = ", ".join(mismatches)
+        raise ValueError(f"Expected release version {version!r}; {details}")
+
+    expected_tag = f"v{version}"
+    if tag is not None and tag != expected_tag:
+        raise ValueError(f"Expected tag {expected_tag!r}, got {tag!r}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,14 +117,33 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="sync the clean Cargo.toml version",
     )
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="verify release metadata without modifying files",
+    )
+    parser.add_argument(
+        "--tag",
+        help="also require the supplied tag to equal v plus the Cargo version",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
 
+    if args.tag is not None and not args.check:
+        print("sync-version: --tag requires --check", file=sys.stderr)
+        return 2
+
     try:
         base_version = read_cargo_version()
+        if args.check:
+            check_release_versions(base_version, args.tag)
+            tag_detail = f" and tag {args.tag}" if args.tag is not None else ""
+            print(f"Verified release version {base_version}{tag_detail}")
+            return 0
+
         version = target_version(base_version, dev=args.dev)
         changed = [
             path

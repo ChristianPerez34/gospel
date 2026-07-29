@@ -1015,10 +1015,14 @@ fn record_tool_result_failure(
 fn reasoning_text_from_content(content: &[ReasoningContent]) -> String {
     let mut parts = Vec::with_capacity(content.len());
     for item in content {
-        if let ReasoningContent::Text { text, .. } = item {
-            parts.push(text.clone());
+        match item {
+            ReasoningContent::Text { text, .. } | ReasoningContent::Summary(text) => {
+                parts.push(text.clone());
+            }
+            // Encrypted, redacted, and future opaque variants intentionally
+            // contribute nothing.
+            _ => {}
         }
-        // Encrypted and Redacted variants intentionally contribute nothing.
     }
     parts.join("")
 }
@@ -1247,13 +1251,14 @@ mod tests {
                 text: "world".to_string(),
                 signature: Some("sig".to_string()),
             },
+            ReasoningContent::Summary(" summary".to_string()),
             ReasoningContent::Encrypted("cipher".to_string()),
             ReasoningContent::Redacted {
                 data: "redacted".to_string(),
             },
         ];
 
-        assert_eq!(reasoning_text_from_content(&content), "hello world");
+        assert_eq!(reasoning_text_from_content(&content), "hello world summary");
     }
 
     #[test]

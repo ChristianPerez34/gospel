@@ -284,8 +284,8 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
   const ariaLabel = ariaLabelParts.join(" ");
 
   useEffect(() => {
-    if (bodyRef.current) bodyRef.current.inert = !expanded;
-  }, [expanded]);
+    if (hasBody && bodyRef.current) bodyRef.current.inert = !expanded;
+  }, [expanded, hasBody]);
 
   return (
     <li className={classNames("activity-step relative", className)} data-type={card.type}>

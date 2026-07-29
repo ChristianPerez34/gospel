@@ -198,7 +198,7 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
     let resp = client
         .get("https://chatgpt.com/backend-api/models")
         .header("Authorization", format!("Bearer {}", access_token))
-        .header("User-Agent", "gospel/0.1.0")
+        .header("User-Agent", concat!("gospel/", env!("CARGO_PKG_VERSION")))
         .send()
         .await;
 

@@ -10,9 +10,9 @@ Gospel publishes the same App Version through Rust package metadata, Tauri bundl
 
 ## Decision
 
-Use `src-tauri/Cargo.toml` as the canonical App Version. Keep the Cargo version clean, such as `0.1.0`, and use `scripts/bump-version.py` to increment that canonical SemVer before releases. The bump script updates Cargo metadata first, then runs `scripts/sync-version.py --release` to propagate the clean version into `package.json` and `src-tauri/tauri.conf.json`. Development metadata is derived only in the generated targets: `sync-version.py --dev` writes a `-dev` suffix, while `sync-version.py --release` writes the clean release version.
+Use `src-tauri/Cargo.toml` as the canonical App Version. Store a valid release SemVer there, such as `0.1.0` or `0.1.0-alpha.1`, and use `scripts/bump-version.py` to update that version before releases. The bump script updates Cargo metadata first, then runs `scripts/sync-version.py --release` to propagate the release version into `package.json` and `src-tauri/tauri.conf.json`. Development metadata is derived only in the generated targets: `sync-version.py --dev` writes a `-dev` suffix, while `sync-version.py --release` preserves the canonical release version.
 
-Release Builds are created by pushing `v*` git tags. The GitHub Actions release workflow syncs the clean version, builds an Apple Silicon DMG, and attaches it to the matching GitHub Release.
+Release Builds are created by pushing `v*` git tags. The GitHub Actions release workflow verifies that the tag, Cargo lockfile, and derived metadata match the canonical version before it builds an Apple Silicon DMG and attaches it to the matching GitHub Release.
 
 ## Consequences
 

@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AppShell } from "./AppShell";
 import { WorkspacesProvider } from "../hooks/useWorkspaces";
+import { AppShell } from "./AppShell";
 
 let capturedListeners: Record<string, ((event: { payload: unknown }) => void)[]> = {};
 

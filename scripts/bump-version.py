@@ -9,11 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+from version_semver import parse_semver
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CARGO_TOML = ROOT / "src-tauri" / "Cargo.toml"
 SYNC_SCRIPT = ROOT / "scripts" / "sync-version.py"
-SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 VERSION_LINE_RE = re.compile(r'(?m)^version\s*=\s*"([^"]+)"\s*$')
 
 
@@ -34,11 +35,7 @@ def read_cargo_version(cargo_toml: str) -> str:
 
 
 def parse_version(version: str) -> tuple[int, int, int]:
-    match = SEMVER_RE.fullmatch(version)
-    if match is None:
-        raise ValueError(f"Expected clean SemVer major.minor.patch, got {version!r}")
-
-    return tuple(int(part) for part in match.groups())
+    return parse_semver(version)
 
 
 def bump_version(version: str, part: str) -> str:
@@ -95,7 +92,7 @@ def parse_args() -> argparse.Namespace:
         "--set",
         dest="set_version",
         metavar="VERSION",
-        help="set an explicit clean SemVer instead of incrementing",
+        help="set an explicit SemVer, including an alpha prerelease, instead of incrementing",
     )
     parser.add_argument(
         "--dry-run",

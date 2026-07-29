@@ -1,8 +1,8 @@
 [package]
 name = "gospel"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.1.0-alpha.1"
+description = "Desktop harness for LLM-powered coding agents"
+authors = ["Christian Perez Villanueva"]
 edition = "2021"
 default-run = "gospel"
 
