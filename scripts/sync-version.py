@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from version_semver import parse_semver
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CARGO_TOML = ROOT / "src-tauri" / "Cargo.toml"
@@ -80,6 +82,7 @@ def target_version(base_version: str, dev: bool) -> str:
 
 
 def check_release_versions(version: str, tag: str | None) -> None:
+    parse_semver(version)
     versions = {
         CARGO_LOCK: read_cargo_lock_version(),
         PACKAGE_JSON: read_json(PACKAGE_JSON).get("version"),
