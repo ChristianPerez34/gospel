@@ -28,6 +28,7 @@ export function ReviewerPanelCard({ r, active, onHover, onLeave }: ReviewerPanel
   }, [r.comments.length]);
 
   const statusLabel = reviewerStatusLabel(r.status);
+  const modelLabel = r.provider && r.model ? `${r.provider}/${r.model}` : null;
 
   return (
     <div
@@ -54,6 +55,11 @@ export function ReviewerPanelCard({ r, active, onHover, onLeave }: ReviewerPanel
         <div className="reviewer-panel-card-meta">
           <span className="reviewer-panel-card-name">{r.name}</span>
           <span className="reviewer-panel-card-role">{r.focus}</span>
+          {modelLabel && (
+            <span className="reviewer-panel-card-model" title={`Review model: ${modelLabel}`}>
+              {modelLabel}
+            </span>
+          )}
         </div>
         <span
           className="reviewer-panel-card-status"

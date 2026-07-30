@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   ChunkFailure,
   ChunkStatus,
@@ -10,6 +10,7 @@ import type {
   ReviewPhase,
   ReviewPipelineState,
   ReviewProgressEvent,
+  ReviewToolActivity,
 } from "../types";
 
 const INITIAL_PIPELINE: ReviewPipelineState = {
@@ -31,10 +32,13 @@ export interface FocusProgress {
 
 export interface UseReviewProgressState {
   runId: string | null;
+  provider: string | null;
+  model: string | null;
   done: boolean;
   failed: boolean;
   pipeline: ReviewPipelineState;
   perFocus: Partial<Record<ReviewFocus, FocusProgress>>;
+  tools: ReviewToolActivity[];
   log: ReviewActivityEntry[];
 }
 
@@ -45,6 +49,7 @@ export interface UseReviewProgress extends UseReviewProgressState {
 
 /** Cap the activity feed so a 20-batch scan can't grow it without bound. */
 const MAX_LOG_ENTRIES = 400;
+const MAX_TOOL_ENTRIES = 200;
 
 function describe(phase: ReviewPhase): string {
   switch (phase.type) {
@@ -76,7 +81,8 @@ function describe(phase: ReviewPhase): string {
       return `Review complete — ${phase.findings} finding${phase.findings === 1 ? "" : "s"}, ${phase.suppressed} suppressed`;
     case "failed":
       return `Review failed: ${phase.detail}`;
-    case "detectorTool": {
+    case "detectorTool":
+    case "validatorTool": {
       if ("call" in phase.event) {
         const args = phase.event.call.arguments as Record<string, unknown> | undefined;
         const target =
@@ -243,6 +249,7 @@ function reducePipeline(prev: ReviewPipelineState, phase: ReviewPhase): ReviewPi
       else if (next.finalize === "active") next.finalize = "failed";
       break;
     case "detectorTool":
+    case "validatorTool":
       // Tool-call activity is logged but does not move the pipeline.
       break;
   }
@@ -259,6 +266,41 @@ function reduceReviewState(
     ...prev,
     perFocus: { ...prev.perFocus },
   };
+
+  if ((phase.type === "detectorTool" || phase.type === "validatorTool") && focus) {
+    const stage: ReviewToolActivity["stage"] =
+      phase.type === "detectorTool" ? "detector" : "validator";
+    const chunk = phase.type === "detectorTool" ? phase.chunk : 0;
+    if ("call" in phase.event) {
+      const tools = [
+        ...prev.tools,
+        {
+          id: phase.event.call.id,
+          focus,
+          stage,
+          chunk,
+          toolName: phase.toolName,
+          arguments: phase.event.call.arguments,
+          status: "calling" as const,
+        },
+      ];
+      next.tools = tools.slice(-MAX_TOOL_ENTRIES);
+    } else {
+      const result = phase.event.result;
+      next.tools = prev.tools.map((tool) =>
+        tool.id === result.id &&
+        tool.focus === focus &&
+        tool.stage === stage &&
+        tool.chunk === chunk
+          ? {
+              ...tool,
+              result: result.summary,
+              status: "completed" as const,
+            }
+          : tool
+      );
+    }
+  }
 
   if (focus) {
     const existing = next.perFocus[focus];
@@ -287,22 +329,25 @@ function reduceReviewState(
 export function useReviewProgress(): UseReviewProgress {
   const [state, setState] = useState<UseReviewProgressState>({
     runId: null,
+    provider: null,
+    model: null,
     done: false,
     failed: false,
     pipeline: INITIAL_PIPELINE,
     perFocus: {},
+    tools: [],
     log: [],
   });
-  const runIdRef = useRef<string | null>(null);
-
   const reset = useCallback(() => {
-    runIdRef.current = null;
     setState({
       runId: null,
+      provider: null,
+      model: null,
       done: false,
       failed: false,
       pipeline: INITIAL_PIPELINE,
       perFocus: {},
+      tools: [],
       log: [],
     });
   }, []);
@@ -322,22 +367,22 @@ export function useReviewProgress(): UseReviewProgress {
 
           setState((prev) => {
             const isAggregate = focus == null;
-            if (!isAggregate && runIdRef.current !== null && runIdRef.current !== payload.run_id) {
+            if (!isAggregate && prev.runId !== null && prev.runId !== payload.run_id) {
               return prev;
             }
             const runChanged =
-              runIdRef.current === null || (isAggregate && runIdRef.current !== payload.run_id);
-            if (runChanged) {
-              runIdRef.current = payload.run_id;
-            }
+              prev.runId === null || (isAggregate && prev.runId !== payload.run_id);
 
             const base: UseReviewProgressState = runChanged
               ? {
                   runId: payload.run_id,
+                  provider: null,
+                  model: null,
                   done: false,
                   failed: false,
                   pipeline: INITIAL_PIPELINE,
                   perFocus: {},
+                  tools: [],
                   log: [],
                 }
               : prev;
@@ -353,7 +398,13 @@ export function useReviewProgress(): UseReviewProgress {
             if (log.length > MAX_LOG_ENTRIES) {
               log.splice(0, log.length - MAX_LOG_ENTRIES);
             }
-            return { ...next, runId: payload.run_id, log };
+            return {
+              ...next,
+              runId: payload.run_id,
+              provider: payload.provider ?? base.provider,
+              model: payload.model ?? base.model,
+              log,
+            };
           });
         });
         if (cancelled) {

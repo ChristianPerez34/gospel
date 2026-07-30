@@ -457,17 +457,20 @@ pub async fn run_review(
 
     // Run-start handshake so the frontend can key on run_id and render the
     // pipeline immediately, before chunking is known.
-    emitter.emit_progress(ReviewProgressEvent::new_with_focus(
-        &run_id,
-        focus,
-        ReviewPhase::Detector {
-            chunk: 0,
-            total_chunks: 0,
-            files: Vec::new(),
-            candidate_count: 0,
-            status: ChunkStatus::Starting,
-        },
-    ));
+    emitter.emit_progress(
+        ReviewProgressEvent::new_with_focus(
+            &run_id,
+            focus,
+            ReviewPhase::Detector {
+                chunk: 0,
+                total_chunks: 0,
+                files: Vec::new(),
+                candidate_count: 0,
+                status: ChunkStatus::Starting,
+            },
+        )
+        .with_model(&config.provider, &config.model),
+    );
 
     let outcome = match mode.clone() {
         ReviewMode::Local => {
@@ -1080,32 +1083,76 @@ struct DetectorToolObserver<'a> {
     emitter: &'a dyn ReviewProgressEmitter,
 }
 
+struct ValidatorToolObserver<'a> {
+    run_id: &'a str,
+    focus: ReviewFocus,
+    emitter: &'a dyn ReviewProgressEmitter,
+}
+
 impl<'a> ToolEventObserver for DetectorToolObserver<'a> {
-    fn on_tool_call(&self, name: &str, arguments: &serde_json::Value) {
-        self.emitter.emit_progress(ReviewProgressEvent::new_with_focus(
-            self.run_id,
-            self.focus,
-            ReviewPhase::DetectorTool {
-                chunk: self.chunk,
-                tool_name: name.to_string(),
-                event: ToolEventKind::Call {
-                    arguments: arguments.clone(),
+    fn on_tool_call(&self, id: &str, name: &str, arguments: &serde_json::Value) {
+        self.emitter
+            .emit_progress(ReviewProgressEvent::new_with_focus(
+                self.run_id,
+                self.focus,
+                ReviewPhase::DetectorTool {
+                    chunk: self.chunk,
+                    tool_name: name.to_string(),
+                    event: ToolEventKind::Call {
+                        id: id.to_string(),
+                        arguments: arguments.clone(),
+                    },
                 },
-            },
-        ));
+            ));
     }
 
-    fn on_tool_result(&self, name: &str, result: &str) {
+    fn on_tool_result(&self, id: &str, name: &str, result: &str) {
         let summary = truncate_tool_result(result);
-        self.emitter.emit_progress(ReviewProgressEvent::new_with_focus(
-            self.run_id,
-            self.focus,
-            ReviewPhase::DetectorTool {
-                chunk: self.chunk,
-                tool_name: name.to_string(),
-                event: ToolEventKind::Result { summary },
-            },
-        ));
+        self.emitter
+            .emit_progress(ReviewProgressEvent::new_with_focus(
+                self.run_id,
+                self.focus,
+                ReviewPhase::DetectorTool {
+                    chunk: self.chunk,
+                    tool_name: name.to_string(),
+                    event: ToolEventKind::Result {
+                        id: id.to_string(),
+                        summary,
+                    },
+                },
+            ));
+    }
+}
+
+impl<'a> ToolEventObserver for ValidatorToolObserver<'a> {
+    fn on_tool_call(&self, id: &str, name: &str, arguments: &serde_json::Value) {
+        self.emitter
+            .emit_progress(ReviewProgressEvent::new_with_focus(
+                self.run_id,
+                self.focus,
+                ReviewPhase::ValidatorTool {
+                    tool_name: name.to_string(),
+                    event: ToolEventKind::Call {
+                        id: id.to_string(),
+                        arguments: arguments.clone(),
+                    },
+                },
+            ));
+    }
+
+    fn on_tool_result(&self, id: &str, name: &str, result: &str) {
+        self.emitter
+            .emit_progress(ReviewProgressEvent::new_with_focus(
+                self.run_id,
+                self.focus,
+                ReviewPhase::ValidatorTool {
+                    tool_name: name.to_string(),
+                    event: ToolEventKind::Result {
+                        id: id.to_string(),
+                        summary: truncate_tool_result(result),
+                    },
+                },
+            ));
     }
 }
 
@@ -1387,33 +1434,47 @@ async fn validate_candidates(
     ));
     let prompt = validator::build_validator_prompt(candidates, focus)
         .map_err(|e| format!("Failed to build validator prompt: {}", e))?;
-    let result =
-        match validator::run_validator(provider, model, api_key, workspace, &prompt, focus).await {
-            Ok(output) => {
-                let mut parsed = parse_agent_review_output(&output, "Validator");
-                stamp_parsed_comments_focus(&mut parsed, focus);
-                Ok(review_validator_parse_result(
-                    parsed,
-                    candidates,
-                    anti_pattern_store,
-                ))
-            }
-            Err(ReviewAgentError::Timeout) => Ok((
-                candidates.to_vec(),
-                false,
-                None,
-                vec!["Validator agent timed out".to_string()],
-            )),
-            Err(ReviewAgentError::Provider(error)) => Ok((
-                candidates.to_vec(),
-                false,
-                None,
-                vec![format!(
-                    "Validator agent failed: {}",
-                    sanitize_failure_detail(&error)
-                )],
-            )),
-        };
+    let observer = ValidatorToolObserver {
+        run_id,
+        focus,
+        emitter,
+    };
+    let result = match validator::run_validator(
+        provider,
+        model,
+        api_key,
+        workspace,
+        &prompt,
+        focus,
+        Some(&observer),
+    )
+    .await
+    {
+        Ok(output) => {
+            let mut parsed = parse_agent_review_output(&output, "Validator");
+            stamp_parsed_comments_focus(&mut parsed, focus);
+            Ok(review_validator_parse_result(
+                parsed,
+                candidates,
+                anti_pattern_store,
+            ))
+        }
+        Err(ReviewAgentError::Timeout) => Ok((
+            candidates.to_vec(),
+            false,
+            None,
+            vec!["Validator agent timed out".to_string()],
+        )),
+        Err(ReviewAgentError::Provider(error)) => Ok((
+            candidates.to_vec(),
+            false,
+            None,
+            vec![format!(
+                "Validator agent failed: {}",
+                sanitize_failure_detail(&error)
+            )],
+        )),
+    };
     emitter.emit_progress(ReviewProgressEvent::new_with_focus(
         run_id,
         focus,
@@ -2127,8 +2188,8 @@ pub(crate) struct AgentConfig<'a> {
 /// progress to the frontend without coupling `run_workspace_agent` to the
 /// progress event types.
 pub trait ToolEventObserver: Send + Sync {
-    fn on_tool_call(&self, name: &str, arguments: &serde_json::Value);
-    fn on_tool_result(&self, name: &str, result: &str);
+    fn on_tool_call(&self, id: &str, name: &str, arguments: &serde_json::Value);
+    fn on_tool_result(&self, id: &str, name: &str, result: &str);
 }
 
 /// Drives a streaming agent run to completion, accumulating the final
@@ -2241,8 +2302,11 @@ where
                     tool_name_by_id
                         .insert(internal_call_id.clone(), tool_call.function.name.clone());
                     if let Some(observer) = on_tool_event {
-                        observer
-                            .on_tool_call(&tool_call.function.name, &tool_call.function.arguments);
+                        observer.on_tool_call(
+                            &internal_call_id,
+                            &tool_call.function.name,
+                            &tool_call.function.arguments,
+                        );
                     }
                 }
                 StreamedAssistantContent::Text(_) => {}
@@ -2250,10 +2314,10 @@ where
             },
             Ok(MultiTurnStreamItem::StreamUserItem(user_content)) => {
                 if let Some(observer) = on_tool_event {
-                    if let Some((name, result_text)) =
+                    if let Some((id, name, result_text)) =
                         extract_tool_result(&user_content, &tool_name_by_id)
                     {
-                        observer.on_tool_result(&name, &result_text);
+                        observer.on_tool_result(&id, &name, &result_text);
                     }
                 }
             }
@@ -2277,7 +2341,7 @@ where
 fn extract_tool_result(
     user_content: &rig::streaming::StreamedUserContent,
     tool_name_by_id: &std::collections::HashMap<String, String>,
-) -> Option<(String, String)> {
+) -> Option<(String, String, String)> {
     // `StreamedUserContent` currently has a single `ToolResult` variant;
     // match explicitly so new variants added upstream surface as a
     // compile error rather than silently being dropped.
@@ -2298,7 +2362,7 @@ fn extract_tool_result(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    Some((name, result_text))
+    Some((internal_call_id.clone(), name, result_text))
 }
 
 #[cfg(test)]
@@ -3073,6 +3137,21 @@ Binary files a/icon.png and b/icon.png differ
                 candidate_count: 2,
                 status: PhaseStatus::Running,
             },
+            ReviewPhase::DetectorTool {
+                chunk: 1,
+                tool_name: "read_file".to_string(),
+                event: ToolEventKind::Call {
+                    id: "detector-call".to_string(),
+                    arguments: serde_json::json!({ "path": "src/a.rs" }),
+                },
+            },
+            ReviewPhase::ValidatorTool {
+                tool_name: "read_file".to_string(),
+                event: ToolEventKind::Call {
+                    id: "validator-call".to_string(),
+                    arguments: serde_json::json!({ "path": "src/a.rs" }),
+                },
+            },
             ReviewPhase::Finalize {
                 status: PhaseStatus::Done,
             },
@@ -3101,14 +3180,78 @@ Binary files a/icon.png and b/icon.png differ
                 candidate_count: 3,
                 status: ChunkStatus::Running,
             },
-        );
+        )
+        .with_model("anthropic", "claude-sonnet-4");
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["run_id"], "run-1");
+        assert_eq!(json["provider"], "anthropic");
+        assert_eq!(json["model"], "claude-sonnet-4");
         assert_eq!(json["phase"]["type"], "detector");
         assert_eq!(json["phase"]["chunk"], 2);
         assert_eq!(json["phase"]["totalChunks"], 5);
         assert_eq!(json["phase"]["candidateCount"], 3);
         assert_eq!(json["phase"]["status"], "running");
+    }
+
+    #[test]
+    fn review_tool_progress_serializes_call_id_for_frontend_pairing() {
+        let event = ReviewProgressEvent::new_with_focus(
+            "run-1",
+            ReviewFocus::Architecture,
+            ReviewPhase::DetectorTool {
+                chunk: 1,
+                tool_name: "read_file".to_string(),
+                event: ToolEventKind::Call {
+                    id: "call-7".to_string(),
+                    arguments: serde_json::json!({ "path": "src/review/mod.rs" }),
+                },
+            },
+        );
+
+        let json = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(json["focus"], "Architecture");
+        assert_eq!(json["phase"]["type"], "detectorTool");
+        assert_eq!(json["phase"]["event"]["call"]["id"], "call-7");
+        assert_eq!(
+            json["phase"]["event"]["call"]["arguments"]["path"],
+            "src/review/mod.rs"
+        );
+    }
+
+    #[test]
+    fn validator_tool_observer_emits_focus_owned_call_and_result() {
+        let emitter = CapturingEmitter::default();
+        let observer = ValidatorToolObserver {
+            run_id: "run-validator",
+            focus: ReviewFocus::Security,
+            emitter: &emitter,
+        };
+
+        observer.on_tool_call(
+            "call-validator",
+            "read_file",
+            &serde_json::json!({ "path": "src/lib.rs" }),
+        );
+        observer.on_tool_result("call-validator", "read_file", "contents");
+
+        let events = emitter.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].focus, Some(ReviewFocus::Security));
+        assert!(matches!(
+            &events[0].phase,
+            ReviewPhase::ValidatorTool {
+                tool_name,
+                event: ToolEventKind::Call { id, .. }
+            } if tool_name == "read_file" && id == "call-validator"
+        ));
+        assert!(matches!(
+            &events[1].phase,
+            ReviewPhase::ValidatorTool {
+                event: ToolEventKind::Result { id, summary },
+                ..
+            } if id == "call-validator" && summary == "contents"
+        ));
     }
 
     #[test]

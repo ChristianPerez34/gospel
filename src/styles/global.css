@@ -1766,6 +1766,28 @@ summary,
   gap: 8px;
 }
 
+.review-trigger-model {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.review-trigger-model span {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.review-trigger-model code {
+  overflow: hidden;
+  color: var(--accent-action);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .review-trigger-error {
   font-size: var(--font-size-body-sm);
   color: var(--status-error);
@@ -1856,6 +1878,15 @@ summary,
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.reviewer-panel-card-model {
+  overflow: hidden;
+  color: var(--accent-action);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reviewer-panel-card-status {
@@ -2224,6 +2255,16 @@ summary,
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.constellation-reviewer-model {
+  max-width: 112px;
+  overflow: hidden;
+  color: var(--accent-action);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .constellation-reviewer-verdict-dot {

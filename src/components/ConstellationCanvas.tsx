@@ -80,14 +80,18 @@ export function ConstellationCanvas({
   const cx = size.w / 2;
   const cy = size.h / 2 - 10;
 
-  // Decide which tools render as individual nodes vs. a cluster.
+  const mainToolNodes = useMemo(() => toolNodes.filter((tool) => !tool.reviewerId), [toolNodes]);
+  const reviewerToolNodes = useMemo(() => toolNodes.filter((tool) => tool.reviewerId), [toolNodes]);
+
+  // Decide which main-agent tools render as individual nodes vs. a cluster.
+  // Reviewer tools stay visible and form their own branches.
   const { visibleTools, clusteredTools } = useMemo(() => {
-    if (toolNodes.length <= CLUSTER_THRESHOLD)
-      return { visibleTools: toolNodes, clusteredTools: [] };
-    const visible = toolNodes.slice(-VISIBLE_TOOLS);
-    const clustered = toolNodes.slice(0, toolNodes.length - VISIBLE_TOOLS);
+    if (mainToolNodes.length <= CLUSTER_THRESHOLD)
+      return { visibleTools: mainToolNodes, clusteredTools: [] };
+    const visible = mainToolNodes.slice(-VISIBLE_TOOLS);
+    const clustered = mainToolNodes.slice(0, mainToolNodes.length - VISIBLE_TOOLS);
     return { visibleTools: visible, clusteredTools: clustered };
-  }, [toolNodes]);
+  }, [mainToolNodes]);
 
   const activeReviewers = useMemo(
     () => (reviewActive ? reviewerNodes : []),
@@ -96,6 +100,7 @@ export function ConstellationCanvas({
 
   const nodes = useMemo<NodePos[]>(() => {
     const list: NodePos[] = [{ id: "agent", x: cx, y: cy, kind: "agent" }];
+    const reviewerPositions = new Map<string, { x: number; y: number }>();
     const toolCount = visibleTools.length + (clusteredTools.length > 0 ? 1 : 0);
     visibleTools.forEach((tc, i) => {
       const t = toolCount <= 1 ? 0.5 : i / (toolCount - 1);
@@ -125,17 +130,42 @@ export function ConstellationCanvas({
         const t = activeReviewers.length <= 1 ? 0.5 : i / (activeReviewers.length - 1);
         const angle = -0.65 + t * 1.3;
         const radius = 230;
-        list.push({
-          id: r.id,
+        const position = {
           x: cx + Math.cos(angle) * radius,
           y: cy + Math.sin(angle) * radius * 0.75,
+        };
+        reviewerPositions.set(r.id, position);
+        list.push({
+          id: r.id,
+          ...position,
           kind: "reviewer",
           ref: r,
         });
       });
+
+      for (const reviewer of activeReviewers) {
+        const reviewerPosition = reviewerPositions.get(reviewer.id);
+        if (!reviewerPosition) continue;
+        const ownedTools = reviewerToolNodes.filter((tool) => tool.reviewerId === reviewer.focus);
+        const outwardAngle = Math.atan2(reviewerPosition.y - cy, reviewerPosition.x - cx);
+        const spread = Math.min(0.8, Math.max(0, ownedTools.length - 1) * 0.16);
+        ownedTools.forEach((tool, index) => {
+          const offset = ownedTools.length <= 1 ? 0 : index / (ownedTools.length - 1) - 0.5;
+          const angle = outwardAngle + offset * spread;
+          const ring = Math.floor(index / 6);
+          const radius = 130 + ring * 74;
+          list.push({
+            id: tool.id,
+            x: reviewerPosition.x + Math.cos(angle) * radius,
+            y: reviewerPosition.y + Math.sin(angle) * radius,
+            kind: "tool",
+            ref: tool,
+          });
+        });
+      }
     }
     return list;
-  }, [visibleTools, clusteredTools, activeReviewers, cx, cy, reviewActive]);
+  }, [visibleTools, clusteredTools, activeReviewers, reviewerToolNodes, cx, cy, reviewActive]);
 
   const edges = useMemo<Edge[]>(() => {
     const e: Edge[] = [];
@@ -147,9 +177,14 @@ export function ConstellationCanvas({
       for (const r of activeReviewers) {
         const color = FOCUS_COLOR_VAR[r.focus] ?? "var(--gospel-text-muted)";
         e.push({ from: "agent", to: r.id, color, dashed: true });
+        for (const tool of reviewerToolNodes) {
+          if (tool.reviewerId === r.focus) {
+            e.push({ from: r.id, to: tool.id, color });
+          }
+        }
       }
     return e;
-  }, [visibleTools, clusteredTools, activeReviewers, reviewActive]);
+  }, [visibleTools, clusteredTools, activeReviewers, reviewerToolNodes, reviewActive]);
 
   const posOf = (id: string) => nodes.find((n) => n.id === id);
 
@@ -160,7 +195,7 @@ export function ConstellationCanvas({
 
       {/* SVG edges */}
       <svg className="constellation-svg" width={size.w} height={size.h} aria-hidden>
-        {edges.map((e, i) => {
+        {edges.map((e) => {
           const a = posOf(e.from);
           const b = posOf(e.to);
           if (!a || !b) return null;
@@ -168,7 +203,9 @@ export function ConstellationCanvas({
           const my = (a.y + b.y) / 2 - 30;
           return (
             <path
-              key={i}
+              key={`${e.from}:${e.to}`}
+              data-edge-from={e.from}
+              data-edge-to={e.to}
               d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
               stroke={e.color}
               strokeWidth={e.dashed ? 1.5 : 1}
@@ -600,6 +637,14 @@ function ReviewerNode({
           {r.name[0]}
         </span>
         <span className="constellation-reviewer-name">{r.name}</span>
+        {r.model && (
+          <span
+            className="constellation-reviewer-model"
+            title={`Review model: ${r.provider ? `${r.provider}/` : ""}${r.model}`}
+          >
+            {r.model}
+          </span>
+        )}
         {r.status === "done" && (
           <span
             className="constellation-reviewer-verdict-dot"
@@ -616,6 +661,7 @@ function ReviewerNode({
 
 function ReviewerPopover({ r }: { r: CanvasReviewerNode }) {
   const color = FOCUS_COLOR_HEX[r.focus] ?? "var(--gospel-text-muted)";
+  const modelLabel = r.provider && r.model ? `${r.provider}/${r.model}` : "model pending";
   return (
     <div className="constellation-reviewer-pop" style={{ borderColor: color }}>
       <div className="constellation-pop-head">
@@ -632,7 +678,7 @@ function ReviewerPopover({ r }: { r: CanvasReviewerNode }) {
         <div>
           <div className="constellation-pop-name">{r.name}</div>
           <div className="constellation-pop-role">
-            {r.status} · {r.findings} findings
+            {modelLabel} · {r.status} · {r.findings} findings
           </div>
         </div>
       </div>

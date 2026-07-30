@@ -51,6 +51,8 @@ const reviewResult: ReviewResult = {
 function makeReviewProgress(): UseReviewProgress {
   return {
     runId: null,
+    provider: null,
+    model: null,
     done: false,
     failed: false,
     pipeline: {
@@ -64,6 +66,7 @@ function makeReviewProgress(): UseReviewProgress {
       suppressed: 0,
     },
     perFocus: {},
+    tools: [],
     log: [],
     reset: vi.fn(),
   };
@@ -125,6 +128,7 @@ describe("WorkbenchLayout", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Run" })).toBeDefined();
     });
+    expect(screen.getByText("openai/gpt-5")).toBeDefined();
     expect(screen.queryByText("Conversation content")).toBeNull();
   });
 

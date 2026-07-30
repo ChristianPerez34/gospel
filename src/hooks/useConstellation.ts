@@ -29,6 +29,8 @@ export interface CanvasToolNode {
   arguments?: unknown;
   /** Raw result for diff popover extraction. */
   result?: string;
+  /** Review focus that owns this tool call. Main-agent tools omit it. */
+  reviewerId?: ReviewFocus;
 }
 
 export type CanvasReviewerStatus = "idle" | "active" | "done" | "failed";
@@ -42,6 +44,8 @@ export interface CanvasReviewerNode {
   findings: number;
   suppressed: number;
   comments: ReviewActivityEntry[];
+  provider: string | null;
+  model: string | null;
 }
 
 export interface UseConstellationResult {
@@ -202,6 +206,20 @@ export function useConstellation(
       result: block.result,
     }));
 
+    for (const tool of reviewProgress.tools) {
+      toolNodes.push({
+        id: `review-tool:${tool.focus}:${tool.stage}:${tool.chunk}:${tool.id}`,
+        kind: mapToolKind(tool.toolName),
+        label: TOOL_LABELS[tool.toolName] ?? tool.toolName,
+        target: extractTarget(tool.toolName, tool.arguments),
+        status: tool.status === "calling" ? "running" : "done",
+        hasDiff: false,
+        arguments: tool.arguments,
+        result: tool.result,
+        reviewerId: tool.focus,
+      });
+    }
+
     // Merge approval blocks as "awaiting" tool nodes (they represent pending
     // tool calls that need user approval before proceeding).
     for (const approval of approvalBlocks) {
@@ -232,6 +250,8 @@ export function useConstellation(
         findings: pipeline.findings,
         suppressed: pipeline.suppressed,
         comments,
+        provider: reviewProgress.provider,
+        model: reviewProgress.model,
       };
     }).filter((r) => r.status !== "idle" || reviewActive);
 

@@ -252,6 +252,8 @@ export function WorkbenchLayout({
             // Review trigger
             reviewMode={reviewMode}
             onReviewModeChange={setReviewMode}
+            reviewProvider={reviewProvider}
+            reviewModel={reviewModel}
             prNumber={prNumber}
             onPrNumberChange={setPrNumber}
             selectedFocus={selectedFocus}
@@ -303,6 +305,8 @@ interface ReviewersTabProps {
   // Review trigger
   reviewMode: ReviewMode;
   onReviewModeChange: (mode: ReviewMode) => void;
+  reviewProvider?: string;
+  reviewModel?: string;
   prNumber: string;
   onPrNumberChange: (value: string) => void;
   selectedFocus: ReviewFocus;
@@ -332,6 +336,8 @@ function ReviewersTab({
   onLeave,
   reviewMode,
   onReviewModeChange,
+  reviewProvider,
+  reviewModel,
   prNumber,
   onPrNumberChange,
   selectedFocus,
@@ -391,6 +397,14 @@ function ReviewersTab({
             ))}
           </select>
         </div>
+        {reviewProvider && reviewModel && (
+          <div className="review-trigger-model" title="Model used by every review subagent">
+            <span>Model</span>
+            <code>
+              {reviewProvider}/{reviewModel}
+            </code>
+          </div>
+        )}
         <div className="review-trigger-actions">
           <Button
             variant="default"

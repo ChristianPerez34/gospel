@@ -125,10 +125,10 @@ pub(crate) async fn run_multi_focus_review_with_child(
     let mut pending: BTreeSet<ReviewFocus> = unique_focuses.clone();
     let emitter_ref: &dyn ReviewProgressEmitter = &*emitter;
 
-    emitter_ref.emit_progress(ReviewProgressEvent::new(
-        &run_id,
-        ReviewPhase::MultiFocusStart { total },
-    ));
+    emitter_ref.emit_progress(
+        ReviewProgressEvent::new(&run_id, ReviewPhase::MultiFocusStart { total })
+            .with_model(&provider, &model),
+    );
 
     let mut join_set = JoinSet::new();
 
@@ -788,6 +788,9 @@ mod tests {
                 "every event must carry the shared run id"
             );
         }
+        let events = emitter.events.lock().unwrap();
+        assert_eq!(events[0].provider.as_deref(), Some("openai"));
+        assert_eq!(events[0].model.as_deref(), Some("gpt-test"));
     }
 
     #[tokio::test]
