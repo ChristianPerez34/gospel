@@ -1429,38 +1429,42 @@ fn cancel_streaming(
 }
 
 fn resolve_delegate_completion_config(
-    app_config: &AppConfigState,
+    _app_config: &AppConfigState,
     provider: &str,
     model: &str,
 ) -> (String, String, String) {
-    let fallback_provider = provider.to_string();
-    let fallback_model = model.to_string();
-
-    let stored_provider = app_config
-        .store
-        .as_ref()
-        .and_then(|store| store.get_config_value("delegate_provider").ok().flatten());
-    let configured_provider = stored_provider.filter(|configured| {
-        ModelRegistry::all_providers().contains(&configured.as_str())
-    });
-    let delegate_provider = configured_provider.unwrap_or(fallback_provider);
-
-    let stored_model = app_config
-        .store
-        .as_ref()
-        .and_then(|store| store.get_config_value("delegate_model").ok().flatten());
-    let supported_models = ModelRegistry::models_for_provider(&delegate_provider);
-    let delegate_model = stored_model
-        .filter(|configured| supported_models.contains(&configured.as_str()))
-        .unwrap_or(fallback_model);
-
-    let delegate_api_key = if ModelRegistry::is_oauth_provider(&delegate_provider) {
+    let delegate_api_key = if ModelRegistry::is_oauth_provider(provider) {
         String::new()
     } else {
-        keychain::retrieve(&delegate_provider).unwrap_or_default()
+        keychain::retrieve(provider).unwrap_or_default()
     };
 
-    (delegate_provider, delegate_model, delegate_api_key)
+    (provider.to_string(), model.to_string(), delegate_api_key)
+}
+
+#[cfg(test)]
+mod delegate_completion_config_tests {
+    use super::*;
+
+    #[test]
+    fn delegation_reuses_active_provider_and_model_despite_stale_config() {
+        let store = AppConfigStore::in_memory_for_test().unwrap();
+        store
+            .set_config_value("delegate_provider", "openai")
+            .unwrap();
+        store.set_config_value("delegate_model", "gpt-4o").unwrap();
+        let state = AppConfigState {
+            store: Some(store),
+            init_warning: None,
+        };
+
+        let (provider, model, api_key) =
+            resolve_delegate_completion_config(&state, "chatgpt", "gpt-5.6-sol");
+
+        assert_eq!(provider, "chatgpt");
+        assert_eq!(model, "gpt-5.6-sol");
+        assert!(api_key.is_empty());
+    }
 }
 
 #[tauri::command]
