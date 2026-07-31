@@ -60,7 +60,7 @@ function reviewerClusterId(reviewerId: string): string {
 interface ConstellationCanvasProps {
   toolNodes: CanvasToolNode[];
   reviewerNodes: CanvasReviewerNode[];
-  reviewActive: boolean;
+  reviewVisible: boolean;
   agentRunning: boolean;
   onApprove?: (id: string) => void;
 }
@@ -70,7 +70,7 @@ interface ConstellationCanvasProps {
 export function ConstellationCanvas({
   toolNodes,
   reviewerNodes,
-  reviewActive,
+  reviewVisible,
   agentRunning,
   onApprove,
 }: ConstellationCanvasProps) {
@@ -118,8 +118,8 @@ export function ConstellationCanvas({
   const mainClusterId = clusteredTools.length > 0 ? MAIN_CLUSTER_PREFIX : null;
 
   const activeReviewers = useMemo(
-    () => (reviewActive ? reviewerNodes : []),
-    [reviewerNodes, reviewActive]
+    () => (reviewVisible ? reviewerNodes : []),
+    [reviewerNodes, reviewVisible]
   );
 
   const nodes = useMemo<NodePos[]>(() => {
@@ -149,7 +149,7 @@ export function ConstellationCanvas({
         ref: clusteredTools,
       });
     }
-    if (reviewActive) {
+    if (reviewVisible) {
       const positions = layoutReviewerPositions(activeReviewers.length, size, { x: cx, y: cy });
       const activityPositions: CanvasPoint[] = [];
       activeReviewers.forEach((r, i) => {
@@ -176,7 +176,6 @@ export function ConstellationCanvas({
           size,
           { x: cx, y: cy }
         );
-        if (!activityPosition) continue;
         activityPositions.push(activityPosition);
         list.push({
           id: ownedTools.length === 1 ? ownedTools[0].id : reviewerClusterId(reviewer.id),
@@ -194,7 +193,7 @@ export function ConstellationCanvas({
     toolsByFocus,
     cx,
     cy,
-    reviewActive,
+    reviewVisible,
     size,
     mainClusterId,
   ]);
@@ -205,7 +204,7 @@ export function ConstellationCanvas({
       e.push({ from: "agent", to: tc.id, color: "var(--gospel-surface-line)" });
     if (mainClusterId)
       e.push({ from: "agent", to: mainClusterId, color: "var(--gospel-text-muted)" });
-    if (reviewActive)
+    if (reviewVisible)
       for (const r of activeReviewers) {
         const color = FOCUS_COLOR_VAR[r.focus] ?? "var(--gospel-text-muted)";
         e.push({ from: "agent", to: r.id, color, dashed: true });
@@ -218,7 +217,7 @@ export function ConstellationCanvas({
           });
       }
     return e;
-  }, [visibleTools, activeReviewers, toolsByFocus, reviewActive, mainClusterId]);
+  }, [visibleTools, activeReviewers, toolsByFocus, reviewVisible, mainClusterId]);
 
   const openClusterTools = useMemo(() => {
     const cluster = nodes.find((node) => node.id === openClusterId && node.kind === "cluster");

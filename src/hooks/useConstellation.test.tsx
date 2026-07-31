@@ -74,4 +74,40 @@ describe("useConstellation", () => {
       })
     );
   });
+
+  it("keeps surviving reviewer activity visible after another focus fails", () => {
+    const progress = reviewProgressWithFileRead();
+    progress.failed = true;
+    progress.perFocus.Security = {
+      runId: "run-1",
+      focus: "Security",
+      pipeline: {
+        detector: { chunk: 1, totalChunks: 1, candidateCount: 0, status: "failed" },
+        validator: "idle",
+        finalize: "idle",
+        done: false,
+        failed: true,
+        failureDetail: "provider unavailable",
+        findings: 0,
+        suppressed: 0,
+      },
+    };
+
+    const { result } = renderHook(() => useConstellation([], null, progress, false));
+
+    expect(result.current.reviewActive).toBe(true);
+    expect(result.current.reviewVisible).toBe(true);
+    expect(result.current.reviewerNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ focus: "Architecture", status: "active" }),
+        expect.objectContaining({ focus: "Security", status: "failed" }),
+      ])
+    );
+    expect(result.current.toolNodes).toContainEqual(
+      expect.objectContaining({
+        reviewerId: "Architecture",
+        target: "src/review/mod.rs",
+      })
+    );
+  });
 });

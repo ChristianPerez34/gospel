@@ -244,7 +244,7 @@ export function WorkbenchLayout({
         ) : (
           <ReviewersTab
             reviewers={visibleReviewers}
-            reviewActive={constellation.reviewActive}
+            reviewVisible={constellation.reviewVisible}
             verdictCount={verdictCount}
             activeReviewer={activeReviewer}
             onHover={setActiveReviewer}
@@ -284,7 +284,7 @@ export function WorkbenchLayout({
         <ConstellationCanvas
           toolNodes={constellation.toolNodes}
           reviewerNodes={constellation.reviewerNodes}
-          reviewActive={constellation.reviewActive}
+          reviewVisible={constellation.reviewVisible}
           agentRunning={constellation.agentRunning}
           onApprove={handleApprove}
         />
@@ -297,7 +297,7 @@ export function WorkbenchLayout({
 
 interface ReviewersTabProps {
   reviewers: ReturnType<typeof useConstellation>["reviewerNodes"];
-  reviewActive: boolean;
+  reviewVisible: boolean;
   verdictCount: number;
   activeReviewer: string | null;
   onHover: (id: string) => void;
@@ -329,7 +329,7 @@ interface ReviewersTabProps {
 
 function ReviewersTab({
   reviewers,
-  reviewActive,
+  reviewVisible,
   verdictCount,
   activeReviewer,
   onHover,
@@ -429,7 +429,7 @@ function ReviewersTab({
       </div>
 
       {/* Summary pills */}
-      {reviewActive && (
+      {reviewVisible && (
         <div className="reviewers-summary">
           <span className="reviewers-summary-meta">
             {verdictCount}/{reviewers.length} verdicts
@@ -439,7 +439,7 @@ function ReviewersTab({
 
       {/* Reviewer cards */}
       <div className="reviewers-list">
-        {reviewers.length === 0 && !reviewActive && !reviewResult && !multiReviewResult && (
+        {reviewers.length === 0 && !reviewVisible && !reviewResult && !multiReviewResult && (
           <div className="reviewers-empty">Run a review to see parallel reviewer activity.</div>
         )}
         {reviewers.map((r) => (

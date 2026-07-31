@@ -33,6 +33,40 @@ function overlaps(
   );
 }
 
+function overlapArea(
+  first: CanvasPoint,
+  firstBounds: NodeBounds,
+  second: CanvasPoint,
+  secondBounds: NodeBounds
+): number {
+  const width = Math.max(
+    0,
+    (firstBounds.width + secondBounds.width) / 2 - Math.abs(first.x - second.x)
+  );
+  const height = Math.max(
+    0,
+    (firstBounds.height + secondBounds.height) / 2 - Math.abs(first.y - second.y)
+  );
+  return width * height;
+}
+
+function relaxedAxisBounds(canvasExtent: number, nodeExtent: number): [number, number] {
+  if (canvasExtent <= nodeExtent) {
+    const midpoint = Math.max(0, canvasExtent) / 2;
+    return [midpoint, midpoint];
+  }
+  const halfNode = nodeExtent / 2;
+  const padding = Math.min(CANVAS_EDGE_PADDING, (canvasExtent - nodeExtent) / 2);
+  return [halfNode + padding, canvasExtent - halfNode - padding];
+}
+
+function steppedRange(min: number, max: number, step: number): number[] {
+  const values: number[] = [];
+  for (let value = min; value <= max; value += step) values.push(value);
+  if (values.length === 0 || values[values.length - 1] < max) values.push(max);
+  return values;
+}
+
 function isInsideCanvas(
   point: CanvasPoint,
   bounds: NodeBounds,
@@ -55,17 +89,14 @@ export function layoutReviewerPositions(
   if (count <= 0) return [];
 
   const halfWidth = REVIEWER_NODE_BOUNDS.width / 2;
-  const halfHeight = REVIEWER_NODE_BOUNDS.height / 2;
-  const minY = halfHeight + CANVAS_EDGE_PADDING;
-  const maxY = Math.max(minY, canvas.h - halfHeight - CANVAS_EDGE_PADDING);
+  const [minY, maxY] = relaxedAxisBounds(canvas.h, REVIEWER_NODE_BOUNDS.height);
   const desiredStep = REVIEWER_NODE_BOUNDS.height + REVIEWER_NODE_GAP;
   const availableSpan = maxY - minY;
   const step = count <= 1 ? 0 : Math.min(desiredStep, availableSpan / (count - 1));
   const span = step * (count - 1);
   const orbitCenterY = clamp(center.y, minY + span / 2, maxY - span / 2);
 
-  const leftEdge = halfWidth + CANVAS_EDGE_PADDING;
-  const rightEdge = canvas.w - halfWidth - CANVAS_EDGE_PADDING;
+  const [leftEdge, rightEdge] = relaxedAxisBounds(canvas.w, REVIEWER_NODE_BOUNDS.width);
   const maxOrbitOffset = Math.max(0, rightEdge - center.x);
   const outerOffset = Math.min(REVIEWER_ORBIT_RADIUS, maxOrbitOffset);
   const innerOffset = Math.min(
@@ -105,14 +136,14 @@ export function layoutReviewerPositions(
   });
 }
 
-/** Places one compact activity node without covering the agent or reviewer cards. */
+/** Places one compact activity node, preferring collision-free space with a bounded fallback. */
 export function layoutReviewerActivityPosition(
   reviewer: CanvasPoint,
   otherReviewers: CanvasPoint[],
   placedActivities: CanvasPoint[],
   canvas: { w: number; h: number },
   center: CanvasPoint
-): CanvasPoint | null {
+): CanvasPoint {
   const horizontalOffset =
     REVIEWER_NODE_BOUNDS.width / 2 + REVIEWER_ACTIVITY_BOUNDS.width / 2 + REVIEWER_NODE_GAP;
   const inward = reviewer.x >= center.x ? -1 : 1;
@@ -170,5 +201,39 @@ export function layoutReviewerActivityPosition(
       }
     }
   }
-  return nearest;
+  if (nearest) return nearest;
+
+  // A narrow canvas may not have any collision-free point. Keep the activity
+  // visible by choosing the bounded point with the least overlap instead of
+  // silently dropping the reviewer branch.
+  const [fallbackMinX, fallbackMaxX] = relaxedAxisBounds(canvas.w, REVIEWER_ACTIVITY_BOUNDS.width);
+  const [fallbackMinY, fallbackMaxY] = relaxedAxisBounds(canvas.h, REVIEWER_ACTIVITY_BOUNDS.height);
+  let fallback = {
+    x: clamp(reviewer.x, fallbackMinX, fallbackMaxX),
+    y: clamp(reviewer.y, fallbackMinY, fallbackMaxY),
+  };
+  let fallbackOverlap = Number.POSITIVE_INFINITY;
+  let fallbackDistance = Number.POSITIVE_INFINITY;
+
+  for (const y of steppedRange(fallbackMinY, fallbackMaxY, 16)) {
+    for (const x of steppedRange(fallbackMinX, fallbackMaxX, 16)) {
+      const point = { x, y };
+      const overlap = obstacles.reduce(
+        (total, obstacle) =>
+          total + overlapArea(point, REVIEWER_ACTIVITY_BOUNDS, obstacle.point, obstacle.bounds),
+        0
+      );
+      const distance = (x - reviewer.x) ** 2 + (y - reviewer.y) ** 2;
+      if (
+        overlap < fallbackOverlap ||
+        (overlap === fallbackOverlap && distance < fallbackDistance)
+      ) {
+        fallback = point;
+        fallbackOverlap = overlap;
+        fallbackDistance = distance;
+      }
+    }
+  }
+
+  return fallback;
 }

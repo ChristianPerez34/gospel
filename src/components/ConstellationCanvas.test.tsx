@@ -107,12 +107,44 @@ describe("ConstellationCanvas", () => {
     }
   });
 
+  it("keeps reviewer activity present when the canvas is too narrow for collision-free placement", () => {
+    const canvas = { w: 156, h: 500 };
+    const center = { x: canvas.w / 2, y: canvas.h / 2 - 10 };
+    const reviewers = layoutReviewerPositions(5, canvas, center);
+    const activities: CanvasPoint[] = [];
+
+    reviewers.forEach((reviewerPosition) => {
+      expect(reviewerPosition.x - REVIEWER_NODE_BOUNDS.width / 2).toBeGreaterThanOrEqual(0);
+      expect(reviewerPosition.x + REVIEWER_NODE_BOUNDS.width / 2).toBeLessThanOrEqual(canvas.w);
+      expect(reviewerPosition.y - REVIEWER_NODE_BOUNDS.height / 2).toBeGreaterThanOrEqual(0);
+      expect(reviewerPosition.y + REVIEWER_NODE_BOUNDS.height / 2).toBeLessThanOrEqual(canvas.h);
+    });
+
+    reviewers.forEach((reviewerPosition, reviewerIndex) => {
+      const activity = layoutReviewerActivityPosition(
+        reviewerPosition,
+        reviewers.filter((_, index) => index !== reviewerIndex),
+        activities,
+        canvas,
+        center
+      );
+
+      expect(activity.x - REVIEWER_ACTIVITY_BOUNDS.width / 2).toBeGreaterThanOrEqual(0);
+      expect(activity.x + REVIEWER_ACTIVITY_BOUNDS.width / 2).toBeLessThanOrEqual(canvas.w);
+      expect(activity.y - REVIEWER_ACTIVITY_BOUNDS.height / 2).toBeGreaterThanOrEqual(0);
+      expect(activity.y + REVIEWER_ACTIVITY_BOUNDS.height / 2).toBeLessThanOrEqual(canvas.h);
+      activities.push(activity);
+    });
+
+    expect(activities).toHaveLength(reviewers.length);
+  });
+
   it("connects reviewer file activity to its reviewer instead of the main agent", () => {
     const { container } = render(
       <ConstellationCanvas
         toolNodes={[fileRead]}
         reviewerNodes={[reviewer]}
-        reviewActive
+        reviewVisible
         agentRunning={false}
       />
     );
@@ -141,7 +173,7 @@ describe("ConstellationCanvas", () => {
       <ConstellationCanvas
         toolNodes={[fileRead]}
         reviewerNodes={[focusedReviewer]}
-        reviewActive
+        reviewVisible
         agentRunning={false}
       />
     );
@@ -169,7 +201,7 @@ describe("ConstellationCanvas", () => {
       <ConstellationCanvas
         toolNodes={toolNodes}
         reviewerNodes={[reviewer]}
-        reviewActive
+        reviewVisible
         agentRunning={false}
       />
     );
