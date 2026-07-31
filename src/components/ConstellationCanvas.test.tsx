@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CanvasReviewerNode, CanvasToolNode } from "../hooks/useConstellation";
 import { ConstellationCanvas } from "./ConstellationCanvas";
 import {
+  AGENT_NODE_BOUNDS,
   type CanvasPoint,
   layoutReviewerActivityPosition,
   layoutReviewerPositions,
@@ -79,10 +80,7 @@ describe("ConstellationCanvas", () => {
         expect(activity).not.toBeNull();
         if (!activity) return;
         expect(
-          rectanglesOverlap(activity, REVIEWER_ACTIVITY_BOUNDS, center, {
-            width: 104,
-            height: 104,
-          })
+          rectanglesOverlap(activity, REVIEWER_ACTIVITY_BOUNDS, center, AGENT_NODE_BOUNDS)
         ).toBe(false);
         reviewers.forEach((otherReviewer) => {
           expect(
@@ -133,7 +131,35 @@ describe("ConstellationCanvas", () => {
     ).toBeNull();
   });
 
-  it("groups multiple tool calls into one separated reviewer activity node", () => {
+  it("uses reviewer.focus for tool ownership while reviewer placement and edges use id", () => {
+    const focusedReviewer: CanvasReviewerNode = {
+      ...reviewer,
+      id: "custom-reviewer",
+      focus: "Architecture",
+    };
+    const { container } = render(
+      <ConstellationCanvas
+        toolNodes={[fileRead]}
+        reviewerNodes={[focusedReviewer]}
+        reviewActive
+        agentRunning={false}
+      />
+    );
+
+    expect(screen.getByText("mod.rs")).toBeDefined();
+    expect(
+      container.querySelector(
+        'path[data-edge-from="custom-reviewer"][data-edge-to="review-tool:Architecture:detector:1:call-7"]'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        'path[data-edge-from="Architecture"][data-edge-to="review-tool:Architecture:detector:1:call-7"]'
+      )
+    ).toBeNull();
+  });
+
+  it("groups multiple tool calls into one separated reviewer activity node", async () => {
     const toolNodes = Array.from({ length: 6 }, (_, index) => ({
       ...fileRead,
       id: `review-tool:Architecture:detector:${index}:call-${index}`,
@@ -162,7 +188,7 @@ describe("ConstellationCanvas", () => {
     ).toBeGreaterThanOrEqual(150);
     expect(
       container.querySelector(
-        'path[data-edge-from="Architecture"][data-edge-to^="reviewer-cluster:Architecture:"]'
+        'path[data-edge-from="Architecture"][data-edge-to="reviewer-cluster:Architecture"]'
       )
     ).not.toBeNull();
 
@@ -173,6 +199,10 @@ describe("ConstellationCanvas", () => {
     expect(screen.getByText("6 grouped tool calls")).toBeDefined();
     expect(screen.getByText("src/review/file-0.rs")).toBeDefined();
     expect(screen.getByText("src/review/file-5.rs")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close tool activity" }));
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 });
 

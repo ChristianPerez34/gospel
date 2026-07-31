@@ -2080,6 +2080,7 @@ summary,
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
+/* Keep dimensions in sync with REVIEWER_ACTIVITY_BOUNDS in src/components/constellationLayout.ts. */
 .constellation-reviewer-tool-card {
   box-sizing: border-box;
   flex-direction: row;
@@ -2230,7 +2231,7 @@ summary,
 }
 
 .constellation-activity-cluster-btn .constellation-cluster-label {
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .constellation-cluster-glyph {

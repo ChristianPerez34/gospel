@@ -51,12 +51,8 @@ interface Edge {
 
 const MAIN_CLUSTER_PREFIX = "cluster";
 
-function toolClusterId(prefix: string, tools: CanvasToolNode[]): string {
-  return `${prefix}:${tools.length}:${tools[0]?.id ?? "empty"}:${tools[tools.length - 1]?.id ?? "empty"}`;
-}
-
-function reviewerClusterId(reviewerId: string, tools: CanvasToolNode[]): string {
-  return toolClusterId(`reviewer-cluster:${reviewerId}`, tools);
+function reviewerClusterId(reviewerId: string): string {
+  return `reviewer-cluster:${reviewerId}`;
 }
 
 // ── Props ───────────────────────────────────────────────────────────────────
@@ -99,6 +95,17 @@ export function ConstellationCanvas({
   const mainToolNodes = useMemo(() => toolNodes.filter((tool) => !tool.reviewerId), [toolNodes]);
   const reviewerToolNodes = useMemo(() => toolNodes.filter((tool) => tool.reviewerId), [toolNodes]);
 
+  const toolsByFocus = useMemo(() => {
+    const map = new Map<string, CanvasToolNode[]>();
+    for (const tool of reviewerToolNodes) {
+      if (!tool.reviewerId) continue;
+      const list = map.get(tool.reviewerId) ?? [];
+      list.push(tool);
+      map.set(tool.reviewerId, list);
+    }
+    return map;
+  }, [reviewerToolNodes]);
+
   // Decide which main-agent tools render as individual nodes vs. a cluster.
   // Reviewer activity stays visible on bounded, reviewer-owned branches.
   const { visibleTools, clusteredTools } = useMemo(() => {
@@ -108,8 +115,7 @@ export function ConstellationCanvas({
     const clustered = mainToolNodes.slice(0, mainToolNodes.length - VISIBLE_TOOLS);
     return { visibleTools: visible, clusteredTools: clustered };
   }, [mainToolNodes]);
-  const mainClusterId =
-    clusteredTools.length > 0 ? toolClusterId(MAIN_CLUSTER_PREFIX, clusteredTools) : null;
+  const mainClusterId = clusteredTools.length > 0 ? MAIN_CLUSTER_PREFIX : null;
 
   const activeReviewers = useMemo(
     () => (reviewActive ? reviewerNodes : []),
@@ -160,7 +166,7 @@ export function ConstellationCanvas({
       for (const [reviewerIndex, reviewer] of activeReviewers.entries()) {
         const reviewerPosition = reviewerPositions.get(reviewer.id);
         if (!reviewerPosition) continue;
-        const ownedTools = reviewerToolNodes.filter((tool) => tool.reviewerId === reviewer.focus);
+        const ownedTools = toolsByFocus.get(reviewer.focus) ?? [];
         if (ownedTools.length === 0) continue;
 
         const activityPosition = layoutReviewerActivityPosition(
@@ -173,8 +179,7 @@ export function ConstellationCanvas({
         if (!activityPosition) continue;
         activityPositions.push(activityPosition);
         list.push({
-          id:
-            ownedTools.length === 1 ? ownedTools[0].id : reviewerClusterId(reviewer.id, ownedTools),
+          id: ownedTools.length === 1 ? ownedTools[0].id : reviewerClusterId(reviewer.id),
           ...activityPosition,
           kind: ownedTools.length === 1 ? "tool" : "cluster",
           ref: ownedTools.length === 1 ? ownedTools[0] : ownedTools,
@@ -186,7 +191,7 @@ export function ConstellationCanvas({
     visibleTools,
     clusteredTools,
     activeReviewers,
-    reviewerToolNodes,
+    toolsByFocus,
     cx,
     cy,
     reviewActive,
@@ -204,16 +209,16 @@ export function ConstellationCanvas({
       for (const r of activeReviewers) {
         const color = FOCUS_COLOR_VAR[r.focus] ?? "var(--gospel-text-muted)";
         e.push({ from: "agent", to: r.id, color, dashed: true });
-        const ownedTools = reviewerToolNodes.filter((tool) => tool.reviewerId === r.focus);
+        const ownedTools = toolsByFocus.get(r.focus) ?? [];
         if (ownedTools.length > 0)
           e.push({
             from: r.id,
-            to: ownedTools.length === 1 ? ownedTools[0].id : reviewerClusterId(r.id, ownedTools),
+            to: ownedTools.length === 1 ? ownedTools[0].id : reviewerClusterId(r.id),
             color,
           });
       }
     return e;
-  }, [visibleTools, activeReviewers, reviewerToolNodes, reviewActive, mainClusterId]);
+  }, [visibleTools, activeReviewers, toolsByFocus, reviewActive, mainClusterId]);
 
   const openClusterTools = useMemo(() => {
     const cluster = nodes.find((node) => node.id === openClusterId && node.kind === "cluster");

@@ -10,10 +10,11 @@ interface NodeBounds {
 
 export const REVIEWER_NODE_BOUNDS = { width: 144, height: 88 } as const;
 export const REVIEWER_NODE_GAP = 24;
+// Keep in sync with .constellation-reviewer-tool-card in src/styles/global.css.
 export const REVIEWER_ACTIVITY_BOUNDS = { width: 120, height: 32 } as const;
 
 const CANVAS_EDGE_PADDING = 24;
-const AGENT_NODE_BOUNDS = { width: 104, height: 104 } as const;
+export const AGENT_NODE_BOUNDS = { width: 104, height: 104 } as const;
 const REVIEWER_ORBIT_RADIUS = 270;
 
 function clamp(value: number, min: number, max: number): number {
@@ -156,16 +157,18 @@ export function layoutReviewerActivityPosition(
   const maxX = canvas.w - REVIEWER_ACTIVITY_BOUNDS.width / 2 - CANVAS_EDGE_PADDING;
   const minY = REVIEWER_ACTIVITY_BOUNDS.height / 2 + CANVAS_EDGE_PADDING;
   const maxY = canvas.h - REVIEWER_ACTIVITY_BOUNDS.height / 2 - CANVAS_EDGE_PADDING;
-  const gridCandidates: CanvasPoint[] = [];
+  let nearest: CanvasPoint | null = null;
+  let nearestDistance = Infinity;
   for (let y = minY; y <= maxY; y += 16) {
-    for (let x = minX; x <= maxX; x += 16) gridCandidates.push({ x, y });
+    for (let x = minX; x <= maxX; x += 16) {
+      const point = { x, y };
+      if (!isAvailable(point)) continue;
+      const distance = (x - reviewer.x) ** 2 + (y - reviewer.y) ** 2;
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = point;
+      }
+    }
   }
-  gridCandidates.sort(
-    (first, second) =>
-      (first.x - reviewer.x) ** 2 +
-      (first.y - reviewer.y) ** 2 -
-      ((second.x - reviewer.x) ** 2 + (second.y - reviewer.y) ** 2)
-  );
-
-  return gridCandidates.find(isAvailable) ?? null;
+  return nearest;
 }
