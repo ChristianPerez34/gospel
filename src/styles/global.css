@@ -1766,6 +1766,28 @@ summary,
   gap: 8px;
 }
 
+.review-trigger-model {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.review-trigger-model span {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.review-trigger-model code {
+  overflow: hidden;
+  color: var(--accent-action);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .review-trigger-error {
   font-size: var(--font-size-body-sm);
   color: var(--status-error);
@@ -1856,6 +1878,15 @@ summary,
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.reviewer-panel-card-model {
+  overflow: hidden;
+  color: var(--accent-action);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reviewer-panel-card-status {
@@ -2049,6 +2080,27 @@ summary,
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
+/* Keep dimensions in sync with REVIEWER_ACTIVITY_BOUNDS in src/components/constellationLayout.ts. */
+.constellation-reviewer-tool-card {
+  box-sizing: border-box;
+  flex-direction: row;
+  width: 120px;
+  min-width: 120px;
+  height: 32px;
+  padding: 0 8px;
+  gap: 6px;
+}
+
+.constellation-reviewer-tool-card .constellation-tool-target {
+  flex: 1;
+  min-width: 0;
+}
+
+.constellation-reviewer-tool-card .constellation-tool-status-dot {
+  flex: none;
+  margin-top: 0;
+}
+
 .constellation-tool-kind {
   font-size: 9px;
   text-transform: uppercase;
@@ -2159,6 +2211,29 @@ summary,
   min-width: 96px;
 }
 
+.constellation-activity-cluster-btn {
+  box-sizing: border-box;
+  flex-direction: row;
+  width: 84px;
+  min-width: 84px;
+  height: 28px;
+  padding: 0 8px;
+  gap: 5px;
+  border-radius: var(--radius-full);
+}
+
+.constellation-activity-cluster-btn .constellation-cluster-glyph {
+  display: none;
+}
+
+.constellation-activity-cluster-btn .constellation-cluster-count {
+  font-size: 11px;
+}
+
+.constellation-activity-cluster-btn .constellation-cluster-label {
+  font-size: 9px;
+}
+
 .constellation-cluster-glyph {
   font-size: 14px;
   color: var(--text-muted);
@@ -2224,6 +2299,16 @@ summary,
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.constellation-reviewer-model {
+  max-width: 112px;
+  overflow: hidden;
+  color: var(--accent-action);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .constellation-reviewer-verdict-dot {

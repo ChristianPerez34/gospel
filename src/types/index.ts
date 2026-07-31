@@ -137,7 +137,16 @@ export type ReviewPhase =
       type: "detectorTool";
       chunk: number;
       toolName: string;
-      event: { call: { arguments: unknown } } | { result: { summary: string } };
+      event:
+        | { call: { id: string; arguments: unknown } }
+        | { result: { id: string; summary: string } };
+    }
+  | {
+      type: "validatorTool";
+      toolName: string;
+      event:
+        | { call: { id: string; arguments: unknown } }
+        | { result: { id: string; summary: string } };
     }
   | { type: "finalize"; status: PhaseStatus }
   | { type: "done"; findings: number; suppressed: number }
@@ -160,6 +169,8 @@ export type ReviewPhase =
 export interface ReviewProgressEvent {
   run_id: string;
   focus?: ReviewFocus;
+  provider?: string;
+  model?: string;
   phase: ReviewPhase;
   timestamp: number;
 }
@@ -191,6 +202,17 @@ export interface ReviewActivityEntry {
   phase: ReviewPhase["type"];
   focus?: ReviewFocus;
   text: string;
+}
+
+export interface ReviewToolActivity {
+  id: string;
+  focus: ReviewFocus;
+  stage: "detector" | "validator";
+  chunk: number;
+  toolName: string;
+  arguments?: unknown;
+  result?: string;
+  status: "calling" | "completed";
 }
 
 export interface ToolCallActivity {

@@ -29,6 +29,8 @@ export interface CanvasToolNode {
   arguments?: unknown;
   /** Raw result for diff popover extraction. */
   result?: string;
+  /** Review focus that owns this tool call. Main-agent tools omit it. */
+  reviewerId?: ReviewFocus;
 }
 
 export type CanvasReviewerStatus = "idle" | "active" | "done" | "failed";
@@ -42,12 +44,15 @@ export interface CanvasReviewerNode {
   findings: number;
   suppressed: number;
   comments: ReviewActivityEntry[];
+  provider: string | null;
+  model: string | null;
 }
 
 export interface UseConstellationResult {
   toolNodes: CanvasToolNode[];
   reviewerNodes: CanvasReviewerNode[];
   reviewActive: boolean;
+  reviewVisible: boolean;
   agentRunning: boolean;
 }
 
@@ -202,6 +207,20 @@ export function useConstellation(
       result: block.result,
     }));
 
+    for (const tool of reviewProgress.tools) {
+      toolNodes.push({
+        id: `review-tool:${tool.focus}:${tool.stage}:${tool.chunk}:${tool.id}`,
+        kind: mapToolKind(tool.toolName),
+        label: TOOL_LABELS[tool.toolName] ?? tool.toolName,
+        target: extractTarget(tool.toolName, tool.arguments),
+        status: tool.status === "calling" ? "running" : "done",
+        hasDiff: false,
+        arguments: tool.arguments,
+        result: tool.result,
+        reviewerId: tool.focus,
+      });
+    }
+
     // Merge approval blocks as "awaiting" tool nodes (they represent pending
     // tool calls that need user approval before proceeding).
     for (const approval of approvalBlocks) {
@@ -217,8 +236,13 @@ export function useConstellation(
     }
 
     // Derive reviewer nodes from review progress perFocus.
+    const aggregateActive = reviewerStatusFromPipeline(reviewProgress.pipeline) === "active";
+    const focusActive = Object.values(reviewProgress.perFocus).some(
+      (progress) => reviewerStatusFromPipeline(progress.pipeline) === "active"
+    );
     const reviewActive =
-      reviewProgress.runId !== null && !reviewProgress.done && !reviewProgress.failed;
+      reviewProgress.runId !== null && !reviewProgress.done && (aggregateActive || focusActive);
+    const reviewVisible = reviewProgress.runId !== null;
     const reviewerNodes: CanvasReviewerNode[] = FOCUS_OPTIONS.map((option) => {
       const fp = reviewProgress.perFocus[option.value];
       const pipeline = fp?.pipeline ?? reviewProgress.pipeline;
@@ -232,6 +256,8 @@ export function useConstellation(
         findings: pipeline.findings,
         suppressed: pipeline.suppressed,
         comments,
+        provider: reviewProgress.provider,
+        model: reviewProgress.model,
       };
     }).filter((r) => r.status !== "idle" || reviewActive);
 
@@ -240,7 +266,8 @@ export function useConstellation(
     return {
       toolNodes,
       reviewerNodes,
-      reviewActive: reviewActive || reviewProgress.done,
+      reviewActive,
+      reviewVisible,
       agentRunning,
     };
   }, [messages, currentTurn, reviewProgress, isStreaming]);

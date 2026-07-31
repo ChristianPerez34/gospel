@@ -244,7 +244,7 @@ export function WorkbenchLayout({
         ) : (
           <ReviewersTab
             reviewers={visibleReviewers}
-            reviewActive={constellation.reviewActive}
+            reviewVisible={constellation.reviewVisible}
             verdictCount={verdictCount}
             activeReviewer={activeReviewer}
             onHover={setActiveReviewer}
@@ -252,6 +252,8 @@ export function WorkbenchLayout({
             // Review trigger
             reviewMode={reviewMode}
             onReviewModeChange={setReviewMode}
+            reviewProvider={reviewProvider}
+            reviewModel={reviewModel}
             prNumber={prNumber}
             onPrNumberChange={setPrNumber}
             selectedFocus={selectedFocus}
@@ -282,7 +284,7 @@ export function WorkbenchLayout({
         <ConstellationCanvas
           toolNodes={constellation.toolNodes}
           reviewerNodes={constellation.reviewerNodes}
-          reviewActive={constellation.reviewActive}
+          reviewVisible={constellation.reviewVisible}
           agentRunning={constellation.agentRunning}
           onApprove={handleApprove}
         />
@@ -295,7 +297,7 @@ export function WorkbenchLayout({
 
 interface ReviewersTabProps {
   reviewers: ReturnType<typeof useConstellation>["reviewerNodes"];
-  reviewActive: boolean;
+  reviewVisible: boolean;
   verdictCount: number;
   activeReviewer: string | null;
   onHover: (id: string) => void;
@@ -303,6 +305,8 @@ interface ReviewersTabProps {
   // Review trigger
   reviewMode: ReviewMode;
   onReviewModeChange: (mode: ReviewMode) => void;
+  reviewProvider?: string;
+  reviewModel?: string;
   prNumber: string;
   onPrNumberChange: (value: string) => void;
   selectedFocus: ReviewFocus;
@@ -325,13 +329,15 @@ interface ReviewersTabProps {
 
 function ReviewersTab({
   reviewers,
-  reviewActive,
+  reviewVisible,
   verdictCount,
   activeReviewer,
   onHover,
   onLeave,
   reviewMode,
   onReviewModeChange,
+  reviewProvider,
+  reviewModel,
   prNumber,
   onPrNumberChange,
   selectedFocus,
@@ -391,6 +397,14 @@ function ReviewersTab({
             ))}
           </select>
         </div>
+        {reviewProvider && reviewModel && (
+          <div className="review-trigger-model" title="Model used by every review subagent">
+            <span>Model</span>
+            <code>
+              {reviewProvider}/{reviewModel}
+            </code>
+          </div>
+        )}
         <div className="review-trigger-actions">
           <Button
             variant="default"
@@ -415,7 +429,7 @@ function ReviewersTab({
       </div>
 
       {/* Summary pills */}
-      {reviewActive && (
+      {reviewVisible && (
         <div className="reviewers-summary">
           <span className="reviewers-summary-meta">
             {verdictCount}/{reviewers.length} verdicts
@@ -425,7 +439,7 @@ function ReviewersTab({
 
       {/* Reviewer cards */}
       <div className="reviewers-list">
-        {reviewers.length === 0 && !reviewActive && !reviewResult && !multiReviewResult && (
+        {reviewers.length === 0 && !reviewVisible && !reviewResult && !multiReviewResult && (
           <div className="reviewers-empty">Run a review to see parallel reviewer activity.</div>
         )}
         {reviewers.map((r) => (

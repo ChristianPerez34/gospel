@@ -1,4 +1,6 @@
-use super::{knowledge, AgentConfig, ReviewAgentError, ReviewComment, ReviewFocus};
+use super::{
+    knowledge, AgentConfig, ReviewAgentError, ReviewComment, ReviewFocus, ToolEventObserver,
+};
 use crate::harness_profile::{ActiveWorkspaceContext, AgentRole};
 use crate::text_utils::wrap_untrusted;
 
@@ -125,6 +127,7 @@ pub async fn run_validator(
     workspace: &ActiveWorkspaceContext,
     prompt: &str,
     focus: ReviewFocus,
+    on_tool_event: Option<&dyn ToolEventObserver>,
 ) -> Result<String, ReviewAgentError> {
     let preamble = preamble_for_focus(focus);
     super::run_workspace_agent(AgentConfig {
@@ -135,7 +138,7 @@ pub async fn run_validator(
         role: AgentRole::ReviewValidator,
         preamble: preamble.as_str(),
         prompt,
-        on_tool_event: None,
+        on_tool_event,
     })
     .await
 }

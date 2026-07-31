@@ -22,6 +22,10 @@ pub struct ReviewProgressEvent {
     pub run_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<ReviewFocus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub phase: ReviewPhase,
     pub timestamp: i64,
 }
@@ -39,9 +43,17 @@ impl ReviewProgressEvent {
         Self {
             run_id: run_id.to_string(),
             focus: focus.into(),
+            provider: None,
+            model: None,
             phase,
             timestamp: chrono::Utc::now().timestamp_millis(),
         }
+    }
+
+    pub fn with_model(mut self, provider: &str, model: &str) -> Self {
+        self.provider = Some(provider.to_string());
+        self.model = Some(model.to_string());
+        self
     }
 }
 
@@ -80,6 +92,12 @@ pub enum ReviewPhase {
     /// with the `Detector` chunk number.
     DetectorTool {
         chunk: usize,
+        tool_name: String,
+        event: ToolEventKind,
+    },
+    /// Incremental tool activity from the validator agent. These events share
+    /// the review focus so validator file reads attach to the same reviewer.
+    ValidatorTool {
         tool_name: String,
         event: ToolEventKind,
     },
@@ -155,9 +173,12 @@ pub enum PhaseStatus {
 #[serde(rename_all = "camelCase")]
 pub enum ToolEventKind {
     /// The agent invoked a tool. `arguments` carries the raw JSON arguments.
-    Call { arguments: serde_json::Value },
+    Call {
+        id: String,
+        arguments: serde_json::Value,
+    },
     /// The tool returned a result. `summary` is a best-effort text excerpt.
-    Result { summary: String },
+    Result { id: String, summary: String },
 }
 
 /// Abstracts emission of review progress events so the review pipeline can

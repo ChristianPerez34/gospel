@@ -8,7 +8,12 @@ type ReviewProgressListener = (event: { payload: ReviewProgressEvent }) => void;
 
 let progressListener: ReviewProgressListener | null = null;
 
-function emitProgress(phase: ReviewPhase, focus?: ReviewFocus, runId = "run-1") {
+function emitProgress(
+  phase: ReviewPhase,
+  focus?: ReviewFocus,
+  runId = "run-1",
+  metadata: { provider?: string; model?: string } = {}
+) {
   if (!progressListener) {
     throw new Error("review-progress listener was not registered");
   }
@@ -20,6 +25,7 @@ function emitProgress(phase: ReviewPhase, focus?: ReviewFocus, runId = "run-1") 
         focus,
         phase,
         timestamp: 1783094400000,
+        ...metadata,
       },
     });
   });
@@ -102,7 +108,7 @@ describe("useReviewProgress", () => {
       type: "detectorTool",
       chunk: 1,
       toolName: "read_file",
-      event: { call: { arguments: { path: "/src/main.rs" } } },
+      event: { call: { id: "call-1", arguments: { path: "/src/main.rs" } } },
     });
 
     await waitFor(() => {
@@ -110,6 +116,104 @@ describe("useReviewProgress", () => {
     });
     expect(result.current.log[0]?.text).toBe("read_file: /src/main.rs");
     expect(result.current.pipeline.detector.status).toBe("idle");
+  });
+
+  it("retains the runtime model from the review start event", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress(
+      {
+        type: "detector",
+        chunk: 0,
+        totalChunks: 0,
+        files: [],
+        candidateCount: 0,
+        status: "starting",
+      },
+      "Security",
+      "run-model",
+      { provider: "anthropic", model: "claude-sonnet-4" }
+    );
+
+    await waitFor(() => {
+      expect(result.current.provider).toBe("anthropic");
+      expect(result.current.model).toBe("claude-sonnet-4");
+    });
+  });
+
+  it("retains structured reviewer tool calls and pairs their results by id", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress(
+      {
+        type: "detectorTool",
+        chunk: 1,
+        toolName: "read_file",
+        event: { call: { id: "call-7", arguments: { path: "src/review/mod.rs" } } },
+      },
+      "Architecture"
+    );
+    emitProgress(
+      {
+        type: "detectorTool",
+        chunk: 1,
+        toolName: "read_file",
+        event: { result: { id: "call-7", summary: "file contents" } },
+      },
+      "Architecture"
+    );
+
+    await waitFor(() => {
+      expect(result.current.tools).toEqual([
+        {
+          id: "call-7",
+          focus: "Architecture",
+          stage: "detector",
+          chunk: 1,
+          toolName: "read_file",
+          arguments: { path: "src/review/mod.rs" },
+          result: "file contents",
+          status: "completed",
+        },
+      ]);
+    });
+  });
+
+  it("retains validator file activity under the same review focus", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress(
+      {
+        type: "validatorTool",
+        toolName: "read_file",
+        event: { call: { id: "validator-call", arguments: { path: "src/lib.rs" } } },
+      },
+      "Security"
+    );
+
+    await waitFor(() => {
+      expect(result.current.tools).toEqual([
+        expect.objectContaining({
+          id: "validator-call",
+          focus: "Security",
+          stage: "validator",
+          chunk: 0,
+          status: "calling",
+        }),
+      ]);
+    });
   });
 
   it("logs multi-focus start event so the UI leaves waiting state", async () => {

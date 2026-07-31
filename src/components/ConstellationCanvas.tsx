@@ -8,6 +8,11 @@ import {
   VISIBLE_TOOLS,
 } from "../hooks/useConstellation";
 import type { ReviewFocus } from "../types";
+import {
+  type CanvasPoint,
+  layoutReviewerActivityPosition,
+  layoutReviewerPositions,
+} from "./constellationLayout";
 
 // ── Review focus → color mapping ────────────────────────────────────────────
 
@@ -44,12 +49,18 @@ interface Edge {
   dashed?: boolean;
 }
 
+const MAIN_CLUSTER_PREFIX = "cluster";
+
+function reviewerClusterId(reviewerId: string): string {
+  return `reviewer-cluster:${reviewerId}`;
+}
+
 // ── Props ───────────────────────────────────────────────────────────────────
 
 interface ConstellationCanvasProps {
   toolNodes: CanvasToolNode[];
   reviewerNodes: CanvasReviewerNode[];
-  reviewActive: boolean;
+  reviewVisible: boolean;
   agentRunning: boolean;
   onApprove?: (id: string) => void;
 }
@@ -59,15 +70,16 @@ interface ConstellationCanvasProps {
 export function ConstellationCanvas({
   toolNodes,
   reviewerNodes,
-  reviewActive,
+  reviewVisible,
   agentRunning,
   onApprove,
 }: ConstellationCanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 1000, h: 600 });
   const [activeReviewer, setActiveReviewer] = useState<string | null>(null);
-  const [clusterOpen, setClusterOpen] = useState(false);
+  const [openClusterId, setOpenClusterId] = useState<string | null>(null);
   const [diffTool, setDiffTool] = useState<CanvasToolNode | null>(null);
+  const clusterOpenerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -80,22 +92,39 @@ export function ConstellationCanvas({
   const cx = size.w / 2;
   const cy = size.h / 2 - 10;
 
-  // Decide which tools render as individual nodes vs. a cluster.
+  const mainToolNodes = useMemo(() => toolNodes.filter((tool) => !tool.reviewerId), [toolNodes]);
+  const reviewerToolNodes = useMemo(() => toolNodes.filter((tool) => tool.reviewerId), [toolNodes]);
+
+  const toolsByFocus = useMemo(() => {
+    const map = new Map<string, CanvasToolNode[]>();
+    for (const tool of reviewerToolNodes) {
+      if (!tool.reviewerId) continue;
+      const list = map.get(tool.reviewerId) ?? [];
+      list.push(tool);
+      map.set(tool.reviewerId, list);
+    }
+    return map;
+  }, [reviewerToolNodes]);
+
+  // Decide which main-agent tools render as individual nodes vs. a cluster.
+  // Reviewer activity stays visible on bounded, reviewer-owned branches.
   const { visibleTools, clusteredTools } = useMemo(() => {
-    if (toolNodes.length <= CLUSTER_THRESHOLD)
-      return { visibleTools: toolNodes, clusteredTools: [] };
-    const visible = toolNodes.slice(-VISIBLE_TOOLS);
-    const clustered = toolNodes.slice(0, toolNodes.length - VISIBLE_TOOLS);
+    if (mainToolNodes.length <= CLUSTER_THRESHOLD)
+      return { visibleTools: mainToolNodes, clusteredTools: [] };
+    const visible = mainToolNodes.slice(-VISIBLE_TOOLS);
+    const clustered = mainToolNodes.slice(0, mainToolNodes.length - VISIBLE_TOOLS);
     return { visibleTools: visible, clusteredTools: clustered };
-  }, [toolNodes]);
+  }, [mainToolNodes]);
+  const mainClusterId = clusteredTools.length > 0 ? MAIN_CLUSTER_PREFIX : null;
 
   const activeReviewers = useMemo(
-    () => (reviewActive ? reviewerNodes : []),
-    [reviewerNodes, reviewActive]
+    () => (reviewVisible ? reviewerNodes : []),
+    [reviewerNodes, reviewVisible]
   );
 
   const nodes = useMemo<NodePos[]>(() => {
     const list: NodePos[] = [{ id: "agent", x: cx, y: cy, kind: "agent" }];
+    const reviewerPositions = new Map<string, { x: number; y: number }>();
     const toolCount = visibleTools.length + (clusteredTools.length > 0 ? 1 : 0);
     visibleTools.forEach((tc, i) => {
       const t = toolCount <= 1 ? 0.5 : i / (toolCount - 1);
@@ -113,43 +142,94 @@ export function ConstellationCanvas({
       const angle = Math.PI - 0.65;
       const radius = 200;
       list.push({
-        id: "cluster",
+        id: mainClusterId!,
         x: cx + Math.cos(angle) * radius,
         y: cy + Math.sin(angle) * radius * 0.7,
         kind: "cluster",
         ref: clusteredTools,
       });
     }
-    if (reviewActive) {
+    if (reviewVisible) {
+      const positions = layoutReviewerPositions(activeReviewers.length, size, { x: cx, y: cy });
+      const activityPositions: CanvasPoint[] = [];
       activeReviewers.forEach((r, i) => {
-        const t = activeReviewers.length <= 1 ? 0.5 : i / (activeReviewers.length - 1);
-        const angle = -0.65 + t * 1.3;
-        const radius = 230;
+        const position = positions[i];
+        reviewerPositions.set(r.id, position);
         list.push({
           id: r.id,
-          x: cx + Math.cos(angle) * radius,
-          y: cy + Math.sin(angle) * radius * 0.75,
+          ...position,
           kind: "reviewer",
           ref: r,
         });
       });
+
+      for (const [reviewerIndex, reviewer] of activeReviewers.entries()) {
+        const reviewerPosition = reviewerPositions.get(reviewer.id);
+        if (!reviewerPosition) continue;
+        const ownedTools = toolsByFocus.get(reviewer.focus) ?? [];
+        if (ownedTools.length === 0) continue;
+
+        const activityPosition = layoutReviewerActivityPosition(
+          reviewerPosition,
+          positions.filter((_, index) => index !== reviewerIndex),
+          activityPositions,
+          size,
+          { x: cx, y: cy }
+        );
+        activityPositions.push(activityPosition);
+        list.push({
+          id: ownedTools.length === 1 ? ownedTools[0].id : reviewerClusterId(reviewer.id),
+          ...activityPosition,
+          kind: ownedTools.length === 1 ? "tool" : "cluster",
+          ref: ownedTools.length === 1 ? ownedTools[0] : ownedTools,
+        });
+      }
     }
     return list;
-  }, [visibleTools, clusteredTools, activeReviewers, cx, cy, reviewActive]);
+  }, [
+    visibleTools,
+    clusteredTools,
+    activeReviewers,
+    toolsByFocus,
+    cx,
+    cy,
+    reviewVisible,
+    size,
+    mainClusterId,
+  ]);
 
   const edges = useMemo<Edge[]>(() => {
     const e: Edge[] = [];
     for (const tc of visibleTools)
       e.push({ from: "agent", to: tc.id, color: "var(--gospel-surface-line)" });
-    if (clusteredTools.length > 0)
-      e.push({ from: "agent", to: "cluster", color: "var(--gospel-text-muted)" });
-    if (reviewActive)
+    if (mainClusterId)
+      e.push({ from: "agent", to: mainClusterId, color: "var(--gospel-text-muted)" });
+    if (reviewVisible)
       for (const r of activeReviewers) {
         const color = FOCUS_COLOR_VAR[r.focus] ?? "var(--gospel-text-muted)";
         e.push({ from: "agent", to: r.id, color, dashed: true });
+        const ownedTools = toolsByFocus.get(r.focus) ?? [];
+        if (ownedTools.length > 0)
+          e.push({
+            from: r.id,
+            to: ownedTools.length === 1 ? ownedTools[0].id : reviewerClusterId(r.id),
+            color,
+          });
       }
     return e;
-  }, [visibleTools, clusteredTools, activeReviewers, reviewActive]);
+  }, [visibleTools, activeReviewers, toolsByFocus, reviewVisible, mainClusterId]);
+
+  const openClusterTools = useMemo(() => {
+    const cluster = nodes.find((node) => node.id === openClusterId && node.kind === "cluster");
+    return cluster && Array.isArray(cluster.ref) ? cluster.ref : null;
+  }, [nodes, openClusterId]);
+
+  const closeCluster = () => {
+    const opener = clusterOpenerRef.current;
+    clusterOpenerRef.current = null;
+    setOpenClusterId(null);
+    requestAnimationFrame(() => opener?.focus());
+  };
 
   const posOf = (id: string) => nodes.find((n) => n.id === id);
 
@@ -160,7 +240,7 @@ export function ConstellationCanvas({
 
       {/* SVG edges */}
       <svg className="constellation-svg" width={size.w} height={size.h} aria-hidden>
-        {edges.map((e, i) => {
+        {edges.map((e) => {
           const a = posOf(e.from);
           const b = posOf(e.to);
           if (!a || !b) return null;
@@ -168,7 +248,9 @@ export function ConstellationCanvas({
           const my = (a.y + b.y) / 2 - 30;
           return (
             <path
-              key={i}
+              key={`${e.from}:${e.to}`}
+              data-edge-from={e.from}
+              data-edge-to={e.to}
               d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
               stroke={e.color}
               strokeWidth={e.dashed ? 1.5 : 1}
@@ -202,8 +284,18 @@ export function ConstellationCanvas({
               x={n.x}
               y={n.y}
               tools={n.ref as CanvasToolNode[]}
-              open={clusterOpen}
-              onToggle={() => setClusterOpen((v) => !v)}
+              label={n.id === mainClusterId ? "earlier" : "activity"}
+              open={openClusterId === n.id}
+              popoverId={clusterPopoverId(n.id)}
+              onToggle={(opener) => {
+                if (openClusterId === n.id) {
+                  clusterOpenerRef.current = null;
+                  setOpenClusterId(null);
+                } else {
+                  clusterOpenerRef.current = opener;
+                  setOpenClusterId(n.id);
+                }
+              }}
             />
           );
         if (n.kind === "reviewer" && n.ref && "focus" in n.ref)
@@ -228,7 +320,10 @@ export function ConstellationCanvas({
           <button
             type="button"
             className="constellation-load-hint-btn"
-            onClick={() => setClusterOpen(true)}
+            onClick={(event) => {
+              clusterOpenerRef.current = event.currentTarget;
+              setOpenClusterId(mainClusterId);
+            }}
           >
             view all
           </button>
@@ -244,8 +339,17 @@ export function ConstellationCanvas({
           }
         />
       )}
-      {clusterOpen && (
-        <ClusterPopover tools={clusteredTools} onClose={() => setClusterOpen(false)} />
+      {openClusterTools && (
+        <ClusterPopover
+          tools={openClusterTools}
+          title={
+            openClusterId === mainClusterId
+              ? `${openClusterTools.length} earlier tool calls`
+              : `${openClusterTools.length} grouped tool calls`
+          }
+          id={clusterPopoverId(openClusterId ?? mainClusterId ?? MAIN_CLUSTER_PREFIX)}
+          onClose={closeCluster}
+        />
       )}
       {diffTool && <DiffPopover tc={diffTool} onClose={() => setDiffTool(null)} />}
     </div>
@@ -287,10 +391,11 @@ function ToolNode({
   onShowDiff: (tc: CanvasToolNode) => void;
 }) {
   const [hover, setHover] = useState(false);
+  const compact = Boolean(tc.reviewerId);
   return (
     <div className="constellation-node-tool" style={{ left: x, top: y }}>
       <div
-        className="constellation-tool-card"
+        className={`constellation-tool-card${compact ? " constellation-reviewer-tool-card" : ""}`}
         style={{
           borderColor:
             tc.status === "awaiting"
@@ -370,35 +475,52 @@ function ClusterNode({
   x,
   y,
   tools,
+  label,
   open,
+  popoverId,
   onToggle,
 }: {
   x: number;
   y: number;
   tools: CanvasToolNode[];
+  label: "activity" | "earlier";
   open: boolean;
-  onToggle: () => void;
+  popoverId: string;
+  onToggle: (opener: HTMLButtonElement) => void;
 }) {
   return (
     <div className="constellation-node-cluster" style={{ left: x, top: y }}>
       <button
         type="button"
-        className="constellation-cluster-btn"
+        className={`constellation-cluster-btn${label === "activity" ? " constellation-activity-cluster-btn" : ""}`}
         style={{
           borderColor: open ? "var(--gospel-accent-action)" : "var(--gospel-text-muted)",
           borderStyle: "dashed",
         }}
-        onClick={onToggle}
+        aria-controls={popoverId}
+        aria-expanded={open}
+        aria-label={`${tools.length} ${label === "activity" ? "grouped reviewer tool calls" : "earlier tool calls"}`}
+        onClick={(event) => onToggle(event.currentTarget)}
       >
         <span className="constellation-cluster-glyph">⇄</span>
         <span className="constellation-cluster-count">+{tools.length}</span>
-        <span className="constellation-cluster-label">earlier</span>
+        <span className="constellation-cluster-label">{label}</span>
       </button>
     </div>
   );
 }
 
-function ClusterPopover({ tools, onClose }: { tools: CanvasToolNode[]; onClose: () => void }) {
+function ClusterPopover({
+  tools,
+  title,
+  id,
+  onClose,
+}: {
+  tools: CanvasToolNode[];
+  title: string;
+  id: string;
+  onClose: () => void;
+}) {
   const byKind = useMemo(() => {
     const m = new Map<CanvasToolKind, CanvasToolNode[]>();
     for (const t of tools) {
@@ -410,10 +532,15 @@ function ClusterPopover({ tools, onClose }: { tools: CanvasToolNode[]; onClose: 
   }, [tools]);
 
   return (
-    <div className="constellation-cluster-pop">
+    <section id={id} className="constellation-cluster-pop" aria-label={title}>
       <div className="constellation-cluster-pop-head">
-        <span className="constellation-cluster-pop-title">{tools.length} earlier tool calls</span>
-        <button type="button" className="constellation-pop-close" onClick={onClose}>
+        <span className="constellation-cluster-pop-title">{title}</span>
+        <button
+          type="button"
+          className="constellation-pop-close"
+          aria-label="Close tool activity"
+          onClick={onClose}
+        >
           ×
         </button>
       </div>
@@ -438,8 +565,12 @@ function ClusterPopover({ tools, onClose }: { tools: CanvasToolNode[]; onClose: 
           </div>
         ))}
       </div>
-    </div>
+    </section>
   );
+}
+
+function clusterPopoverId(clusterId: string): string {
+  return `constellation-cluster-popover-${clusterId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
 // ── Diff popover ────────────────────────────────────────────────────────────
@@ -600,6 +731,14 @@ function ReviewerNode({
           {r.name[0]}
         </span>
         <span className="constellation-reviewer-name">{r.name}</span>
+        {r.model && (
+          <span
+            className="constellation-reviewer-model"
+            title={`Review model: ${r.provider ? `${r.provider}/` : ""}${r.model}`}
+          >
+            {r.model}
+          </span>
+        )}
         {r.status === "done" && (
           <span
             className="constellation-reviewer-verdict-dot"
@@ -616,6 +755,7 @@ function ReviewerNode({
 
 function ReviewerPopover({ r }: { r: CanvasReviewerNode }) {
   const color = FOCUS_COLOR_HEX[r.focus] ?? "var(--gospel-text-muted)";
+  const modelLabel = r.provider && r.model ? `${r.provider}/${r.model}` : "model pending";
   return (
     <div className="constellation-reviewer-pop" style={{ borderColor: color }}>
       <div className="constellation-pop-head">
@@ -632,7 +772,7 @@ function ReviewerPopover({ r }: { r: CanvasReviewerNode }) {
         <div>
           <div className="constellation-pop-name">{r.name}</div>
           <div className="constellation-pop-role">
-            {r.status} · {r.findings} findings
+            {modelLabel} · {r.status} · {r.findings} findings
           </div>
         </div>
       </div>
