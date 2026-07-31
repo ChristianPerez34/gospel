@@ -2080,6 +2080,26 @@ summary,
     box-shadow var(--duration-fast) var(--ease-out-quart);
 }
 
+.constellation-reviewer-tool-card {
+  box-sizing: border-box;
+  flex-direction: row;
+  width: 120px;
+  min-width: 120px;
+  height: 32px;
+  padding: 0 8px;
+  gap: 6px;
+}
+
+.constellation-reviewer-tool-card .constellation-tool-target {
+  flex: 1;
+  min-width: 0;
+}
+
+.constellation-reviewer-tool-card .constellation-tool-status-dot {
+  flex: none;
+  margin-top: 0;
+}
+
 .constellation-tool-kind {
   font-size: 9px;
   text-transform: uppercase;
@@ -2188,6 +2208,29 @@ summary,
   cursor: pointer;
   font-family: var(--font-mono);
   min-width: 96px;
+}
+
+.constellation-activity-cluster-btn {
+  box-sizing: border-box;
+  flex-direction: row;
+  width: 84px;
+  min-width: 84px;
+  height: 28px;
+  padding: 0 8px;
+  gap: 5px;
+  border-radius: var(--radius-full);
+}
+
+.constellation-activity-cluster-btn .constellation-cluster-glyph {
+  display: none;
+}
+
+.constellation-activity-cluster-btn .constellation-cluster-count {
+  font-size: 11px;
+}
+
+.constellation-activity-cluster-btn .constellation-cluster-label {
+  font-size: 8px;
 }
 
 .constellation-cluster-glyph {
