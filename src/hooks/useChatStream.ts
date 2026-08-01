@@ -111,40 +111,37 @@ interface StartStreamOptions {
  * `setFrameSchedulerForTest`. A scheduled handle is cancelled by
  * `cancelFrameHandle` before a synchronous flush or cleanup. */
 type FrameHandle = number;
-type FrameScheduler = (cb: () => void) => FrameHandle;
-type FrameCanceller = (handle: FrameHandle) => void;
+interface FrameScheduler {
+  schedule: (cb: () => void) => FrameHandle;
+  cancel: (handle: FrameHandle) => void;
+}
 
-const frameScheduler: FrameScheduler =
-  typeof requestAnimationFrame === "function"
-    ? (cb) => requestAnimationFrame(cb)
-    : (cb) => setTimeout(cb, 0) as unknown as FrameHandle;
-const frameCanceller: FrameCanceller =
-  typeof cancelAnimationFrame === "function"
-    ? (handle) => cancelAnimationFrame(handle)
-    : (handle) => clearTimeout(handle as number);
+const browserFrameScheduler: FrameScheduler = {
+  schedule:
+    typeof requestAnimationFrame === "function"
+      ? (cb) => requestAnimationFrame(cb)
+      : (cb) => setTimeout(cb, 0) as unknown as FrameHandle,
+  cancel:
+    typeof cancelAnimationFrame === "function"
+      ? (handle) => cancelAnimationFrame(handle)
+      : (handle) => clearTimeout(handle as number),
+};
 
-let testScheduler: FrameScheduler | null = null;
-let testCanceller: FrameCanceller | null = null;
+let testFrameScheduler: FrameScheduler | null = null;
 
 /** Test-only seam: replace the frame scheduler/canceller with a deterministic
  * queue. Pass `null` to restore the browser animation-frame scheduler. */
-export function setFrameSchedulerForTest(
-  scheduler: FrameScheduler | null,
-  canceller: FrameCanceller | null = null
-) {
-  testScheduler = scheduler;
-  testCanceller = canceller;
+export function setFrameSchedulerForTest(scheduler: FrameScheduler | null) {
+  testFrameScheduler = scheduler;
 }
 
 function scheduleFlush(cb: () => void): FrameHandle {
-  const sched = testScheduler ?? frameScheduler;
-  return sched(cb);
+  return (testFrameScheduler ?? browserFrameScheduler).schedule(cb);
 }
 
 function cancelFrameHandle(handle: FrameHandle | null) {
   if (handle == null) return;
-  const cancel = testCanceller ?? frameCanceller;
-  cancel(handle);
+  (testFrameScheduler ?? browserFrameScheduler).cancel(handle);
 }
 
 export function useChatStream(options: UseChatStreamOptions = {}) {

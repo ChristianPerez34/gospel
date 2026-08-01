@@ -533,21 +533,21 @@ describe("useChatStream", () => {
       scheduledFrames = new Map();
       frameHandles = 0;
       cancelledHandles = [];
-      setFrameSchedulerForTest(
-        (cb) => {
+      setFrameSchedulerForTest({
+        schedule: (cb) => {
           const handle = ++frameHandles;
           scheduledFrames.set(handle, () => cb());
           return handle;
         },
-        (handle) => {
+        cancel: (handle) => {
           cancelledHandles.push(handle);
           scheduledFrames.delete(handle);
-        }
-      );
+        },
+      });
     });
 
     afterEach(() => {
-      setFrameSchedulerForTest(null, null);
+      setFrameSchedulerForTest(null);
     });
 
     function flushFrames() {

@@ -4,8 +4,8 @@ import { act, renderHook } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message, ModelOption, Session } from "../types";
-import { type UseSessionManagerParams, useSessionManager } from "./useSessionManager";
 import { setFrameSchedulerForTest } from "./useChatStream";
+import { type UseSessionManagerParams, useSessionManager } from "./useSessionManager";
 
 type ListenerCallback = (event: { payload: unknown }) => void;
 
@@ -818,18 +818,18 @@ describe("useSessionManager", () => {
     });
 
     it("creates a stable currentTurn from the first streamed token", async () => {
-      let scheduledFrames: Map<number, () => void> = new Map();
+      const scheduledFrames: Map<number, () => void> = new Map();
       let frameHandles = 0;
-      setFrameSchedulerForTest(
-        (cb) => {
+      setFrameSchedulerForTest({
+        schedule: (cb) => {
           const handle = ++frameHandles;
           scheduledFrames.set(handle, () => cb());
           return handle;
         },
-        (handle) => {
+        cancel: (handle) => {
           scheduledFrames.delete(handle);
-        }
-      );
+        },
+      });
 
       function flushFrames() {
         const pending = [...scheduledFrames.values()];
@@ -867,7 +867,7 @@ describe("useSessionManager", () => {
           { kind: "text", id: "text-0", text: "hello back" },
         ]);
       } finally {
-        setFrameSchedulerForTest(null, null);
+        setFrameSchedulerForTest(null);
       }
     });
 

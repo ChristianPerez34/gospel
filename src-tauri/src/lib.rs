@@ -1470,10 +1470,32 @@ mod delegate_completion_config_tests {
 #[tauri::command]
 fn clear_conversation_history(
     conversation_state: tauri::State<'_, ConversationState>,
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
 ) -> Result<(), String> {
-    let mut store = conversation_state.store.lock().unwrap();
-    store.clear(&session_id);
+    match &session_store.store {
+        Some(store) => clear_conversation_history_with_access(
+            conversation_state.inner(),
+            store,
+            app_config.inner(),
+            &session_id,
+        ),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+fn clear_conversation_history_with_access(
+    conversation_state: &ConversationState,
+    session_store: &SessionStore,
+    app_config: &AppConfigState,
+    session_id: &str,
+) -> Result<(), String> {
+    validate_session_access(session_store, session_id, app_config)?;
+    conversation_state.store.lock().unwrap().clear(session_id);
     Ok(())
 }
 
@@ -2211,14 +2233,7 @@ fn get_session(
     session_id: String,
 ) -> Result<SessionDetail, String> {
     let detail = match &session_store.store {
-        Some(store) => {
-            let detail = store
-                .get_session(&session_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("Session not found: {}", session_id))?;
-            validate_session_access(store, &session_id, app_config.inner())?;
-            detail
-        }
+        Some(store) => authorized_session_detail(store, &session_id, app_config.inner())?,
         None => {
             return Err(session_store
                 .init_warning
@@ -2593,11 +2608,52 @@ enum ExportFormat {
     Internal,
 }
 
+const DEBUG_EXPORT_METADATA_MAX_BYTES: usize = 200;
+
+fn project_debug_metadata(value: &str) -> String {
+    let redacted = trace::redacted_text(value);
+    text_utils::truncate_text_bytes(&redacted, DEBUG_EXPORT_METADATA_MAX_BYTES).0
+}
+
 /// Parse the persisted Display Transcript JSON into an array of entries. A
 /// malformed or legacy payload yields an empty array rather than the raw
 /// string, so exports never fall back to returning unprojected input.
 fn parse_display_transcript(raw: &str) -> Vec<serde_json::Value> {
     serde_json::from_str::<Vec<serde_json::Value>>(raw).unwrap_or_default()
+}
+
+fn project_shared_export_fields(
+    entry: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let role = entry.get("role").and_then(|value| value.as_str())?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+
+    let mut projected = serde_json::Map::new();
+    projected.insert(
+        "role".to_string(),
+        serde_json::Value::String(role.to_string()),
+    );
+    if let Some(content) = entry.get("content").and_then(|value| value.as_str()) {
+        projected.insert(
+            "content".to_string(),
+            serde_json::Value::String(content.to_string()),
+        );
+    }
+    if let Some(error) = entry.get("error").and_then(|value| value.as_bool()) {
+        projected.insert("error".to_string(), serde_json::Value::Bool(error));
+    }
+    if let Some(controlled_stop) = entry
+        .get("controlled_stop")
+        .and_then(|value| value.as_bool())
+    {
+        projected.insert(
+            "controlled_stop".to_string(),
+            serde_json::Value::Bool(controlled_stop),
+        );
+    }
+    Some(projected)
 }
 
 /// Safe-to-share Transcript projection. Preserves only user/assistant text and
@@ -2609,23 +2665,7 @@ fn project_transcript(raw: &str) -> String {
         .iter()
         .filter_map(|entry| {
             let obj = entry.as_object()?;
-            let role = obj.get("role").and_then(|r| r.as_str())?;
-            if role != "user" && role != "assistant" {
-                return None;
-            }
-            let mut out = serde_json::Map::new();
-            out.insert("role".to_string(), serde_json::Value::String(role.to_string()));
-
-            if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
-                out.insert("content".to_string(), serde_json::Value::String(content.to_string()));
-            }
-            if let Some(error) = obj.get("error").and_then(|e| e.as_bool()) {
-                out.insert("error".to_string(), serde_json::Value::Bool(error));
-            }
-            if let Some(controlled_stop) = obj.get("controlled_stop").and_then(|cs| cs.as_bool()) {
-                out.insert("controlled_stop".to_string(), serde_json::Value::Bool(controlled_stop));
-            }
-            Some(serde_json::Value::Object(out))
+            project_shared_export_fields(obj).map(serde_json::Value::Object)
         })
         .collect();
     serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
@@ -2640,22 +2680,7 @@ fn project_debug(raw: &str) -> String {
         .iter()
         .filter_map(|entry| {
             let obj = entry.as_object()?;
-            let role = obj.get("role").and_then(|r| r.as_str())?;
-            if role != "user" && role != "assistant" {
-                return None;
-            }
-            let mut out = serde_json::Map::new();
-            out.insert("role".to_string(), serde_json::Value::String(role.to_string()));
-
-            if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
-                out.insert("content".to_string(), serde_json::Value::String(content.to_string()));
-            }
-            if let Some(error) = obj.get("error").and_then(|e| e.as_bool()) {
-                out.insert("error".to_string(), serde_json::Value::Bool(error));
-            }
-            if let Some(controlled_stop) = obj.get("controlled_stop").and_then(|cs| cs.as_bool()) {
-                out.insert("controlled_stop".to_string(), serde_json::Value::Bool(controlled_stop));
-            }
+            let mut out = project_shared_export_fields(obj)?;
             if let Some(blocks) = obj.get("blocks").and_then(|b| b.as_array()) {
                 let debug_blocks: Vec<serde_json::Value> = blocks
                     .iter()
@@ -2663,22 +2688,34 @@ fn project_debug(raw: &str) -> String {
                         let b_obj = block.as_object()?;
                         let mut dbg = serde_json::Map::new();
                         if let Some(kind) = b_obj.get("kind").and_then(|v| v.as_str()) {
-                            dbg.insert("kind".to_string(), serde_json::Value::String(kind.to_string()));
+                            dbg.insert(
+                                "kind".to_string(),
+                                serde_json::Value::String(project_debug_metadata(kind)),
+                            );
                         }
                         if let Some(id) = b_obj.get("id").and_then(|v| v.as_str()) {
-                            dbg.insert("id".to_string(), serde_json::Value::String(id.to_string()));
+                            dbg.insert(
+                                "id".to_string(),
+                                serde_json::Value::String(project_debug_metadata(id)),
+                            );
                         }
                         if let Some(name) = b_obj.get("name").and_then(|v| v.as_str()) {
-                            dbg.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+                            dbg.insert(
+                                "name".to_string(),
+                                serde_json::Value::String(project_debug_metadata(name)),
+                            );
                         }
                         if let Some(status) = b_obj.get("status").and_then(|v| v.as_str()) {
-                            dbg.insert("status".to_string(), serde_json::Value::String(status.to_string()));
+                            dbg.insert(
+                                "status".to_string(),
+                                serde_json::Value::String(project_debug_metadata(status)),
+                            );
                         }
                         if let Some(result) = b_obj.get("result").and_then(|v| v.as_str()) {
-                            let len = result.len();
+                            let byte_len = result.len();
                             dbg.insert(
                                 "result".to_string(),
-                                serde_json::Value::String(format!("[redacted: {len} chars]")),
+                                serde_json::Value::String(format!("[redacted: {byte_len} bytes]")),
                             );
                         }
                         if dbg.is_empty() {
@@ -2705,11 +2742,7 @@ fn export_session(
 ) -> Result<String, String> {
     match &session_store.store {
         Some(store) => {
-            let detail = store
-                .get_session(&session_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("Session not found: {}", session_id))?;
-            validate_session_access(store, &session_id, app_config.inner())?;
+            let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
 
             match format {
                 ExportFormat::Transcript => Ok(project_transcript(&detail.display_transcript)),
@@ -2919,6 +2952,18 @@ fn validate_session_access(
     store
         .validate_workspace_binding(session_id, active_ws_id.as_deref())
         .map_err(|e| e.to_string())
+}
+
+fn authorized_session_detail(
+    store: &SessionStore,
+    session_id: &str,
+    app_config: &AppConfigState,
+) -> Result<SessionDetail, String> {
+    validate_session_access(store, session_id, app_config)?;
+    store
+        .get_session(session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Session not found: {}", session_id))
 }
 
 fn validate_archived_session_access(
@@ -3506,7 +3551,32 @@ mod session_export {
         let tool_block = &value[1]["blocks"][1];
         let result_marker = tool_block["result"].as_str().unwrap();
         assert!(result_marker.starts_with("[redacted: "));
-        assert!(result_marker.contains("chars]"));
+        assert!(result_marker.contains("bytes]"));
+    }
+
+    #[test]
+    fn debug_projection_redacts_and_bounds_tool_metadata() {
+        let token = format!("sk-{}", "x".repeat(40));
+        let oversized_id = "id".repeat(200);
+        let raw = serde_json::json!([{
+            "role": "assistant",
+            "content": "diagnostic",
+            "blocks": [{
+                "kind": "tool",
+                "id": oversized_id,
+                "name": token,
+                "status": "completed"
+            }]
+        }])
+        .to_string();
+
+        let projected = project_debug(&raw);
+        let value: serde_json::Value = serde_json::from_str(&projected).unwrap();
+        let tool = &value[0]["blocks"][0];
+
+        assert!(!projected.contains(&token));
+        assert!(tool["name"].as_str().unwrap().contains("[REDACTED]"));
+        assert!(tool["id"].as_str().unwrap().len() <= 200);
     }
 
     #[test]
@@ -3591,6 +3661,7 @@ mod session_export {
 mod session_access {
     use super::*;
     use crate::app_config::AppConfigStore;
+    use rig::completion::message::{Message, Text, UserContent};
     use tempfile::tempdir;
 
     fn setup() -> (
@@ -3699,5 +3770,56 @@ mod session_access {
             .unwrap();
 
         assert!(validate_session_access(&session_store, &first_session.id, &app_state).is_ok());
+    }
+
+    #[test]
+    fn authorized_session_detail_rejects_other_workspace_before_returning_data() {
+        let (_root, app_state, session_store, _first_id, second_id) = setup();
+        let second_session = session_store
+            .create_session("second", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+
+        let error =
+            authorized_session_detail(&session_store, &second_session.id, &app_state).unwrap_err();
+
+        assert!(error.contains("active workspace"));
+    }
+
+    #[test]
+    fn clearing_conversation_history_rejects_other_workspace_without_mutation() {
+        let (_root, app_state, session_store, _first_id, second_id) = setup();
+        let second_session = session_store
+            .create_session("second", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+        let conversation_state = ConversationState {
+            store: Mutex::new(ConversationStore::new()),
+        };
+        conversation_state.store.lock().unwrap().store_history(
+            &second_session.id,
+            vec![Message::User {
+                content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
+                    text: "keep me".to_string(),
+                    additional_params: Some(serde_json::json!({})),
+                })),
+            }],
+        );
+
+        let result = clear_conversation_history_with_access(
+            &conversation_state,
+            &session_store,
+            &app_state,
+            &second_session.id,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            conversation_state
+                .store
+                .lock()
+                .unwrap()
+                .get_history(&second_session.id)
+                .len(),
+            1
+        );
     }
 }

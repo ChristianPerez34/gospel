@@ -252,6 +252,29 @@ struct DelegateExplorationOutput {
     reason: Option<String>,
 }
 
+fn delegate_exploration_failure(error: LlmError) -> DelegateExplorationOutput {
+    let reason = match &error {
+        LlmError::ProviderError(_) => "provider_error",
+        LlmError::ApiKeyMissing => "api_key_missing",
+        LlmError::ModelUnavailable(_) => "model_unavailable",
+        LlmError::UnsupportedProvider(_) => "unsupported_provider",
+        LlmError::ControlledStop(_) => "controlled_stop",
+    };
+    DelegateExplorationOutput {
+        success: false,
+        truncated: false,
+        report: String::new(),
+        summary: None,
+        key_files: vec![],
+        findings: vec![],
+        constraints: vec![],
+        suggested_next_reads: vec![],
+        tools_used: vec![],
+        message: error.to_dto().message,
+        reason: Some(reason.to_string()),
+    }
+}
+
 #[derive(Clone, Deserialize)]
 struct DelegateExplorationTool {
     workspace: ActiveWorkspaceContext,
@@ -328,25 +351,7 @@ impl Tool for DelegateExplorationTool {
         .await
         {
             Ok(output) => Ok(output),
-            Err(error) => Ok(DelegateExplorationOutput {
-                success: false,
-                truncated: false,
-                report: String::new(),
-                summary: None,
-                key_files: vec![],
-                findings: vec![],
-                constraints: vec![],
-                suggested_next_reads: vec![],
-                tools_used: vec![],
-                message: error.to_string(),
-                reason: Some(match error {
-                    LlmError::ProviderError(_) => "provider_error".to_string(),
-                    LlmError::ApiKeyMissing => "api_key_missing".to_string(),
-                    LlmError::ModelUnavailable(_) => "model_unavailable".to_string(),
-                    LlmError::UnsupportedProvider(_) => "unsupported_provider".to_string(),
-                    LlmError::ControlledStop(_) => "controlled_stop".to_string(),
-                }),
-            }),
+            Err(error) => Ok(delegate_exploration_failure(error)),
         }
     }
 }
@@ -1376,6 +1381,18 @@ mod tests {
 
         assert!(!dto.message.contains("sk-"));
         assert!(dto.message.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn delegate_exploration_failure_uses_sanitized_provider_message() {
+        let raw = format!("request failed with key sk-{}invalidtoken", "b".repeat(30));
+
+        let output = delegate_exploration_failure(LlmError::ProviderError(raw.clone()));
+
+        assert!(!output.message.contains(&raw));
+        assert!(!output.message.contains("sk-"));
+        assert!(output.message.contains("[REDACTED]"));
+        assert_eq!(output.reason.as_deref(), Some("provider_error"));
     }
 
     #[test]
