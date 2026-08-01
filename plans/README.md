@@ -42,7 +42,7 @@ Status values: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED` (with one-line reason
 - Plans 001–010 dependency notes remain as previously recorded.
 - **013 depends on 012**: The workspace-streaming-leak refactor needs the streaming characterization tests to exist as the regression net.
 - **014 depends on 012**: Cancel + per-run event isolation refactors `useChatStream.ts` listeners; plan 012's tests are the safety net. Plan 014 updates the `TODO(plan 014)` test marker left by plan 012.
-- **011, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026 are independent** and can start in any order unless a plan's own STOP conditions say otherwise. Plans 022–026 touch disjoint primary files; the suggested execution order is leverage-weighted, not structural.
+- **011, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026 are independent** and can start in any order unless a plan's own STOP conditions say otherwise. Plans 022–024 are behaviorally independent but share modifications to `src-tauri/src/lib.rs` (with Plan 024 also modifying `src-tauri/src/llm.rs` and `src-tauri/src/session_turn.rs`), creating shared-file merge risk if run concurrently; the suggested execution order is leverage-weighted, not structural.
 - **015 may land alongside any plan in 011–014** — it touches deleted components only, plus a small `SessionDrawer.tsx` edit; merge friction with 011+013 is minimal.
 
 ## Execution order suggestion
@@ -64,7 +64,7 @@ Recommended order for a single executor working sequentially:
 13. **025** (stale aggregate review events) — small correctness/test fix.
 14. **026** (stream coalescing) — performance improvement; preserve plans 012/014 characterization coverage.
 
-Parallel executors: 011, 015, 016, 017, 018, 019, 020, 022, 023, 024, 025, 026 are independent; 013 and 014 wait for 012. Plan 021 is already DONE.
+Parallel executors: 011, 015, 016, 017, 018, 019, 020, 022, 023, 024, 025, 026 are behaviorally independent; 013 and 014 wait for 012. (Note: Plans 022–024 all modify `src-tauri/src/lib.rs`, so parallel execution carries shared-file merge risk.) Plan 021 is already DONE.
 
 ## Findings considered and rejected (this run, 2026-07-31)
 

@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ChunkFailure,
   ChunkStatus,
@@ -303,20 +303,20 @@ function reduceReviewState(
   }
 
   if (focus) {
-    const existing = next.perFocus[focus];
-    const focusProgress: FocusProgress = existing ?? {
+    const existing = prev.perFocus[focus] ?? {
       runId,
       focus,
       pipeline: INITIAL_PIPELINE,
     };
     next.perFocus[focus] = {
-      ...focusProgress,
-      pipeline: reducePipeline(focusProgress.pipeline, phase),
+      ...existing,
+      pipeline: reducePipeline(existing.pipeline, phase),
     };
   } else {
     next.pipeline = reducePipeline(prev.pipeline, phase);
   }
 
+  // Derived aggregate completion across per-focus records if any exist
   const focusPipelines = Object.values(next.perFocus);
   next.done =
     next.pipeline.done ||
@@ -327,6 +327,7 @@ function reduceReviewState(
 }
 
 export function useReviewProgress(): UseReviewProgress {
+  const invalidatedRunIds = useRef(new Set<string>());
   const [state, setState] = useState<UseReviewProgressState>({
     runId: null,
     provider: null,
@@ -339,16 +340,21 @@ export function useReviewProgress(): UseReviewProgress {
     log: [],
   });
   const reset = useCallback(() => {
-    setState({
-      runId: null,
-      provider: null,
-      model: null,
-      done: false,
-      failed: false,
-      pipeline: INITIAL_PIPELINE,
-      perFocus: {},
-      tools: [],
-      log: [],
+    setState((prev) => {
+      if (prev.runId) {
+        invalidatedRunIds.current.add(prev.runId);
+      }
+      return {
+        runId: null,
+        provider: null,
+        model: null,
+        done: false,
+        failed: false,
+        pipeline: INITIAL_PIPELINE,
+        perFocus: {},
+        tools: [],
+        log: [],
+      };
     });
   }, []);
 
@@ -362,6 +368,7 @@ export function useReviewProgress(): UseReviewProgress {
           if (cancelled) return;
           const payload = event.payload;
           if (!payload?.run_id || !payload?.phase) return;
+          if (invalidatedRunIds.current.has(payload.run_id)) return;
           const phase = payload.phase;
           const focus = payload.focus;
 

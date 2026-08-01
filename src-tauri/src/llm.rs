@@ -1391,10 +1391,12 @@ mod tests {
     #[test]
     fn provider_error_dto_truncates_oversized_detail_on_utf8_boundary() {
         let raw = "x".repeat(600);
-        let dto = LlmError::ProviderError(raw.clone()).to_dto();
+        let dto = LlmError::ProviderError(raw).to_dto();
 
-        assert!(dto.message.len() < raw.len() + 32);
-        assert!(dto.message.contains('…'));
+        let detail = dto.message.strip_prefix("Completion failed: ").unwrap();
+        assert!(detail.ends_with('…'));
+        let without_marker = detail.strip_suffix('…').unwrap();
+        assert_eq!(without_marker.len(), 500);
         assert!(dto.message.is_char_boundary(dto.message.len()));
     }
 
@@ -1409,9 +1411,14 @@ mod tests {
 
     #[test]
     fn provider_error_dto_truncates_oversized_multibyte_on_char_boundary() {
-        let raw = "é".repeat(600);
+        let raw = "€".repeat(600);
         let dto = LlmError::ProviderError(raw).to_dto();
 
+        let detail = dto.message.strip_prefix("Completion failed: ").unwrap();
+        assert!(detail.ends_with('…'));
+        let without_marker = detail.strip_suffix('…').unwrap();
+        assert_eq!(without_marker.len(), 498);
+        assert!(without_marker.is_char_boundary(without_marker.len()));
         assert!(dto.message.is_char_boundary(dto.message.len()));
     }
 }

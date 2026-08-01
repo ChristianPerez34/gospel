@@ -108,6 +108,7 @@ token-prefix patterns, sensitive JSON keys, and free-form error strings at
   user-facing DTO message; add no provider/network test.
 - `src-tauri/src/session_turn.rs` — update failure-persistence tests or helper
   usage only if required to prove the persisted message is sanitized.
+- `plans/README.md` — metadata-only status row update exception.
 
 **Out of scope** (do not touch):
 

@@ -7,7 +7,7 @@
 > `plans/README.md` unless a reviewer dispatched you and told you they maintain
 > the index.
 >
-> **Drift check (run first)**: `git diff --stat 0ec1edd..HEAD -- src/hooks/useReviewProgress.ts src/hooks/useReviewProgress.test.tsx`
+> **Drift check (run first)**: `git diff 0ec1edd..HEAD -- src/hooks/useReviewProgress.ts src/hooks/useReviewProgress.test.tsx`
 > If the reducer or test fixture shape differs from the excerpts, stop and
 > report the drift before editing.
 

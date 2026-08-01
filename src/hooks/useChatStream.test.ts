@@ -568,6 +568,7 @@ describe("useChatStream", () => {
 
       // Before the frame flushes, no text block is visible yet.
       expect(result.current.currentTurn).toBeNull();
+      expect(scheduledFrames.size).toBe(1);
 
       await act(async () => {
         flushFrames();

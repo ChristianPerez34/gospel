@@ -416,15 +416,29 @@ describe("useReviewProgress", () => {
       expect(progressListener).not.toBeNull();
     });
 
-    emitProgress({ type: "multiFocusStart", total: 2 }, undefined, "current-run");
+    emitProgress(
+      {
+        type: "detector",
+        chunk: 1,
+        totalChunks: 2,
+        files: ["src/current.ts"],
+        candidateCount: 1,
+        status: "running",
+      },
+      "Security",
+      "current-run"
+    );
+
+    const expectedPipeline = { ...result.current.pipeline };
+
     emitProgress({ type: "multiFocusStart", total: 5 }, undefined, "stale-run");
 
     await waitFor(() => {
       expect(result.current.runId).toBe("current-run");
     });
-    expect(result.current.pipeline.detector.status).toBe("active");
+    expect(result.current.pipeline).toEqual(expectedPipeline);
     expect(result.current.log).toHaveLength(1);
-    expect(result.current.log[0]?.text).toContain("2 focuses");
+    expect(result.current.log[0]?.text).toContain("chunk 1/2");
   });
 
   it("ignores stale aggregate terminal events from a different run", async () => {
@@ -434,14 +448,63 @@ describe("useReviewProgress", () => {
       expect(progressListener).not.toBeNull();
     });
 
-    emitProgress({ type: "multiFocusStart", total: 2 }, undefined, "current-run");
+    emitProgress(
+      {
+        type: "detector",
+        chunk: 1,
+        totalChunks: 2,
+        files: ["src/current.ts"],
+        candidateCount: 1,
+        status: "running",
+      },
+      "Security",
+      "current-run"
+    );
+
+    const initialLogText = result.current.log[0]?.text;
+
     emitProgress({ type: "done", findings: 9, suppressed: 0 }, undefined, "stale-run");
 
     await waitFor(() => {
       expect(result.current.runId).toBe("current-run");
     });
     expect(result.current.done).toBe(false);
+    expect(result.current.pipeline.failed).toBe(false);
     expect(result.current.log).toHaveLength(1);
+    expect(result.current.log[0]?.text).toBe(initialLogText);
+  });
+
+  it("ignores stale events arriving between reset and a new review invocation", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({ type: "multiFocusStart", total: 2 }, undefined, "first-run");
+    await waitFor(() => {
+      expect(result.current.runId).toBe("first-run");
+    });
+
+    act(() => {
+      result.current.reset();
+    });
+
+    expect(result.current.runId).toBeNull();
+
+    // Late event from first-run arrives after reset, before second-run starts
+    emitProgress({ type: "done", findings: 5, suppressed: 0 }, undefined, "first-run");
+
+    expect(result.current.runId).toBeNull();
+
+    // Now second-run starts
+    emitProgress({ type: "multiFocusStart", total: 3 }, undefined, "second-run");
+
+    await waitFor(() => {
+      expect(result.current.runId).toBe("second-run");
+    });
+    expect(result.current.log).toHaveLength(1);
+    expect(result.current.log[0]?.text).toContain("3 focuses");
   });
 
   it("accepts the first aggregate event after reset as a new run", async () => {

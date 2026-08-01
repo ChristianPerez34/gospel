@@ -2607,21 +2607,25 @@ fn project_transcript(raw: &str) -> String {
     let entries = parse_display_transcript(raw);
     let projected: Vec<serde_json::Value> = entries
         .iter()
-        .map(|entry| {
+        .filter_map(|entry| {
+            let obj = entry.as_object()?;
+            let role = obj.get("role").and_then(|r| r.as_str())?;
+            if role != "user" && role != "assistant" {
+                return None;
+            }
             let mut out = serde_json::Map::new();
-            if let Some(role) = entry.get("role") {
-                out.insert("role".to_string(), role.clone());
+            out.insert("role".to_string(), serde_json::Value::String(role.to_string()));
+
+            if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
+                out.insert("content".to_string(), serde_json::Value::String(content.to_string()));
             }
-            if let Some(content) = entry.get("content") {
-                out.insert("content".to_string(), content.clone());
+            if let Some(error) = obj.get("error").and_then(|e| e.as_bool()) {
+                out.insert("error".to_string(), serde_json::Value::Bool(error));
             }
-            if let Some(error) = entry.get("error") {
-                out.insert("error".to_string(), error.clone());
+            if let Some(controlled_stop) = obj.get("controlled_stop").and_then(|cs| cs.as_bool()) {
+                out.insert("controlled_stop".to_string(), serde_json::Value::Bool(controlled_stop));
             }
-            if let Some(controlled_stop) = entry.get("controlled_stop") {
-                out.insert("controlled_stop".to_string(), controlled_stop.clone());
-            }
-            serde_json::Value::Object(out)
+            Some(serde_json::Value::Object(out))
         })
         .collect();
     serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
@@ -2634,50 +2638,59 @@ fn project_debug(raw: &str) -> String {
     let entries = parse_display_transcript(raw);
     let projected: Vec<serde_json::Value> = entries
         .iter()
-        .map(|entry| {
+        .filter_map(|entry| {
+            let obj = entry.as_object()?;
+            let role = obj.get("role").and_then(|r| r.as_str())?;
+            if role != "user" && role != "assistant" {
+                return None;
+            }
             let mut out = serde_json::Map::new();
-            if let Some(role) = entry.get("role") {
-                out.insert("role".to_string(), role.clone());
+            out.insert("role".to_string(), serde_json::Value::String(role.to_string()));
+
+            if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
+                out.insert("content".to_string(), serde_json::Value::String(content.to_string()));
             }
-            if let Some(content) = entry.get("content") {
-                out.insert("content".to_string(), content.clone());
+            if let Some(error) = obj.get("error").and_then(|e| e.as_bool()) {
+                out.insert("error".to_string(), serde_json::Value::Bool(error));
             }
-            if let Some(error) = entry.get("error") {
-                out.insert("error".to_string(), error.clone());
+            if let Some(controlled_stop) = obj.get("controlled_stop").and_then(|cs| cs.as_bool()) {
+                out.insert("controlled_stop".to_string(), serde_json::Value::Bool(controlled_stop));
             }
-            if let Some(controlled_stop) = entry.get("controlled_stop") {
-                out.insert("controlled_stop".to_string(), controlled_stop.clone());
-            }
-            if let Some(blocks) = entry.get("blocks").and_then(|b| b.as_array()) {
+            if let Some(blocks) = obj.get("blocks").and_then(|b| b.as_array()) {
                 let debug_blocks: Vec<serde_json::Value> = blocks
                     .iter()
-                    .map(|block| {
+                    .filter_map(|block| {
+                        let b_obj = block.as_object()?;
                         let mut dbg = serde_json::Map::new();
-                        if let Some(kind) = block.get("kind") {
-                            dbg.insert("kind".to_string(), kind.clone());
+                        if let Some(kind) = b_obj.get("kind").and_then(|v| v.as_str()) {
+                            dbg.insert("kind".to_string(), serde_json::Value::String(kind.to_string()));
                         }
-                        if let Some(id) = block.get("id") {
-                            dbg.insert("id".to_string(), id.clone());
+                        if let Some(id) = b_obj.get("id").and_then(|v| v.as_str()) {
+                            dbg.insert("id".to_string(), serde_json::Value::String(id.to_string()));
                         }
-                        if let Some(name) = block.get("name") {
-                            dbg.insert("name".to_string(), name.clone());
+                        if let Some(name) = b_obj.get("name").and_then(|v| v.as_str()) {
+                            dbg.insert("name".to_string(), serde_json::Value::String(name.to_string()));
                         }
-                        if let Some(status) = block.get("status") {
-                            dbg.insert("status".to_string(), status.clone());
+                        if let Some(status) = b_obj.get("status").and_then(|v| v.as_str()) {
+                            dbg.insert("status".to_string(), serde_json::Value::String(status.to_string()));
                         }
-                        if let Some(result) = block.get("result") {
-                            let len = result.as_str().map(str::len).unwrap_or(0);
+                        if let Some(result) = b_obj.get("result").and_then(|v| v.as_str()) {
+                            let len = result.len();
                             dbg.insert(
                                 "result".to_string(),
                                 serde_json::Value::String(format!("[redacted: {len} chars]")),
                             );
                         }
-                        serde_json::Value::Object(dbg)
+                        if dbg.is_empty() {
+                            None
+                        } else {
+                            Some(serde_json::Value::Object(dbg))
+                        }
                     })
                     .collect();
                 out.insert("blocks".to_string(), serde_json::Value::Array(debug_blocks));
             }
-            serde_json::Value::Object(out)
+            Some(serde_json::Value::Object(out))
         })
         .collect();
     serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
@@ -3516,6 +3529,61 @@ mod session_export {
         assert_eq!(debug, "[]");
         assert_ne!(transcript, raw);
         assert_ne!(debug, raw);
+    }
+
+    #[test]
+    fn projections_omit_malformed_entries_and_nested_object_values() {
+        let raw = serde_json::json!([
+            {
+                "role": "user",
+                "content": {"nested": "secret"},
+                "error": "not a bool",
+                "controlled_stop": {"nested": true}
+            },
+            {
+                "role": "invalid_role",
+                "content": "hello"
+            },
+            {
+                "role": "assistant",
+                "content": "valid content",
+                "blocks": [
+                    "not an object",
+                    {
+                        "kind": {"nested": "tool"},
+                        "id": "call-1",
+                        "name": "read_file",
+                        "status": "completed",
+                        "result": {"nested": "payload"}
+                    }
+                ]
+            }
+        ])
+        .to_string();
+
+        let transcript = project_transcript(&raw);
+        let debug = project_debug(&raw);
+
+        assert!(!transcript.contains("nested"));
+        assert!(!transcript.contains("secret"));
+        assert!(!transcript.contains("invalid_role"));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("payload"));
+        assert!(!debug.contains("invalid_role"));
+
+        let tr_val: serde_json::Value = serde_json::from_str(&transcript).unwrap();
+        assert_eq!(tr_val.as_array().unwrap().len(), 2);
+        assert_eq!(tr_val[0]["role"], "user");
+        assert!(tr_val[0].get("content").is_none());
+        assert!(tr_val[0].get("error").is_none());
+        assert!(tr_val[0].get("controlled_stop").is_none());
+
+        let dbg_val: serde_json::Value = serde_json::from_str(&debug).unwrap();
+        let blocks = dbg_val[1]["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].get("kind").is_none());
+        assert_eq!(blocks[0]["id"], "call-1");
+        assert!(blocks[0].get("result").is_none());
     }
 }
 
