@@ -207,7 +207,8 @@ provider string while debugging tests.
       not exposed.
 - [ ] `cargo test --locked --manifest-path src-tauri/Cargo.toml` exits 0.
 - [ ] `cargo clippy --locked --manifest-path src-tauri/Cargo.toml -- -D warnings` exits 0.
-- [ ] No files outside the listed three source files are modified.
+- [ ] No files outside the listed three source files are modified, except for
+      the `plans/README.md` metadata-only status row update.
 - [ ] `plans/README.md` status row for plan 024 is updated.
 
 ## STOP conditions
