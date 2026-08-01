@@ -366,12 +366,10 @@ export function useReviewProgress(): UseReviewProgress {
           const focus = payload.focus;
 
           setState((prev) => {
-            const isAggregate = focus == null;
-            if (!isAggregate && prev.runId !== null && prev.runId !== payload.run_id) {
+            if (prev.runId !== null && prev.runId !== payload.run_id) {
               return prev;
             }
-            const runChanged =
-              prev.runId === null || (isAggregate && prev.runId !== payload.run_id);
+            const runChanged = prev.runId === null;
 
             const base: UseReviewProgressState = runChanged
               ? {

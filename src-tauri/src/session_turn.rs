@@ -1675,6 +1675,31 @@ mod tests {
     }
 
     #[test]
+    fn provider_failure_persists_sanitized_message_without_raw_token() {
+        let raw = format!(
+            "request failed: sk-{} leaked\ndangerous second line",
+            "a".repeat(30)
+        );
+        let decision = failure_turn_persistence(
+            r#"[{"role":"user","content":"hi"}]"#,
+            Some(r#"[{"provider":"history"}]"#),
+            &LlmError::ProviderError(raw.clone()),
+        );
+
+        let display: serde_json::Value =
+            serde_json::from_str(&decision.display_transcript).unwrap();
+        let persisted = display[1]["content"].as_str().unwrap();
+        assert_eq!(display[1]["error"], true);
+        assert!(!persisted.contains("sk-"));
+        assert!(!persisted.contains("dangerous second line"));
+        assert!(persisted.contains("[REDACTED]"));
+        assert_eq!(
+            decision.model_history.as_deref(),
+            Some(r#"[{"provider":"history"}]"#)
+        );
+    }
+
+    #[test]
     fn build_display_transcript_emits_ordered_blocks_with_attached_tool_results() {
         let history = vec![
             user_message("please read foo"),

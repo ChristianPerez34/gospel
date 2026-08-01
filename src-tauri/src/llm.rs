@@ -27,6 +27,7 @@ use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::shell_tools::CommandApproval;
 use crate::text_utils::truncate_text_bytes;
+use crate::trace;
 use crate::workspace_tools::{workspace_root_inventory, ExternalPathApproval};
 
 const EXPLORATION_REPORT_BYTES_CAP: usize = 32 * 1024;
@@ -69,6 +70,39 @@ pub struct LlmErrorDto {
     pub message: String,
 }
 
+/// Provider SDK error strings are uncontrolled: they may contain HTTP
+/// response bodies, request URLs, authorization details, or proxy
+/// diagnostics. This helper produces the single user-facing/persisted
+/// representation used by every `LlmError::ProviderError` sink.
+///
+/// It applies the existing `trace::redacted_text` secret redaction, keeps
+/// only the first non-empty line so multiline response bodies do not leak,
+/// truncates on a UTF-8 character boundary to a fixed cap, and falls back to
+/// a stable generic message when nothing safe remains. It never claims to
+/// make arbitrary provider responses safe; it only bounds the surface.
+fn sanitize_provider_error_detail(raw: &str) -> String {
+    const MAX_LEN: usize = 500;
+    const GENERIC: &str = "Provider request failed";
+
+    let redacted = trace::redacted_text(raw);
+    let first_line = redacted
+        .lines()
+        .map(|line| line.trim())
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    if first_line.is_empty() {
+        return GENERIC.to_string();
+    }
+    if first_line.len() <= MAX_LEN {
+        return first_line.to_string();
+    }
+    let mut end = MAX_LEN;
+    while !first_line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &first_line[..end])
+}
+
 impl LlmError {
     pub fn to_dto(&self) -> LlmErrorDto {
         match self {
@@ -78,7 +112,7 @@ impl LlmError {
             },
             LlmError::ProviderError(msg) => LlmErrorDto {
                 code: "PROVIDER_ERROR".to_string(),
-                message: format!("Completion failed: {}", msg),
+                message: format!("Completion failed: {}", sanitize_provider_error_detail(msg)),
             },
             LlmError::ModelUnavailable(model) => LlmErrorDto {
                 code: "MODEL_UNAVAILABLE".to_string(),
@@ -1325,5 +1359,59 @@ mod tests {
         let complete_id = active.clone().unwrap_or_else(|| "provider-rs-9".to_string());
         assert_eq!(complete_id, "reasoning-1");
         assert_ne!(complete_id, "provider-rs-9");
+    }
+
+    #[test]
+    fn provider_error_dto_preserves_ordinary_short_message() {
+        let dto = LlmError::ProviderError("connection refused".to_string()).to_dto();
+
+        assert_eq!(dto.code, "PROVIDER_ERROR");
+        assert!(dto.message.contains("connection refused"));
+    }
+
+    #[test]
+    fn provider_error_dto_redacts_token_shaped_detail() {
+        let raw = format!("request failed with key sk-{}invalidtoken", "a".repeat(30));
+        let dto = LlmError::ProviderError(raw).to_dto();
+
+        assert!(!dto.message.contains("sk-"));
+        assert!(dto.message.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn provider_error_dto_keeps_only_first_nonempty_line() {
+        let raw = "first diagnostic line\nsecond line should not appear\nthird line";
+        let dto = LlmError::ProviderError(raw.to_string()).to_dto();
+
+        assert!(dto.message.contains("first diagnostic line"));
+        assert!(!dto.message.contains("second line should not appear"));
+        assert!(!dto.message.contains("third line"));
+    }
+
+    #[test]
+    fn provider_error_dto_truncates_oversized_detail_on_utf8_boundary() {
+        let raw = "x".repeat(600);
+        let dto = LlmError::ProviderError(raw.clone()).to_dto();
+
+        assert!(dto.message.len() < raw.len() + 32);
+        assert!(dto.message.contains('…'));
+        assert!(dto.message.is_char_boundary(dto.message.len()));
+    }
+
+    #[test]
+    fn provider_error_dto_falls_back_to_generic_message_for_empty_detail() {
+        let dto = LlmError::ProviderError("   \n  ".to_string()).to_dto();
+
+        assert_eq!(dto.code, "PROVIDER_ERROR");
+        assert!(!dto.message.is_empty());
+        assert!(!dto.message.contains("   \n  "));
+    }
+
+    #[test]
+    fn provider_error_dto_truncates_oversized_multibyte_on_char_boundary() {
+        let raw = "é".repeat(600);
+        let dto = LlmError::ProviderError(raw).to_dto();
+
+        assert!(dto.message.is_char_boundary(dto.message.len()));
     }
 }

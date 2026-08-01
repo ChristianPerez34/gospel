@@ -408,4 +408,64 @@ describe("useReviewProgress", () => {
     expect(result.current.perFocus.Security?.pipeline.findings).toBe(0);
     expect(result.current.log).toHaveLength(1);
   });
+
+  it("ignores stale aggregate start events from a different run", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({ type: "multiFocusStart", total: 2 }, undefined, "current-run");
+    emitProgress({ type: "multiFocusStart", total: 5 }, undefined, "stale-run");
+
+    await waitFor(() => {
+      expect(result.current.runId).toBe("current-run");
+    });
+    expect(result.current.pipeline.detector.status).toBe("active");
+    expect(result.current.log).toHaveLength(1);
+    expect(result.current.log[0]?.text).toContain("2 focuses");
+  });
+
+  it("ignores stale aggregate terminal events from a different run", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({ type: "multiFocusStart", total: 2 }, undefined, "current-run");
+    emitProgress({ type: "done", findings: 9, suppressed: 0 }, undefined, "stale-run");
+
+    await waitFor(() => {
+      expect(result.current.runId).toBe("current-run");
+    });
+    expect(result.current.done).toBe(false);
+    expect(result.current.log).toHaveLength(1);
+  });
+
+  it("accepts the first aggregate event after reset as a new run", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({ type: "multiFocusStart", total: 2 }, undefined, "first-run");
+    await waitFor(() => {
+      expect(result.current.runId).toBe("first-run");
+    });
+
+    act(() => {
+      result.current.reset();
+    });
+
+    emitProgress({ type: "multiFocusStart", total: 3 }, undefined, "second-run");
+
+    await waitFor(() => {
+      expect(result.current.runId).toBe("second-run");
+    });
+    expect(result.current.log).toHaveLength(1);
+    expect(result.current.log[0]?.text).toContain("3 focuses");
+  });
 });

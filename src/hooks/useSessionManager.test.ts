@@ -825,7 +825,7 @@ describe("useSessionManager", () => {
 
       expect(result.current.currentTurn).toBeNull();
 
-      act(() => {
+      await act(async () => {
         triggerEvent<string>("llm-token", "hello");
       });
 
@@ -835,7 +835,7 @@ describe("useSessionManager", () => {
         { kind: "text", id: "text-0", text: "hello" },
       ]);
 
-      act(() => {
+      await act(async () => {
         triggerEvent<string>("llm-token", " back");
       });
 
@@ -1230,7 +1230,7 @@ describe("useSessionManager", () => {
       const originalSessionId = result.current.activeSessionId;
       expect(originalSessionId).toBe("backend-stream");
 
-      act(() => {
+      await act(async () => {
         triggerEvent<string>("llm-token", "live token");
       });
 
