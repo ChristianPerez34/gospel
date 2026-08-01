@@ -507,6 +507,34 @@ describe("useReviewProgress", () => {
     expect(result.current.log[0]?.text).toContain("3 focuses");
   });
 
+  it("rejects an event queued before reset when reset flushes first", async () => {
+    const { result } = renderHook(() => useReviewProgress());
+
+    await waitFor(() => {
+      expect(progressListener).not.toBeNull();
+    });
+
+    emitProgress({ type: "multiFocusStart", total: 2 }, undefined, "first-run");
+    await waitFor(() => {
+      expect(result.current.runId).toBe("first-run");
+    });
+
+    act(() => {
+      progressListener?.({
+        payload: {
+          run_id: "first-run",
+          phase: { type: "done", findings: 5, suppressed: 0 },
+          timestamp: 1783094400000,
+        },
+      });
+      result.current.reset();
+    });
+
+    expect(result.current.runId).toBeNull();
+    expect(result.current.done).toBe(false);
+    expect(result.current.log).toHaveLength(0);
+  });
+
   it("accepts the first aggregate event after reset as a new run", async () => {
     const { result } = renderHook(() => useReviewProgress());
 

@@ -50,6 +50,15 @@ export interface UseReviewProgress extends UseReviewProgressState {
 /** Cap the activity feed so a 20-batch scan can't grow it without bound. */
 const MAX_LOG_ENTRIES = 400;
 const MAX_TOOL_ENTRIES = 200;
+const MAX_INVALIDATED_RUN_IDS = 32;
+
+function rememberInvalidatedRunId(invalidatedRunIds: Set<string>, runId: string): void {
+  invalidatedRunIds.add(runId);
+  if (invalidatedRunIds.size <= MAX_INVALIDATED_RUN_IDS) return;
+
+  const oldestRunId = invalidatedRunIds.values().next().value;
+  if (oldestRunId !== undefined) invalidatedRunIds.delete(oldestRunId);
+}
 
 function describe(phase: ReviewPhase): string {
   switch (phase.type) {
@@ -328,6 +337,7 @@ function reduceReviewState(
 
 export function useReviewProgress(): UseReviewProgress {
   const invalidatedRunIds = useRef(new Set<string>());
+  const activeRunId = useRef<string | null>(null);
   const [state, setState] = useState<UseReviewProgressState>({
     runId: null,
     provider: null,
@@ -340,21 +350,20 @@ export function useReviewProgress(): UseReviewProgress {
     log: [],
   });
   const reset = useCallback(() => {
-    setState((prev) => {
-      if (prev.runId) {
-        invalidatedRunIds.current.add(prev.runId);
-      }
-      return {
-        runId: null,
-        provider: null,
-        model: null,
-        done: false,
-        failed: false,
-        pipeline: INITIAL_PIPELINE,
-        perFocus: {},
-        tools: [],
-        log: [],
-      };
+    const runId = activeRunId.current;
+    if (runId) rememberInvalidatedRunId(invalidatedRunIds.current, runId);
+    activeRunId.current = null;
+
+    setState({
+      runId: null,
+      provider: null,
+      model: null,
+      done: false,
+      failed: false,
+      pipeline: INITIAL_PIPELINE,
+      perFocus: {},
+      tools: [],
+      log: [],
     });
   }, []);
 
@@ -369,10 +378,18 @@ export function useReviewProgress(): UseReviewProgress {
           const payload = event.payload;
           if (!payload?.run_id || !payload?.phase) return;
           if (invalidatedRunIds.current.has(payload.run_id)) return;
+          if (activeRunId.current !== null && activeRunId.current !== payload.run_id) return;
+          if (activeRunId.current === null) activeRunId.current = payload.run_id;
           const phase = payload.phase;
           const focus = payload.focus;
 
           setState((prev) => {
+            if (
+              invalidatedRunIds.current.has(payload.run_id) ||
+              (activeRunId.current !== null && activeRunId.current !== payload.run_id)
+            ) {
+              return prev;
+            }
             if (prev.runId !== null && prev.runId !== payload.run_id) {
               return prev;
             }
