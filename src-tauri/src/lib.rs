@@ -910,7 +910,7 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
             LlmService::completion(&provider, "Say 'pong' and nothing else.", &model, "").await;
         match response {
             Ok(_) => Ok(true),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.to_dto().message),
         }
     } else {
         let api_key = keychain::retrieve(&provider).map_err(|e| e.to_string())?;
@@ -919,7 +919,7 @@ async fn test_connection(provider: String, model: String) -> Result<bool, String
                 .await;
         match response {
             Ok(_) => Ok(true),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.to_dto().message),
         }
     }
 }
@@ -1470,24 +1470,33 @@ mod delegate_completion_config_tests {
 #[tauri::command]
 fn clear_conversation_history(
     conversation_state: tauri::State<'_, ConversationState>,
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
 ) -> Result<(), String> {
-    let mut store = conversation_state.store.lock().unwrap();
-    store.clear(&session_id);
-    Ok(())
+    match &session_store.store {
+        Some(store) => clear_conversation_history_with_access(
+            conversation_state.inner(),
+            store,
+            app_config.inner(),
+            &session_id,
+        ),
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
 }
 
-#[tauri::command]
-fn export_conversation(
-    conversation_state: tauri::State<'_, ConversationState>,
-    session_id: String,
-) -> Result<String, String> {
-    let mut store = conversation_state.store.lock().unwrap();
-    let history = store.get_history(&session_id);
-    if history.is_empty() {
-        return Err("Conversation not found".to_string());
-    }
-    serde_json::to_string_pretty(&history).map_err(|e| e.to_string())
+fn clear_conversation_history_with_access(
+    conversation_state: &ConversationState,
+    session_store: &SessionStore,
+    app_config: &AppConfigState,
+    session_id: &str,
+) -> Result<(), String> {
+    validate_session_access(session_store, session_id, app_config)?;
+    conversation_state.store.lock().unwrap().clear(session_id);
+    Ok(())
 }
 
 fn emit_oauth_complete(
@@ -2120,8 +2129,10 @@ fn reload_skills(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn create_session(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     title: String,
     provider: String,
     model: String,
@@ -2130,6 +2141,7 @@ fn create_session(
     mode: Option<String>,
 ) -> Result<SessionRecord, String> {
     let mode = mode.unwrap_or_else(|| session_mode::SESSION_MODE_BUILD.to_string());
+    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => store
             .create_session_with_selection(
@@ -2151,15 +2163,19 @@ fn create_session(
 #[tauri::command]
 fn update_session_model_selection(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
     provider: String,
     model: String,
     variant: Option<String>,
 ) -> Result<(), String> {
     match &session_store.store {
-        Some(store) => store
-            .update_model_selection(&session_id, &provider, &model, variant.as_deref())
-            .map_err(|e| e.to_string()),
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .update_model_selection(&session_id, &provider, &model, variant.as_deref())
+                .map_err(|e| e.to_string())
+        }
         None => Err(session_store
             .init_warning
             .clone()
@@ -2170,13 +2186,17 @@ fn update_session_model_selection(
 #[tauri::command]
 fn update_session_mode(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
     mode: String,
 ) -> Result<(), String> {
     match &session_store.store {
-        Some(store) => store
-            .update_session_mode(&session_id, &mode)
-            .map_err(|e| e.to_string()),
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .update_session_mode(&session_id, &mode)
+                .map_err(|e| e.to_string())
+        }
         None => Err(session_store
             .init_warning
             .clone()
@@ -2187,13 +2207,17 @@ fn update_session_mode(
 #[tauri::command]
 fn update_session_title(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
     title: String,
 ) -> Result<(), String> {
     match &session_store.store {
-        Some(store) => store
-            .update_session_title(&session_id, &title)
-            .map_err(|e| e.to_string()),
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .update_session_title(&session_id, &title)
+                .map_err(|e| e.to_string())
+        }
         None => Err(session_store
             .init_warning
             .clone()
@@ -2209,14 +2233,7 @@ fn get_session(
     session_id: String,
 ) -> Result<SessionDetail, String> {
     let detail = match &session_store.store {
-        Some(store) => {
-            let detail = store
-                .get_session(&session_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("Session not found: {}", session_id))?;
-            validate_session_access(store, &session_id, app_config.inner())?;
-            detail
-        }
+        Some(store) => authorized_session_detail(store, &session_id, app_config.inner())?,
         None => {
             return Err(session_store
                 .init_warning
@@ -2254,6 +2271,7 @@ fn list_sessions(
     app_config: tauri::State<'_, AppConfigState>,
     workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
+    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -2285,6 +2303,7 @@ fn list_archived_sessions(
     app_config: tauri::State<'_, AppConfigState>,
     workspace_id: Option<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
+    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -2311,8 +2330,10 @@ fn list_archived_sessions(
 #[tauri::command]
 fn get_archive_policy(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     workspace_id: Option<String>,
 ) -> Result<ArchivePolicy, String> {
+    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => store
             .get_archive_policy(workspace_id.as_deref())
@@ -2369,8 +2390,10 @@ fn clear_workspace_archive_policy(
 #[tauri::command]
 fn get_archive_stats(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     workspace_id: Option<String>,
 ) -> Result<ArchiveStats, String> {
+    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => store
             .archive_stats(workspace_id.as_deref())
@@ -2385,8 +2408,10 @@ fn get_archive_stats(
 #[tauri::command]
 fn run_archive_maintenance(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     workspace_id: Option<String>,
 ) -> Result<ArchiveMaintenanceResult, String> {
+    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => store
             .run_archive_maintenance(workspace_id.as_deref())
@@ -2527,8 +2552,10 @@ fn delete_archived_sessions(
 #[tauri::command]
 fn delete_expired_archived_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     workspace_id: Option<String>,
 ) -> Result<usize, String> {
+    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => {
             let policy = store
@@ -2581,6 +2608,131 @@ enum ExportFormat {
     Internal,
 }
 
+const DEBUG_EXPORT_METADATA_MAX_BYTES: usize = 200;
+
+fn project_debug_metadata(value: &str) -> String {
+    let redacted = trace::redacted_text(value);
+    text_utils::truncate_text_bytes(&redacted, DEBUG_EXPORT_METADATA_MAX_BYTES).0
+}
+
+/// Parse the persisted Display Transcript JSON into an array of entries. A
+/// malformed or legacy payload yields an empty array rather than the raw
+/// string, so exports never fall back to returning unprojected input.
+fn parse_display_transcript(raw: &str) -> Vec<serde_json::Value> {
+    serde_json::from_str::<Vec<serde_json::Value>>(raw).unwrap_or_default()
+}
+
+fn project_shared_export_fields(
+    entry: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let role = entry.get("role").and_then(|value| value.as_str())?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+
+    let mut projected = serde_json::Map::new();
+    projected.insert(
+        "role".to_string(),
+        serde_json::Value::String(role.to_string()),
+    );
+    if let Some(content) = entry.get("content").and_then(|value| value.as_str()) {
+        projected.insert(
+            "content".to_string(),
+            serde_json::Value::String(content.to_string()),
+        );
+    }
+    if let Some(error) = entry.get("error").and_then(|value| value.as_bool()) {
+        projected.insert("error".to_string(), serde_json::Value::Bool(error));
+    }
+    if let Some(controlled_stop) = entry
+        .get("controlled_stop")
+        .and_then(|value| value.as_bool())
+    {
+        projected.insert(
+            "controlled_stop".to_string(),
+            serde_json::Value::Bool(controlled_stop),
+        );
+    }
+    Some(projected)
+}
+
+/// Safe-to-share Transcript projection. Preserves only user/assistant text and
+/// existing user-visible error/controlled-stop status metadata. Removes tool
+/// blocks, tool IDs, tool names, arguments, and raw tool results.
+fn project_transcript(raw: &str) -> String {
+    let entries = parse_display_transcript(raw);
+    let projected: Vec<serde_json::Value> = entries
+        .iter()
+        .filter_map(|entry| {
+            let obj = entry.as_object()?;
+            project_shared_export_fields(obj).map(serde_json::Value::Object)
+        })
+        .collect();
+    serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Bounded diagnostic Debug projection. Preserves the ordered action shape for
+/// diagnostics but never exports raw tool arguments or result bodies. Tool
+/// identity (name, id), status, and a bounded result-length marker are kept.
+fn project_debug(raw: &str) -> String {
+    let entries = parse_display_transcript(raw);
+    let projected: Vec<serde_json::Value> = entries
+        .iter()
+        .filter_map(|entry| {
+            let obj = entry.as_object()?;
+            let mut out = project_shared_export_fields(obj)?;
+            if let Some(blocks) = obj.get("blocks").and_then(|b| b.as_array()) {
+                let debug_blocks: Vec<serde_json::Value> = blocks
+                    .iter()
+                    .filter_map(|block| {
+                        let b_obj = block.as_object()?;
+                        let mut dbg = serde_json::Map::new();
+                        if let Some(kind) = b_obj.get("kind").and_then(|v| v.as_str()) {
+                            dbg.insert(
+                                "kind".to_string(),
+                                serde_json::Value::String(project_debug_metadata(kind)),
+                            );
+                        }
+                        if let Some(id) = b_obj.get("id").and_then(|v| v.as_str()) {
+                            dbg.insert(
+                                "id".to_string(),
+                                serde_json::Value::String(project_debug_metadata(id)),
+                            );
+                        }
+                        if let Some(name) = b_obj.get("name").and_then(|v| v.as_str()) {
+                            dbg.insert(
+                                "name".to_string(),
+                                serde_json::Value::String(project_debug_metadata(name)),
+                            );
+                        }
+                        if let Some(status) = b_obj.get("status").and_then(|v| v.as_str()) {
+                            dbg.insert(
+                                "status".to_string(),
+                                serde_json::Value::String(project_debug_metadata(status)),
+                            );
+                        }
+                        if let Some(result) = b_obj.get("result").and_then(|v| v.as_str()) {
+                            let byte_len = result.len();
+                            dbg.insert(
+                                "result".to_string(),
+                                serde_json::Value::String(format!("[redacted: {byte_len} bytes]")),
+                            );
+                        }
+                        if dbg.is_empty() {
+                            None
+                        } else {
+                            Some(serde_json::Value::Object(dbg))
+                        }
+                    })
+                    .collect();
+                out.insert("blocks".to_string(), serde_json::Value::Array(debug_blocks));
+            }
+            Some(serde_json::Value::Object(out))
+        })
+        .collect();
+    serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
+}
+
 #[tauri::command]
 fn export_session(
     session_store: tauri::State<'_, SessionStoreState>,
@@ -2590,21 +2742,11 @@ fn export_session(
 ) -> Result<String, String> {
     match &session_store.store {
         Some(store) => {
-            let detail = store
-                .get_session(&session_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("Session not found: {}", session_id))?;
-            validate_session_access(store, &session_id, app_config.inner())?;
+            let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
 
             match format {
-                ExportFormat::Transcript => {
-                    // UI-safe: only Display Transcript, no Model History
-                    Ok(detail.display_transcript)
-                }
-                ExportFormat::Debug => {
-                    // Includes tool activity from Display Transcript
-                    Ok(detail.display_transcript)
-                }
+                ExportFormat::Transcript => Ok(project_transcript(&detail.display_transcript)),
+                ExportFormat::Debug => Ok(project_debug(&detail.display_transcript)),
                 ExportFormat::Internal => {
                     // Full internal: Display Transcript + Model History
                     let export = serde_json::json!({
@@ -2681,8 +2823,10 @@ fn import_archived_sessions(
 #[tauri::command]
 fn get_workspace_session_count(
     session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
     workspace_id: String,
 ) -> Result<i64, String> {
+    validate_workspace_id_access(&workspace_id, app_config.inner())?;
     match &session_store.store {
         Some(store) => store
             .workspace_session_count(&workspace_id)
@@ -2785,6 +2929,20 @@ fn validate_workspace_id_access(
     Ok(())
 }
 
+/// Validate an explicit optional workspace ID before a workspace-scoped read
+/// or mutation. `None` preserves the existing unscoped/global fallback and is
+/// not turned into an arbitrary workspace. `Some(id)` must match the active
+/// workspace or be rejected before any store call.
+fn validate_optional_workspace_id_access(
+    workspace_id: Option<&str>,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    if let Some(id) = workspace_id {
+        validate_workspace_id_access(id, app_config)?;
+    }
+    Ok(())
+}
+
 fn validate_session_access(
     store: &SessionStore,
     session_id: &str,
@@ -2794,6 +2952,18 @@ fn validate_session_access(
     store
         .validate_workspace_binding(session_id, active_ws_id.as_deref())
         .map_err(|e| e.to_string())
+}
+
+fn authorized_session_detail(
+    store: &SessionStore,
+    session_id: &str,
+    app_config: &AppConfigState,
+) -> Result<SessionDetail, String> {
+    validate_session_access(store, session_id, app_config)?;
+    store
+        .get_session(session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Session not found: {}", session_id))
 }
 
 fn validate_archived_session_access(
@@ -2917,7 +3087,6 @@ pub fn run() {
             complete_streaming,
             cancel_streaming,
             clear_conversation_history,
-            export_conversation,
             test_connection,
             gospel_review,
             gospel_multi_review,
@@ -3263,5 +3432,394 @@ mod streaming_run_handles_tests {
 
         handles.remove_if_run_matches("session-1", "run-2");
         assert!(!handles.inner.lock().unwrap().contains_key("session-1"));
+    }
+}
+
+#[cfg(test)]
+mod session_export {
+    use super::*;
+
+    fn fixture_display_transcript() -> String {
+        serde_json::json!([
+            {"role": "user", "content": "please read foo"},
+            {
+                "role": "assistant",
+                "content": "Let me check.",
+                "blocks": [
+                    {"kind": "text", "id": "text-0", "text": "Let me check."},
+                    {
+                        "kind": "tool",
+                        "id": "call-1",
+                        "name": "read_file",
+                        "arguments": {"path": "src/lib.rs"},
+                        "result": "top secret file contents",
+                        "status": "completed"
+                    }
+                ]
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "blocks": [
+                    {
+                        "kind": "tool",
+                        "id": "edit-1",
+                        "name": "source_edit",
+                        "arguments": {"old_text": "secret old", "new_text": "secret new"},
+                        "result": null,
+                        "status": "completed"
+                    }
+                ]
+            },
+            {
+                "role": "assistant",
+                "content": "Error: boom",
+                "blocks": [],
+                "error": true,
+                "controlled_stop": false
+            }
+        ])
+        .to_string()
+    }
+
+    #[test]
+    fn transcript_projection_removes_tool_blocks_and_arguments() {
+        let projected = project_transcript(&fixture_display_transcript());
+        let value: serde_json::Value = serde_json::from_str(&projected).unwrap();
+
+        let assistant_with_tools = &value[1];
+        assert!(assistant_with_tools.get("blocks").is_none());
+        assert!(assistant_with_tools.get("arguments").is_none());
+        assert_eq!(assistant_with_tools["role"], "assistant");
+        assert_eq!(assistant_with_tools["content"], "Let me check.");
+
+        let edit_entry = &value[2];
+        assert!(edit_entry.get("blocks").is_none());
+        assert!(edit_entry.get("arguments").is_none());
+    }
+
+    #[test]
+    fn transcript_projection_preserves_user_assistant_text_and_status() {
+        let projected = project_transcript(&fixture_display_transcript());
+        let value: serde_json::Value = serde_json::from_str(&projected).unwrap();
+
+        assert_eq!(value[0]["role"], "user");
+        assert_eq!(value[0]["content"], "please read foo");
+
+        let error_entry = &value[3];
+        assert_eq!(error_entry["content"], "Error: boom");
+        assert_eq!(error_entry["error"], true);
+        assert_eq!(error_entry["controlled_stop"], false);
+    }
+
+    #[test]
+    fn transcript_projection_contains_no_tool_names_ids_or_result_bodies() {
+        let projected = project_transcript(&fixture_display_transcript());
+        assert!(!projected.contains("read_file"));
+        assert!(!projected.contains("call-1"));
+        assert!(!projected.contains("source_edit"));
+        assert!(!projected.contains("top secret file contents"));
+        assert!(!projected.contains("old_text"));
+        assert!(!projected.contains("new_text"));
+    }
+
+    #[test]
+    fn debug_projection_keeps_tool_identity_without_result_bodies() {
+        let projected = project_debug(&fixture_display_transcript());
+        let value: serde_json::Value = serde_json::from_str(&projected).unwrap();
+
+        assert!(projected.contains("read_file"));
+        assert!(projected.contains("call-1"));
+        assert!(!projected.contains("top secret file contents"));
+        assert!(!projected.contains("old_text"));
+        assert!(!projected.contains("secret old"));
+        assert!(!projected.contains("secret new"));
+
+        let tool_block = &value[1]["blocks"][1];
+        assert_eq!(tool_block["name"], "read_file");
+        assert_eq!(tool_block["id"], "call-1");
+        assert_eq!(tool_block["status"], "completed");
+        assert!(tool_block["result"].as_str().unwrap().contains("[redacted"));
+        assert!(tool_block.get("arguments").is_none());
+    }
+
+    #[test]
+    fn debug_projection_redacts_tool_result_with_length_marker() {
+        let projected = project_debug(&fixture_display_transcript());
+        let value: serde_json::Value = serde_json::from_str(&projected).unwrap();
+
+        let tool_block = &value[1]["blocks"][1];
+        let result_marker = tool_block["result"].as_str().unwrap();
+        assert!(result_marker.starts_with("[redacted: "));
+        assert!(result_marker.contains("bytes]"));
+    }
+
+    #[test]
+    fn debug_projection_redacts_and_bounds_tool_metadata() {
+        let token = format!("sk-{}", "x".repeat(40));
+        let oversized_id = "id".repeat(200);
+        let raw = serde_json::json!([{
+            "role": "assistant",
+            "content": "diagnostic",
+            "blocks": [{
+                "kind": "tool",
+                "id": oversized_id,
+                "name": token,
+                "status": "completed"
+            }]
+        }])
+        .to_string();
+
+        let projected = project_debug(&raw);
+        let value: serde_json::Value = serde_json::from_str(&projected).unwrap();
+        let tool = &value[0]["blocks"][0];
+
+        assert!(!projected.contains(&token));
+        assert!(tool["name"].as_str().unwrap().contains("[REDACTED]"));
+        assert!(tool["id"].as_str().unwrap().len() <= 200);
+    }
+
+    #[test]
+    fn internal_export_is_only_format_with_model_history() {
+        // Internal format is exercised via export_session with a live store;
+        // here we assert the projections never emit model_history.
+        let transcript = project_transcript(&fixture_display_transcript());
+        let debug = project_debug(&fixture_display_transcript());
+        assert!(!transcript.contains("model_history"));
+        assert!(!debug.contains("model_history"));
+    }
+
+    #[test]
+    fn malformed_display_transcript_does_not_return_raw_input() {
+        let raw = "this is not json at all {broken";
+        let transcript = project_transcript(raw);
+        let debug = project_debug(raw);
+
+        assert_eq!(transcript, "[]");
+        assert_eq!(debug, "[]");
+        assert_ne!(transcript, raw);
+        assert_ne!(debug, raw);
+    }
+
+    #[test]
+    fn projections_omit_malformed_entries_and_nested_object_values() {
+        let raw = serde_json::json!([
+            {
+                "role": "user",
+                "content": {"nested": "secret"},
+                "error": "not a bool",
+                "controlled_stop": {"nested": true}
+            },
+            {
+                "role": "invalid_role",
+                "content": "hello"
+            },
+            {
+                "role": "assistant",
+                "content": "valid content",
+                "blocks": [
+                    "not an object",
+                    {
+                        "kind": {"nested": "tool"},
+                        "id": "call-1",
+                        "name": "read_file",
+                        "status": "completed",
+                        "result": {"nested": "payload"}
+                    }
+                ]
+            }
+        ])
+        .to_string();
+
+        let transcript = project_transcript(&raw);
+        let debug = project_debug(&raw);
+
+        assert!(!transcript.contains("nested"));
+        assert!(!transcript.contains("secret"));
+        assert!(!transcript.contains("invalid_role"));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("payload"));
+        assert!(!debug.contains("invalid_role"));
+
+        let tr_val: serde_json::Value = serde_json::from_str(&transcript).unwrap();
+        assert_eq!(tr_val.as_array().unwrap().len(), 2);
+        assert_eq!(tr_val[0]["role"], "user");
+        assert!(tr_val[0].get("content").is_none());
+        assert!(tr_val[0].get("error").is_none());
+        assert!(tr_val[0].get("controlled_stop").is_none());
+
+        let dbg_val: serde_json::Value = serde_json::from_str(&debug).unwrap();
+        let blocks = dbg_val[1]["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].get("kind").is_none());
+        assert_eq!(blocks[0]["id"], "call-1");
+        assert!(blocks[0].get("result").is_none());
+    }
+}
+
+#[cfg(test)]
+mod session_access {
+    use super::*;
+    use crate::app_config::AppConfigStore;
+    use rig::completion::message::{Message, Text, UserContent};
+    use tempfile::tempdir;
+
+    fn setup() -> (
+        tempfile::TempDir,
+        AppConfigState,
+        SessionStore,
+        String,
+        String,
+    ) {
+        let root = tempdir().unwrap();
+        let first_path = root.path().join("first");
+        let second_path = root.path().join("second");
+        std::fs::create_dir_all(&first_path).unwrap();
+        std::fs::create_dir_all(&second_path).unwrap();
+
+        let app_store = AppConfigStore::in_memory_for_test().unwrap();
+        let first_workspace = app_store
+            .add_workspace(first_path.to_str().unwrap())
+            .unwrap();
+        let second_workspace = app_store
+            .add_workspace(second_path.to_str().unwrap())
+            .unwrap();
+        app_store.set_active_workspace(&first_workspace.id).unwrap();
+
+        let app_state = AppConfigState {
+            store: Some(app_store),
+            init_warning: None,
+        };
+        let session_store = SessionStore::in_memory_for_test().unwrap();
+
+        (
+            root,
+            app_state,
+            session_store,
+            first_workspace.id,
+            second_workspace.id,
+        )
+    }
+
+    #[test]
+    fn validate_optional_workspace_id_rejects_inactive_workspace() {
+        let (_root, app_state, _session_store, first_id, second_id) = setup();
+
+        assert!(validate_optional_workspace_id_access(Some(&second_id), &app_state).is_err());
+        assert!(validate_optional_workspace_id_access(Some(&first_id), &app_state).is_ok());
+        assert!(validate_optional_workspace_id_access(None, &app_state).is_ok());
+    }
+
+    #[test]
+    fn validate_session_access_rejects_other_workspace_session() {
+        let (_root, app_state, session_store, first_id, second_id) = setup();
+
+        let first_session = session_store
+            .create_session("first", "openai", "gpt-4", Some(&first_id))
+            .unwrap();
+        let second_session = session_store
+            .create_session("second", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+
+        assert!(validate_session_access(&session_store, &first_session.id, &app_state).is_ok());
+        assert!(validate_session_access(&session_store, &second_session.id, &app_state).is_err());
+    }
+
+    #[test]
+    fn unscoped_session_rejected_while_workspace_active() {
+        let (_root, app_state, session_store, _first_id, _second_id) = setup();
+
+        let unscoped = session_store
+            .create_session("Unscoped", "openai", "gpt-4", None)
+            .unwrap();
+
+        assert!(validate_session_access(&session_store, &unscoped.id, &app_state).is_err());
+    }
+
+    #[test]
+    fn unscoped_session_accepted_when_no_workspace_active() {
+        let app_state = AppConfigState {
+            store: Some(AppConfigStore::in_memory_for_test().unwrap()),
+            init_warning: None,
+        };
+        let session_store = SessionStore::in_memory_for_test().unwrap();
+
+        let unscoped = session_store
+            .create_session("Unscoped", "openai", "gpt-4", None)
+            .unwrap();
+
+        assert!(validate_session_access(&session_store, &unscoped.id, &app_state).is_ok());
+    }
+
+    #[test]
+    fn validate_workspace_id_access_requires_active_workspace() {
+        let app_state = AppConfigState {
+            store: Some(AppConfigStore::in_memory_for_test().unwrap()),
+            init_warning: None,
+        };
+
+        assert!(validate_workspace_id_access("any", &app_state).is_err());
+    }
+
+    #[test]
+    fn validate_session_access_accepts_active_workspace_session() {
+        let (_root, app_state, session_store, first_id, _second_id) = setup();
+
+        let first_session = session_store
+            .create_session("first", "openai", "gpt-4", Some(&first_id))
+            .unwrap();
+
+        assert!(validate_session_access(&session_store, &first_session.id, &app_state).is_ok());
+    }
+
+    #[test]
+    fn authorized_session_detail_rejects_other_workspace_before_returning_data() {
+        let (_root, app_state, session_store, _first_id, second_id) = setup();
+        let second_session = session_store
+            .create_session("second", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+
+        let error =
+            authorized_session_detail(&session_store, &second_session.id, &app_state).unwrap_err();
+
+        assert!(error.contains("active workspace"));
+    }
+
+    #[test]
+    fn clearing_conversation_history_rejects_other_workspace_without_mutation() {
+        let (_root, app_state, session_store, _first_id, second_id) = setup();
+        let second_session = session_store
+            .create_session("second", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+        let conversation_state = ConversationState {
+            store: Mutex::new(ConversationStore::new()),
+        };
+        conversation_state.store.lock().unwrap().store_history(
+            &second_session.id,
+            vec![Message::User {
+                content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
+                    text: "keep me".to_string(),
+                    additional_params: Some(serde_json::json!({})),
+                })),
+            }],
+        );
+
+        let result = clear_conversation_history_with_access(
+            &conversation_state,
+            &session_store,
+            &app_state,
+            &second_session.id,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            conversation_state
+                .store
+                .lock()
+                .unwrap()
+                .get_history(&second_session.id)
+                .len(),
+            1
+        );
     }
 }

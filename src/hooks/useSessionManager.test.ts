@@ -4,6 +4,7 @@ import { act, renderHook } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message, ModelOption, Session } from "../types";
+import { setFrameSchedulerForTest } from "./useChatStream";
 import { type UseSessionManagerParams, useSessionManager } from "./useSessionManager";
 
 type ListenerCallback = (event: { payload: unknown }) => void;
@@ -817,32 +818,57 @@ describe("useSessionManager", () => {
     });
 
     it("creates a stable currentTurn from the first streamed token", async () => {
-      const { result } = renderSessionManager();
-
-      await act(async () => {
-        await result.current.handleSend("hi");
+      const scheduledFrames: Map<number, () => void> = new Map();
+      let frameHandles = 0;
+      setFrameSchedulerForTest({
+        schedule: (cb) => {
+          const handle = ++frameHandles;
+          scheduledFrames.set(handle, () => cb());
+          return handle;
+        },
+        cancel: (handle) => {
+          scheduledFrames.delete(handle);
+        },
       });
 
-      expect(result.current.currentTurn).toBeNull();
+      function flushFrames() {
+        const pending = [...scheduledFrames.values()];
+        scheduledFrames.clear();
+        for (const cb of pending) cb();
+      }
 
-      act(() => {
-        triggerEvent<string>("llm-token", "hello");
-      });
+      try {
+        const { result } = renderSessionManager();
 
-      const turnId = result.current.currentTurn?.id;
-      expect(turnId).toMatch(/^turn-/);
-      expect(result.current.currentTurn?.blocks).toEqual([
-        { kind: "text", id: "text-0", text: "hello" },
-      ]);
+        await act(async () => {
+          await result.current.handleSend("hi");
+        });
 
-      act(() => {
-        triggerEvent<string>("llm-token", " back");
-      });
+        expect(result.current.currentTurn).toBeNull();
 
-      expect(result.current.currentTurn?.id).toBe(turnId);
-      expect(result.current.currentTurn?.blocks).toEqual([
-        { kind: "text", id: "text-0", text: "hello back" },
-      ]);
+        await act(async () => {
+          triggerEvent<string>("llm-token", "hello");
+          flushFrames();
+        });
+
+        const turnId = result.current.currentTurn?.id;
+        expect(turnId).toMatch(/^turn-/);
+        expect(result.current.currentTurn?.blocks).toEqual([
+          { kind: "text", id: "text-0", text: "hello" },
+        ]);
+
+        await act(async () => {
+          triggerEvent<string>("llm-token", " back");
+          flushFrames();
+        });
+
+        expect(result.current.currentTurn?.id).toBe(turnId);
+        expect(result.current.currentTurn?.blocks).toEqual([
+          { kind: "text", id: "text-0", text: "hello back" },
+        ]);
+      } finally {
+        setFrameSchedulerForTest(null);
+      }
     });
 
     it("groups live text and tool blocks inside currentTurn and finalizes them into the assistant message", async () => {
@@ -1230,7 +1256,7 @@ describe("useSessionManager", () => {
       const originalSessionId = result.current.activeSessionId;
       expect(originalSessionId).toBe("backend-stream");
 
-      act(() => {
+      await act(async () => {
         triggerEvent<string>("llm-token", "live token");
       });
 

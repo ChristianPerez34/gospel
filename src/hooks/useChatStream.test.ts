@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalRequest, Message } from "../types";
-import { useChatStream } from "./useChatStream";
+import { setFrameSchedulerForTest, useChatStream } from "./useChatStream";
 
 type ListenerCallback = (event: { payload: unknown }) => void;
 
@@ -518,6 +518,279 @@ describe("useChatStream", () => {
 
       expect(onMessages).not.toHaveBeenCalled();
       expect(result.current.currentTurn).toBeNull();
+    });
+  });
+
+  describe("buffered text coalescing", () => {
+    // A deterministic frame queue: scheduled callbacks are held until
+    // `flushFrames()` runs them. Cancelled handles are skipped. This proves
+    // coalescing without wall-clock timing.
+    let scheduledFrames: Map<number, () => void> = new Map();
+    let frameHandles = 0;
+    let cancelledHandles: number[] = [];
+
+    beforeEach(() => {
+      scheduledFrames = new Map();
+      frameHandles = 0;
+      cancelledHandles = [];
+      setFrameSchedulerForTest({
+        schedule: (cb) => {
+          const handle = ++frameHandles;
+          scheduledFrames.set(handle, () => cb());
+          return handle;
+        },
+        cancel: (handle) => {
+          cancelledHandles.push(handle);
+          scheduledFrames.delete(handle);
+        },
+      });
+    });
+
+    afterEach(() => {
+      setFrameSchedulerForTest(null);
+    });
+
+    function flushFrames() {
+      const pending = [...scheduledFrames.values()];
+      scheduledFrames.clear();
+      for (const cb of pending) cb();
+    }
+
+    it("multiple tokens in one frame produce a single flush with concatenated text in order", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<string>("llm-token", "Hello");
+        triggerEvent<string>("llm-token", " ");
+        triggerEvent<string>("llm-token", "world");
+      });
+
+      // Before the frame flushes, no text block is visible yet.
+      expect(result.current.currentTurn).toBeNull();
+      expect(scheduledFrames.size).toBe(1);
+
+      await act(async () => {
+        flushFrames();
+      });
+
+      const turn = result.current.currentTurn!;
+      expect(turn.blocks).toHaveLength(1);
+      expect(turn.blocks[0]).toMatchObject({ kind: "text", text: "Hello world" });
+    });
+
+    it("a tool call flushes buffered text before the tool block", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<string>("llm-token", "pre-tool");
+        triggerEvent("llm-tool-call", { id: "t1", name: "shell", arguments: "ls" });
+      });
+
+      const turn = result.current.currentTurn!;
+      expect(turn.blocks).toHaveLength(2);
+      expect(turn.blocks[0]).toMatchObject({ kind: "text", text: "pre-tool" });
+      expect(turn.blocks[1]).toMatchObject({ kind: "tool", id: "t1" });
+      // The pending frame was cancelled by the synchronous flush.
+      expect(cancelledHandles.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("llm-done flushes buffered text even when the frame has not run", async () => {
+      const onMessages = vi.fn();
+      const { result } = renderChatStream({ onMessages });
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<string>("llm-token", "almost");
+        triggerEvent<string>("llm-token", " done");
+        triggerEvent<string>("llm-done", "final-answer");
+      });
+
+      // done flushed synchronously; no frame should remain pending.
+      expect(scheduledFrames.size).toBe(0);
+      expect(result.current.currentTurn).toBeNull();
+
+      const setter = onMessages.mock.calls[0][0] as (prev: Message[]) => Message[];
+      const message = setter([])[0];
+      // Authoritative backend response wins, but buffered text was flushed
+      // into the finalized blocks before the message was captured.
+      expect(message.content).toBe("final-answer");
+      expect(message.blocks?.some((b) => b.kind === "text")).toBe(true);
+    });
+
+    it("llm-error flushes buffered text before finalizing", async () => {
+      const onMessages = vi.fn();
+      const { result } = renderChatStream({ onMessages });
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<string>("llm-token", "partial");
+        triggerEvent<{ code: string; message: string }>("llm-error", {
+          code: "RUNTIME",
+          message: "boom",
+        });
+      });
+
+      expect(scheduledFrames.size).toBe(0);
+      expect(result.current.currentTurn).toBeNull();
+
+      const setter = onMessages.mock.calls[0][0] as (prev: Message[]) => Message[];
+      const message = setter([])[0];
+      expect(message.error).toBe("boom");
+      expect(message.blocks?.some((b) => b.kind === "text" && b.text === "partial")).toBe(true);
+    });
+
+    it("cancelStream flushes buffered text before finalizing as cancelled", async () => {
+      const onMessages = vi.fn();
+      const { result } = renderChatStream({ onMessages, sessionId: "s-coal" });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "s-coal",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", { runId, token: "buffered" });
+        await result.current.cancelStream();
+      });
+
+      expect(scheduledFrames.size).toBe(0);
+      const setter = onMessages.mock.calls[0][0] as (prev: Message[]) => Message[];
+      const message = setter([])[0];
+      expect(message.content).toBe("buffered");
+    });
+
+    it("a stale token never enters the pending buffer", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "s-stale",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: "run-stale",
+          token: "ignored",
+        });
+      });
+
+      // No frame was scheduled because the stale token was rejected before
+      // buffering.
+      expect(scheduledFrames.size).toBe(0);
+      expect(result.current.currentTurn).toBeNull();
+
+      // An accepted token for the active run still works.
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId,
+          token: "accepted",
+        });
+        flushFrames();
+      });
+      expect(result.current.currentTurn!.blocks[0]).toMatchObject({
+        kind: "text",
+        text: "accepted",
+      });
+    });
+
+    it("reset cancels pending work and a later run starts with an empty buffer", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<string>("llm-token", "first run");
+      });
+      expect(scheduledFrames.size).toBe(1);
+
+      act(() => {
+        result.current.resetStream();
+      });
+
+      // Reset cancelled the pending frame and cleared the buffer.
+      expect(cancelledHandles.length).toBeGreaterThanOrEqual(1);
+      expect(scheduledFrames.size).toBe(0);
+      expect(result.current.currentTurn).toBeNull();
+
+      // A later run starts clean.
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "s-next",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId,
+          token: "second run",
+        });
+        flushFrames();
+      });
+      expect(result.current.currentTurn!.blocks[0]).toMatchObject({
+        kind: "text",
+        text: "second run",
+      });
+    });
+
+    it("unmount cancels pending work and cannot leak text into a later mount", async () => {
+      const { unmount } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<string>("llm-token", "about to unmount");
+      });
+      expect(scheduledFrames.size).toBe(1);
+
+      act(() => {
+        unmount();
+      });
+
+      expect(cancelledHandles.length).toBeGreaterThanOrEqual(1);
+      expect(scheduledFrames.size).toBe(0);
+    });
+
+    it("preserves tool-result pairing after buffered text flushes", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<string>("llm-token", "text before tool");
+        triggerEvent("llm-tool-call", { id: "pair-1", name: "read_file", arguments: {} });
+      });
+      await act(async () => {
+        triggerEvent("llm-tool-result", {
+          id: "pair-1",
+          name: "read_file",
+          result: "contents",
+        });
+      });
+
+      const turn = result.current.currentTurn!;
+      expect(turn.blocks).toHaveLength(2);
+      expect(turn.blocks[0]).toMatchObject({ kind: "text", text: "text before tool" });
+      const toolBlock = turn.blocks[1];
+      expect(toolBlock).toMatchObject({
+        kind: "tool",
+        id: "pair-1",
+        status: "completed",
+        result: "contents",
+      });
     });
   });
 });

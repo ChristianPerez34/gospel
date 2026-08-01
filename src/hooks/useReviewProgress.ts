@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ChunkFailure,
   ChunkStatus,
@@ -50,6 +50,15 @@ export interface UseReviewProgress extends UseReviewProgressState {
 /** Cap the activity feed so a 20-batch scan can't grow it without bound. */
 const MAX_LOG_ENTRIES = 400;
 const MAX_TOOL_ENTRIES = 200;
+const MAX_INVALIDATED_RUN_IDS = 32;
+
+function rememberInvalidatedRunId(invalidatedRunIds: Set<string>, runId: string): void {
+  invalidatedRunIds.add(runId);
+  if (invalidatedRunIds.size <= MAX_INVALIDATED_RUN_IDS) return;
+
+  const oldestRunId = invalidatedRunIds.values().next().value;
+  if (oldestRunId !== undefined) invalidatedRunIds.delete(oldestRunId);
+}
 
 function describe(phase: ReviewPhase): string {
   switch (phase.type) {
@@ -303,20 +312,20 @@ function reduceReviewState(
   }
 
   if (focus) {
-    const existing = next.perFocus[focus];
-    const focusProgress: FocusProgress = existing ?? {
+    const existing = prev.perFocus[focus] ?? {
       runId,
       focus,
       pipeline: INITIAL_PIPELINE,
     };
     next.perFocus[focus] = {
-      ...focusProgress,
-      pipeline: reducePipeline(focusProgress.pipeline, phase),
+      ...existing,
+      pipeline: reducePipeline(existing.pipeline, phase),
     };
   } else {
     next.pipeline = reducePipeline(prev.pipeline, phase);
   }
 
+  // Derived aggregate completion across per-focus records if any exist
   const focusPipelines = Object.values(next.perFocus);
   next.done =
     next.pipeline.done ||
@@ -327,6 +336,8 @@ function reduceReviewState(
 }
 
 export function useReviewProgress(): UseReviewProgress {
+  const invalidatedRunIds = useRef(new Set<string>());
+  const activeRunId = useRef<string | null>(null);
   const [state, setState] = useState<UseReviewProgressState>({
     runId: null,
     provider: null,
@@ -339,6 +350,10 @@ export function useReviewProgress(): UseReviewProgress {
     log: [],
   });
   const reset = useCallback(() => {
+    const runId = activeRunId.current;
+    if (runId) rememberInvalidatedRunId(invalidatedRunIds.current, runId);
+    activeRunId.current = null;
+
     setState({
       runId: null,
       provider: null,
@@ -362,16 +377,23 @@ export function useReviewProgress(): UseReviewProgress {
           if (cancelled) return;
           const payload = event.payload;
           if (!payload?.run_id || !payload?.phase) return;
+          if (invalidatedRunIds.current.has(payload.run_id)) return;
+          if (activeRunId.current !== null && activeRunId.current !== payload.run_id) return;
+          if (activeRunId.current === null) activeRunId.current = payload.run_id;
           const phase = payload.phase;
           const focus = payload.focus;
 
           setState((prev) => {
-            const isAggregate = focus == null;
-            if (!isAggregate && prev.runId !== null && prev.runId !== payload.run_id) {
+            if (
+              invalidatedRunIds.current.has(payload.run_id) ||
+              (activeRunId.current !== null && activeRunId.current !== payload.run_id)
+            ) {
               return prev;
             }
-            const runChanged =
-              prev.runId === null || (isAggregate && prev.runId !== payload.run_id);
+            if (prev.runId !== null && prev.runId !== payload.run_id) {
+              return prev;
+            }
+            const runChanged = prev.runId === null;
 
             const base: UseReviewProgressState = runChanged
               ? {

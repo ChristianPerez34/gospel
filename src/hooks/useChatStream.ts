@@ -106,6 +106,44 @@ interface StartStreamOptions {
   invokedSkill?: { name: string; args?: string } | null;
 }
 
+/** Schedules a single frame flush of buffered streamed text. Defaults to the
+ * browser animation frame; tests substitute a deterministic queue via
+ * `setFrameSchedulerForTest`. A scheduled handle is cancelled by
+ * `cancelFrameHandle` before a synchronous flush or cleanup. */
+type FrameHandle = number;
+interface FrameScheduler {
+  schedule: (cb: () => void) => FrameHandle;
+  cancel: (handle: FrameHandle) => void;
+}
+
+const browserFrameScheduler: FrameScheduler = {
+  schedule:
+    typeof requestAnimationFrame === "function"
+      ? (cb) => requestAnimationFrame(cb)
+      : (cb) => setTimeout(cb, 0) as unknown as FrameHandle,
+  cancel:
+    typeof cancelAnimationFrame === "function"
+      ? (handle) => cancelAnimationFrame(handle)
+      : (handle) => clearTimeout(handle as number),
+};
+
+let testFrameScheduler: FrameScheduler | null = null;
+
+/** Test-only seam: replace the frame scheduler/canceller with a deterministic
+ * queue. Pass `null` to restore the browser animation-frame scheduler. */
+export function setFrameSchedulerForTest(scheduler: FrameScheduler | null) {
+  testFrameScheduler = scheduler;
+}
+
+function scheduleFlush(cb: () => void): FrameHandle {
+  return (testFrameScheduler ?? browserFrameScheduler).schedule(cb);
+}
+
+function cancelFrameHandle(handle: FrameHandle | null) {
+  if (handle == null) return;
+  (testFrameScheduler ?? browserFrameScheduler).cancel(handle);
+}
+
 export function useChatStream(options: UseChatStreamOptions = {}) {
   const [currentTurn, setCurrentTurn] = useState<CurrentTurn | null>(null);
   const currentTurnRef = useRef<CurrentTurn | null>(null);
@@ -113,6 +151,13 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   const turnSequenceRef = useRef(0);
   const optionsRef = useRef(options);
   optionsRef.current = options;
+
+  // Buffered streamed text: accepted `llm-token` events append here and are
+  // flushed at frame cadence (or synchronously before any ordering-sensitive
+  // event / lifecycle finalizer) so long responses do not trigger one React
+  // state update per token. The buffer preserves original text order.
+  const pendingTextRef = useRef<string>("");
+  const pendingFrameRef = useRef<FrameHandle | null>(null);
 
   const generateTurnId = useCallback(() => {
     turnSequenceRef.current += 1;
@@ -138,7 +183,44 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     [createTurn]
   );
 
+  /** Apply any buffered streamed text to the current turn's last text block
+   * (or a new text block), then clear the buffer and cancel any pending frame.
+   * Synchronous and idempotent: safe to call before any event that can append
+   * or mutate blocks, and before completion, error, cancellation, reset, or
+   * unmount. Preserves turn id and text-block occurrence order. */
+  const flushPendingText = useCallback(() => {
+    if (pendingFrameRef.current != null) {
+      cancelFrameHandle(pendingFrameRef.current);
+      pendingFrameRef.current = null;
+    }
+    const buffered = pendingTextRef.current;
+    if (!buffered) return;
+    // Clear the buffer before applying so a reentrant event cannot duplicate
+    // text.
+    pendingTextRef.current = "";
+    updateCurrentTurn((turn) => {
+      const blocks = [...turn.blocks];
+      const last = blocks[blocks.length - 1];
+      if (last && last.kind === "text") {
+        blocks[blocks.length - 1] = {
+          ...last,
+          text: last.text + buffered,
+        };
+      } else {
+        blocks.push({
+          kind: "text",
+          id: `text-${blocks.length}`,
+          text: buffered,
+        });
+      }
+      return { ...turn, blocks };
+    });
+  }, [updateCurrentTurn]);
+
   const clearCurrentTurn = useCallback(() => {
+    cancelFrameHandle(pendingFrameRef.current);
+    pendingFrameRef.current = null;
+    pendingTextRef.current = "";
     currentTurnRef.current = null;
     activeRunIdRef.current = null;
     setCurrentTurn(null);
@@ -175,29 +257,26 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const token = typeof payload === "string" ? payload : payload?.token;
               const runId = typeof payload === "string" ? null : payload?.runId;
               if (isStale(runId)) return;
-              updateCurrentTurn((turn) => {
-                const blocks = [...turn.blocks];
-                const last = blocks[blocks.length - 1];
-                if (last && last.kind === "text") {
-                  blocks[blocks.length - 1] = {
-                    ...last,
-                    text: last.text + token,
-                  };
-                } else {
-                  blocks.push({
-                    kind: "text",
-                    id: `text-${blocks.length}`,
-                    text: token,
-                  });
-                }
-                return { ...turn, blocks };
-              });
+              if (!token) return;
+              // Buffer the token and schedule at most one frame flush. The
+              // flush preserves original text order by appending the whole
+              // buffer to the last text block.
+              pendingTextRef.current += token;
+              if (pendingFrameRef.current == null) {
+                pendingFrameRef.current = scheduleFlush(() => {
+                  pendingFrameRef.current = null;
+                  flushPendingText();
+                });
+              }
             })
           ),
           track(
             listen<LlmDonePayload>("llm-done", (event) => {
               const payload = event.payload;
               if (typeof payload !== "string" && isStale(payload?.runId)) return;
+              // Flush any buffered text before capturing the authoritative
+              // final turn so no final tokens are lost.
+              flushPendingText();
               const finalTurn = currentTurnRef.current;
               const payloadContent =
                 typeof payload === "string" ? payload : (payload?.response ?? "");
@@ -233,6 +312,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             listen<LlmErrorPayload>("llm-error", (event) => {
               const err = event.payload;
               if (isStale(err?.runId)) return;
+              // Flush buffered text before finalizing so a quick failure
+              // cannot lose trailing tokens.
+              flushPendingText();
               const finalTurn = currentTurnRef.current;
               const messageId = finalTurn?.id ?? generateTurnId();
               const rawBlocks = finalTurn?.blocks ?? [];
@@ -273,6 +355,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             listen<LlmToolCallPayload>("llm-tool-call", (event) => {
               const payload = event.payload;
               if (isStale(payload?.runId)) return;
+              // Flush buffered text before appending a tool block so the
+              // visible timeline keeps text before tool calls.
+              flushPendingText();
               updateCurrentTurn((turn) => ({
                 ...turn,
                 blocks: [
@@ -293,6 +378,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             listen<LlmToolResultPayload>("llm-tool-result", (event) => {
               const payload = event.payload;
               if (isStale(payload?.runId)) return;
+              // Flush buffered text before pairing a tool result so a late
+              // text token cannot interleave between a tool call and result.
+              flushPendingText();
               updateCurrentTurn((turn) => {
                 const idx = turn.blocks.findIndex(
                   (b): b is TurnBlock & { kind: "tool" } => b.kind === "tool" && b.id === payload.id
@@ -334,6 +422,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             listen<LlmReasoningPayload>("llm-reasoning", (event) => {
               const { runId, id, text, phase } = event.payload;
               if (isStale(runId)) return;
+              // Flush buffered text before appending/mutating a reasoning
+              // block so reasoning does not appear before trailing text.
+              flushPendingText();
               updateCurrentTurn((turn) => {
                 const idx = turn.blocks.findIndex(
                   (b): b is Extract<TurnBlock, { kind: "reasoning" }> =>
@@ -396,6 +487,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
           track(
             listen<ApprovalRequest>("approval-requested", (event) => {
+              // Flush buffered text before appending an approval block so
+              // the approval card appears after trailing text.
+              flushPendingText();
               updateCurrentTurn((turn) => {
                 if (
                   turn.blocks.some(
@@ -427,6 +521,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
           track(
             listen<ApprovalResolution>("approval-resolved", (event) => {
+              // Flush buffered text before mutating approval block status.
+              flushPendingText();
               const status = event.payload.outcome;
               updateCurrentTurn((turn) => ({
                 ...turn,
@@ -461,9 +557,14 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
     return () => {
       cancelled = true;
+      // Cancel any pending frame flush so unmount cannot leak buffered text
+      // into a later mount or a stale run.
+      cancelFrameHandle(pendingFrameRef.current);
+      pendingFrameRef.current = null;
+      pendingTextRef.current = "";
       cleanup?.();
     };
-  }, [updateCurrentTurn, generateTurnId, clearCurrentTurn]);
+  }, [updateCurrentTurn, generateTurnId, clearCurrentTurn, flushPendingText]);
 
   const startStream = useCallback(async (opts: StartStreamOptions) => {
     const runId = crypto.randomUUID();
@@ -493,6 +594,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     // Finalize the current turn as cancelled locally. Mirror the llm-error
     // finalize path: persist a plain-language "cancelled" assistant message so
     // the transcript records the controlled stop, and clear streaming state.
+    // Flush buffered text first so a cancelled turn cannot lose trailing
+    // tokens, then clear (which cancels any pending frame deterministically).
+    flushPendingText();
     const finalTurn = currentTurnRef.current;
     const rawBlocks = finalTurn?.blocks ?? [];
     const blocks = dropReasoningBlocks(rawBlocks);
@@ -511,7 +615,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     ]);
     clearCurrentTurn();
     optionsRef.current.onStatusChange?.("connected");
-  }, [clearCurrentTurn, generateTurnId]);
+  }, [clearCurrentTurn, generateTurnId, flushPendingText]);
 
   const resolveApproval = useCallback(async (id: string, decision: ApprovalDecision) => {
     // Default to invoking the Tauri command if the consumer did not supply
