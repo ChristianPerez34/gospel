@@ -170,6 +170,142 @@ pub trait SessionTurnVerification: Send + Sync {
     fn schedule_verification(&self, job: VerificationJobRequest);
 }
 
+// ============================================================================
+// Consolidated Deep Turn Orchestrator Seams (ADR-0004, ADR-0005, CONTEXT.md)
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnSummary {
+    pub full_response: String,
+    pub prompt_tokens: usize,
+    pub response_tokens: usize,
+    pub tool_calls: usize,
+}
+
+pub trait TurnPersistenceAdapter: Send + Sync {
+    fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String>;
+    fn save_turn_success(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        assistant_reply: &str,
+        model_history: Option<&str>,
+    ) -> Result<(), String>;
+    fn save_turn_failure(&self, session_id: &str, error_message: &str) -> Result<(), String>;
+    fn save_turn_stopped(&self, session_id: &str, stopped_reason: &str) -> Result<(), String>;
+}
+
+impl<T: TurnPersistenceAdapter + ?Sized> TurnPersistenceAdapter for std::sync::Arc<T> {
+    fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String> {
+        (**self).activate_draft_if_needed(session_id)
+    }
+
+    fn save_turn_success(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        assistant_reply: &str,
+        model_history: Option<&str>,
+    ) -> Result<(), String> {
+        (**self).save_turn_success(session_id, user_prompt, assistant_reply, model_history)
+    }
+
+    fn save_turn_failure(&self, session_id: &str, error_message: &str) -> Result<(), String> {
+        (**self).save_turn_failure(session_id, error_message)
+    }
+
+    fn save_turn_stopped(&self, session_id: &str, stopped_reason: &str) -> Result<(), String> {
+        (**self).save_turn_stopped(session_id, stopped_reason)
+    }
+}
+
+pub trait TurnEventEmitter: Send + Sync {
+    fn emit_event(&self, session_id: &str, run_id: &str, event: &SessionTurnEvent);
+}
+
+impl<T: TurnEventEmitter + ?Sized> TurnEventEmitter for std::sync::Arc<T> {
+    fn emit_event(&self, session_id: &str, run_id: &str, event: &SessionTurnEvent) {
+        (**self).emit_event(session_id, run_id, event)
+    }
+}
+
+pub trait TurnLlmAdapter: Send + Sync {
+    fn stream_turn<'a>(
+        &'a self,
+        prompt: &'a str,
+        on_event: Box<dyn FnMut(SessionTurnEvent) + Send + 'a>,
+    ) -> SessionTurnFuture<'a, Result<StreamCompletionResult, LlmError>>;
+}
+
+pub struct TurnOrchestrator<P, E, L> {
+    pub persistence: P,
+    pub emitter: E,
+    pub llm: L,
+}
+
+impl<P: TurnPersistenceAdapter, E: TurnEventEmitter, L: TurnLlmAdapter> TurnOrchestrator<P, E, L> {
+    pub fn new(persistence: P, emitter: E, llm: L) -> Self {
+        Self {
+            persistence,
+            emitter,
+            llm,
+        }
+    }
+
+    pub async fn execute_turn(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        prompt: &str,
+    ) -> Result<TurnSummary, LlmError> {
+        let _ = self.persistence.activate_draft_if_needed(session_id);
+
+        let emitter_ref = &self.emitter;
+        let result = self
+            .llm
+            .stream_turn(
+                prompt,
+                Box::new(move |evt| {
+                    emitter_ref.emit_event(session_id, run_id, &evt);
+                }),
+            )
+            .await;
+
+        match result {
+            Ok(completion) => {
+                let history_json = completion
+                    .history
+                    .as_ref()
+                    .map(|h| serde_json::to_string(h).unwrap_or_default());
+                self.persistence
+                    .save_turn_success(
+                        session_id,
+                        prompt,
+                        &completion.full_response,
+                        history_json.as_deref(),
+                    )
+                    .map_err(|e| LlmError::ProviderError(e))?;
+
+                Ok(TurnSummary {
+                    full_response: completion.full_response,
+                    prompt_tokens: completion.prompt_tokens,
+                    response_tokens: completion.response_tokens,
+                    tool_calls: completion.tool_calls,
+                })
+            }
+            Err(LlmError::ControlledStop(reason)) => {
+                self.persistence.save_turn_stopped(session_id, &reason).ok();
+                Err(LlmError::ControlledStop(reason))
+            }
+            Err(err) => {
+                let err_msg = err.to_string();
+                self.persistence.save_turn_failure(session_id, &err_msg).ok();
+                Err(err)
+            }
+        }
+    }
+}
+
 pub async fn run_streaming_turn(
     deps: StreamingTurnDependencies<'_>,
     request: StreamingTurnRequest,
@@ -2511,5 +2647,195 @@ mod tests {
         assert_eq!(display[1]["content"], "Agent stopped");
         assert_eq!(display[1]["error"], false);
         assert_eq!(display[1]["controlled_stop"], true);
+    }
+
+    struct TestPersistence {
+        saved_turns: std::sync::Mutex<Vec<(String, String, String, Option<String>)>>,
+        drafts_activated: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl TestPersistence {
+        fn new() -> Self {
+            Self {
+                saved_turns: std::sync::Mutex::new(Vec::new()),
+                drafts_activated: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl TurnPersistenceAdapter for TestPersistence {
+        fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String> {
+            self.drafts_activated.lock().unwrap().push(session_id.to_string());
+            Ok(())
+        }
+
+        fn save_turn_success(
+            &self,
+            session_id: &str,
+            user_prompt: &str,
+            assistant_reply: &str,
+            model_history: Option<&str>,
+        ) -> Result<(), String> {
+            self.saved_turns.lock().unwrap().push((
+                session_id.to_string(),
+                user_prompt.to_string(),
+                assistant_reply.to_string(),
+                model_history.map(|s| s.to_string()),
+            ));
+            Ok(())
+        }
+
+        fn save_turn_failure(&self, _session_id: &str, _error_message: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn save_turn_stopped(&self, _session_id: &str, _stopped_reason: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct TestEmitter {
+        emitted: std::sync::Mutex<Vec<(String, String, SessionTurnEvent)>>,
+    }
+
+    impl TestEmitter {
+        fn new() -> Self {
+            Self {
+                emitted: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl TurnEventEmitter for TestEmitter {
+        fn emit_event(&self, session_id: &str, run_id: &str, event: &SessionTurnEvent) {
+            self.emitted
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), run_id.to_string(), event.clone()));
+        }
+    }
+
+    struct TestLlm {
+        response: String,
+    }
+
+    impl TurnLlmAdapter for TestLlm {
+        fn stream_turn<'a>(
+            &'a self,
+            _prompt: &'a str,
+            mut on_event: Box<dyn FnMut(SessionTurnEvent) + Send + 'a>,
+        ) -> SessionTurnFuture<'a, Result<StreamCompletionResult, LlmError>> {
+            on_event(SessionTurnEvent::TextToken(self.response.clone()));
+            let result = StreamCompletionResult {
+                full_response: self.response.clone(),
+                history: Some(vec![
+                    user_message("Hi"),
+                    assistant_message(&self.response),
+                ]),
+                source_edit_succeeded: false,
+                prompt_tokens: 10,
+                response_tokens: 15,
+                tool_calls: 0,
+            };
+            Box::pin(async move { Ok(result) })
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrator_executes_successful_turn() {
+        use std::sync::Arc;
+        let persistence = Arc::new(TestPersistence::new());
+        let emitter = Arc::new(TestEmitter::new());
+        let llm = TestLlm {
+            response: "Hello! How can I help?".to_string(),
+        };
+
+        let orchestrator = TurnOrchestrator::new(persistence.clone(), emitter.clone(), llm);
+        let summary: TurnSummary = orchestrator
+            .execute_turn("session-1", "run-1", "Hi")
+            .await
+            .unwrap();
+
+        assert_eq!(summary.full_response, "Hello! How can I help?");
+        assert_eq!(summary.prompt_tokens, 10);
+        assert_eq!(summary.response_tokens, 15);
+        assert_eq!(summary.tool_calls, 0);
+
+        let saved = persistence.saved_turns.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].0, "session-1");
+        assert_eq!(saved[0].1, "Hi");
+        assert_eq!(saved[0].2, "Hello! How can I help?");
+
+        let emitted = emitter.emitted.lock().unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].0, "session-1");
+        assert_eq!(emitted[0].1, "run-1");
+        assert!(matches!(
+            &emitted[0].2,
+            SessionTurnEvent::TextToken(t) if t == "Hello! How can I help?"
+        ));
+    }
+
+    struct TestFailingLlm {
+        err: LlmError,
+    }
+
+    impl TurnLlmAdapter for TestFailingLlm {
+        fn stream_turn<'a>(
+            &'a self,
+            _prompt: &'a str,
+            _on_event: Box<dyn FnMut(SessionTurnEvent) + Send + 'a>,
+        ) -> SessionTurnFuture<'a, Result<StreamCompletionResult, LlmError>> {
+            let err = match &self.err {
+                LlmError::ControlledStop(r) => LlmError::ControlledStop(r.clone()),
+                LlmError::ProviderError(e) => LlmError::ProviderError(e.clone()),
+                _ => LlmError::ProviderError("failed".to_string()),
+            };
+            Box::pin(async move { Err(err) })
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrator_handles_controlled_stop() {
+        use std::sync::Arc;
+        let persistence = Arc::new(TestPersistence::new());
+        let emitter = Arc::new(TestEmitter::new());
+        let llm = TestFailingLlm {
+            err: LlmError::ControlledStop("Loop threshold exceeded".to_string()),
+        };
+
+        let orchestrator = TurnOrchestrator::new(persistence.clone(), emitter.clone(), llm);
+        let err = orchestrator
+            .execute_turn("session-1", "run-1", "Hi")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, LlmError::ControlledStop(_)));
+
+        let saved = persistence.saved_turns.lock().unwrap();
+        assert!(saved.is_empty());
+
+        let drafts = persistence.drafts_activated.lock().unwrap();
+        assert_eq!(*drafts, vec!["session-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_activates_draft_session_on_turn_start() {
+        use std::sync::Arc;
+        let persistence = Arc::new(TestPersistence::new());
+        let emitter = Arc::new(TestEmitter::new());
+        let llm = TestLlm {
+            response: "Activated!".to_string(),
+        };
+
+        let orchestrator = TurnOrchestrator::new(persistence.clone(), emitter.clone(), llm);
+        orchestrator
+            .execute_turn("draft-session-99", "run-99", "Hello")
+            .await
+            .unwrap();
+
+        let drafts = persistence.drafts_activated.lock().unwrap();
+        assert_eq!(*drafts, vec!["draft-session-99".to_string()]);
     }
 }

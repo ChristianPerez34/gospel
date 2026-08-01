@@ -636,6 +636,15 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn activate_draft_if_needed(&self, id: &str) -> Result<(), SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET status = 'active', updated_at = datetime('now') WHERE id = ?1 AND status = 'draft'",
+            params![id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_session(&self, id: &str) -> Result<(), SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;

@@ -1055,6 +1055,53 @@ impl session_turn::SessionTurnCredentials for TauriSessionTurnAdapters<'_> {
     }
 }
 
+impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
+    fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String> {
+        match &self.session_store_state.store {
+            Some(store) => store
+                .activate_draft_if_needed(session_id)
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
+        }
+    }
+
+    fn save_turn_success(
+        &self,
+        session_id: &str,
+        _user_prompt: &str,
+        assistant_reply: &str,
+        model_history: Option<&str>,
+    ) -> Result<(), String> {
+        match &self.session_store_state.store {
+            Some(store) => store
+                .persist_turn(session_id, assistant_reply, model_history)
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
+        }
+    }
+
+    fn save_turn_failure(&self, _session_id: &str, _error_message: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn save_turn_stopped(&self, _session_id: &str, _stopped_reason: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+impl session_turn::TurnEventEmitter for TauriSessionTurnAdapters<'_> {
+    fn emit_event(&self, session_id: &str, run_id: &str, event: &session_turn::SessionTurnEvent) {
+        let _ = self.app.emit(
+            "session-turn-event",
+            serde_json::json!({
+                "sessionId": session_id,
+                "runId": run_id,
+                "event": event,
+            }),
+        );
+    }
+}
+
 impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
     fn validate_workspace_binding(
         &self,
