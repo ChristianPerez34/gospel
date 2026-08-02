@@ -3424,4 +3424,23 @@ Binary files a/icon.png and b/icon.png differ
         assert!(parsed[0].diff.contains("--- a/src/a.rs"));
         assert!(parsed[1].diff.contains("+++ b/src/b.rs"));
     }
+
+    #[test]
+    fn citrapr_151_diff_is_not_secret_filtered() {
+        let diff = "diff --git a/apps/web/src/components/evidence-viewer.tsx b/apps/web/src/components/evidence-viewer.tsx\n\
+--- a/apps/web/src/components/evidence-viewer.tsx\n\
++++ b/apps/web/src/components/evidence-viewer.tsx\n\
+@@ -348,7 +289,7 @@\n\
+ \\t\\t\\t>\n\\t\\t\\t\\t<img\n\\t\\t\\t\\t\\talt={alt}\n\
+-\\t\\t\\t\\t\\tclassName=\\\"block h-auto w-auto select-none object-contain\\\"\n\
++\\t\\t\\t\\t\\tclassName=\\\"block h-auto max-h-full w-auto max-w-full select-none object-contain\\\"\n\
+ \\t\\t\\t\\t\\tdraggable={false}\n\\t\\t\\t\\t\\theight={720}\n\\t\\t\\t\\t\\tsrc={src}\n\\t\\t\\t\\t\\twidth={720}\n\\t\\t\\t\\t/>\n";
+
+        let parsed = parse_diff_by_file(diff);
+        assert_eq!(parsed.len(), 1);
+        let file = &parsed[0];
+        assert!(!file.is_binary);
+        assert!(!is_secret_like(Path::new(&file.file)));
+        assert!(!diff_contains_secrets(&file.diff));
+    }
 }

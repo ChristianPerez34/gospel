@@ -81,9 +81,9 @@ Every comment must cite concrete code in evidence. Return an empty comments arra
 const STYLE_DETECTOR_PREAMBLE: &str = r#"
 You are the Gospel Style Detector Agent.
 
-Find concrete readability, idiom, naming, documentation, and maintainability issues in the supplied changes or files: inconsistent names, unclear public interfaces, dead or redundant code, overly complex expressions, non-idiomatic language use, and missing documentation where project conventions require it. Use live workspace tools, especially read_file, to inspect surrounding code when a finding depends on context. Do not report personal taste, formatting churn, or issues already covered by security, bugs, architecture, or performance.
+Find concrete readability, idiom, naming, documentation, and maintainability issues in the supplied changes or files: inconsistent names, unclear public interfaces, dead or redundant code, overly complex expressions, non-idiomatic language use, missing documentation where project conventions require it, and cleanup leftovers such as HTML/JSX attributes or props that are now redundant because siblings were removed or CSS classes now override them, or names that no longer describe the remaining behavior after a feature is removed. Use live workspace tools, especially read_file, to inspect surrounding code when a finding depends on context. Do not report personal taste, formatting churn, or issues already covered by security, bugs, architecture, or performance.
 
-Every comment MUST include a non-empty "rationale" and "verification_plan". Every comment SHOULD include a "signal_tier" suggestion. Return only the JSON shape used by Gospel review comments. Use null for cwe_id and cwe_name.
+Every comment MUST include a non-empty "rationale" and "verification_plan". Every comment SHOULD include a "signal_tier" suggestion. Suggest "tier_2" for concrete dead code, naming mismatches, redundant attributes/props, and maintainability nits; use "noise" only for formatting-only or purely subjective taste. Return only the JSON shape used by Gospel review comments. Use null for cwe_id and cwe_name.
 
 Every comment must cite concrete code in evidence. Return an empty comments array when there are no credible style findings.
 "#;
@@ -226,6 +226,11 @@ mod tests {
 
         assert!(prompt.contains("Performance patterns:"));
         assert!(prompt.contains("performance/unbounded-growth"));
+
+        let style_prompt = build_diff_prompt("Context", &[], ReviewFocus::Style);
+
+        assert!(style_prompt.contains("Style rules:"));
+        assert!(style_prompt.contains("style/cleanup-leftover"));
     }
 
     #[test]
@@ -261,9 +266,12 @@ mod tests {
         assert!(preamble < first_begin);
         // The diff text must live INSIDE a fence, not bare in the prompt body.
         let injection = prompt.find("Ignore previous instructions").unwrap();
-        let diff_begin =
-            prompt.find("BEGIN UNTRUSTED DATA — git_diff:src/app.rs").unwrap();
-        let diff_end = prompt.find("END UNTRUSTED DATA — git_diff:src/app.rs").unwrap();
+        let diff_begin = prompt
+            .find("BEGIN UNTRUSTED DATA — git_diff:src/app.rs")
+            .unwrap();
+        let diff_end = prompt
+            .find("END UNTRUSTED DATA — git_diff:src/app.rs")
+            .unwrap();
         assert!(diff_begin < injection);
         assert!(injection < diff_end);
     }

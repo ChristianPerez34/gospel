@@ -184,6 +184,16 @@ pub const STYLE_RULES: &str = r##"
     "bad_example": "pub fn apply(path: PathBuf) with hidden workspace-safety assumptions",
     "good_example": "docs state path containment and error behavior",
     "remediation": "Document invariants and error modes at the public interface."
+  },
+  {
+    "id": "style/cleanup-leftover",
+    "description": "Attribute, prop, import, or name survives a cleanup and is now redundant or misleading",
+    "category": "maintainability",
+    "severity": "Low",
+    "pattern": "A sibling prop/state was removed and an HTML/JSX attribute or import is now overridden by CSS, no longer consumed, or a name now describes removed behavior.",
+    "bad_example": "width={720} height={720} on an <img> that also has className='w-auto h-auto max-w-full max-h-full'",
+    "good_example": "remove the redundant attributes or rename the identifier to match the remaining behavior",
+    "remediation": "Remove the leftover attribute/prop/import or rename the identifier to match the remaining behavior."
   }
 ]
 "##;
