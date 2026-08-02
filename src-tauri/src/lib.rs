@@ -1080,25 +1080,56 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn save_turn_failure(&self, _session_id: &str, _error_message: &str) -> Result<(), String> {
+    fn save_turn_failure(&self, session_id: &str, error_message: &str) -> Result<(), String> {
+        let store = self
+            .session_store_state
+            .store
+            .as_ref()
+            .ok_or_else(|| "session store unavailable".to_string())?;
+        if let Some(snapshot) = session_turn::SessionTurnSessions::failure_snapshot(self, session_id) {
+            let persistence = session_turn::failure_turn_persistence(
+                &snapshot.display_transcript,
+                snapshot.model_history.as_deref(),
+                &LlmError::ProviderError(error_message.to_string()),
+            );
+            store
+                .persist_turn(
+                    session_id,
+                    &persistence.display_transcript,
+                    persistence.model_history.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
-    fn save_turn_stopped(&self, _session_id: &str, _stopped_reason: &str) -> Result<(), String> {
+    fn save_turn_stopped(&self, session_id: &str, stopped_reason: &str) -> Result<(), String> {
+        let store = self
+            .session_store_state
+            .store
+            .as_ref()
+            .ok_or_else(|| "session store unavailable".to_string())?;
+        if let Some(snapshot) = session_turn::SessionTurnSessions::failure_snapshot(self, session_id) {
+            let persistence = session_turn::failure_turn_persistence(
+                &snapshot.display_transcript,
+                snapshot.model_history.as_deref(),
+                &LlmError::ControlledStop(stopped_reason.to_string()),
+            );
+            store
+                .persist_turn(
+                    session_id,
+                    &persistence.display_transcript,
+                    persistence.model_history.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 }
 
 impl session_turn::TurnEventEmitter for TauriSessionTurnAdapters<'_> {
     fn emit_event(&self, session_id: &str, run_id: &str, event: &session_turn::SessionTurnEvent) {
-        let _ = self.app.emit(
-            "session-turn-event",
-            serde_json::json!({
-                "sessionId": session_id,
-                "runId": run_id,
-                "event": event,
-            }),
-        );
+        session_turn::SessionTurnEvents::emit_stream_event(self, session_id, "main", run_id, event);
     }
 }
 
