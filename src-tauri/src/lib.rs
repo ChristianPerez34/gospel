@@ -1055,6 +1055,84 @@ impl session_turn::SessionTurnCredentials for TauriSessionTurnAdapters<'_> {
     }
 }
 
+impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
+    fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String> {
+        match &self.session_store_state.store {
+            Some(store) => store
+                .activate_draft_if_needed(session_id)
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
+        }
+    }
+
+    fn save_turn_success(
+        &self,
+        session_id: &str,
+        _user_prompt: &str,
+        assistant_reply: &str,
+        model_history: Option<&str>,
+    ) -> Result<(), String> {
+        match &self.session_store_state.store {
+            Some(store) => store
+                .persist_turn(session_id, assistant_reply, model_history)
+                .map_err(|e| e.to_string()),
+            None => Err("session store unavailable".to_string()),
+        }
+    }
+
+    fn save_turn_failure(&self, session_id: &str, error_message: &str) -> Result<(), String> {
+        let store = self
+            .session_store_state
+            .store
+            .as_ref()
+            .ok_or_else(|| "session store unavailable".to_string())?;
+        if let Some(snapshot) = session_turn::SessionTurnSessions::failure_snapshot(self, session_id) {
+            let persistence = session_turn::failure_turn_persistence(
+                &snapshot.display_transcript,
+                snapshot.model_history.as_deref(),
+                &LlmError::ProviderError(error_message.to_string()),
+            );
+            store
+                .persist_turn(
+                    session_id,
+                    &persistence.display_transcript,
+                    persistence.model_history.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn save_turn_stopped(&self, session_id: &str, stopped_reason: &str) -> Result<(), String> {
+        let store = self
+            .session_store_state
+            .store
+            .as_ref()
+            .ok_or_else(|| "session store unavailable".to_string())?;
+        if let Some(snapshot) = session_turn::SessionTurnSessions::failure_snapshot(self, session_id) {
+            let persistence = session_turn::failure_turn_persistence(
+                &snapshot.display_transcript,
+                snapshot.model_history.as_deref(),
+                &LlmError::ControlledStop(stopped_reason.to_string()),
+            );
+            store
+                .persist_turn(
+                    session_id,
+                    &persistence.display_transcript,
+                    persistence.model_history.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+impl session_turn::TurnEventEmitter for TauriSessionTurnAdapters<'_> {
+    fn emit_event(&self, session_id: &str, run_id: &str, event: &session_turn::SessionTurnEvent) {
+        session_turn::SessionTurnEvents::emit_stream_event(self, session_id, "main", run_id, event);
+    }
+}
+
 impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
     fn validate_workspace_binding(
         &self,
