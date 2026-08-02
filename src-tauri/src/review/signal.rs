@@ -99,21 +99,163 @@ impl Default for SignalRules {
             .into_iter()
             .map(str::to_string)
             .collect(),
-            noise_categories: vec![
-                "best practice",
-                "documentation",
-                "formatting",
-                "lint",
-                "maintainability",
-                "performance",
-                "style",
-                "test",
-                "tests",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            per_focus: BTreeMap::new(),
+            noise_categories: vec!["best practice", "formatting", "lint"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            per_focus: BTreeMap::from([
+                (
+                    ReviewFocus::Security,
+                    FocusSignalRules {
+                        tier1_cwes: Vec::new(),
+                        tier2_cwes: Vec::new(),
+                        noise_cwes: Vec::new(),
+                        tier1_categories: Vec::new(),
+                        tier2_categories: Vec::new(),
+                        noise_categories: vec![
+                            "style",
+                            "maintainability",
+                            "performance",
+                            "test",
+                            "tests",
+                            "documentation",
+                            "formatting",
+                            "lint",
+                            "best practice",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    },
+                ),
+                (
+                    ReviewFocus::BugHunt,
+                    FocusSignalRules {
+                        tier1_cwes: Vec::new(),
+                        tier2_cwes: Vec::new(),
+                        noise_cwes: Vec::new(),
+                        tier1_categories: Vec::new(),
+                        tier2_categories: vec![
+                            "boundary",
+                            "error handling",
+                            "state",
+                            "concurrency",
+                            "lifecycle",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                        noise_categories: vec![
+                            "style",
+                            "maintainability",
+                            "performance",
+                            "documentation",
+                            "formatting",
+                            "lint",
+                            "best practice",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    },
+                ),
+                (
+                    ReviewFocus::Architecture,
+                    FocusSignalRules {
+                        tier1_cwes: Vec::new(),
+                        tier2_cwes: Vec::new(),
+                        noise_cwes: Vec::new(),
+                        tier1_categories: Vec::new(),
+                        tier2_categories: vec![
+                            "layering",
+                            "interface",
+                            "depth",
+                            "coupling",
+                            "abstraction",
+                            "dependencies",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                        noise_categories: vec![
+                            "style",
+                            "formatting",
+                            "lint",
+                            "best practice",
+                            "test",
+                            "tests",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    },
+                ),
+                (
+                    ReviewFocus::Performance,
+                    FocusSignalRules {
+                        tier1_cwes: Vec::new(),
+                        tier2_cwes: Vec::new(),
+                        noise_cwes: Vec::new(),
+                        tier1_categories: Vec::new(),
+                        tier2_categories: vec![
+                            "algorithmic complexity",
+                            "io",
+                            "async",
+                            "memory",
+                            "rendering",
+                            "allocation",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                        noise_categories: vec![
+                            "style",
+                            "maintainability",
+                            "documentation",
+                            "formatting",
+                            "lint",
+                            "best practice",
+                            "test",
+                            "tests",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    },
+                ),
+                (
+                    ReviewFocus::Style,
+                    FocusSignalRules {
+                        tier1_cwes: Vec::new(),
+                        tier2_cwes: Vec::new(),
+                        noise_cwes: Vec::new(),
+                        tier1_categories: Vec::new(),
+                        tier2_categories: vec![
+                            "naming",
+                            "clarity",
+                            "maintainability",
+                            "documentation",
+                            "readability",
+                            "idiom",
+                            "redundancy",
+                            "style",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                        noise_categories: vec![
+                            "formatting",
+                            "lint",
+                            "best practice",
+                            "taste",
+                            "preference",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    },
+                ),
+            ]),
         }
     }
 }
@@ -215,10 +357,11 @@ pub fn classify_comment(comment: &ReviewComment, rules: &SignalRules) -> SignalT
         return SignalTier::Noise;
     }
 
-    if comment.signal_tier == SignalTier::Unclassified
-        && matches!(comment.severity, Severity::High | Severity::Medium)
-        && (cwe_in(&rules.tier2_cwes, |rules| &rules.tier2_cwes)
-            || category_in(&rules.tier2_categories, |rules| &rules.tier2_categories))
+    if matches!(
+        comment.severity,
+        Severity::High | Severity::Medium | Severity::Low | Severity::Info
+    ) && (cwe_in(&rules.tier2_cwes, |rules| &rules.tier2_cwes)
+        || category_in(&rules.tier2_categories, |rules| &rules.tier2_categories))
     {
         return SignalTier::Tier2;
     }
@@ -312,16 +455,30 @@ fn cwe_matches(cwe_id: Option<&str>, values: &[String]) -> bool {
 }
 
 fn category_matches(category: &str, focus_subcategory: Option<&str>, values: &[String]) -> bool {
-    values
-        .iter()
-        .map(|value| normalize_category(value))
-        .any(|rule| {
-            !rule.is_empty()
-                && (category.contains(&rule)
-                    || focus_subcategory
-                        .map(|subcategory| subcategory.contains(&rule))
-                        .unwrap_or(false))
-        })
+    let category_tokens: BTreeSet<String> = normalize_category(category)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let subcategory_tokens: Option<BTreeSet<String>> = focus_subcategory.map(|subcategory| {
+        normalize_category(subcategory)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    });
+
+    values.iter().any(|value| {
+        let rule_tokens: BTreeSet<String> = normalize_category(value)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        if rule_tokens.is_empty() {
+            return false;
+        }
+
+        let rule_in = |tokens: &BTreeSet<String>| rule_tokens.is_subset(tokens);
+
+        rule_in(&category_tokens) || subcategory_tokens.as_ref().is_some_and(rule_in)
+    })
 }
 
 fn normalize_file_anchor(file: &str) -> String {
@@ -422,12 +579,43 @@ mod tests {
     }
 
     #[test]
-    fn tier2_rules_preserve_explicit_model_tiers() {
+    fn tier2_rules_override_model_noise_suggestion() {
         let finding = comment(Severity::High, Some("CWE-200"), "style", SignalTier::Noise);
 
         assert_eq!(
             classify_comment(&finding, &SignalRules::default()),
-            SignalTier::Noise
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn tier2_rules_override_model_tier1_suggestion_when_no_tier1_rule_matches() {
+        let finding = comment(
+            Severity::Medium,
+            Some("CWE-200"),
+            "information disclosure",
+            SignalTier::Tier1,
+        );
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn tier2_rules_override_model_noise_for_focus_domain_finding() {
+        let mut finding = comment(
+            Severity::Low,
+            None,
+            "maintainability",
+            SignalTier::Noise,
+        );
+        finding.focus = ReviewFocus::Style;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
         );
     }
 
@@ -531,6 +719,132 @@ mod tests {
         assert_eq!(
             classify_comment(&noise, &SignalRules::default()),
             SignalTier::Noise
+        );
+    }
+
+    #[test]
+    fn style_maintainability_low_is_actionable() {
+        let mut finding = comment(
+            Severity::Low,
+            None,
+            "maintainability",
+            SignalTier::Unclassified,
+        );
+        finding.focus = ReviewFocus::Style;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn style_naming_low_is_actionable() {
+        let mut finding = comment(Severity::Low, None, "naming", SignalTier::Unclassified);
+        finding.focus = ReviewFocus::Style;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn style_formatting_low_is_noise() {
+        let mut finding = comment(Severity::Low, None, "formatting", SignalTier::Unclassified);
+        finding.focus = ReviewFocus::Style;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Noise
+        );
+    }
+
+    #[test]
+    fn security_style_low_is_still_noise() {
+        let finding = comment(Severity::Low, None, "style", SignalTier::Unclassified);
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Noise
+        );
+    }
+
+    #[test]
+    fn bug_hunt_state_low_is_actionable() {
+        let mut finding = comment(Severity::Low, None, "state", SignalTier::Unclassified);
+        finding.focus = ReviewFocus::BugHunt;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn architecture_interface_low_is_actionable() {
+        let mut finding = comment(Severity::Low, None, "interface", SignalTier::Unclassified);
+        finding.focus = ReviewFocus::Architecture;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn style_documentation_info_is_actionable() {
+        let mut finding = comment(
+            Severity::Info,
+            None,
+            "documentation",
+            SignalTier::Unclassified,
+        );
+        finding.focus = ReviewFocus::Style;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
+        );
+    }
+
+    #[test]
+    fn performance_io_rule_does_not_match_unrelated_categories() {
+        let mut configuration = comment(
+            Severity::Low,
+            None,
+            "configuration",
+            SignalTier::Unclassified,
+        );
+        configuration.focus = ReviewFocus::Performance;
+
+        assert_eq!(
+            classify_comment(&configuration, &SignalRules::default()),
+            SignalTier::Unclassified
+        );
+
+        let mut communication = comment(
+            Severity::Low,
+            None,
+            "communication",
+            SignalTier::Unclassified,
+        );
+        communication.focus = ReviewFocus::Performance;
+
+        assert_eq!(
+            classify_comment(&communication, &SignalRules::default()),
+            SignalTier::Unclassified
+        );
+    }
+
+    #[test]
+    fn performance_io_rule_matches_disk_io_category() {
+        let mut finding = comment(Severity::Low, None, "disk io", SignalTier::Unclassified);
+        finding.focus = ReviewFocus::Performance;
+
+        assert_eq!(
+            classify_comment(&finding, &SignalRules::default()),
+            SignalTier::Tier2
         );
     }
 }

@@ -184,6 +184,16 @@ pub const STYLE_RULES: &str = r##"
     "bad_example": "pub fn apply(path: PathBuf) with hidden workspace-safety assumptions",
     "good_example": "docs state path containment and error behavior",
     "remediation": "Document invariants and error modes at the public interface."
+  },
+  {
+    "id": "style/cleanup-leftover",
+    "description": "Attribute, prop, import, or name survives a cleanup and is now redundant or misleading",
+    "category": "maintainability",
+    "severity": "Low",
+    "pattern": "Direct code evidence shows that an HTML/JSX attribute, prop, or import is no longer read or consumed after related cleanup, or that a name now describes removed behavior.",
+    "bad_example": "legacyMode={true} passed to <Panel> after Panel's implementation and type no longer declare or read legacyMode",
+    "good_example": "remove the redundant attributes or rename the identifier to match the remaining behavior",
+    "remediation": "Remove the leftover attribute/prop/import or rename the identifier to match the remaining behavior."
   }
 ]
 "##;
