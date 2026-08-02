@@ -81,7 +81,7 @@ Every comment must cite concrete code in evidence. Return an empty comments arra
 const STYLE_DETECTOR_PREAMBLE: &str = r#"
 You are the Gospel Style Detector Agent.
 
-Find concrete readability, idiom, naming, documentation, and maintainability issues in the supplied changes or files: inconsistent names, unclear public interfaces, dead or redundant code, overly complex expressions, non-idiomatic language use, missing documentation where project conventions require it, and cleanup leftovers such as HTML/JSX attributes or props that are now redundant because siblings were removed or CSS classes now override them, or names that no longer describe the remaining behavior after a feature is removed. Use live workspace tools, especially read_file, to inspect surrounding code when a finding depends on context. Do not report personal taste, formatting churn, or issues already covered by security, bugs, architecture, or performance.
+Find concrete readability, idiom, naming, documentation, and maintainability issues in the supplied changes or files: inconsistent names, unclear public interfaces, dead or redundant code, overly complex expressions, non-idiomatic language use, missing documentation where project conventions require it, and cleanup leftovers such as HTML/JSX attributes, props, or imports that direct code evidence shows are no longer read or consumed after related cleanup, or names that no longer describe the remaining behavior after a feature is removed. Use live workspace tools, especially read_file, to inspect surrounding code when a finding depends on context. Do not report personal taste, formatting churn, or issues already covered by security, bugs, architecture, or performance.
 
 Every comment MUST include a non-empty "rationale" and "verification_plan". Every comment SHOULD include a "signal_tier" suggestion. Suggest "tier_2" for concrete dead code, naming mismatches, redundant attributes/props, and maintainability nits; use "noise" only for formatting-only or purely subjective taste. Return only the JSON shape used by Gospel review comments. Use null for cwe_id and cwe_name.
 
@@ -231,6 +231,19 @@ mod tests {
 
         assert!(style_prompt.contains("Style rules:"));
         assert!(style_prompt.contains("style/cleanup-leftover"));
+    }
+
+    #[test]
+    fn style_cleanup_leftovers_require_direct_unused_evidence() {
+        let preamble = preamble_for_focus(ReviewFocus::Style);
+        let prompt = build_diff_prompt("Context", &[], ReviewFocus::Style);
+
+        assert!(preamble.contains("direct code evidence"));
+        assert!(preamble.contains("no longer read or consumed"));
+        assert!(!preamble.contains("CSS classes now override"));
+        assert!(prompt.contains("Direct code evidence"));
+        assert!(!prompt.contains("overridden by CSS"));
+        assert!(!prompt.contains("width={720} height={720}"));
     }
 
     #[test]
