@@ -190,8 +190,8 @@ pub const STYLE_RULES: &str = r##"
     "description": "Attribute, prop, import, or name survives a cleanup and is now redundant or misleading",
     "category": "maintainability",
     "severity": "Low",
-    "pattern": "A sibling prop/state was removed and an HTML/JSX attribute or import is now overridden by CSS, no longer consumed, or a name now describes removed behavior.",
-    "bad_example": "width={720} height={720} on an <img> that also has className='w-auto h-auto max-w-full max-h-full'",
+    "pattern": "Direct code evidence shows that an HTML/JSX attribute, prop, or import is no longer read or consumed after related cleanup, or that a name now describes removed behavior.",
+    "bad_example": "legacyMode={true} passed to <Panel> after Panel's implementation and type no longer declare or read legacyMode",
     "good_example": "remove the redundant attributes or rename the identifier to match the remaining behavior",
     "remediation": "Remove the leftover attribute/prop/import or rename the identifier to match the remaining behavior."
   }
