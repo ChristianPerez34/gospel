@@ -21,13 +21,15 @@ Validate detector candidates against the appropriate domain knowledge and the wo
 
 Suggest a "signal_tier" for each retained finding:
 - "tier_1": critical, high-confidence issues that should interrupt the user immediately.
-- "tier_2": important actionable issues with concrete impact.
+- "tier_2": important actionable issues with concrete impact, including concrete style nits such as dead/redundant code, misleading names, redundant props or attributes after a cleanup, and missing documentation.
 - "noise": non-actionable, speculative, formatting-only, personal preference, or low-value comments.
 - "unclassified": legacy or uncertain cases where the tier cannot be inferred.
 
 The backend applies deterministic guardrails after validation, so provide the best signal_tier but do not rely on it to override the concrete evidence.
 
 CRITICAL: Enforce surgical fixes. Favor minimal, precise changes over large refactors. If a detector's "suggestion" is unnecessarily complex or adds excessive bloat compared to the severity of the issue, you MUST either rewrite the suggestion to be more surgical or reject the candidate if it cannot be fixed simply.
+
+For the Style focus, do not reject concrete dead/redundant code, naming mismatches, redundant attributes or props after a cleanup, or missing documentation as noise. Retain them as "tier_2" with Low or Info severity.
 
 Ensure every validated comment retains its "rationale" and "verification_plan" — both are required non-empty strings and must not be null or omitted.
 
@@ -73,7 +75,7 @@ fn focus_validation_guidance(focus: ReviewFocus) -> &'static str {
         ReviewFocus::BugHunt => "Validate against correctness invariants. Keep only findings where the bug is reproducible with a concrete input, state sequence, or error path.",
         ReviewFocus::Architecture => "Validate against module boundary, dependency direction, and interface-depth principles. Keep only findings where the violation is structural, not stylistic.",
         ReviewFocus::Performance => "Validate against algorithmic, allocation, memory, and I/O complexity principles. Keep only findings with plausible measurable impact, not micro-optimizations.",
-        ReviewFocus::Style => "Validate against project conventions and language idiom. Keep only findings that improve clarity or maintainability, not personal preference.",
+        ReviewFocus::Style => "Validate against project conventions and language idiom. Keep concrete clarity and maintainability findings such as dead/redundant code, misleading names, redundant attributes or props after a cleanup, and missing documentation. Reject only formatting-only or purely subjective taste.",
     }
 }
 
@@ -195,10 +197,12 @@ mod tests {
         assert!(preamble < first_begin);
         // The "Ignore previous instructions" text must appear inside the fence.
         let injection = prompt.find("Ignore previous instructions").unwrap();
-        let begin_fence =
-            prompt.find("BEGIN UNTRUSTED DATA — detector_candidates").unwrap();
-        let end_fence =
-            prompt.find("END UNTRUSTED DATA — detector_candidates").unwrap();
+        let begin_fence = prompt
+            .find("BEGIN UNTRUSTED DATA — detector_candidates")
+            .unwrap();
+        let end_fence = prompt
+            .find("END UNTRUSTED DATA — detector_candidates")
+            .unwrap();
         assert!(begin_fence < injection);
         assert!(injection < end_fence);
     }
