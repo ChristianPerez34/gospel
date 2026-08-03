@@ -1,7 +1,7 @@
 use super::outcome::{record_review_outcome, ReviewOutcome};
 use super::{
-    multi, run_review, NoopReviewProgressEmitter, ReviewComment, ReviewConfig, ReviewFocus,
-    ReviewResult,
+    multi, NoopReviewProgressEmitter, ReviewComment, ReviewEngine, ReviewFocus, ReviewMode,
+    ReviewRequest, ReviewResult,
 };
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
@@ -200,18 +200,23 @@ impl Tool for RunMultiReviewTool {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let focuses = args.focuses.unwrap_or_else(|| multi::ALL_FOCUSES.to_vec());
-        multi::run_multi_focus_review(
+        let mode_enum =
+            ReviewMode::parse(&args.mode, args.pr_number).map_err(WorkspaceToolError::Internal)?;
+
+        let request = ReviewRequest::new(
+            self.workspace_root.clone(),
+            mode_enum,
+            focuses,
             self.provider.clone(),
             self.model.clone(),
-            args.mode,
-            args.pr_number,
-            &focuses,
-            self.workspace_root.clone(),
             self.api_key.clone(),
-            Arc::new(NoopReviewProgressEmitter),
-        )
-        .await
-        .map_err(WorkspaceToolError::Internal)
+        );
+
+        let engine = ReviewEngine::new();
+        engine
+            .execute_multi(request, Arc::new(NoopReviewProgressEmitter))
+            .await
+            .map_err(WorkspaceToolError::Internal)
     }
 }
 
@@ -288,18 +293,19 @@ async fn run_review_tool(
     pr_number: Option<u64>,
     focus: ReviewFocus,
 ) -> Result<RunReviewOutput, WorkspaceToolError> {
-    let config = ReviewConfig {
+    let mode_enum = ReviewMode::parse(&mode, pr_number).map_err(WorkspaceToolError::Internal)?;
+
+    let request = ReviewRequest::new(
+        workspace_root,
+        mode_enum,
+        vec![focus],
         provider,
         model,
-        mode,
-        focus,
-        pr_number,
-    };
+        api_key,
+    );
 
-    // Phase 1: the agent-initiated tool path stays text-only in the chat
-    // transcript, so it uses a no-op emitter. Streaming into a tool-call card
-    // is a follow-up (see handoff "Out of scope").
-    match run_review(config, workspace_root, api_key, Arc::new(NoopReviewProgressEmitter)).await {
+    let engine = ReviewEngine::new();
+    match engine.execute(request, Arc::new(NoopReviewProgressEmitter)).await {
         Ok(review) => {
             let findings = review
                 .comments

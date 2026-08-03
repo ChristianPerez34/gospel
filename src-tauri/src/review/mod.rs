@@ -2,6 +2,7 @@ pub mod analytics;
 pub mod anti_pattern;
 pub mod config;
 pub mod detector;
+pub mod engine;
 pub mod knowledge;
 pub mod multi;
 pub mod outcome;
@@ -10,6 +11,7 @@ pub mod signal;
 pub mod tools;
 pub mod validator;
 
+pub use engine::{ReviewEngine, ReviewRequest};
 pub use progress::{
     ChunkStatus, MultiFocusStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewPhase,
     ReviewProgressEmitter, ReviewProgressEvent, ToolEventKind,
@@ -68,20 +70,7 @@ pub struct ReviewConfig {
 
 impl ReviewConfig {
     fn review_mode(&self) -> Result<ReviewMode, String> {
-        match self.mode.trim().to_ascii_lowercase().as_str() {
-            "local" => Ok(ReviewMode::Local),
-            "pr" | "pull_request" | "pull-request" => {
-                let pr_number = self
-                    .pr_number
-                    .ok_or_else(|| "pr_number is required when mode is \"pr\"".to_string())?;
-                Ok(ReviewMode::PullRequest { pr_number })
-            }
-            "scan" | "full_scan" | "full-scan" => Ok(ReviewMode::FullScan),
-            other => Err(format!(
-                "Unsupported review mode \"{}\". Expected local, pr, or scan.",
-                other
-            )),
-        }
+        ReviewMode::parse(&self.mode, self.pr_number)
     }
 }
 
@@ -91,6 +80,24 @@ pub enum ReviewMode {
     Local,
     PullRequest { pr_number: u64 },
     FullScan,
+}
+
+impl ReviewMode {
+    pub fn parse(mode: &str, pr_number: Option<u64>) -> Result<Self, String> {
+        match mode.trim().to_ascii_lowercase().as_str() {
+            "local" => Ok(ReviewMode::Local),
+            "pr" | "pull_request" | "pull-request" => {
+                let pr = pr_number
+                    .ok_or_else(|| "pr_number is required when mode is \"pr\"".to_string())?;
+                Ok(ReviewMode::PullRequest { pr_number: pr })
+            }
+            "scan" | "full_scan" | "full-scan" => Ok(ReviewMode::FullScan),
+            other => Err(format!(
+                "Unsupported review mode \"{}\". Expected local, pr, or scan.",
+                other
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]

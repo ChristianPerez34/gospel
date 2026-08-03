@@ -959,7 +959,20 @@ async fn gospel_review(
     let workspace_path = active_review_workspace_path(&app_config)?;
     let api_key = review_api_key(&config.provider)?;
     let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
-    review::run_review(config, workspace_path, api_key, emitter).await
+
+    let mode_enum = review::ReviewMode::parse(&config.mode, config.pr_number)?;
+
+    let request = review::ReviewRequest::new(
+        workspace_path,
+        mode_enum,
+        vec![config.focus],
+        config.provider,
+        config.model,
+        api_key,
+    );
+
+    let engine = review::ReviewEngine::new();
+    engine.execute(request, emitter).await
 }
 
 #[tauri::command]
@@ -976,17 +989,20 @@ async fn gospel_multi_review(
     let api_key = review_api_key(&provider)?;
     let focus_list = focuses.unwrap_or_else(|| review::multi::ALL_FOCUSES.to_vec());
     let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
-    review::multi::run_multi_focus_review(
+
+    let mode_enum = review::ReviewMode::parse(&mode, pr_number)?;
+
+    let request = review::ReviewRequest::new(
+        workspace_path,
+        mode_enum,
+        focus_list,
         provider,
         model,
-        mode,
-        pr_number,
-        &focus_list,
-        workspace_path,
         api_key,
-        emitter,
-    )
-    .await
+    );
+
+    let engine = review::ReviewEngine::new();
+    engine.execute_multi(request, emitter).await
 }
 
 /// Tauri-backed [`review::ReviewProgressEmitter`] that forwards every event to
