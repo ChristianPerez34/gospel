@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use crate::review::multi::{run_multi_focus_review, MultiReviewResult};
@@ -14,7 +15,7 @@ use crate::review::{
 pub struct ReviewEngine;
 
 /// Request payload supplied to `ReviewEngine::execute` and `ReviewEngine::execute_multi`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ReviewRequest {
     pub workspace_path: PathBuf,
     pub mode: ReviewMode,
@@ -22,6 +23,19 @@ pub struct ReviewRequest {
     pub provider: String,
     pub model: String,
     pub api_key: String,
+}
+
+impl fmt::Debug for ReviewRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReviewRequest")
+            .field("workspace_path", &self.workspace_path)
+            .field("mode", &self.mode)
+            .field("focuses", &self.focuses)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 impl ReviewRequest {
@@ -191,6 +205,22 @@ mod tests {
             .execute_multi(request, Arc::new(NoopReviewProgressEmitter))
             .await;
         assert!(multi_result.is_err());
+    }
+
+    #[test]
+    fn review_request_debug_redacts_api_key() {
+        let request = ReviewRequest::new(
+            PathBuf::from("/tmp"),
+            ReviewMode::Local,
+            vec![ReviewFocus::Security],
+            "openai".to_string(),
+            "gpt-4o".to_string(),
+            "super-secret-key".to_string(),
+        );
+
+        let rendered = format!("{:?}", request);
+        assert!(!rendered.contains("super-secret-key"));
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]
