@@ -960,22 +960,7 @@ async fn gospel_review(
     let api_key = review_api_key(&config.provider)?;
     let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
 
-    let mode_enum = match config.mode.trim().to_ascii_lowercase().as_str() {
-        "local" => review::ReviewMode::Local,
-        "pr" | "pull_request" | "pull-request" => {
-            let pr = config
-                .pr_number
-                .ok_or_else(|| "pr_number is required when mode is \"pr\"".to_string())?;
-            review::ReviewMode::PullRequest { pr_number: pr }
-        }
-        "scan" | "full_scan" | "full-scan" => review::ReviewMode::FullScan,
-        other => {
-            return Err(format!(
-                "Unsupported review mode \"{}\". Expected local, pr, or scan.",
-                other
-            ))
-        }
-    };
+    let mode_enum = review::ReviewMode::parse(&config.mode, config.pr_number)?;
 
     let request = review::ReviewRequest::new(
         workspace_path,
@@ -1004,17 +989,20 @@ async fn gospel_multi_review(
     let api_key = review_api_key(&provider)?;
     let focus_list = focuses.unwrap_or_else(|| review::multi::ALL_FOCUSES.to_vec());
     let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
-    review::multi::run_multi_focus_review(
+
+    let mode_enum = review::ReviewMode::parse(&mode, pr_number)?;
+
+    let request = review::ReviewRequest::new(
+        workspace_path,
+        mode_enum,
+        focus_list,
         provider,
         model,
-        mode,
-        pr_number,
-        &focus_list,
-        workspace_path,
         api_key,
-        emitter,
-    )
-    .await
+    );
+
+    let engine = review::ReviewEngine::new();
+    engine.execute_multi(request, emitter).await
 }
 
 /// Tauri-backed [`review::ReviewProgressEmitter`] that forwards every event to

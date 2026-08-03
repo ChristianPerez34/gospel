@@ -200,18 +200,23 @@ impl Tool for RunMultiReviewTool {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let focuses = args.focuses.unwrap_or_else(|| multi::ALL_FOCUSES.to_vec());
-        multi::run_multi_focus_review(
+        let mode_enum =
+            ReviewMode::parse(&args.mode, args.pr_number).map_err(WorkspaceToolError::Internal)?;
+
+        let request = ReviewRequest::new(
+            self.workspace_root.clone(),
+            mode_enum,
+            focuses,
             self.provider.clone(),
             self.model.clone(),
-            args.mode,
-            args.pr_number,
-            &focuses,
-            self.workspace_root.clone(),
             self.api_key.clone(),
-            Arc::new(NoopReviewProgressEmitter),
-        )
-        .await
-        .map_err(WorkspaceToolError::Internal)
+        );
+
+        let engine = ReviewEngine::new();
+        engine
+            .execute_multi(request, Arc::new(NoopReviewProgressEmitter))
+            .await
+            .map_err(WorkspaceToolError::Internal)
     }
 }
 
@@ -288,22 +293,7 @@ async fn run_review_tool(
     pr_number: Option<u64>,
     focus: ReviewFocus,
 ) -> Result<RunReviewOutput, WorkspaceToolError> {
-    let mode_enum = match mode.trim().to_ascii_lowercase().as_str() {
-        "local" => ReviewMode::Local,
-        "pr" | "pull_request" | "pull-request" => {
-            let pr = pr_number.ok_or_else(|| WorkspaceToolError::Internal(
-                "pr_number is required when mode is \"pr\"".to_string(),
-            ))?;
-            ReviewMode::PullRequest { pr_number: pr }
-        }
-        "scan" | "full_scan" | "full-scan" => ReviewMode::FullScan,
-        other => {
-            return Err(WorkspaceToolError::Internal(format!(
-                "Unsupported review mode \"{}\". Expected local, pr, or scan.",
-                other
-            )))
-        }
-    };
+    let mode_enum = ReviewMode::parse(&mode, pr_number).map_err(WorkspaceToolError::Internal)?;
 
     let request = ReviewRequest::new(
         workspace_root,
