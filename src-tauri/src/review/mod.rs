@@ -2,6 +2,7 @@ pub mod analytics;
 pub mod anti_pattern;
 pub mod config;
 pub mod detector;
+pub mod engine;
 pub mod knowledge;
 pub mod multi;
 pub mod outcome;
@@ -10,6 +11,7 @@ pub mod signal;
 pub mod tools;
 pub mod validator;
 
+pub use engine::{ReviewEngine, ReviewRequest};
 pub use progress::{
     ChunkStatus, MultiFocusStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewPhase,
     ReviewProgressEmitter, ReviewProgressEvent, ToolEventKind,

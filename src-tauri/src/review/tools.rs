@@ -1,7 +1,7 @@
 use super::outcome::{record_review_outcome, ReviewOutcome};
 use super::{
-    multi, run_review, NoopReviewProgressEmitter, ReviewComment, ReviewConfig, ReviewFocus,
-    ReviewResult,
+    multi, NoopReviewProgressEmitter, ReviewComment, ReviewEngine, ReviewFocus, ReviewMode,
+    ReviewRequest, ReviewResult,
 };
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
@@ -288,18 +288,34 @@ async fn run_review_tool(
     pr_number: Option<u64>,
     focus: ReviewFocus,
 ) -> Result<RunReviewOutput, WorkspaceToolError> {
-    let config = ReviewConfig {
-        provider,
-        model,
-        mode,
-        focus,
-        pr_number,
+    let mode_enum = match mode.trim().to_ascii_lowercase().as_str() {
+        "local" => ReviewMode::Local,
+        "pr" | "pull_request" | "pull-request" => {
+            let pr = pr_number.ok_or_else(|| WorkspaceToolError::Internal(
+                "pr_number is required when mode is \"pr\"".to_string(),
+            ))?;
+            ReviewMode::PullRequest { pr_number: pr }
+        }
+        "scan" | "full_scan" | "full-scan" => ReviewMode::FullScan,
+        other => {
+            return Err(WorkspaceToolError::Internal(format!(
+                "Unsupported review mode \"{}\". Expected local, pr, or scan.",
+                other
+            )))
+        }
     };
 
-    // Phase 1: the agent-initiated tool path stays text-only in the chat
-    // transcript, so it uses a no-op emitter. Streaming into a tool-call card
-    // is a follow-up (see handoff "Out of scope").
-    match run_review(config, workspace_root, api_key, Arc::new(NoopReviewProgressEmitter)).await {
+    let request = ReviewRequest::new(
+        workspace_root,
+        mode_enum,
+        vec![focus],
+        provider,
+        model,
+        api_key,
+    );
+
+    let engine = ReviewEngine::new();
+    match engine.execute(request, Arc::new(NoopReviewProgressEmitter)).await {
         Ok(review) => {
             let findings = review
                 .comments

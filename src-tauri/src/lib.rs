@@ -959,7 +959,35 @@ async fn gospel_review(
     let workspace_path = active_review_workspace_path(&app_config)?;
     let api_key = review_api_key(&config.provider)?;
     let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
-    review::run_review(config, workspace_path, api_key, emitter).await
+
+    let mode_enum = match config.mode.trim().to_ascii_lowercase().as_str() {
+        "local" => review::ReviewMode::Local,
+        "pr" | "pull_request" | "pull-request" => {
+            let pr = config
+                .pr_number
+                .ok_or_else(|| "pr_number is required when mode is \"pr\"".to_string())?;
+            review::ReviewMode::PullRequest { pr_number: pr }
+        }
+        "scan" | "full_scan" | "full-scan" => review::ReviewMode::FullScan,
+        other => {
+            return Err(format!(
+                "Unsupported review mode \"{}\". Expected local, pr, or scan.",
+                other
+            ))
+        }
+    };
+
+    let request = review::ReviewRequest::new(
+        workspace_path,
+        mode_enum,
+        vec![config.focus],
+        config.provider,
+        config.model,
+        api_key,
+    );
+
+    let engine = review::ReviewEngine::new();
+    engine.execute(request, emitter).await
 }
 
 #[tauri::command]
