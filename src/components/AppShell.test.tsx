@@ -245,6 +245,65 @@ describe("AppShell session title editing", () => {
     });
   });
 
+  it("switches Active Workspace Context from the command palette", async () => {
+    let activeWorkspace = sampleWorkspace;
+    const workspaces = [sampleWorkspace, otherWorkspace];
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "list_workspaces") return workspaces;
+      if (cmd === "get_active_workspace") return activeWorkspace;
+      if (cmd === "get_model_availability") return sampleAvailability;
+      if (cmd === "get_archive_policy") {
+        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
+      }
+      if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
+      if (cmd === "list_sessions") return [];
+      if (cmd === "list_archived_sessions") return [];
+      if (cmd === "list_skills") return [];
+      if (cmd === "set_active_workspace") {
+        const id = (args as { id: string }).id;
+        activeWorkspace = workspaces.find((workspace) => workspace.id === id) ?? activeWorkspace;
+        return undefined;
+      }
+      return undefined;
+    });
+
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+        "Test Workspace"
+      );
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "k", metaKey: true });
+    });
+
+    const search = await screen.findByLabelText("Search commands");
+    fireEvent.change(search, { target: { value: "Other" } });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Other Workspace/ }));
+
+    await waitFor(() => {
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "set_active_workspace")).toBe(
+        true
+      );
+    });
+    expect(
+      vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === "set_active_workspace")?.[1]
+    ).toEqual({ id: "ws-2" });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+        "Other Workspace"
+      );
+    });
+  });
+
   it("updates local session title and calls update_session_title invoke when backendCreated is true", async () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === "list_workspaces") {

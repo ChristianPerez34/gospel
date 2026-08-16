@@ -13,6 +13,7 @@ import {
   modelOptionId,
   normalizeSessionMode,
   type Session,
+  type Workspace,
 } from "../types";
 import { ChatView } from "./ChatView";
 import { CommandPalette } from "./CommandPalette";
@@ -328,6 +329,14 @@ export function AppShell() {
   const allSessions = useMemo(() => {
     return sortSessionsByTimestamp(session.sessions);
   }, [session.sessions]);
+
+  const handleSwitchWorkspace = useCallback(
+    (ws: Workspace) => {
+      if (session.isStreaming) return;
+      void switchWorkspace(ws.id);
+    },
+    [session.isStreaming, switchWorkspace]
+  );
 
   const ensureSessionWorkspaceActive = useCallback(
     async (target: Session) => {
@@ -1003,6 +1012,8 @@ export function AppShell() {
           applyModelSelection(modelId);
         }}
         onVariantChange={applyVariantSelection}
+        recentWorkspaces={workspaces}
+        onSelectWorkspace={handleSwitchWorkspace}
         restoreFocusRef={commandPaletteRestoreRef}
       />
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
