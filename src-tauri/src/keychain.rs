@@ -11,21 +11,15 @@ pub enum KeychainError {
     UnsupportedProvider(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Provider {0} does not support OAuth")]
+    NotOauthProvider(String),
 }
 
 const SERVICE_NAME: &str = "gospel";
 
 fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
-    let supported = [
-        "openai",
-        "anthropic",
-        "gemini",
-        "groq",
-        "mistral",
-        "chatgpt",
-        "github_copilot",
-    ];
-    if !supported.contains(&provider) {
+    let api_key_providers = ["openai", "anthropic", "gemini", "groq", "mistral"];
+    if !api_key_providers.contains(&provider) && crate::oauth::oauth_provider(provider).is_none() {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
     }
     Ok(Entry::new(SERVICE_NAME, provider)?)
@@ -170,11 +164,17 @@ pub fn delete_github_copilot_auth_files() -> Result<(), KeychainError> {
 }
 
 pub fn provider_has_credentials(provider: &str) -> bool {
-    match provider {
-        "chatgpt" => has_chatgpt_oauth_session(),
-        "github_copilot" => has_github_copilot_oauth_session(),
-        _ => has_key(provider),
-    }
+    crate::oauth::oauth_provider(provider)
+        .map(|entry| (entry.has_session)())
+        .unwrap_or_else(|| has_key(provider))
+}
+
+pub fn logout_oauth_provider(provider: &str) -> Result<(), KeychainError> {
+    let entry = crate::oauth::oauth_provider(provider)
+        .ok_or_else(|| KeychainError::NotOauthProvider(provider.to_string()))?;
+    (entry.delete_session)()?;
+    let _ = delete(provider);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -194,5 +194,52 @@ mod tests {
         assert_eq!(entry.get_password().unwrap(), test_key);
         entry.delete_credential().unwrap();
         assert!(entry.get_password().is_err());
+    }
+
+    #[test]
+    fn oauth_provider_credential_gate_uses_local_sessions() {
+        let _guard = config_env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let result = std::panic::catch_unwind(|| {
+            assert!(!provider_has_credentials("chatgpt"));
+            assert!(!provider_has_credentials("github_copilot"));
+
+            let chatgpt_dir = dir.path().join("chatgpt");
+            std::fs::create_dir_all(&chatgpt_dir).unwrap();
+            std::fs::write(
+                chatgpt_dir.join("auth.json"),
+                r#"{"access_token":"chatgpt-session-token"}"#,
+            )
+            .unwrap();
+            assert!(provider_has_credentials("chatgpt"));
+
+            let copilot_dir = dir.path().join("gospel").join("github_copilot");
+            std::fs::create_dir_all(&copilot_dir).unwrap();
+            std::fs::write(copilot_dir.join("access-token"), "github-copilot-token").unwrap();
+            assert!(provider_has_credentials("github_copilot"));
+
+            logout_oauth_provider("chatgpt").unwrap();
+            assert!(!provider_has_credentials("chatgpt"));
+            logout_oauth_provider("github_copilot").unwrap();
+            assert!(!provider_has_credentials("github_copilot"));
+
+            let error = logout_oauth_provider("openai").unwrap_err();
+            assert!(error.to_string().contains("openai"));
+            assert!(error.to_string().contains("does not support OAuth"));
+        });
+
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        result.unwrap();
+    }
+
+    fn config_env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        &LOCK
     }
 }

@@ -551,7 +551,7 @@ impl ModelRegistry {
     }
 
     pub fn is_oauth_provider(provider: &str) -> bool {
-        matches!(provider, "chatgpt" | "github_copilot")
+        crate::oauth::oauth_provider(provider).is_some()
     }
 
     pub fn provider_display_name(provider: &str) -> &'static str {
@@ -1048,6 +1048,19 @@ mod tests {
             "GitHub Copilot"
         );
         assert_eq!(ModelRegistry::provider_auth_type("github_copilot"), "oauth");
+    }
+
+    #[test]
+    fn oauth_provider_ids_are_the_registered_credentialed_oauth_providers() {
+        assert_eq!(
+            crate::oauth::oauth_provider_ids(),
+            ["chatgpt", "github_copilot"]
+        );
+        assert!(ModelRegistry::is_oauth_provider("chatgpt"));
+        assert!(ModelRegistry::is_oauth_provider("github_copilot"));
+        assert!(!ModelRegistry::is_oauth_provider("openai"));
+        assert_eq!(ModelRegistry::provider_auth_type("chatgpt"), "oauth");
+        assert_eq!(ModelRegistry::provider_auth_type("openai"), "api_key");
     }
 
     #[test]

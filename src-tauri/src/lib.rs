@@ -14,6 +14,7 @@ pub mod keychain;
 mod llm;
 pub mod mcp;
 mod models;
+mod oauth;
 mod provider_client;
 mod review;
 pub mod session_mode;
@@ -1779,26 +1780,29 @@ async fn start_provider_oauth(
     app: tauri::AppHandle,
     provider: String,
 ) -> Result<OauthChallenge, String> {
-    match provider.as_str() {
-        "chatgpt" => start_chatgpt_oauth_flow(app, "chatgpt-auth-complete").await,
-        "github_copilot" => {
-            start_github_copilot_oauth_flow(app, "github-copilot-auth-complete").await
+    let entry = oauth::oauth_provider(&provider)
+        .ok_or_else(|| format!("Provider {} does not support OAuth", provider))?;
+    match entry.start_adapter {
+        oauth::OauthStartAdapter::Chatgpt => {
+            start_chatgpt_oauth_flow(app, entry.auth_complete_event).await
         }
-        other => Err(format!("Provider {} does not support OAuth", other)),
+        oauth::OauthStartAdapter::GithubCopilot => {
+            start_github_copilot_oauth_flow(app, entry.auth_complete_event).await
+        }
     }
 }
 
 #[tauri::command]
 fn is_chatgpt_authenticated() -> ApiKeyStatus {
     ApiKeyStatus {
-        configured: keychain::has_chatgpt_oauth_session(),
+        configured: keychain::provider_has_credentials("chatgpt"),
     }
 }
 
 #[tauri::command]
 fn is_github_copilot_authenticated() -> ApiKeyStatus {
     ApiKeyStatus {
-        configured: keychain::has_github_copilot_oauth_session(),
+        configured: keychain::provider_has_credentials("github_copilot"),
     }
 }
 
@@ -1810,26 +1814,26 @@ fn is_provider_authenticated(provider: String) -> ApiKeyStatus {
 }
 
 #[tauri::command]
+fn list_oauth_providers() -> Vec<String> {
+    oauth::oauth_provider_ids()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+#[tauri::command]
 fn logout_chatgpt() -> Result<(), String> {
-    keychain::delete_chatgpt_auth_file().map_err(|e| e.to_string())?;
-    let _ = keychain::delete("chatgpt");
-    Ok(())
+    keychain::logout_oauth_provider("chatgpt").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn logout_github_copilot() -> Result<(), String> {
-    keychain::delete_github_copilot_auth_files().map_err(|e| e.to_string())?;
-    let _ = keychain::delete("github_copilot");
-    Ok(())
+    keychain::logout_oauth_provider("github_copilot").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn logout_provider_oauth(provider: String) -> Result<(), String> {
-    match provider.as_str() {
-        "chatgpt" => logout_chatgpt(),
-        "github_copilot" => logout_github_copilot(),
-        other => Err(format!("Provider {} does not support OAuth", other)),
-    }
+    keychain::logout_oauth_provider(&provider).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3190,6 +3194,7 @@ pub fn run() {
             is_chatgpt_authenticated,
             is_github_copilot_authenticated,
             is_provider_authenticated,
+            list_oauth_providers,
             logout_chatgpt,
             logout_github_copilot,
             logout_provider_oauth,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { oauthProviderIds, registeredOauthProviderIds } from "./oauthProviders";
 
 export type ProviderId =
   | "openai"
@@ -44,8 +45,6 @@ interface OAuthCompletion {
   provider: ProviderId;
   success: boolean;
 }
-
-const OAUTH_PROVIDER_IDS: ProviderId[] = ["chatgpt", "github_copilot"];
 
 function oauthCopy(provider: ProviderConfig) {
   switch (provider.id) {
@@ -96,8 +95,10 @@ export function ProviderSelector({
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
+        const listed = oauthProviderIds(providersRef.current);
+        const oauthIds = listed.length > 0 ? listed : await registeredOauthProviderIds(invoke);
         const statuses = await Promise.all(
-          OAUTH_PROVIDER_IDS.map(async (provider) => ({
+          oauthIds.map(async (provider) => ({
             provider,
             status: await invoke<{ configured: boolean }>("is_provider_authenticated", {
               provider,
