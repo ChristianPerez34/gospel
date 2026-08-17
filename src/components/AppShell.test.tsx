@@ -49,6 +49,35 @@ const sampleAvailability = {
   warnings: [],
 };
 
+function handleCommonInvoke(
+  cmd: string,
+  args: unknown,
+  ctx?: {
+    workspaces?: Array<typeof sampleWorkspace>;
+    getActiveWorkspace?: () => typeof sampleWorkspace;
+    setActiveWorkspace?: (id: string) => void;
+  }
+) {
+  const workspaces = ctx?.workspaces ?? [sampleWorkspace];
+  if (cmd === "list_workspaces") return workspaces;
+  if (cmd === "get_active_workspace") {
+    return ctx?.getActiveWorkspace?.() ?? workspaces[0] ?? sampleWorkspace;
+  }
+  if (cmd === "get_model_availability") return sampleAvailability;
+  if (cmd === "get_archive_policy") {
+    return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
+  }
+  if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
+  if (cmd === "list_sessions") return [];
+  if (cmd === "list_archived_sessions") return [];
+  if (cmd === "list_skills") return [];
+  if (cmd === "set_active_workspace") {
+    ctx?.setActiveWorkspace?.((args as { id: string }).id);
+    return undefined;
+  }
+  return undefined;
+}
+
 describe("AppShell session title editing", () => {
   beforeEach(() => {
     capturedListeners = {};
@@ -58,27 +87,9 @@ describe("AppShell session title editing", () => {
       return () => {};
     });
 
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === "list_workspaces") {
-        return [sampleWorkspace];
-      }
-      if (cmd === "get_active_workspace") {
-        return sampleWorkspace;
-      }
-      if (cmd === "get_model_availability") {
-        return sampleAvailability;
-      }
-      if (cmd === "get_archive_policy") {
-        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
-      }
-      if (cmd === "get_archive_stats") {
-        return { archived_count: 0, expired_count: 0 };
-      }
-      if (cmd === "list_sessions") return [];
-      if (cmd === "list_archived_sessions") return [];
-      if (cmd === "list_skills") return [];
-      return undefined;
-    });
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) =>
+      handleCommonInvoke(cmd, args)
+    );
   });
 
   afterEach(() => {
@@ -87,29 +98,11 @@ describe("AppShell session title editing", () => {
   });
 
   it("updates local session title when creation failed (backendCreated: false) without calling update_session_title invoke", async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === "list_workspaces") {
-        return [sampleWorkspace];
-      }
-      if (cmd === "get_active_workspace") {
-        return sampleWorkspace;
-      }
-      if (cmd === "get_model_availability") {
-        return sampleAvailability;
-      }
-      if (cmd === "get_archive_policy") {
-        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
-      }
-      if (cmd === "get_archive_stats") {
-        return { archived_count: 0, expired_count: 0 };
-      }
-      if (cmd === "list_sessions") return [];
-      if (cmd === "list_archived_sessions") return [];
-      if (cmd === "list_skills") return [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
       if (cmd === "create_session") {
         throw new Error("backend database error");
       }
-      return undefined;
+      return handleCommonInvoke(cmd, args);
     });
 
     render(
@@ -171,24 +164,15 @@ describe("AppShell session title editing", () => {
     const workspaces = [sampleWorkspace, otherWorkspace];
 
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
-      if (cmd === "list_workspaces") return workspaces;
-      if (cmd === "get_active_workspace") return activeWorkspace;
-      if (cmd === "get_model_availability") return sampleAvailability;
-      if (cmd === "get_archive_policy") {
-        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
-      }
-      if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
-      if (cmd === "list_sessions") return [];
-      if (cmd === "list_archived_sessions") return [];
-      if (cmd === "list_skills") return [];
       if (cmd === "create_session") return { id: "stream-session" };
       if (cmd === "complete_streaming") return undefined;
-      if (cmd === "set_active_workspace") {
-        const id = (args as { id: string }).id;
-        activeWorkspace = workspaces.find((workspace) => workspace.id === id) ?? activeWorkspace;
-        return undefined;
-      }
-      return undefined;
+      return handleCommonInvoke(cmd, args, {
+        workspaces,
+        getActiveWorkspace: () => activeWorkspace,
+        setActiveWorkspace: (id) => {
+          activeWorkspace = workspaces.find((workspace) => workspace.id === id) ?? activeWorkspace;
+        },
+      });
     });
 
     render(
@@ -245,33 +229,116 @@ describe("AppShell session title editing", () => {
     });
   });
 
+  it("switches Active Workspace Context from the command palette", async () => {
+    let activeWorkspace = sampleWorkspace;
+    const workspaces = [sampleWorkspace, otherWorkspace];
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) =>
+      handleCommonInvoke(cmd, args, {
+        workspaces,
+        getActiveWorkspace: () => activeWorkspace,
+        setActiveWorkspace: (id) => {
+          activeWorkspace = workspaces.find((workspace) => workspace.id === id) ?? activeWorkspace;
+        },
+      })
+    );
+
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+        "Test Workspace"
+      );
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "k", metaKey: true });
+    });
+
+    const search = await screen.findByLabelText("Search commands");
+    fireEvent.change(search, { target: { value: "Other" } });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Other Workspace/ }));
+
+    await waitFor(() => {
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "set_active_workspace")).toBe(
+        true
+      );
+    });
+    expect(
+      vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === "set_active_workspace")?.[1]
+    ).toEqual({ id: "ws-2" });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+        "Other Workspace"
+      );
+    });
+  });
+
+  it("keeps the command palette open when workspace switch is blocked by a stream", async () => {
+    let activeWorkspace = sampleWorkspace;
+    const workspaces = [sampleWorkspace, otherWorkspace];
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "create_session") return { id: "stream-session" };
+      if (cmd === "complete_streaming") return undefined;
+      return handleCommonInvoke(cmd, args, {
+        workspaces,
+        getActiveWorkspace: () => activeWorkspace,
+        setActiveWorkspace: (id) => {
+          activeWorkspace = workspaces.find((workspace) => workspace.id === id) ?? activeWorkspace;
+        },
+      });
+    });
+
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Message input",
+    })) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(textarea.disabled).toBe(false);
+    });
+
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: "streaming prompt" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    });
+    act(() => {
+      triggerEvent<string>("llm-token", "live token");
+    });
+    expect(await screen.findByText("live token")).toBeDefined();
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "k", metaKey: true });
+    });
+
+    const search = await screen.findByLabelText("Search commands");
+    fireEvent.change(search, { target: { value: "Other" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Other Workspace/ }));
+
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "set_active_workspace")
+    ).toHaveLength(0);
+    expect(screen.getByLabelText("Search commands")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+      "Test Workspace"
+    );
+  });
+
   it("updates local session title and calls update_session_title invoke when backendCreated is true", async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === "list_workspaces") {
-        return [sampleWorkspace];
-      }
-      if (cmd === "get_active_workspace") {
-        return sampleWorkspace;
-      }
-      if (cmd === "get_model_availability") {
-        return sampleAvailability;
-      }
-      if (cmd === "get_archive_policy") {
-        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
-      }
-      if (cmd === "get_archive_stats") {
-        return { archived_count: 0, expired_count: 0 };
-      }
-      if (cmd === "list_sessions") return [];
-      if (cmd === "list_archived_sessions") return [];
-      if (cmd === "list_skills") return [];
-      if (cmd === "create_session") {
-        return { id: "sess-backend-1" };
-      }
-      if (cmd === "update_session_title") {
-        return undefined;
-      }
-      return undefined;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "create_session") return { id: "sess-backend-1" };
+      if (cmd === "update_session_title") return undefined;
+      return handleCommonInvoke(cmd, args);
     });
 
     render(
@@ -325,24 +392,14 @@ describe("AppShell session title editing", () => {
   it("rolls back the current rename and shows an error when update_session_title fails", async () => {
     let rejectRename: ((error: Error) => void) | null = null;
 
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === "list_workspaces") return [sampleWorkspace];
-      if (cmd === "get_active_workspace") return sampleWorkspace;
-      if (cmd === "get_model_availability") return sampleAvailability;
-      if (cmd === "get_archive_policy") {
-        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
-      }
-      if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
-      if (cmd === "list_sessions") return [];
-      if (cmd === "list_archived_sessions") return [];
-      if (cmd === "list_skills") return [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
       if (cmd === "create_session") return { id: "sess-backend-1" };
       if (cmd === "update_session_title") {
         return new Promise<void>((_resolve, reject) => {
           rejectRename = reject;
         });
       }
-      return undefined;
+      return handleCommonInvoke(cmd, args);
     });
 
     render(
@@ -400,16 +457,6 @@ describe("AppShell session title editing", () => {
     const titleInvokes: string[] = [];
 
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
-      if (cmd === "list_workspaces") return [sampleWorkspace];
-      if (cmd === "get_active_workspace") return sampleWorkspace;
-      if (cmd === "get_model_availability") return sampleAvailability;
-      if (cmd === "get_archive_policy") {
-        return { workspaceId: null, retentionDays: 30, autoArchiveHours: 24 };
-      }
-      if (cmd === "get_archive_stats") return { archived_count: 0, expired_count: 0 };
-      if (cmd === "list_sessions") return [];
-      if (cmd === "list_archived_sessions") return [];
-      if (cmd === "list_skills") return [];
       if (cmd === "create_session") return { id: "sess-backend-1" };
       if (cmd === "update_session_title") {
         const title = (args as { title: string }).title;
@@ -426,7 +473,7 @@ describe("AppShell session title editing", () => {
         }
         return undefined;
       }
-      return undefined;
+      return handleCommonInvoke(cmd, args);
     });
 
     render(

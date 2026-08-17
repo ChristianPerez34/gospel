@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CreateMcpServerRequest,
   McpApplyImportResult,
@@ -18,22 +18,43 @@ export function useMcpServers(active: boolean) {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<McpImportPreview | null>(null);
+  const mountedRef = useRef(true);
+  const generationRef = useRef(0);
+
+  const canCommit = useCallback((generation: number) => {
+    return mountedRef.current && generationRef.current === generation;
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      generationRef.current += 1;
+    };
+  }, []);
 
   const reload = useCallback(async () => {
+    const generation = generationRef.current;
     setLoading(true);
     setError(null);
     try {
       const next = await invoke<McpServer[]>("list_mcp_servers");
+      if (!canCommit(generation)) return;
       setServers(next);
     } catch (e) {
+      if (!canCommit(generation)) return;
       setError(`Failed to load MCP servers: ${e}`);
     } finally {
-      setLoading(false);
+      if (canCommit(generation)) setLoading(false);
     }
-  }, []);
+  }, [canCommit]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      generationRef.current += 1;
+      setLoading(false);
+      return;
+    }
     void reload();
   }, [active, reload]);
 

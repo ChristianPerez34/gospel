@@ -2,7 +2,13 @@ import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { ModelOption, Session, Workspace } from "../types";
 
-type CommandGroup = "Sessions" | "Files / context" | "Settings" | "Variants" | "Commands";
+type CommandGroup =
+  | "Workspaces"
+  | "Sessions"
+  | "Files / context"
+  | "Settings"
+  | "Variants"
+  | "Commands";
 
 interface PaletteResult {
   id: string;
@@ -33,6 +39,8 @@ interface CommandPaletteProps {
   onVariantChange: (variant: string | null) => void;
   restoreFocusRef?: RefObject<HTMLElement>;
   workspaceNames?: Record<string, string>;
+  recentWorkspaces?: Workspace[];
+  onSelectWorkspace?: (workspace: Workspace) => boolean | undefined;
 }
 
 function includesQuery(result: PaletteResult, query: string) {
@@ -44,6 +52,7 @@ function includesQuery(result: PaletteResult, query: string) {
 function groupResults(results: PaletteResult[]) {
   const groups: Array<{ label: CommandGroup; results: PaletteResult[] }> = [];
   for (const label of [
+    "Workspaces",
     "Sessions",
     "Files / context",
     "Settings",
@@ -78,6 +87,8 @@ export function CommandPalette({
   onVariantChange,
   restoreFocusRef,
   workspaceNames,
+  recentWorkspaces = [],
+  onSelectWorkspace,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -120,10 +131,29 @@ export function CommandPalette({
       };
     });
 
+    const recentWorkspaceResults: PaletteResult[] = recentWorkspaces.map((ws) => {
+      const isActive = ws.id === workspace?.id;
+      return {
+        id: `workspace-${ws.id}`,
+        group: "Workspaces" as const,
+        icon: "Folder",
+        label: ws.name,
+        detail: ws.path,
+        shortcut: isActive ? "Active" : undefined,
+        keywords: `workspace folder ${ws.name} ${ws.path}`,
+        action: isActive
+          ? onClose
+          : () => {
+              if (onSelectWorkspace?.(ws) === false) return;
+              onClose();
+            },
+      };
+    });
+
     const workspaceResults: PaletteResult[] = workspace
       ? [
           {
-            id: `workspace-${workspace.id}`,
+            id: `workspace-context-${workspace.id}`,
             group: "Files / context",
             icon: "W",
             label: workspace.name,
@@ -224,6 +254,7 @@ export function CommandPalette({
     ];
 
     return [
+      ...recentWorkspaceResults,
       ...sessionResults,
       ...workspaceResults,
       ...settingsResults,
@@ -239,9 +270,11 @@ export function CommandPalette({
     onOpenWorkspaceSwitcher,
     onSelectModel,
     onSelectSession,
+    onSelectWorkspace,
     onVariantChange,
     onToggleSessions,
     query,
+    recentWorkspaces,
     selectedModelId,
     selectedVariant,
     sessions,
@@ -320,7 +353,7 @@ export function CommandPalette({
             className="h-11 w-full rounded-lg bg-surface-base px-3 font-body text-body text-text-primary outline-none placeholder:text-text-muted border border-surface-overlay"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search sessions, settings, models, commands"
+            placeholder="Search workspaces, sessions, settings, models, commands"
             aria-label="Search commands"
           />
         </div>
