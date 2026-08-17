@@ -19,53 +19,44 @@ export function useMcpServers(active: boolean) {
   const [error, setError] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<McpImportPreview | null>(null);
   const mountedRef = useRef(true);
+  const generationRef = useRef(0);
+
+  const canCommit = useCallback((generation: number) => {
+    return mountedRef.current && generationRef.current === generation;
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      generationRef.current += 1;
     };
   }, []);
 
   const reload = useCallback(async () => {
+    const generation = generationRef.current;
     setLoading(true);
     setError(null);
     try {
       const next = await invoke<McpServer[]>("list_mcp_servers");
-      if (!mountedRef.current) return;
+      if (!canCommit(generation)) return;
       setServers(next);
     } catch (e) {
-      if (!mountedRef.current) return;
+      if (!canCommit(generation)) return;
       setError(`Failed to load MCP servers: ${e}`);
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (canCommit(generation)) setLoading(false);
     }
-  }, []);
+  }, [canCommit]);
 
   useEffect(() => {
     if (!active) {
+      generationRef.current += 1;
       setLoading(false);
       return;
     }
-    let cancelled = false;
-
-    setLoading(true);
-    setError(null);
-    void invoke<McpServer[]>("list_mcp_servers")
-      .then((next) => {
-        if (!cancelled) setServers(next);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(`Failed to load MCP servers: ${e}`);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [active]);
+    void reload();
+  }, [active, reload]);
 
   const setEnabled = useCallback(async (server: McpServer, enabled: boolean) => {
     setSavingId(server.id);

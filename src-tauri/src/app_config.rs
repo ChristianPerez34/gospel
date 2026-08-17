@@ -137,13 +137,13 @@ impl AppConfigStore {
         Self::from_connection(Connection::open_in_memory()?)
     }
 
-    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, AppConfigError> {
-        Ok(self.conn.lock().unwrap_or_else(|e| e.into_inner()))
+    fn lock_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn provider_visibility(&self, provider: &str) -> Result<bool, AppConfigError> {
         validate_provider(provider)?;
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let visible = conn
             .query_row(
                 "SELECT visible FROM provider_settings WHERE provider_id = ?1",
@@ -160,7 +160,7 @@ impl AppConfigStore {
         visible: bool,
     ) -> Result<(), AppConfigError> {
         validate_provider(provider)?;
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO provider_settings (provider_id, visible, updated_at)
              VALUES (?1, ?2, CURRENT_TIMESTAMP)
@@ -173,7 +173,7 @@ impl AppConfigStore {
     }
 
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, path, session_count, created_at FROM workspaces ORDER BY created_at",
         )?;
@@ -211,7 +211,7 @@ impl AppConfigStore {
 
         let id = Uuid::new_v4().to_string();
 
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
 
         let existing: Option<String> = conn
             .query_row(
@@ -241,7 +241,7 @@ impl AppConfigStore {
     }
 
     pub fn remove_workspace(&self, id: &str) -> Result<(), AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let rows = conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
         if rows == 0 {
             return Err(AppConfigError::WorkspaceNotFound(id.to_string()));
@@ -250,7 +250,7 @@ impl AppConfigStore {
     }
 
     pub fn get_active_workspace(&self) -> Result<Option<Workspace>, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let active_id: Option<String> = conn
             .query_row(
                 "SELECT value FROM app_config WHERE key = 'active_workspace'",
@@ -283,7 +283,7 @@ impl AppConfigStore {
     }
 
     pub fn set_active_workspace(&self, id: &str) -> Result<(), AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
             params![id],
@@ -304,7 +304,7 @@ impl AppConfigStore {
     }
 
     pub fn clear_active_workspace(&self) -> Result<(), AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM app_config WHERE key = 'active_workspace'",
             params![],
@@ -313,7 +313,7 @@ impl AppConfigStore {
     }
 
     pub fn get_config_value(&self, key: &str) -> Result<Option<String>, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let value = conn
             .query_row(
                 "SELECT value FROM app_config WHERE key = ?1",
@@ -325,7 +325,7 @@ impl AppConfigStore {
     }
 
     pub fn set_config_value(&self, key: &str, value: &str) -> Result<(), AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO app_config (key, value, updated_at)
              VALUES (?1, ?2, CURRENT_TIMESTAMP)
@@ -343,7 +343,7 @@ impl AppConfigStore {
     }
 
     pub fn list_mcp_servers(&self) -> Result<Vec<McpServer>, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         list_mcp_servers_locked(&conn)
     }
 
@@ -352,7 +352,7 @@ impl AppConfigStore {
         request: CreateMcpServerRequest,
     ) -> Result<McpServer, AppConfigError> {
         mcp::validate_create_request(&request).map_err(AppConfigError::InvalidMcpServer)?;
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let id = mcp::new_custom_server_id();
         insert_custom_mcp_server_locked(&conn, &id, &request, None)?;
         query_mcp_server_locked(&conn, MCP_KIND_CUSTOM, &id)
@@ -364,13 +364,13 @@ impl AppConfigStore {
         request: UpdateMcpServerRequest,
     ) -> Result<McpServer, AppConfigError> {
         mcp::validate_update_request(&request).map_err(AppConfigError::InvalidMcpServer)?;
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         update_custom_mcp_server_locked(&conn, id, &request, None)?;
         query_mcp_server_locked(&conn, MCP_KIND_CUSTOM, id)
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<(), AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         if query_custom_mcp_record_locked(&conn, id)?.is_none() {
             return Err(AppConfigError::McpServerNotFound(id.to_string()));
         }
@@ -396,7 +396,7 @@ impl AppConfigStore {
         id: &str,
         enabled: bool,
     ) -> Result<McpServer, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         ensure_mcp_server_exists_locked(&conn, kind, id)?;
         let default_trusted = if kind == MCP_KIND_BUILT_IN { 1 } else { 0 };
         conn.execute(
@@ -413,7 +413,7 @@ impl AppConfigStore {
     }
 
     pub fn trust_mcp_server(&self, id: &str) -> Result<McpServer, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         ensure_mcp_server_exists_locked(&conn, MCP_KIND_CUSTOM, id)?;
         conn.execute(
             "INSERT INTO mcp_server_state (
@@ -430,7 +430,7 @@ impl AppConfigStore {
     }
 
     pub fn revoke_trust_mcp_server(&self, id: &str) -> Result<McpServer, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         ensure_mcp_server_exists_locked(&conn, MCP_KIND_CUSTOM, id)?;
         conn.execute(
             "INSERT INTO mcp_server_state (
@@ -453,7 +453,7 @@ impl AppConfigStore {
         active_workspace_path: Option<&Path>,
     ) -> Result<McpServer, AppConfigError> {
         let server = {
-            let conn = self.lock_conn()?;
+            let conn = self.lock_conn();
             query_mcp_server_locked(&conn, kind, id)?
         };
 
@@ -463,7 +463,7 @@ impl AppConfigStore {
             mcp::refresh_custom(&server)
         };
 
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         persist_mcp_refresh_locked(&conn, kind, id, &update)?;
         query_mcp_server_locked(&conn, kind, id)
     }
@@ -477,7 +477,7 @@ impl AppConfigStore {
         let preview = mcp::parse_opencode_import(source_path, &content, &existing_servers)
             .map_err(AppConfigError::McpImport)?;
         let preview_json = mcp::serialize_json(&preview).map_err(AppConfigError::McpImport)?;
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO mcp_import_previews (token, source_path, preview_json, created_at)
              VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)",
@@ -490,7 +490,7 @@ impl AppConfigStore {
         &self,
         request: McpApplyImportRequest,
     ) -> Result<McpApplyImportResult, AppConfigError> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_conn();
         let preview_json: String = conn
             .query_row(
                 "SELECT preview_json FROM mcp_import_previews WHERE token = ?1",

@@ -332,8 +332,9 @@ export function AppShell() {
 
   const handleSwitchWorkspace = useCallback(
     (ws: Workspace) => {
-      if (session.isStreaming) return;
+      if (session.isStreaming) return false;
       void switchWorkspace(ws.id);
+      return true;
     },
     [session.isStreaming, switchWorkspace]
   );

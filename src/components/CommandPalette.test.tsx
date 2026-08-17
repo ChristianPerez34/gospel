@@ -172,22 +172,54 @@ describe("CommandPalette", () => {
     expect(onSelectWorkspace).toHaveBeenCalledWith(gospelApp);
   });
 
-  it("omits the active workspace from Workspaces switch candidates", () => {
+  it("switches workspace from the Workspaces group on Enter", () => {
+    const gospelApp: Workspace = {
+      id: "w1",
+      name: "gospel-app",
+      path: "/path/gospel",
+      sessionCount: 1,
+    };
+    const onSelectWorkspace = vi.fn();
+    const onClose = vi.fn();
+    renderPalette({
+      recentWorkspaces: [gospelApp],
+      onSelectWorkspace,
+      onClose,
+    });
+
+    fireEvent.change(screen.getByLabelText("Search commands"), {
+      target: { value: "gospel" },
+    });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Command palette" }), {
+      key: "Enter",
+    });
+
+    expect(onSelectWorkspace).toHaveBeenCalledWith(gospelApp);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("indicates the Active Workspace Context without offering a redundant switch", () => {
     const frontend: Workspace = {
       id: "w2",
       name: "frontend",
       path: "/path/frontend",
       sessionCount: 0,
     };
+    const onSelectWorkspace = vi.fn();
     renderPalette({
       recentWorkspaces: [workspace, frontend],
+      onSelectWorkspace,
     });
 
     fireEvent.change(screen.getByLabelText("Search commands"), {
-      target: { value: "workspace folder" },
+      target: { value: "workspace folder Main" },
     });
 
-    expect(screen.getByRole("button", { name: /frontend/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Main/ })).toBeNull();
+    expect(screen.getByText("Workspaces")).toBeTruthy();
+    const activeRow = screen.getByRole("button", { name: /Main.*Active/ });
+    expect(screen.getByText("/tmp/main")).toBeTruthy();
+
+    fireEvent.click(activeRow);
+    expect(onSelectWorkspace).not.toHaveBeenCalled();
   });
 });

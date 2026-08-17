@@ -40,7 +40,7 @@ interface CommandPaletteProps {
   restoreFocusRef?: RefObject<HTMLElement>;
   workspaceNames?: Record<string, string>;
   recentWorkspaces?: Workspace[];
-  onSelectWorkspace?: (workspace: Workspace) => void;
+  onSelectWorkspace?: (workspace: Workspace) => boolean | undefined;
 }
 
 function includesQuery(result: PaletteResult, query: string) {
@@ -131,17 +131,24 @@ export function CommandPalette({
       };
     });
 
-    const recentWorkspaceResults: PaletteResult[] = recentWorkspaces
-      .filter((ws) => ws.id !== workspace?.id)
-      .map((ws) => ({
+    const recentWorkspaceResults: PaletteResult[] = recentWorkspaces.map((ws) => {
+      const isActive = ws.id === workspace?.id;
+      return {
         id: `workspace-${ws.id}`,
         group: "Workspaces" as const,
         icon: "Folder",
         label: ws.name,
         detail: ws.path,
+        shortcut: isActive ? "Active" : undefined,
         keywords: `workspace folder ${ws.name} ${ws.path}`,
-        action: closeAfter(() => onSelectWorkspace?.(ws)),
-      }));
+        action: isActive
+          ? onClose
+          : () => {
+              if (onSelectWorkspace?.(ws) === false) return;
+              onClose();
+            },
+      };
+    });
 
     const workspaceResults: PaletteResult[] = workspace
       ? [
