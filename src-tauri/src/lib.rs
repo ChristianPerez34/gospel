@@ -63,8 +63,8 @@ use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
 use llm::{LlmError, LlmService};
 use models::{ModelInfo, ModelRegistry};
+use oauth::OauthChallenge;
 use once_cell::sync::Lazy;
-use rig::providers::{chatgpt, copilot};
 use serde::Serialize;
 use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
@@ -80,7 +80,6 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_opener::OpenerExt;
 use trace::TraceState;
 use workspace_tools::{
     ExternalPathApproval, ExternalPathApprovalFuture, ExternalPathApprovalRequest, PathKind,
@@ -351,18 +350,6 @@ pub(crate) fn validate_active_workspace_path(path: &Path) -> Result<(), String> 
     }
 
     Ok(())
-}
-
-#[derive(Serialize, Clone)]
-struct OauthChallenge {
-    verification_url: String,
-    user_code: String,
-}
-
-#[derive(Serialize, Clone)]
-struct OauthCompletion {
-    provider: String,
-    success: bool,
 }
 
 #[tauri::command]
@@ -1594,185 +1581,14 @@ fn clear_conversation_history_with_access(
     Ok(())
 }
 
-fn emit_oauth_complete(
-    app: &tauri::AppHandle,
-    provider: &'static str,
-    provider_event: &'static str,
-    success: bool,
-) {
-    let _ = app.emit(provider_event, success);
-    let _ = app.emit(
-        "provider-auth-complete",
-        OauthCompletion {
-            provider: provider.to_string(),
-            success,
-        },
-    );
-}
-
-async fn start_chatgpt_oauth_flow(
-    app: tauri::AppHandle,
-    provider_event: &'static str,
-) -> Result<OauthChallenge, String> {
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::Notify;
-
-    let challenge = Arc::new(Mutex::new(None));
-    let challenge_clone = challenge.clone();
-    let notify = Arc::new(Notify::new());
-    let notify_clone = notify.clone();
-
-    let client = chatgpt::Client::builder()
-        .oauth()
-        .on_device_code(move |prompt| {
-            let mut guard = challenge_clone.lock().unwrap();
-            *guard = Some(OauthChallenge {
-                verification_url: prompt.verification_uri.clone(),
-                user_code: prompt.user_code.clone(),
-            });
-            notify_clone.notify_one();
-        })
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // Start authorization in background — this blocks polling for the token
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut retries = 0;
-        let max_retries = 3;
-        let mut success = false;
-
-        while retries < max_retries && !success {
-            match client.authorize().await {
-                Ok(()) => {
-                    success = true;
-                    emit_oauth_complete(&app_clone, "chatgpt", provider_event, true);
-                }
-                Err(e) => {
-                    retries += 1;
-                    if retries >= max_retries {
-                        eprintln!("ChatGPT OAuth failed after {} attempts: {}", retries, e);
-                        emit_oauth_complete(&app_clone, "chatgpt", provider_event, false);
-                    } else {
-                        eprintln!(
-                            "ChatGPT OAuth attempt {} failed: {}, retrying...",
-                            retries, e
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            }
-        }
-    });
-
-    // Wait for the on_device_code callback to fire (with 30s timeout)
-    match tokio::time::timeout(std::time::Duration::from_secs(30), notify.notified()).await {
-        Ok(()) => {}
-        Err(_) => return Err("OAuth flow timed out before receiving device code".to_string()),
-    }
-
-    let maybe_challenge = { challenge.lock().unwrap().take() };
-
-    if let Some(challenge) = maybe_challenge {
-        // Open browser for user to authenticate
-        if let Err(e) = app
-            .opener()
-            .open_url(&challenge.verification_url, None::<String>)
-        {
-            eprintln!("Failed to open browser: {}", e);
-        }
-        Ok(challenge)
-    } else {
-        Err("Failed to initiate OAuth flow".to_string())
-    }
-}
-
 #[tauri::command]
 async fn start_chatgpt_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, String> {
-    start_chatgpt_oauth_flow(app, "chatgpt-auth-complete").await
-}
-
-async fn start_github_copilot_oauth_flow(
-    app: tauri::AppHandle,
-    provider_event: &'static str,
-) -> Result<OauthChallenge, String> {
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::Notify;
-
-    let challenge = Arc::new(Mutex::new(None));
-    let challenge_clone = challenge.clone();
-    let notify = Arc::new(Notify::new());
-    let notify_clone = notify.clone();
-
-    let client = copilot::Client::builder()
-        .oauth()
-        .token_dir(keychain::github_copilot_token_dir())
-        .on_device_code(move |prompt| {
-            let mut guard = challenge_clone.lock().unwrap();
-            *guard = Some(OauthChallenge {
-                verification_url: prompt.verification_uri.clone(),
-                user_code: prompt.user_code.clone(),
-            });
-            notify_clone.notify_one();
-        })
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut retries = 0;
-        let max_retries = 3;
-        let mut success = false;
-
-        while retries < max_retries && !success {
-            match client.authorize().await {
-                Ok(()) => {
-                    success = true;
-                    emit_oauth_complete(&app_clone, "github_copilot", provider_event, true);
-                }
-                Err(e) => {
-                    retries += 1;
-                    if retries >= max_retries {
-                        eprintln!(
-                            "GitHub Copilot OAuth failed after {} attempts: {}",
-                            retries, e
-                        );
-                        emit_oauth_complete(&app_clone, "github_copilot", provider_event, false);
-                    } else {
-                        eprintln!(
-                            "GitHub Copilot OAuth attempt {} failed: {}, retrying...",
-                            retries, e
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            }
-        }
-    });
-
-    match tokio::time::timeout(std::time::Duration::from_secs(30), notify.notified()).await {
-        Ok(()) => {}
-        Err(_) => return Err("OAuth flow timed out before receiving device code".to_string()),
-    }
-
-    let maybe_challenge = { challenge.lock().unwrap().take() };
-
-    if let Some(challenge) = maybe_challenge {
-        if let Err(e) = app
-            .opener()
-            .open_url(&challenge.verification_url, None::<String>)
-        {
-            eprintln!("Failed to open browser: {}", e);
-        }
-        Ok(challenge)
-    } else {
-        Err("Failed to initiate OAuth flow".to_string())
-    }
+    oauth::start_provider_oauth(app, "chatgpt").await
 }
 
 #[tauri::command]
 async fn start_github_copilot_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, String> {
-    start_github_copilot_oauth_flow(app, "github-copilot-auth-complete").await
+    oauth::start_provider_oauth(app, "github_copilot").await
 }
 
 #[tauri::command]
@@ -1780,16 +1596,7 @@ async fn start_provider_oauth(
     app: tauri::AppHandle,
     provider: String,
 ) -> Result<OauthChallenge, String> {
-    let entry = oauth::oauth_provider(&provider)
-        .ok_or_else(|| format!("Provider {} does not support OAuth", provider))?;
-    match entry.start_adapter {
-        oauth::OauthStartAdapter::Chatgpt => {
-            start_chatgpt_oauth_flow(app, entry.auth_complete_event).await
-        }
-        oauth::OauthStartAdapter::GithubCopilot => {
-            start_github_copilot_oauth_flow(app, entry.auth_complete_event).await
-        }
-    }
+    oauth::start_provider_oauth(app, &provider).await
 }
 
 #[tauri::command]

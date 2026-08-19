@@ -34,4 +34,15 @@ describe("oauthProviderIds", () => {
   it("does not invent OAuth providers that the availability snapshot omitted", () => {
     expect(oauthProviderIds([provider("openai", "api_key")])).toEqual([]);
   });
+
+  it("lists a table-driven OAuth id from the availability snapshot", () => {
+    expect(
+      oauthProviderIds([
+        provider("openai", "api_key"),
+        provider("chatgpt", "oauth"),
+        provider("github_copilot", "oauth"),
+        provider("new_oauth", "oauth"),
+      ])
+    ).toEqual(["chatgpt", "github_copilot", "new_oauth"]);
+  });
 });

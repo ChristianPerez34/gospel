@@ -1,15 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { oauthProviderIds, registeredOauthProviderIds } from "./oauthProviders";
+import { oauthProviderIds } from "./oauthProviders";
 
-export type ProviderId =
-  | "openai"
-  | "chatgpt"
-  | "github_copilot"
-  | "anthropic"
-  | "gemini"
-  | "groq"
-  | "mistral";
+export type ProviderId = string;
 
 export interface ProviderConfig {
   id: ProviderId;
@@ -95,8 +88,7 @@ export function ProviderSelector({
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const listed = oauthProviderIds(providersRef.current);
-        const oauthIds = listed.length > 0 ? listed : await registeredOauthProviderIds(invoke);
+        const oauthIds = oauthProviderIds(providersRef.current);
         const statuses = await Promise.all(
           oauthIds.map(async (provider) => ({
             provider,

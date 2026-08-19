@@ -365,6 +365,8 @@ pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
 type PendingMap = Arc<RwLock<HashMap<String, Arc<Notify>>>>;
 pub static PENDING_REQUESTS: Lazy<PendingMap> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
+const API_KEY_PROVIDERS: &[&str] = &["openai", "anthropic", "gemini", "groq", "mistral"];
+
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 
 pub fn get_cache_ttl() -> Duration {
@@ -555,10 +557,11 @@ impl ModelRegistry {
     }
 
     pub fn provider_display_name(provider: &str) -> &'static str {
+        if let Some(entry) = crate::oauth::oauth_provider(provider) {
+            return entry.display_name;
+        }
         match provider {
             "openai" => "OpenAI",
-            "chatgpt" => "ChatGPT Plus/Pro",
-            "github_copilot" => "GitHub Copilot",
             "anthropic" => "Anthropic",
             "gemini" => "Gemini",
             "groq" => "Groq",
@@ -576,15 +579,14 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        &[
-            "openai",
-            "chatgpt",
-            "github_copilot",
-            "anthropic",
-            "gemini",
-            "groq",
-            "mistral",
-        ]
+        static PROVIDERS: Lazy<Vec<&'static str>> = Lazy::new(|| {
+            let (leading, trailing) = API_KEY_PROVIDERS.split_first().unwrap();
+            let mut providers = vec![*leading];
+            providers.extend(crate::oauth::oauth_provider_ids());
+            providers.extend(trailing.iter().copied());
+            providers
+        });
+        PROVIDERS.as_slice()
     }
 
     #[allow(dead_code)]
@@ -1056,11 +1058,36 @@ mod tests {
             crate::oauth::oauth_provider_ids(),
             ["chatgpt", "github_copilot"]
         );
+        assert_eq!(
+            ModelRegistry::all_providers(),
+            [
+                "openai",
+                "chatgpt",
+                "github_copilot",
+                "anthropic",
+                "gemini",
+                "groq",
+                "mistral"
+            ]
+        );
         assert!(ModelRegistry::is_oauth_provider("chatgpt"));
         assert!(ModelRegistry::is_oauth_provider("github_copilot"));
         assert!(!ModelRegistry::is_oauth_provider("openai"));
         assert_eq!(ModelRegistry::provider_auth_type("chatgpt"), "oauth");
         assert_eq!(ModelRegistry::provider_auth_type("openai"), "api_key");
+        assert_eq!(
+            ModelRegistry::provider_display_name("chatgpt"),
+            "ChatGPT Plus/Pro"
+        );
+        assert_eq!(
+            ModelRegistry::provider_display_name("github_copilot"),
+            "GitHub Copilot"
+        );
+        for id in crate::oauth::oauth_provider_ids() {
+            assert!(ModelRegistry::all_providers().contains(&id));
+            assert_eq!(ModelRegistry::provider_auth_type(id), "oauth");
+            assert_ne!(ModelRegistry::provider_display_name(id), "Unknown Provider");
+        }
     }
 
     #[test]
