@@ -365,6 +365,8 @@ pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
 type PendingMap = Arc<RwLock<HashMap<String, Arc<Notify>>>>;
 pub static PENDING_REQUESTS: Lazy<PendingMap> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
+pub(crate) const API_KEY_PROVIDERS: &[&str] = &["openai", "anthropic", "gemini", "groq", "mistral"];
+
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 
 pub fn get_cache_ttl() -> Duration {
@@ -551,14 +553,15 @@ impl ModelRegistry {
     }
 
     pub fn is_oauth_provider(provider: &str) -> bool {
-        matches!(provider, "chatgpt" | "github_copilot")
+        crate::oauth::oauth_provider(provider).is_some()
     }
 
     pub fn provider_display_name(provider: &str) -> &'static str {
+        if let Some(entry) = crate::oauth::oauth_provider(provider) {
+            return entry.display_name;
+        }
         match provider {
             "openai" => "OpenAI",
-            "chatgpt" => "ChatGPT Plus/Pro",
-            "github_copilot" => "GitHub Copilot",
             "anthropic" => "Anthropic",
             "gemini" => "Gemini",
             "groq" => "Groq",
@@ -576,15 +579,21 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        &[
-            "openai",
-            "chatgpt",
-            "github_copilot",
-            "anthropic",
-            "gemini",
-            "groq",
-            "mistral",
-        ]
+        static PROVIDERS: Lazy<Vec<&'static str>> = Lazy::new(|| {
+            let oauth_ids = crate::oauth::oauth_provider_ids();
+            let Some((oauth_insertion_anchor, remaining_api_key_providers)) =
+                API_KEY_PROVIDERS.split_first()
+            else {
+                return oauth_ids;
+            };
+            let mut providers =
+                Vec::with_capacity(1 + oauth_ids.len() + remaining_api_key_providers.len());
+            providers.push(*oauth_insertion_anchor);
+            providers.extend(oauth_ids);
+            providers.extend(remaining_api_key_providers.iter().copied());
+            providers
+        });
+        PROVIDERS.as_slice()
     }
 
     #[allow(dead_code)]
@@ -1048,6 +1057,44 @@ mod tests {
             "GitHub Copilot"
         );
         assert_eq!(ModelRegistry::provider_auth_type("github_copilot"), "oauth");
+    }
+
+    #[test]
+    fn oauth_provider_ids_are_the_registered_credentialed_oauth_providers() {
+        assert_eq!(
+            crate::oauth::oauth_provider_ids(),
+            ["chatgpt", "github_copilot"]
+        );
+        assert_eq!(
+            ModelRegistry::all_providers(),
+            [
+                "openai",
+                "chatgpt",
+                "github_copilot",
+                "anthropic",
+                "gemini",
+                "groq",
+                "mistral"
+            ]
+        );
+        assert!(ModelRegistry::is_oauth_provider("chatgpt"));
+        assert!(ModelRegistry::is_oauth_provider("github_copilot"));
+        assert!(!ModelRegistry::is_oauth_provider("openai"));
+        assert_eq!(ModelRegistry::provider_auth_type("chatgpt"), "oauth");
+        assert_eq!(ModelRegistry::provider_auth_type("openai"), "api_key");
+        assert_eq!(
+            ModelRegistry::provider_display_name("chatgpt"),
+            "ChatGPT Plus/Pro"
+        );
+        assert_eq!(
+            ModelRegistry::provider_display_name("github_copilot"),
+            "GitHub Copilot"
+        );
+        for id in crate::oauth::oauth_provider_ids() {
+            assert!(ModelRegistry::all_providers().contains(&id));
+            assert_eq!(ModelRegistry::provider_auth_type(id), "oauth");
+            assert_ne!(ModelRegistry::provider_display_name(id), "Unknown Provider");
+        }
     }
 
     #[test]

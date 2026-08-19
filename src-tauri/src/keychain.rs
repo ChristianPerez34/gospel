@@ -11,21 +11,16 @@ pub enum KeychainError {
     UnsupportedProvider(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Provider {0} does not support OAuth")]
+    NotOauthProvider(String),
 }
 
 const SERVICE_NAME: &str = "gospel";
 
 fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
-    let supported = [
-        "openai",
-        "anthropic",
-        "gemini",
-        "groq",
-        "mistral",
-        "chatgpt",
-        "github_copilot",
-    ];
-    if !supported.contains(&provider) {
+    if !crate::models::API_KEY_PROVIDERS.contains(&provider)
+        && crate::oauth::oauth_provider(provider).is_none()
+    {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
     }
     Ok(Entry::new(SERVICE_NAME, provider)?)
@@ -170,11 +165,24 @@ pub fn delete_github_copilot_auth_files() -> Result<(), KeychainError> {
 }
 
 pub fn provider_has_credentials(provider: &str) -> bool {
-    match provider {
-        "chatgpt" => has_chatgpt_oauth_session(),
-        "github_copilot" => has_github_copilot_oauth_session(),
-        _ => has_key(provider),
-    }
+    crate::oauth::oauth_provider(provider)
+        .map(|entry| (entry.has_session)())
+        .unwrap_or_else(|| has_key(provider))
+}
+
+pub fn logout_oauth_provider(provider: &str) -> Result<(), KeychainError> {
+    logout_oauth_provider_with(provider, delete)
+}
+
+fn logout_oauth_provider_with(
+    provider: &str,
+    delete_keyring: fn(&str) -> Result<(), KeychainError>,
+) -> Result<(), KeychainError> {
+    let entry = crate::oauth::oauth_provider(provider)
+        .ok_or_else(|| KeychainError::NotOauthProvider(provider.to_string()))?;
+    (entry.delete_session)()?;
+    let _ = delete_keyring(provider);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -194,5 +202,75 @@ mod tests {
         assert_eq!(entry.get_password().unwrap(), test_key);
         entry.delete_credential().unwrap();
         assert!(entry.get_password().is_err());
+    }
+
+    #[test]
+    fn oauth_provider_credential_gate_uses_local_sessions() {
+        let _guard = config_env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let previous = isolate_config_home(dir.path());
+
+        let result = std::panic::catch_unwind(|| {
+            assert!(!provider_has_credentials("chatgpt"));
+            assert!(!provider_has_credentials("github_copilot"));
+
+            let chatgpt_dir = dir.path().join("chatgpt");
+            std::fs::create_dir_all(&chatgpt_dir).unwrap();
+            std::fs::write(
+                chatgpt_dir.join("auth.json"),
+                r#"{"access_token":"chatgpt-session-token"}"#,
+            )
+            .unwrap();
+            assert!(provider_has_credentials("chatgpt"));
+
+            let copilot_dir = dir.path().join("gospel").join("github_copilot");
+            std::fs::create_dir_all(&copilot_dir).unwrap();
+            std::fs::write(copilot_dir.join("access-token"), "github-copilot-token").unwrap();
+            assert!(provider_has_credentials("github_copilot"));
+
+            logout_oauth_provider_with("chatgpt", noop_delete_keyring).unwrap();
+            assert!(!provider_has_credentials("chatgpt"));
+            logout_oauth_provider_with("github_copilot", noop_delete_keyring).unwrap();
+            assert!(!provider_has_credentials("github_copilot"));
+
+            let error = logout_oauth_provider_with("openai", noop_delete_keyring).unwrap_err();
+            assert!(error.to_string().contains("openai"));
+            assert!(error.to_string().contains("does not support OAuth"));
+        });
+
+        restore_config_home(previous);
+        result.unwrap();
+    }
+
+    fn isolate_config_home(dir: &std::path::Path) -> Option<std::ffi::OsString> {
+        let key = config_home_env_key();
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, dir);
+        previous
+    }
+
+    fn restore_config_home(previous: Option<std::ffi::OsString>) {
+        let key = config_home_env_key();
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    fn config_home_env_key() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "APPDATA"
+        } else {
+            "XDG_CONFIG_HOME"
+        }
+    }
+
+    fn noop_delete_keyring(_provider: &str) -> Result<(), KeychainError> {
+        Ok(())
+    }
+
+    fn config_env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        &LOCK
     }
 }

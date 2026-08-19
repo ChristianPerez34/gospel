@@ -14,6 +14,7 @@ pub mod keychain;
 mod llm;
 pub mod mcp;
 mod models;
+mod oauth;
 mod provider_client;
 mod review;
 pub mod session_mode;
@@ -62,8 +63,8 @@ use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
 use llm::{LlmError, LlmService};
 use models::{ModelInfo, ModelRegistry};
+use oauth::OauthChallenge;
 use once_cell::sync::Lazy;
-use rig::providers::{chatgpt, copilot};
 use serde::Serialize;
 use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
@@ -79,7 +80,6 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_opener::OpenerExt;
 use trace::TraceState;
 use workspace_tools::{
     ExternalPathApproval, ExternalPathApprovalFuture, ExternalPathApprovalRequest, PathKind,
@@ -350,18 +350,6 @@ pub(crate) fn validate_active_workspace_path(path: &Path) -> Result<(), String> 
     }
 
     Ok(())
-}
-
-#[derive(Serialize, Clone)]
-struct OauthChallenge {
-    verification_url: String,
-    user_code: String,
-}
-
-#[derive(Serialize, Clone)]
-struct OauthCompletion {
-    provider: String,
-    success: bool,
 }
 
 #[tauri::command]
@@ -1593,212 +1581,25 @@ fn clear_conversation_history_with_access(
     Ok(())
 }
 
-fn emit_oauth_complete(
-    app: &tauri::AppHandle,
-    provider: &'static str,
-    provider_event: &'static str,
-    success: bool,
-) {
-    let _ = app.emit(provider_event, success);
-    let _ = app.emit(
-        "provider-auth-complete",
-        OauthCompletion {
-            provider: provider.to_string(),
-            success,
-        },
-    );
-}
-
-async fn start_chatgpt_oauth_flow(
-    app: tauri::AppHandle,
-    provider_event: &'static str,
-) -> Result<OauthChallenge, String> {
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::Notify;
-
-    let challenge = Arc::new(Mutex::new(None));
-    let challenge_clone = challenge.clone();
-    let notify = Arc::new(Notify::new());
-    let notify_clone = notify.clone();
-
-    let client = chatgpt::Client::builder()
-        .oauth()
-        .on_device_code(move |prompt| {
-            let mut guard = challenge_clone.lock().unwrap();
-            *guard = Some(OauthChallenge {
-                verification_url: prompt.verification_uri.clone(),
-                user_code: prompt.user_code.clone(),
-            });
-            notify_clone.notify_one();
-        })
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // Start authorization in background — this blocks polling for the token
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut retries = 0;
-        let max_retries = 3;
-        let mut success = false;
-
-        while retries < max_retries && !success {
-            match client.authorize().await {
-                Ok(()) => {
-                    success = true;
-                    emit_oauth_complete(&app_clone, "chatgpt", provider_event, true);
-                }
-                Err(e) => {
-                    retries += 1;
-                    if retries >= max_retries {
-                        eprintln!("ChatGPT OAuth failed after {} attempts: {}", retries, e);
-                        emit_oauth_complete(&app_clone, "chatgpt", provider_event, false);
-                    } else {
-                        eprintln!(
-                            "ChatGPT OAuth attempt {} failed: {}, retrying...",
-                            retries, e
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            }
-        }
-    });
-
-    // Wait for the on_device_code callback to fire (with 30s timeout)
-    match tokio::time::timeout(std::time::Duration::from_secs(30), notify.notified()).await {
-        Ok(()) => {}
-        Err(_) => return Err("OAuth flow timed out before receiving device code".to_string()),
-    }
-
-    let maybe_challenge = { challenge.lock().unwrap().take() };
-
-    if let Some(challenge) = maybe_challenge {
-        // Open browser for user to authenticate
-        if let Err(e) = app
-            .opener()
-            .open_url(&challenge.verification_url, None::<String>)
-        {
-            eprintln!("Failed to open browser: {}", e);
-        }
-        Ok(challenge)
-    } else {
-        Err("Failed to initiate OAuth flow".to_string())
-    }
-}
-
-#[tauri::command]
-async fn start_chatgpt_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, String> {
-    start_chatgpt_oauth_flow(app, "chatgpt-auth-complete").await
-}
-
-async fn start_github_copilot_oauth_flow(
-    app: tauri::AppHandle,
-    provider_event: &'static str,
-) -> Result<OauthChallenge, String> {
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::Notify;
-
-    let challenge = Arc::new(Mutex::new(None));
-    let challenge_clone = challenge.clone();
-    let notify = Arc::new(Notify::new());
-    let notify_clone = notify.clone();
-
-    let client = copilot::Client::builder()
-        .oauth()
-        .token_dir(keychain::github_copilot_token_dir())
-        .on_device_code(move |prompt| {
-            let mut guard = challenge_clone.lock().unwrap();
-            *guard = Some(OauthChallenge {
-                verification_url: prompt.verification_uri.clone(),
-                user_code: prompt.user_code.clone(),
-            });
-            notify_clone.notify_one();
-        })
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut retries = 0;
-        let max_retries = 3;
-        let mut success = false;
-
-        while retries < max_retries && !success {
-            match client.authorize().await {
-                Ok(()) => {
-                    success = true;
-                    emit_oauth_complete(&app_clone, "github_copilot", provider_event, true);
-                }
-                Err(e) => {
-                    retries += 1;
-                    if retries >= max_retries {
-                        eprintln!(
-                            "GitHub Copilot OAuth failed after {} attempts: {}",
-                            retries, e
-                        );
-                        emit_oauth_complete(&app_clone, "github_copilot", provider_event, false);
-                    } else {
-                        eprintln!(
-                            "GitHub Copilot OAuth attempt {} failed: {}, retrying...",
-                            retries, e
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            }
-        }
-    });
-
-    match tokio::time::timeout(std::time::Duration::from_secs(30), notify.notified()).await {
-        Ok(()) => {}
-        Err(_) => return Err("OAuth flow timed out before receiving device code".to_string()),
-    }
-
-    let maybe_challenge = { challenge.lock().unwrap().take() };
-
-    if let Some(challenge) = maybe_challenge {
-        if let Err(e) = app
-            .opener()
-            .open_url(&challenge.verification_url, None::<String>)
-        {
-            eprintln!("Failed to open browser: {}", e);
-        }
-        Ok(challenge)
-    } else {
-        Err("Failed to initiate OAuth flow".to_string())
-    }
-}
-
-#[tauri::command]
-async fn start_github_copilot_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, String> {
-    start_github_copilot_oauth_flow(app, "github-copilot-auth-complete").await
-}
-
 #[tauri::command]
 async fn start_provider_oauth(
     app: tauri::AppHandle,
     provider: String,
 ) -> Result<OauthChallenge, String> {
-    match provider.as_str() {
-        "chatgpt" => start_chatgpt_oauth_flow(app, "chatgpt-auth-complete").await,
-        "github_copilot" => {
-            start_github_copilot_oauth_flow(app, "github-copilot-auth-complete").await
-        }
-        other => Err(format!("Provider {} does not support OAuth", other)),
-    }
+    oauth::start_provider_oauth(app, &provider).await
 }
 
 #[tauri::command]
 fn is_chatgpt_authenticated() -> ApiKeyStatus {
     ApiKeyStatus {
-        configured: keychain::has_chatgpt_oauth_session(),
+        configured: keychain::provider_has_credentials("chatgpt"),
     }
 }
 
 #[tauri::command]
 fn is_github_copilot_authenticated() -> ApiKeyStatus {
     ApiKeyStatus {
-        configured: keychain::has_github_copilot_oauth_session(),
+        configured: keychain::provider_has_credentials("github_copilot"),
     }
 }
 
@@ -1810,26 +1611,26 @@ fn is_provider_authenticated(provider: String) -> ApiKeyStatus {
 }
 
 #[tauri::command]
+fn list_oauth_providers() -> Vec<String> {
+    oauth::oauth_provider_ids()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+#[tauri::command]
 fn logout_chatgpt() -> Result<(), String> {
-    keychain::delete_chatgpt_auth_file().map_err(|e| e.to_string())?;
-    let _ = keychain::delete("chatgpt");
-    Ok(())
+    keychain::logout_oauth_provider("chatgpt").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn logout_github_copilot() -> Result<(), String> {
-    keychain::delete_github_copilot_auth_files().map_err(|e| e.to_string())?;
-    let _ = keychain::delete("github_copilot");
-    Ok(())
+    keychain::logout_oauth_provider("github_copilot").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn logout_provider_oauth(provider: String) -> Result<(), String> {
-    match provider.as_str() {
-        "chatgpt" => logout_chatgpt(),
-        "github_copilot" => logout_github_copilot(),
-        other => Err(format!("Provider {} does not support OAuth", other)),
-    }
+    keychain::logout_oauth_provider(&provider).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3184,12 +2985,11 @@ pub fn run() {
             test_connection,
             gospel_review,
             gospel_multi_review,
-            start_chatgpt_oauth,
-            start_github_copilot_oauth,
             start_provider_oauth,
             is_chatgpt_authenticated,
             is_github_copilot_authenticated,
             is_provider_authenticated,
+            list_oauth_providers,
             logout_chatgpt,
             logout_github_copilot,
             logout_provider_oauth,

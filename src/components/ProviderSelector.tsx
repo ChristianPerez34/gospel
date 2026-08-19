@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { oauthCopy, oauthProviderIds } from "./oauthProviders";
 
-export type ProviderId =
-  | "openai"
-  | "chatgpt"
-  | "github_copilot"
-  | "anthropic"
-  | "gemini"
-  | "groq"
-  | "mistral";
+export type ProviderId = string;
 
 export interface ProviderConfig {
   id: ProviderId;
@@ -45,25 +39,6 @@ interface OAuthCompletion {
   success: boolean;
 }
 
-const OAUTH_PROVIDER_IDS: ProviderId[] = ["chatgpt", "github_copilot"];
-
-function oauthCopy(provider: ProviderConfig) {
-  switch (provider.id) {
-    case "github_copilot":
-      return {
-        prompt: "Sign in with the GitHub account that has Copilot access",
-        button: "Sign in with GitHub",
-        connecting: "Connecting to GitHub...",
-      };
-    default:
-      return {
-        prompt: "Sign in with your ChatGPT Plus/Pro account",
-        button: "Sign in with OpenAI",
-        connecting: "Connecting...",
-      };
-  }
-}
-
 function providerAvailabilitySummary(provider: ProviderConfig) {
   if (!provider.credentialed) return "Not credentialed";
   if (!provider.visible) return "Hidden";
@@ -96,8 +71,9 @@ export function ProviderSelector({
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
+        const oauthIds = oauthProviderIds(providersRef.current);
         const statuses = await Promise.all(
-          OAUTH_PROVIDER_IDS.map(async (provider) => ({
+          oauthIds.map(async (provider) => ({
             provider,
             status: await invoke<{ configured: boolean }>("is_provider_authenticated", {
               provider,
