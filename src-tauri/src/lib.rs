@@ -1582,16 +1582,6 @@ fn clear_conversation_history_with_access(
 }
 
 #[tauri::command]
-async fn start_chatgpt_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, String> {
-    oauth::start_provider_oauth(app, "chatgpt").await
-}
-
-#[tauri::command]
-async fn start_github_copilot_oauth(app: tauri::AppHandle) -> Result<OauthChallenge, String> {
-    oauth::start_provider_oauth(app, "github_copilot").await
-}
-
-#[tauri::command]
 async fn start_provider_oauth(
     app: tauri::AppHandle,
     provider: String,
@@ -2995,8 +2985,6 @@ pub fn run() {
             test_connection,
             gospel_review,
             gospel_multi_review,
-            start_chatgpt_oauth,
-            start_github_copilot_oauth,
             start_provider_oauth,
             is_chatgpt_authenticated,
             is_github_copilot_authenticated,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { oauthProviderIds } from "./oauthProviders";
+import { oauthCopy, oauthProviderIds } from "./oauthProviders";
 
 export type ProviderId = string;
 
@@ -37,23 +37,6 @@ interface OAuthChallenge {
 interface OAuthCompletion {
   provider: ProviderId;
   success: boolean;
-}
-
-function oauthCopy(provider: ProviderConfig) {
-  switch (provider.id) {
-    case "github_copilot":
-      return {
-        prompt: "Sign in with the GitHub account that has Copilot access",
-        button: "Sign in with GitHub",
-        connecting: "Connecting to GitHub...",
-      };
-    default:
-      return {
-        prompt: "Sign in with your ChatGPT Plus/Pro account",
-        button: "Sign in with OpenAI",
-        connecting: "Connecting...",
-      };
-  }
 }
 
 function providerAvailabilitySummary(provider: ProviderConfig) {

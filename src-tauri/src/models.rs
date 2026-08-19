@@ -365,7 +365,7 @@ pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
 type PendingMap = Arc<RwLock<HashMap<String, Arc<Notify>>>>;
 pub static PENDING_REQUESTS: Lazy<PendingMap> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
-const API_KEY_PROVIDERS: &[&str] = &["openai", "anthropic", "gemini", "groq", "mistral"];
+pub(crate) const API_KEY_PROVIDERS: &[&str] = &["openai", "anthropic", "gemini", "groq", "mistral"];
 
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 
@@ -580,10 +580,17 @@ impl ModelRegistry {
 
     pub fn all_providers() -> &'static [&'static str] {
         static PROVIDERS: Lazy<Vec<&'static str>> = Lazy::new(|| {
-            let (leading, trailing) = API_KEY_PROVIDERS.split_first().unwrap();
-            let mut providers = vec![*leading];
-            providers.extend(crate::oauth::oauth_provider_ids());
-            providers.extend(trailing.iter().copied());
+            let oauth_ids = crate::oauth::oauth_provider_ids();
+            let Some((oauth_insertion_anchor, remaining_api_key_providers)) =
+                API_KEY_PROVIDERS.split_first()
+            else {
+                return oauth_ids;
+            };
+            let mut providers =
+                Vec::with_capacity(1 + oauth_ids.len() + remaining_api_key_providers.len());
+            providers.push(*oauth_insertion_anchor);
+            providers.extend(oauth_ids);
+            providers.extend(remaining_api_key_providers.iter().copied());
             providers
         });
         PROVIDERS.as_slice()

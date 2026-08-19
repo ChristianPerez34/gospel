@@ -18,8 +18,9 @@ pub enum KeychainError {
 const SERVICE_NAME: &str = "gospel";
 
 fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
-    let api_key_providers = ["openai", "anthropic", "gemini", "groq", "mistral"];
-    if !api_key_providers.contains(&provider) && crate::oauth::oauth_provider(provider).is_none() {
+    if !crate::models::API_KEY_PROVIDERS.contains(&provider)
+        && crate::oauth::oauth_provider(provider).is_none()
+    {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
     }
     Ok(Entry::new(SERVICE_NAME, provider)?)
