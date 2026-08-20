@@ -17,6 +17,11 @@ export const oauthProviders: Record<string, OauthCopy> = {
     button: "Sign in with GitHub",
     connecting: "Connecting to GitHub...",
   },
+  grok: {
+    prompt: "Sign in with your SuperGrok or X Premium+ account",
+    button: "Sign in with Grok",
+    connecting: "Connecting to Grok...",
+  },
 };
 
 const NEUTRAL_OAUTH_COPY: OauthCopy = {

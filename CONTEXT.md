@@ -3,8 +3,8 @@
 ## Glossary
 
 - **Credentialed Provider**: A supported model provider for which Gospel can access a usable credential source. API-key providers are credentialed when a key exists in the OS keychain. OAuth providers are credentialed when a reusable provider-specific OAuth session exists in local auth storage.
-- **OAuth Provider Credential**: A durable, locally stored OAuth session that lets Gospel derive provider access without a user-entered API key. ChatGPT Plus/Pro uses OpenAI/ChatGPT OAuth-managed auth data; GitHub Copilot uses GitHub/Copilot OAuth token files under Gospel config.
-- **OAuth Authority**: The external account system that issues an OAuth Provider Credential. OpenAI/ChatGPT is the authority for the ChatGPT provider; GitHub.com is the authority for the GitHub Copilot provider.
+- **OAuth Provider Credential**: A durable, locally stored OAuth session that lets Gospel derive provider access without a user-entered API key. ChatGPT Plus/Pro uses OpenAI/ChatGPT OAuth-managed auth data; GitHub Copilot uses GitHub/Copilot OAuth token files under Gospel config; Grok uses a Gospel-owned auth file under Gospel config, including refresh-token rotation on refresh.
+- **OAuth Authority**: The external account system that issues an OAuth Provider Credential. OpenAI/ChatGPT is the authority for the ChatGPT provider; GitHub.com is the authority for the GitHub Copilot provider; xAI (`auth.x.ai`) is the authority for the Grok provider.
 - **Provider Visibility**: A non-secret user preference that determines whether a credentialed provider should contribute models to the model picker. Missing visibility data defaults to visible.
 - **Available Model**: A backend-returned provider/model entry that is selectable because its provider is credentialed, visible, and model loading returned a live or cached model list.
 - **Model Variant**: A named backend-owned run configuration for a specific provider/model slug. A Model Variant shares the parent model's availability and counting identity, but resolves to provider-specific request parameters when selected.

@@ -98,34 +98,16 @@ fn github_copilot_api_key_path() -> PathBuf {
     github_copilot_token_dir().join("api-key.json")
 }
 
+pub(crate) fn grok_auth_file_path() -> PathBuf {
+    gospel_config_dir().join("grok").join("auth.json")
+}
+
 pub fn has_chatgpt_oauth_session() -> bool {
-    let path = chatgpt_auth_file_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let record: AuthRecord = match serde_json::from_str(&content) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    record
-        .access_token
-        .as_deref()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false)
-        || record
-            .refresh_token
-            .as_deref()
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false)
+    auth_record_has_token(chatgpt_auth_file_path())
 }
 
 pub fn delete_chatgpt_auth_file() -> Result<(), KeychainError> {
-    let path = chatgpt_auth_file_path();
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
+    delete_if_exists(chatgpt_auth_file_path())
 }
 
 pub fn has_github_copilot_oauth_session() -> bool {
@@ -157,9 +139,43 @@ pub fn delete_github_copilot_auth_files() -> Result<(), KeychainError> {
         github_copilot_access_token_path(),
         github_copilot_api_key_path(),
     ] {
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
+        delete_if_exists(path)?;
+    }
+    Ok(())
+}
+
+fn auth_record_has_token(path: PathBuf) -> bool {
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let record: AuthRecord = match serde_json::from_str(&content) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    record
+        .access_token
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        || record
+            .refresh_token
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+}
+
+pub fn has_grok_oauth_session() -> bool {
+    auth_record_has_token(grok_auth_file_path())
+}
+
+pub fn delete_grok_auth_file() -> Result<(), KeychainError> {
+    delete_if_exists(grok_auth_file_path())
+}
+
+fn delete_if_exists(path: PathBuf) -> Result<(), KeychainError> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
     }
     Ok(())
 }
@@ -213,6 +229,7 @@ mod tests {
         let result = std::panic::catch_unwind(|| {
             assert!(!provider_has_credentials("chatgpt"));
             assert!(!provider_has_credentials("github_copilot"));
+            assert!(!provider_has_credentials("grok"));
 
             let chatgpt_dir = dir.path().join("chatgpt");
             std::fs::create_dir_all(&chatgpt_dir).unwrap();
@@ -228,10 +245,21 @@ mod tests {
             std::fs::write(copilot_dir.join("access-token"), "github-copilot-token").unwrap();
             assert!(provider_has_credentials("github_copilot"));
 
+            let grok_dir = dir.path().join("gospel").join("grok");
+            std::fs::create_dir_all(&grok_dir).unwrap();
+            std::fs::write(
+                grok_dir.join("auth.json"),
+                r#"{"access_token":"grok-access-token","refresh_token":"grok-refresh-token"}"#,
+            )
+            .unwrap();
+            assert!(provider_has_credentials("grok"));
+
             logout_oauth_provider_with("chatgpt", noop_delete_keyring).unwrap();
             assert!(!provider_has_credentials("chatgpt"));
             logout_oauth_provider_with("github_copilot", noop_delete_keyring).unwrap();
             assert!(!provider_has_credentials("github_copilot"));
+            logout_oauth_provider_with("grok", noop_delete_keyring).unwrap();
+            assert!(!provider_has_credentials("grok"));
 
             let error = logout_oauth_provider_with("openai", noop_delete_keyring).unwrap_err();
             assert!(error.to_string().contains("openai"));

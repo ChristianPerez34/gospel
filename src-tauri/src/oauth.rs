@@ -46,6 +46,14 @@ pub const OAUTH_PROVIDERS: &[OauthProviderRegistration] = &[
         has_session: crate::keychain::has_github_copilot_oauth_session,
         delete_session: crate::keychain::delete_github_copilot_auth_files,
     },
+    OauthProviderRegistration {
+        id: "grok",
+        display_name: "Grok",
+        auth_complete_event: "grok-auth-complete",
+        start: start_grok,
+        has_session: crate::keychain::has_grok_oauth_session,
+        delete_session: crate::keychain::delete_grok_auth_file,
+    },
 ];
 
 pub fn oauth_provider(id: &str) -> Option<&'static OauthProviderRegistration> {
@@ -82,6 +90,28 @@ fn start_chatgpt(
             Ok(move || {
                 let client = Arc::clone(&client);
                 async move { client.authorize().await.map_err(|e| e.to_string()) }
+            })
+        })
+        .await
+    })
+}
+
+fn start_grok(
+    app: tauri::AppHandle,
+) -> Pin<Box<dyn Future<Output = Result<OauthChallenge, String>> + Send>> {
+    Box::pin(async move {
+        start_registered_oauth_flow(app, "grok", "Grok", |on_device_code| {
+            Ok(move || {
+                let on_device_code = Arc::clone(&on_device_code);
+                async move {
+                    crate::grok_oauth::login(
+                        &crate::grok_oauth::ReqwestPoster,
+                        &crate::grok_oauth::Endpoints::default(),
+                        &crate::keychain::grok_auth_file_path(),
+                        |url, code| on_device_code(url, code),
+                    )
+                    .await
+                }
             })
         })
         .await

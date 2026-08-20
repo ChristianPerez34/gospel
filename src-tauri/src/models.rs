@@ -1060,10 +1060,17 @@ mod tests {
     }
 
     #[test]
+    fn test_grok_is_registered_as_oauth_provider() {
+        assert!(ModelRegistry::all_providers().contains(&"grok"));
+        assert_eq!(ModelRegistry::provider_display_name("grok"), "Grok");
+        assert!(ModelRegistry::models_for_provider("grok").is_empty());
+    }
+
+    #[test]
     fn oauth_provider_ids_are_the_registered_credentialed_oauth_providers() {
         assert_eq!(
             crate::oauth::oauth_provider_ids(),
-            ["chatgpt", "github_copilot"]
+            ["chatgpt", "github_copilot", "grok"]
         );
         assert_eq!(
             ModelRegistry::all_providers(),
@@ -1071,6 +1078,7 @@ mod tests {
                 "openai",
                 "chatgpt",
                 "github_copilot",
+                "grok",
                 "anthropic",
                 "gemini",
                 "groq",
@@ -1079,8 +1087,10 @@ mod tests {
         );
         assert!(ModelRegistry::is_oauth_provider("chatgpt"));
         assert!(ModelRegistry::is_oauth_provider("github_copilot"));
+        assert!(ModelRegistry::is_oauth_provider("grok"));
         assert!(!ModelRegistry::is_oauth_provider("openai"));
         assert_eq!(ModelRegistry::provider_auth_type("chatgpt"), "oauth");
+        assert_eq!(ModelRegistry::provider_auth_type("grok"), "oauth");
         assert_eq!(ModelRegistry::provider_auth_type("openai"), "api_key");
         assert_eq!(
             ModelRegistry::provider_display_name("chatgpt"),
@@ -1090,6 +1100,7 @@ mod tests {
             ModelRegistry::provider_display_name("github_copilot"),
             "GitHub Copilot"
         );
+        assert_eq!(ModelRegistry::provider_display_name("grok"), "Grok");
         for id in crate::oauth::oauth_provider_ids() {
             assert!(ModelRegistry::all_providers().contains(&id));
             assert_eq!(ModelRegistry::provider_auth_type(id), "oauth");

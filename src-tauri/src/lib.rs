@@ -7,6 +7,7 @@ pub mod approval_broker;
 pub mod context_search;
 mod conversation;
 pub mod corpus;
+mod grok_oauth;
 mod harness_plan;
 mod harness_profile;
 mod json_utils;

@@ -1145,6 +1145,13 @@ mod tests {
     }
 
     #[test]
+    fn validate_api_key_allows_blank_key_for_grok() {
+        let result = validate_api_key("grok", "   ");
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn validate_api_key_rejects_blank_key_for_non_oauth_provider() {
         let result = validate_api_key("openai", "");
 
