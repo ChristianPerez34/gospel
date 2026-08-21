@@ -173,8 +173,8 @@ async fn refresh_tokens(
     if status != 200 {
         return Err(format!("Grok token refresh failed (HTTP {status})"));
     }
-    parse_token_pair(&value)
-        .ok_or_else(|| "Grok refresh response missing access_token or refresh_token".to_string())
+    parse_refreshed_tokens(&value, refresh_token)
+        .ok_or_else(|| "Grok refresh response missing access_token".to_string())
 }
 
 fn parse_device_code(value: &Value) -> Option<DeviceCode> {
@@ -197,6 +197,16 @@ fn parse_device_code(value: &Value) -> Option<DeviceCode> {
 fn parse_token_pair(value: &Value) -> Option<TokenPair> {
     let access_token = nonempty_str(value.get("access_token"))?;
     let refresh_token = nonempty_str(value.get("refresh_token"))?;
+    Some(TokenPair {
+        access_token,
+        refresh_token,
+    })
+}
+
+fn parse_refreshed_tokens(value: &Value, previous_refresh_token: &str) -> Option<TokenPair> {
+    let access_token = nonempty_str(value.get("access_token"))?;
+    let refresh_token = nonempty_str(value.get("refresh_token"))
+        .unwrap_or_else(|| previous_refresh_token.to_string());
     Some(TokenPair {
         access_token,
         refresh_token,
@@ -488,7 +498,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_without_rotated_token_leaves_stored_credential_unchanged() {
+    async fn refresh_without_rotated_token_keeps_existing_refresh_token() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth.json");
         write_tokens(
@@ -505,13 +515,17 @@ mod tests {
             json!({ "access_token": "new-access" }),
         )]);
 
-        let error = refresh(&poster, &test_endpoints(), &path)
-            .await
-            .unwrap_err();
+        let tokens = refresh(&poster, &test_endpoints(), &path).await.unwrap();
 
-        assert!(error.contains("refresh_token"));
+        assert_eq!(
+            tokens,
+            TokenPair {
+                access_token: "new-access".to_string(),
+                refresh_token: "old-refresh".to_string(),
+            }
+        );
         let stored: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(stored["access_token"], "old-access");
+        assert_eq!(stored["access_token"], "new-access");
         assert_eq!(stored["refresh_token"], "old-refresh");
     }
 
