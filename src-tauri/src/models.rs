@@ -35,6 +35,10 @@ mod model_lists {
         O1_2024_12_17, O1_MINI, O1_MINI_2024_09_12, O1_PREVIEW, O1_PREVIEW_2024_09_12, O1_PRO, O3,
         O3_MINI, O3_MINI_2025_01_31, O4_MINI, O4_MINI_2025_04_16,
     };
+    pub use rig::providers::xai::{
+        GROK_2_1212, GROK_2_VISION_1212, GROK_3, GROK_3_FAST, GROK_3_MINI, GROK_3_MINI_FAST, GROK_4,
+    };
+
 
     pub const OPENAI_MODELS: &[&str] = &[
         GPT_5_5,
@@ -161,6 +165,16 @@ mod model_lists {
         "claude-sonnet-4.6",
         "claude-opus-4.6",
         "claude-opus-4.7",
+    ];
+
+    pub const GROK_MODELS: &[&str] = &[
+        GROK_4,
+        GROK_3,
+        GROK_3_FAST,
+        GROK_3_MINI,
+        GROK_3_MINI_FAST,
+        GROK_2_1212,
+        GROK_2_VISION_1212,
     ];
 }
 
@@ -292,12 +306,22 @@ mod model_lists {
         "claude-opus-4.6",
         "claude-opus-4.7",
     ];
+
+    pub const GROK_MODELS: &[&str] = &[
+        "grok-4-0709",
+        "grok-3",
+        "grok-3-fast",
+        "grok-3-mini",
+        "grok-3-mini-fast",
+        "grok-2-1212",
+        "grok-2-vision-1212",
+    ];
 }
 
 use model_lists::{
     ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS,
-    GITHUB_COPILOT_MODELS, GITHUB_COPILOT_TOOL_CAPABLE_MODELS, GROQ_MODELS, MISTRAL_MODELS,
-    OPENAI_MODELS,
+    GITHUB_COPILOT_MODELS, GITHUB_COPILOT_TOOL_CAPABLE_MODELS, GROK_MODELS, GROQ_MODELS,
+    MISTRAL_MODELS, OPENAI_MODELS,
 };
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -536,6 +560,7 @@ impl ModelRegistry {
             "openai" => OPENAI_MODELS,
             "chatgpt" => CHATGPT_MODELS,
             "github_copilot" => GITHUB_COPILOT_MODELS,
+            "grok" => GROK_MODELS,
             "anthropic" => ANTHROPIC_MODELS,
             "gemini" => GEMINI_MODELS,
             "groq" => GROQ_MODELS,
@@ -1060,10 +1085,20 @@ mod tests {
     }
 
     #[test]
+    fn test_grok_is_registered_as_oauth_provider() {
+        assert!(ModelRegistry::all_providers().contains(&"grok"));
+        assert_eq!(ModelRegistry::provider_display_name("grok"), "Grok");
+        assert!(!ModelRegistry::models_for_provider("grok").is_empty());
+        assert!(ModelRegistry::models_for_provider("grok")
+            .iter()
+            .all(|model| model.starts_with("grok-")));
+    }
+
+    #[test]
     fn oauth_provider_ids_are_the_registered_credentialed_oauth_providers() {
         assert_eq!(
             crate::oauth::oauth_provider_ids(),
-            ["chatgpt", "github_copilot"]
+            ["chatgpt", "github_copilot", "grok"]
         );
         assert_eq!(
             ModelRegistry::all_providers(),
@@ -1071,6 +1106,7 @@ mod tests {
                 "openai",
                 "chatgpt",
                 "github_copilot",
+                "grok",
                 "anthropic",
                 "gemini",
                 "groq",
@@ -1079,8 +1115,10 @@ mod tests {
         );
         assert!(ModelRegistry::is_oauth_provider("chatgpt"));
         assert!(ModelRegistry::is_oauth_provider("github_copilot"));
+        assert!(ModelRegistry::is_oauth_provider("grok"));
         assert!(!ModelRegistry::is_oauth_provider("openai"));
         assert_eq!(ModelRegistry::provider_auth_type("chatgpt"), "oauth");
+        assert_eq!(ModelRegistry::provider_auth_type("grok"), "oauth");
         assert_eq!(ModelRegistry::provider_auth_type("openai"), "api_key");
         assert_eq!(
             ModelRegistry::provider_display_name("chatgpt"),
@@ -1090,6 +1128,7 @@ mod tests {
             ModelRegistry::provider_display_name("github_copilot"),
             "GitHub Copilot"
         );
+        assert_eq!(ModelRegistry::provider_display_name("grok"), "Grok");
         for id in crate::oauth::oauth_provider_ids() {
             assert!(ModelRegistry::all_providers().contains(&id));
             assert_eq!(ModelRegistry::provider_auth_type(id), "oauth");

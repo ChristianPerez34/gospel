@@ -24,6 +24,8 @@ fn test_keychain_api_surface() {
     // OAuth providers are supported provider IDs even when they do not use API keys.
     assert!(keychain::store("github_copilot", "unused-test-value").is_ok());
     let _ = keychain::delete("github_copilot");
+    assert!(keychain::store("grok", "unused-test-value").is_ok());
+    let _ = keychain::delete("grok");
 
     // Unsupported provider should error
     assert!(keychain::store("invalid_provider", "key").is_err());

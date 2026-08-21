@@ -64,6 +64,14 @@ describe("oauthCopy", () => {
     });
   });
 
+  it("uses Grok metadata for grok", () => {
+    expect(oauthCopy(provider("grok", "oauth"))).toEqual({
+      prompt: "Sign in with your SuperGrok or X Premium+ account",
+      button: "Sign in with Grok",
+      connecting: "Connecting to Grok...",
+    });
+  });
+
   it("uses provider-neutral copy for unrecognized OAuth ids", () => {
     expect(oauthCopy(provider("new_oauth", "oauth"))).toEqual({
       prompt: "Sign in to continue",

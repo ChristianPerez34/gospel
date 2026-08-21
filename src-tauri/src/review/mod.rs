@@ -2996,6 +2996,10 @@ Binary files a/icon.png and b/icon.png differ
             ensure_provider_session_with("github_copilot", always_unauthenticated).unwrap_err();
         assert!(error.contains("github_copilot"));
         assert!(error.contains("not authenticated"));
+
+        let error = ensure_provider_session_with("grok", always_unauthenticated).unwrap_err();
+        assert!(error.contains("grok"));
+        assert!(error.contains("not authenticated"));
     }
 
     #[test]
@@ -3006,6 +3010,7 @@ Binary files a/icon.png and b/icon.png differ
 
         assert!(ensure_provider_session_with("chatgpt", always_authenticated).is_ok());
         assert!(ensure_provider_session_with("github_copilot", always_authenticated).is_ok());
+        assert!(ensure_provider_session_with("grok", always_authenticated).is_ok());
     }
 
     #[test]
