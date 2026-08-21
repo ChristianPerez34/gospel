@@ -244,7 +244,7 @@ pub fn access_token(path: &Path) -> Result<String, String> {
 
 /// Refreshes the Grok OAuth session (when present) so subsequent API calls use a fresh access token.
 ///
-/// Used by `model_fetch` (excluded from libtest via a stub module).
+/// Used by `model_fetch` and the Grok provider-client OAuth path.
 #[cfg_attr(test, allow(dead_code))]
 pub async fn ensure_fresh_access_token(auth_path: &Path) -> Result<String, String> {
     if !auth_path.exists() {

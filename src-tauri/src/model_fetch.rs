@@ -5,7 +5,7 @@ use rig::client::ModelListingClient;
 
 fn cache_scope_for_provider(provider: &str, api_key: Option<&str>) -> String {
     match provider {
-        "openai" | "anthropic" | "gemini" | "mistral" => api_key.unwrap_or("").to_string(),
+        "openai" | "anthropic" | "gemini" | "mistral" | "grok" => api_key.unwrap_or("").to_string(),
         _ => "shared".to_string(),
     }
 }
@@ -49,7 +49,7 @@ pub async fn fetch_models_for_provider(
             "openai" => fetch_openai_models_impl(api_key.unwrap_or("")).await,
             "chatgpt" => fetch_chatgpt_models_impl().await,
             "github_copilot" => fetch_github_copilot_models_impl().await,
-            "grok" => fetch_grok_models_impl().await,
+            "grok" => fetch_grok_models_impl(api_key).await,
             "anthropic" => fetch_anthropic_models_impl(api_key.unwrap_or("")).await,
             "gemini" => fetch_gemini_models_impl(api_key.unwrap_or("")).await,
             "mistral" => fetch_mistral_models_impl(api_key.unwrap_or("")).await,
@@ -252,17 +252,22 @@ fn should_include_grok_model(model_id: &str) -> bool {
     !exclude.iter().any(|p| id.contains(p))
 }
 
-async fn fetch_grok_models_impl() -> Result<Vec<ModelInfo>, String> {
-    if !crate::keychain::has_grok_oauth_session() {
-        return Err("Grok OAuth session not found".to_string());
-    }
+async fn fetch_grok_models_impl(api_key: Option<&str>) -> Result<Vec<ModelInfo>, String> {
+    let access_token = match api_key.map(str::trim).filter(|key| !key.is_empty()) {
+        Some(key) => key.to_string(),
+        None => {
+            if !crate::keychain::has_grok_oauth_session() {
+                return Err("Grok OAuth session not found".to_string());
+            }
 
-    let auth_path = crate::keychain::grok_auth_file_path();
-    let access_token = match crate::grok_oauth::ensure_fresh_access_token(&auth_path).await {
-        Ok(token) => token,
-        Err(e) => {
-            tracing::warn!("Grok token refresh failed ({e}); using stored access token");
-            crate::grok_oauth::access_token(&auth_path)?
+            let auth_path = crate::keychain::grok_auth_file_path();
+            match crate::grok_oauth::ensure_fresh_access_token(&auth_path).await {
+                Ok(token) => token,
+                Err(e) => {
+                    tracing::warn!("Grok token refresh failed ({e}); using stored access token");
+                    crate::grok_oauth::access_token(&auth_path)?
+                }
+            }
         }
     };
 
@@ -291,7 +296,10 @@ async fn fetch_grok_models_impl() -> Result<Vec<ModelInfo>, String> {
             return Ok(fallback_models);
         }
         Err(e) => {
-            tracing::warn!("Failed to fetch Grok models: {}; using hardcoded base only", e);
+            tracing::warn!(
+                "Failed to fetch Grok models: {}; using hardcoded base only",
+                e
+            );
             return Ok(fallback_models);
         }
     };
@@ -317,4 +325,3 @@ async fn fetch_grok_models_impl() -> Result<Vec<ModelInfo>, String> {
     tracing::info!("Resolved {} compatible models for Grok", models.len());
     Ok(models)
 }
-

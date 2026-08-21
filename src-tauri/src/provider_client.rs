@@ -35,8 +35,17 @@ macro_rules! provider_client {
             }
             "grok" => {
                 let access_token = if $api_key.trim().is_empty() {
-                    crate::grok_oauth::access_token(&crate::keychain::grok_auth_file_path())
-                        .map_err(|e| $client_err(e))?
+                    let auth_path = crate::keychain::grok_auth_file_path();
+                    match crate::grok_oauth::ensure_fresh_access_token(&auth_path).await {
+                        Ok(token) => token,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Grok token refresh failed ({e}); using stored access token"
+                            );
+                            crate::grok_oauth::access_token(&auth_path)
+                                .map_err(|e| $client_err(e))?
+                        }
+                    }
                 } else {
                     $api_key.to_string()
                 };
