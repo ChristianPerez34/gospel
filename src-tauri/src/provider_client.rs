@@ -33,6 +33,17 @@ macro_rules! provider_client {
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
             }
+            "grok" => {
+                let access_token = if $api_key.trim().is_empty() {
+                    crate::grok_oauth::access_token(&crate::keychain::grok_auth_file_path())
+                        .map_err(|e| $client_err(e))?
+                } else {
+                    $api_key.to_string()
+                };
+                let $client = rig::providers::xai::Client::new(&access_token)
+                    .map_err(|e| $client_err(e.to_string()))?;
+                $body
+            }
             "anthropic" => {
                 let $client = rig::providers::anthropic::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;

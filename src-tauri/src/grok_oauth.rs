@@ -90,7 +90,6 @@ pub async fn login(
     write_tokens(auth_path, &tokens)
 }
 
-#[allow(dead_code)]
 pub async fn refresh(
     poster: &dyn FormPoster,
     endpoints: &Endpoints,
@@ -154,7 +153,6 @@ async fn poll_for_tokens(
     Err("Grok device authorization timed out".to_string())
 }
 
-#[allow(dead_code)]
 async fn refresh_tokens(
     poster: &dyn FormPoster,
     token_url: &str,
@@ -230,7 +228,6 @@ fn positive_secs(value: Option<&Value>, default: u64) -> u64 {
     parsed.filter(|n| *n > 0).unwrap_or(default)
 }
 
-#[allow(dead_code)]
 fn read_tokens(path: &Path) -> Result<TokenPair, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|_| "Grok OAuth Provider Credential not found".to_string())?;
@@ -238,6 +235,23 @@ fn read_tokens(path: &Path) -> Result<TokenPair, String> {
         .map_err(|_| "Grok OAuth Provider Credential is invalid".to_string())?;
     parse_token_pair(&value)
         .ok_or_else(|| "Grok OAuth Provider Credential is missing tokens".to_string())
+}
+
+/// Returns the access token stored in the Gospel-owned Grok auth file.
+pub fn access_token(path: &Path) -> Result<String, String> {
+    Ok(read_tokens(path)?.access_token)
+}
+
+/// Refreshes the Grok OAuth session (when present) so subsequent API calls use a fresh access token.
+///
+/// Used by `model_fetch` (excluded from libtest via a stub module).
+#[cfg_attr(test, allow(dead_code))]
+pub async fn ensure_fresh_access_token(auth_path: &Path) -> Result<String, String> {
+    if !auth_path.exists() {
+        return Err("Grok OAuth Provider Credential not found".to_string());
+    }
+    let tokens = refresh(&ReqwestPoster, &Endpoints::default(), auth_path).await?;
+    Ok(tokens.access_token)
 }
 
 fn write_tokens(path: &Path, tokens: &TokenPair) -> Result<(), String> {

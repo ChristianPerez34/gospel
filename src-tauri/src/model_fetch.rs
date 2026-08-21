@@ -49,6 +49,7 @@ pub async fn fetch_models_for_provider(
             "openai" => fetch_openai_models_impl(api_key.unwrap_or("")).await,
             "chatgpt" => fetch_chatgpt_models_impl().await,
             "github_copilot" => fetch_github_copilot_models_impl().await,
+            "grok" => fetch_grok_models_impl().await,
             "anthropic" => fetch_anthropic_models_impl(api_key.unwrap_or("")).await,
             "gemini" => fetch_gemini_models_impl(api_key.unwrap_or("")).await,
             "mistral" => fetch_mistral_models_impl(api_key.unwrap_or("")).await,
@@ -241,3 +242,79 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
     tracing::info!("Resolved {} compatible models for ChatGPT", models.len());
     Ok(models)
 }
+
+fn should_include_grok_model(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    if !id.starts_with("grok-") {
+        return false;
+    }
+    let exclude = ["imagine", "image", "video", "tts", "whisper", "embedding"];
+    !exclude.iter().any(|p| id.contains(p))
+}
+
+async fn fetch_grok_models_impl() -> Result<Vec<ModelInfo>, String> {
+    if !crate::keychain::has_grok_oauth_session() {
+        return Err("Grok OAuth session not found".to_string());
+    }
+
+    let auth_path = crate::keychain::grok_auth_file_path();
+    let access_token = match crate::grok_oauth::ensure_fresh_access_token(&auth_path).await {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::warn!("Grok token refresh failed ({e}); using stored access token");
+            crate::grok_oauth::access_token(&auth_path)?
+        }
+    };
+
+    let fallback_models = ModelRegistry::hardcoded_models_for("grok");
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+
+    let resp = client
+        .get("https://api.x.ai/v1/models")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("User-Agent", concat!("gospel/", env!("CARGO_PKG_VERSION")))
+        .send()
+        .await;
+
+    let body: serde_json::Value = match resp {
+        Ok(r) if r.status().is_success() => r.json().await.unwrap_or(serde_json::Value::Null),
+        Ok(r) => {
+            tracing::warn!(
+                "Grok API returned status {}; using hardcoded base only",
+                r.status()
+            );
+            return Ok(fallback_models);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch Grok models: {}; using hardcoded base only", e);
+            return Ok(fallback_models);
+        }
+    };
+
+    let mut models: Vec<ModelInfo> = Vec::new();
+    if let Some(arr) = body["data"].as_array() {
+        for m in arr {
+            if let Some(id) = m["id"].as_str() {
+                if should_include_grok_model(id)
+                    && !models.iter().any(|existing| existing.model == id)
+                {
+                    models.push(ModelRegistry::model_info("grok", id));
+                }
+            }
+        }
+    }
+
+    if models.is_empty() {
+        tracing::warn!("Grok API returned no compatible models; using hardcoded base only");
+        return Ok(fallback_models);
+    }
+
+    tracing::info!("Resolved {} compatible models for Grok", models.len());
+    Ok(models)
+}
+
