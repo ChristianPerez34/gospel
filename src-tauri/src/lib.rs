@@ -810,6 +810,113 @@ mod availability_tests {
         );
         assert_eq!(availability_empty_reason(&empty, 1), None);
     }
+
+    #[tokio::test]
+    async fn uncredentialed_grok_does_not_contribute_available_models() {
+        let _lock = keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = keychain::isolate_config_home(dir.path());
+
+        let snapshot = build_model_availability(HashMap::new(), Vec::new(), false).await;
+        let grok = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == "grok")
+            .expect("Grok should remain a registered provider");
+
+        assert!(!grok.credentialed);
+        assert_eq!(grok.model_fetch_status, "not_credentialed");
+        assert_eq!(grok.model_count, 0);
+        assert!(!snapshot
+            .available_models
+            .iter()
+            .any(|model| model.provider == "grok"));
+    }
+
+    #[tokio::test]
+    async fn credentialed_visible_grok_contributes_available_models() {
+        let _lock = keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = keychain::isolate_config_home(dir.path());
+        write_grok_session(dir.path());
+
+        let snapshot = build_model_availability(
+            HashMap::from([("grok".to_string(), true)]),
+            Vec::new(),
+            false,
+        )
+        .await;
+        let grok = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == "grok")
+            .expect("Grok should remain a registered provider");
+        let grok_models: Vec<_> = snapshot
+            .available_models
+            .iter()
+            .filter(|model| model.provider == "grok")
+            .collect();
+
+        assert!(grok.credentialed);
+        assert!(grok.visible);
+        assert_eq!(grok.model_fetch_status, "loaded");
+        assert_eq!(grok.model_count, grok_models.len());
+        assert_eq!(
+            grok_models
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "grok-2-1212",
+                "grok-2-vision-1212",
+                "grok-3",
+                "grok-3-fast",
+                "grok-3-mini",
+                "grok-3-mini-fast",
+                "grok-4-0709"
+            ]
+        );
+        assert!(grok_models.iter().all(|model| model.variants.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn hidden_credentialed_grok_does_not_contribute_available_models() {
+        let _lock = keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = keychain::isolate_config_home(dir.path());
+        write_grok_session(dir.path());
+
+        let snapshot = build_model_availability(
+            HashMap::from([("grok".to_string(), false)]),
+            Vec::new(),
+            false,
+        )
+        .await;
+        let grok = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == "grok")
+            .expect("Grok should remain a registered provider");
+
+        assert!(grok.credentialed);
+        assert!(!grok.visible);
+        assert_eq!(grok.model_fetch_status, "hidden");
+        assert_eq!(grok.model_count, 0);
+        assert!(!snapshot
+            .available_models
+            .iter()
+            .any(|model| model.provider == "grok"));
+    }
+
+    fn write_grok_session(config_home: &std::path::Path) {
+        let grok_dir = config_home.join("gospel").join("grok");
+        std::fs::create_dir_all(&grok_dir).unwrap();
+        std::fs::write(
+            grok_dir.join("auth.json"),
+            r#"{"access_token":"grok-access-token","refresh_token":"grok-refresh-token"}"#,
+        )
+        .unwrap();
+    }
 }
 
 #[cfg(test)]

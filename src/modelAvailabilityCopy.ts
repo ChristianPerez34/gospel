@@ -32,7 +32,7 @@ export function noModelCopy(snapshot: ModelAvailabilityCopySource | null): NoMod
       return {
         title: "Add provider credentials",
         detail:
-          "No provider has credentials yet. Add an API key or sign in to ChatGPT Plus/Pro or GitHub Copilot.",
+          "No provider has credentials yet. Add an API key or sign in to ChatGPT Plus/Pro, GitHub Copilot, or Grok.",
         actionLabel: "Open Settings",
       };
     case "all_credentialed_providers_hidden":
