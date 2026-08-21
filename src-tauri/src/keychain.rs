@@ -1,6 +1,7 @@
 use keyring::Entry;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -121,11 +122,7 @@ pub fn has_chatgpt_oauth_session() -> bool {
 }
 
 pub fn delete_chatgpt_auth_file() -> Result<(), KeychainError> {
-    let path = chatgpt_auth_file_path();
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
+    delete_if_exists(&chatgpt_auth_file_path())
 }
 
 pub fn has_github_copilot_oauth_session() -> bool {
@@ -157,11 +154,17 @@ pub fn delete_github_copilot_auth_files() -> Result<(), KeychainError> {
         github_copilot_access_token_path(),
         github_copilot_api_key_path(),
     ] {
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
+        delete_if_exists(&path)?;
     }
     Ok(())
+}
+
+fn delete_if_exists(path: &Path) -> Result<(), KeychainError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 pub fn provider_has_credentials(provider: &str) -> bool {
@@ -236,6 +239,12 @@ mod tests {
             let error = logout_oauth_provider_with("openai", noop_delete_keyring).unwrap_err();
             assert!(error.to_string().contains("openai"));
             assert!(error.to_string().contains("does not support OAuth"));
+
+            delete_if_exists(&dir.path().join("missing-auth.json")).unwrap();
+            let chatgpt_auth = chatgpt_dir.join("auth.json");
+            std::fs::write(&chatgpt_auth, r#"{"access_token":"chatgpt-session-token"}"#).unwrap();
+            delete_if_exists(&chatgpt_auth).unwrap();
+            assert!(!chatgpt_auth.exists());
         });
 
         restore_config_home(previous);
