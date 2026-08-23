@@ -817,7 +817,8 @@ mod availability_tests {
         let dir = tempfile::tempdir().unwrap();
         let _home = keychain::isolate_config_home(dir.path());
 
-        let snapshot = build_model_availability(HashMap::new(), Vec::new(), false).await;
+        let snapshot =
+            build_model_availability(grok_only_visibility(true), Vec::new(), false).await;
         let grok = snapshot
             .providers
             .iter()
@@ -840,12 +841,8 @@ mod availability_tests {
         let _home = keychain::isolate_config_home(dir.path());
         write_grok_session(dir.path());
 
-        let snapshot = build_model_availability(
-            HashMap::from([("grok".to_string(), true)]),
-            Vec::new(),
-            false,
-        )
-        .await;
+        let snapshot =
+            build_model_availability(grok_only_visibility(true), Vec::new(), false).await;
         let grok = snapshot
             .providers
             .iter()
@@ -886,12 +883,8 @@ mod availability_tests {
         let _home = keychain::isolate_config_home(dir.path());
         write_grok_session(dir.path());
 
-        let snapshot = build_model_availability(
-            HashMap::from([("grok".to_string(), false)]),
-            Vec::new(),
-            false,
-        )
-        .await;
+        let snapshot =
+            build_model_availability(grok_only_visibility(false), Vec::new(), false).await;
         let grok = snapshot
             .providers
             .iter()
@@ -906,6 +899,18 @@ mod availability_tests {
             .available_models
             .iter()
             .any(|model| model.provider == "grok"));
+    }
+
+    fn grok_only_visibility(grok_visible: bool) -> HashMap<String, bool> {
+        models::ModelRegistry::all_providers()
+            .iter()
+            .map(|&provider| {
+                (
+                    provider.to_string(),
+                    provider == "grok" && grok_visible,
+                )
+            })
+            .collect()
     }
 
     fn write_grok_session(config_home: &std::path::Path) {
