@@ -1,5 +1,8 @@
 /// Dispatches to the correct rig provider client based on the provider string.
 ///
+/// New Credentialed Providers must be registered in `providers::CREDENTIALED_PROVIDERS`
+/// and given a match arm below.
+///
 /// Usage:
 /// ```ignore
 /// provider_client!(provider, api_key, client_err, unsupported_err, |client| {

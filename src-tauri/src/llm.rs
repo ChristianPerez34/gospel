@@ -187,11 +187,8 @@ pub enum StreamEvent {
 pub struct LlmService;
 
 fn validate_api_key(provider: &str, api_key: &str) -> Result<(), LlmError> {
-    if !ModelRegistry::is_oauth_provider(provider) && api_key.trim().is_empty() {
-        return Err(LlmError::ApiKeyMissing);
-    }
-
-    Ok(())
+    crate::provider_credentials::ensure_inference_ready(provider, api_key)
+        .map_err(|_| LlmError::ApiKeyMissing)
 }
 
 impl LlmService {
@@ -1131,25 +1128,27 @@ mod tests {
     }
 
     #[test]
-    fn validate_api_key_allows_blank_key_for_chatgpt() {
-        let result = validate_api_key("chatgpt", "   ");
-
-        assert!(result.is_ok());
+    fn validate_api_key_allows_blank_key_for_credentialed_oauth_providers() {
+        for provider in ["chatgpt", "github_copilot", "grok"] {
+            if crate::provider_credentials::is_credentialed(provider) {
+                assert!(
+                    validate_api_key(provider, "   ").is_ok(),
+                    "expected blank key to be valid for credentialed oauth provider {provider}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn validate_api_key_allows_blank_key_for_github_copilot() {
-        let result = validate_api_key("github_copilot", "   ");
-
-        assert!(result.is_ok());
+    fn validate_api_key_rejects_blank_key_for_unauthenticated_oauth_provider() {
+        let result = crate::provider_credentials::ensure_inference_ready("chatgpt", "");
+        if crate::provider_credentials::is_credentialed("chatgpt") {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
     }
 
-    #[test]
-    fn validate_api_key_allows_blank_key_for_grok() {
-        let result = validate_api_key("grok", "   ");
-
-        assert!(result.is_ok());
-    }
 
     #[test]
     fn validate_api_key_rejects_blank_key_for_non_oauth_provider() {

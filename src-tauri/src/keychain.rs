@@ -18,9 +18,7 @@ pub enum KeychainError {
 const SERVICE_NAME: &str = "gospel";
 
 fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
-    if !crate::models::API_KEY_PROVIDERS.contains(&provider)
-        && crate::oauth::oauth_provider(provider).is_none()
-    {
+    if !crate::providers::is_known_provider(provider) {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
     }
     Ok(Entry::new(SERVICE_NAME, provider)?)
@@ -181,9 +179,7 @@ fn delete_if_exists(path: PathBuf) -> Result<(), KeychainError> {
 }
 
 pub fn provider_has_credentials(provider: &str) -> bool {
-    crate::oauth::oauth_provider(provider)
-        .map(|entry| (entry.has_session)())
-        .unwrap_or_else(|| has_key(provider))
+    crate::provider_credentials::is_credentialed(provider)
 }
 
 pub fn logout_oauth_provider(provider: &str) -> Result<(), KeychainError> {
@@ -194,9 +190,10 @@ fn logout_oauth_provider_with(
     provider: &str,
     delete_keyring: fn(&str) -> Result<(), KeychainError>,
 ) -> Result<(), KeychainError> {
-    let entry = crate::oauth::oauth_provider(provider)
+    let hooks = crate::providers::provider(provider)
+        .and_then(|entry| entry.oauth.as_ref())
         .ok_or_else(|| KeychainError::NotOauthProvider(provider.to_string()))?;
-    (entry.delete_session)()?;
+    (hooks.delete_session)()?;
     let _ = delete_keyring(provider);
     Ok(())
 }

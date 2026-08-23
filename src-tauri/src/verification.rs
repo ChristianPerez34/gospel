@@ -9,7 +9,6 @@ use crate::harness_profile::{
     resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfile,
     HarnessProfileRequest, LoopDetector, LoopStatus,
 };
-use crate::models::ModelRegistry;
 use crate::provider_client::provider_client;
 use crate::text_utils::wrap_untrusted;
 
@@ -69,7 +68,7 @@ pub async fn run_verification(
     response_to_verify: &str,
     user_prompt: &str,
 ) -> VerificationResult {
-    if !ModelRegistry::is_oauth_provider(provider) && api_key.trim().is_empty() {
+    if crate::provider_credentials::ensure_inference_ready(provider, api_key).is_err() {
         return unavailable("Verification unavailable: API key is not configured.");
     }
 
