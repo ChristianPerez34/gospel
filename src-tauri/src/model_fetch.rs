@@ -1,14 +1,8 @@
 use std::time::Duration;
 
 use crate::models::{ModelInfo, ModelInfoWithFreshness, ModelRegistry};
+use crate::providers::{ModelFetchKind, provider};
 use rig::client::ModelListingClient;
-
-fn cache_scope_for_provider(provider: &str, api_key: Option<&str>) -> String {
-    match provider {
-        "openai" | "anthropic" | "gemini" | "mistral" | "grok" => api_key.unwrap_or("").to_string(),
-        _ => "shared".to_string(),
-    }
-}
 
 fn should_include_completion_model(model_id: &str) -> bool {
     let id = model_id.to_lowercase();
@@ -37,23 +31,33 @@ fn should_include_completion_model(model_id: &str) -> bool {
 }
 
 pub async fn fetch_models_for_provider(
-    provider: &str,
+    provider_id: &str,
     api_key: Option<&str>,
     force_refresh: bool,
 ) -> ModelInfoWithFreshness {
-    let cache_scope = cache_scope_for_provider(provider, api_key);
-    let cache_key = format!("{}:{}", provider, cache_scope);
+    let entry = provider(provider_id);
+    let cache_scope = entry
+        .map(|entry| crate::providers::model_cache_scope_key(entry, api_key))
+        .unwrap_or_else(|| api_key.unwrap_or("").to_string());
+    let cache_key = format!("{}:{}", provider_id, cache_scope);
 
-    ModelRegistry::get_or_fetch(&cache_key, provider, force_refresh, || async {
-        match provider {
-            "openai" => fetch_openai_models_impl(api_key.unwrap_or("")).await,
-            "chatgpt" => fetch_chatgpt_models_impl().await,
-            "github_copilot" => fetch_github_copilot_models_impl().await,
-            "grok" => fetch_grok_models_impl(api_key).await,
-            "anthropic" => fetch_anthropic_models_impl(api_key.unwrap_or("")).await,
-            "gemini" => fetch_gemini_models_impl(api_key.unwrap_or("")).await,
-            "mistral" => fetch_mistral_models_impl(api_key.unwrap_or("")).await,
-            _ => Ok(ModelRegistry::hardcoded_models_for(provider)),
+    ModelRegistry::get_or_fetch(&cache_key, provider_id, force_refresh, || async {
+        let fetch_kind = entry.map(|entry| entry.model_fetch);
+        match fetch_kind {
+            Some(ModelFetchKind::RigOpenAI) => fetch_openai_models_impl(api_key.unwrap_or("")).await,
+            Some(ModelFetchKind::CustomChatGpt) => fetch_chatgpt_models_impl().await,
+            Some(ModelFetchKind::RigOauthCopilot) => fetch_github_copilot_models_impl().await,
+            Some(ModelFetchKind::CustomGrok) => fetch_grok_models_impl(api_key).await,
+            Some(ModelFetchKind::RigAnthropic) => {
+                fetch_anthropic_models_impl(api_key.unwrap_or("")).await
+            }
+            Some(ModelFetchKind::RigGemini) => fetch_gemini_models_impl(api_key.unwrap_or("")).await,
+            Some(ModelFetchKind::RigMistral) => {
+                fetch_mistral_models_impl(api_key.unwrap_or("")).await
+            }
+            Some(ModelFetchKind::StaticHardcoded) | None => {
+                Ok(ModelRegistry::hardcoded_models_for(provider_id))
+            }
         }
     })
     .await

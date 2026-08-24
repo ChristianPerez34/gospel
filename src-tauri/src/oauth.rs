@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::providers::{CredentialedProviderRegistration, ProviderAuthKind};
+
 #[derive(Serialize, Clone)]
 pub struct OauthChallenge {
     pub verification_url: String,
@@ -17,51 +19,8 @@ pub struct OauthCompletion {
     pub success: bool,
 }
 
-pub type OauthStart =
-    fn(tauri::AppHandle) -> Pin<Box<dyn Future<Output = Result<OauthChallenge, String>> + Send>>;
-
-pub struct OauthProviderRegistration {
-    pub id: &'static str,
-    pub display_name: &'static str,
-    pub auth_complete_event: &'static str,
-    pub start: OauthStart,
-    pub has_session: fn() -> bool,
-    pub delete_session: fn() -> Result<(), crate::keychain::KeychainError>,
-}
-
-pub const OAUTH_PROVIDERS: &[OauthProviderRegistration] = &[
-    OauthProviderRegistration {
-        id: "chatgpt",
-        display_name: "ChatGPT Plus/Pro",
-        auth_complete_event: "chatgpt-auth-complete",
-        start: start_chatgpt,
-        has_session: crate::keychain::has_chatgpt_oauth_session,
-        delete_session: crate::keychain::delete_chatgpt_auth_file,
-    },
-    OauthProviderRegistration {
-        id: "github_copilot",
-        display_name: "GitHub Copilot",
-        auth_complete_event: "github-copilot-auth-complete",
-        start: start_github_copilot,
-        has_session: crate::keychain::has_github_copilot_oauth_session,
-        delete_session: crate::keychain::delete_github_copilot_auth_files,
-    },
-    OauthProviderRegistration {
-        id: "grok",
-        display_name: "Grok",
-        auth_complete_event: "grok-auth-complete",
-        start: start_grok,
-        has_session: crate::keychain::has_grok_oauth_session,
-        delete_session: crate::keychain::delete_grok_auth_file,
-    },
-];
-
-pub fn oauth_provider(id: &str) -> Option<&'static OauthProviderRegistration> {
-    OAUTH_PROVIDERS.iter().find(|provider| provider.id == id)
-}
-
-pub fn oauth_provider_ids() -> Vec<&'static str> {
-    OAUTH_PROVIDERS.iter().map(|provider| provider.id).collect()
+fn oauth_provider(id: &str) -> Option<&'static CredentialedProviderRegistration> {
+    crate::providers::provider(id).filter(|entry| entry.auth_kind == ProviderAuthKind::Oauth)
 }
 
 pub async fn start_provider_oauth(
@@ -70,7 +29,12 @@ pub async fn start_provider_oauth(
 ) -> Result<OauthChallenge, String> {
     let entry = oauth_provider(provider)
         .ok_or_else(|| format!("Provider {} does not support OAuth", provider))?;
-    (entry.start)(app).await
+    match entry.id {
+        "chatgpt" => start_chatgpt(app).await,
+        "github_copilot" => start_github_copilot(app).await,
+        "grok" => start_grok(app).await,
+        other => Err(format!("Provider {} does not support OAuth", other)),
+    }
 }
 
 fn start_chatgpt(
@@ -144,10 +108,12 @@ fn start_github_copilot(
 
 fn emit_oauth_complete(
     app: &tauri::AppHandle,
-    provider: &OauthProviderRegistration,
+    provider: &CredentialedProviderRegistration,
     success: bool,
 ) {
-    let _ = app.emit(provider.auth_complete_event, success);
+    if let Some(hooks) = provider.oauth.as_ref() {
+        let _ = app.emit(hooks.auth_complete_event, success);
+    }
     let _ = app.emit(
         "provider-auth-complete",
         OauthCompletion {
@@ -175,7 +141,7 @@ where
 
 async fn start_device_code_oauth_flow<Build, Authorize, AuthFut>(
     app: tauri::AppHandle,
-    provider: &'static OauthProviderRegistration,
+    provider: &'static CredentialedProviderRegistration,
     log_label: &'static str,
     build: Build,
 ) -> Result<OauthChallenge, String>

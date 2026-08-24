@@ -242,6 +242,11 @@ pub fn access_token(path: &Path) -> Result<String, String> {
     Ok(read_tokens(path)?.access_token)
 }
 
+/// Returns the refresh token stored in the Gospel-owned Grok auth file.
+pub fn refresh_token(path: &Path) -> Result<String, String> {
+    Ok(read_tokens(path)?.refresh_token)
+}
+
 /// Refreshes the Grok OAuth session (when present) so subsequent API calls use a fresh access token.
 ///
 /// Used by `model_fetch` and the Grok provider-client OAuth path.

@@ -16,6 +16,8 @@ mod llm;
 pub mod mcp;
 mod models;
 mod oauth;
+mod provider_credentials;
+mod providers;
 mod provider_client;
 mod review;
 pub mod session_mode;
@@ -360,12 +362,12 @@ fn greet(name: &str) -> String {
 
 #[tauri::command]
 async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
-    keychain::store(&provider, &api_key).map_err(|e| e.to_string())
+    provider_credentials::store_api_key(&provider, &api_key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn delete_api_key(provider: String) -> Result<(), String> {
-    keychain::delete(&provider).map_err(|e| e.to_string())
+    provider_credentials::delete_api_key(&provider).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -588,23 +590,19 @@ async fn build_model_availability(
             continue;
         }
 
-        let api_key = if ModelRegistry::is_oauth_provider(provider) {
-            None
-        } else {
-            match keychain::retrieve(provider) {
-                Ok(key) => Some(key),
-                Err(_) => {
-                    providers[index] = Some(provider_availability(
-                        provider,
-                        credentialed,
-                        visible,
-                        "failed".to_string(),
-                        model_count,
-                        Some("credentials_unavailable".to_string()),
-                        Some("Saved provider credentials could not be read.".to_string()),
-                    ));
-                    continue;
-                }
+        let api_key = match provider_credentials::api_key_for_model_fetch(provider) {
+            Ok(key) => key,
+            Err(_) => {
+                providers[index] = Some(provider_availability(
+                    provider,
+                    credentialed,
+                    visible,
+                    "failed".to_string(),
+                    model_count,
+                    Some("credentials_unavailable".to_string()),
+                    Some("Saved provider credentials could not be read.".to_string()),
+                ));
+                continue;
             }
         };
 
@@ -991,37 +989,21 @@ async fn complete(
         None => prompt,
     };
 
-    if ModelRegistry::is_oauth_provider(&provider) {
-        LlmService::completion(&provider, &full_prompt, &model, "")
-            .await
-            .map_err(|e| e.to_dto())
-    } else {
-        let api_key =
-            keychain::retrieve(&provider).map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
-        LlmService::completion(&provider, &full_prompt, &model, &api_key)
-            .await
-            .map_err(|e| e.to_dto())
-    }
+    let api_key = provider_credentials::api_key_for_rig(&provider)
+        .map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
+    LlmService::completion(&provider, &full_prompt, &model, &api_key)
+        .await
+        .map_err(|e| e.to_dto())
 }
 
 #[tauri::command]
 async fn test_connection(provider: String, model: String) -> Result<bool, String> {
-    if ModelRegistry::is_oauth_provider(&provider) {
-        let response =
-            LlmService::completion(&provider, "Say 'pong' and nothing else.", &model, "").await;
-        match response {
-            Ok(_) => Ok(true),
-            Err(e) => Err(e.to_dto().message),
-        }
-    } else {
-        let api_key = keychain::retrieve(&provider).map_err(|e| e.to_string())?;
-        let response =
-            LlmService::completion(&provider, "Say 'pong' and nothing else.", &model, &api_key)
-                .await;
-        match response {
-            Ok(_) => Ok(true),
-            Err(e) => Err(e.to_dto().message),
-        }
+    let api_key = provider_credentials::api_key_for_rig(&provider).map_err(|e| e.to_string())?;
+    let response =
+        LlmService::completion(&provider, "Say 'pong' and nothing else.", &model, &api_key).await;
+    match response {
+        Ok(_) => Ok(true),
+        Err(e) => Err(e.to_dto().message),
     }
 }
 
@@ -1044,11 +1026,8 @@ fn active_review_workspace_path(app_config: &AppConfigState) -> Result<PathBuf, 
 }
 
 fn review_api_key(provider: &str) -> Result<String, String> {
-    if ModelRegistry::is_oauth_provider(provider) {
-        Ok(String::new())
-    } else {
-        keychain::retrieve(provider).map_err(|_| format!("API key not configured for {}", provider))
-    }
+    provider_credentials::api_key_for_rig(provider)
+        .map_err(|_| format!("API key not configured for {}", provider))
 }
 
 #[tauri::command]
@@ -1164,11 +1143,7 @@ impl session_turn::SessionTurnWorkspace for TauriSessionTurnAdapters<'_> {
 
 impl session_turn::SessionTurnCredentials for TauriSessionTurnAdapters<'_> {
     fn api_key(&self, provider: &str) -> Result<String, LlmError> {
-        if ModelRegistry::is_oauth_provider(provider) {
-            Ok(String::new())
-        } else {
-            keychain::retrieve(provider).map_err(|_| LlmError::ApiKeyMissing)
-        }
+        provider_credentials::api_key_for_rig(provider).map_err(|_| LlmError::ApiKeyMissing)
     }
 }
 
@@ -1628,11 +1603,7 @@ fn resolve_delegate_completion_config(
     provider: &str,
     model: &str,
 ) -> (String, String, String) {
-    let delegate_api_key = if ModelRegistry::is_oauth_provider(provider) {
-        String::new()
-    } else {
-        keychain::retrieve(provider).unwrap_or_default()
-    };
+    let delegate_api_key = provider_credentials::api_key_for_rig(provider).unwrap_or_default();
 
     (provider.to_string(), model.to_string(), delegate_api_key)
 }
@@ -1725,7 +1696,7 @@ fn is_provider_authenticated(provider: String) -> ApiKeyStatus {
 
 #[tauri::command]
 fn list_oauth_providers() -> Vec<String> {
-    oauth::oauth_provider_ids()
+    providers::oauth_provider_ids()
         .into_iter()
         .map(str::to_string)
         .collect()
@@ -1733,17 +1704,17 @@ fn list_oauth_providers() -> Vec<String> {
 
 #[tauri::command]
 fn logout_chatgpt() -> Result<(), String> {
-    keychain::logout_oauth_provider("chatgpt").map_err(|e| e.to_string())
+    provider_credentials::logout_oauth("chatgpt").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn logout_github_copilot() -> Result<(), String> {
-    keychain::logout_oauth_provider("github_copilot").map_err(|e| e.to_string())
+    provider_credentials::logout_oauth("github_copilot").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn logout_provider_oauth(provider: String) -> Result<(), String> {
-    keychain::logout_oauth_provider(&provider).map_err(|e| e.to_string())
+    provider_credentials::logout_oauth(&provider).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
