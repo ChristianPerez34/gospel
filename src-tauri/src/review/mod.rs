@@ -2210,11 +2210,16 @@ pub trait ToolEventObserver: Send + Sync {
 pub(crate) async fn run_workspace_agent(
     config: AgentConfig<'_>,
 ) -> Result<String, ReviewAgentError> {
-    if crate::provider_credentials::ensure_inference_ready(config.provider, config.api_key).is_err() {
-        return Err(ReviewAgentError::Provider(format!(
-            "API key not configured for {}",
-            config.provider
-        )));
+    if let Err(error) =
+        crate::provider_credentials::ensure_inference_ready(config.provider, config.api_key)
+    {
+        let message = match error {
+            crate::provider_credentials::CredentialError::UnsupportedProvider(_) => {
+                error.to_string()
+            }
+            _ => format!("API key not configured for {}", config.provider),
+        };
+        return Err(ReviewAgentError::Provider(message));
     }
     let profile = resolve_harness_profile(HarnessProfileRequest {
         role: config.role,
@@ -2868,6 +2873,34 @@ Binary files a/icon.png and b/icon.png differ
             DetectorFailure::from_error(2, &ReviewAgentError::Provider("boom".to_string()));
         assert_eq!(provider.kind, DetectorFailureKind::Provider);
         assert_eq!(provider.detail, "boom");
+    }
+
+    #[tokio::test]
+    async fn run_workspace_agent_preserves_unsupported_provider_error() {
+        let workspace = ActiveWorkspaceContext {
+            workspace_path: std::env::current_dir().unwrap(),
+            corpus_available: false,
+            session_mode: crate::session_mode::SessionMode::Build,
+        };
+        let error = run_workspace_agent(AgentConfig {
+            provider: "not-a-provider",
+            model: "model",
+            api_key: "sk-test",
+            workspace: &workspace,
+            role: AgentRole::ReviewDetector,
+            preamble: "review",
+            prompt: "prompt",
+            on_tool_event: None,
+        })
+        .await
+        .unwrap_err();
+
+        match error {
+            ReviewAgentError::Provider(message) => {
+                assert_eq!(message, "provider not-a-provider is not supported");
+            }
+            other => panic!("expected provider error, got {other:?}"),
+        }
     }
 
     #[test]

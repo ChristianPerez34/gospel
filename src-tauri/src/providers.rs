@@ -31,6 +31,7 @@ pub enum ModelFetchKind {
 pub enum ModelCacheScope {
     ApiKey,
     Shared,
+    Account,
 }
 
 pub struct CredentialedProviderRegistration {
@@ -80,7 +81,7 @@ pub const CREDENTIALED_PROVIDERS: &[CredentialedProviderRegistration] = &[
         display_name: "Grok",
         auth_kind: ProviderAuthKind::Oauth,
         model_fetch: ModelFetchKind::CustomGrok,
-        model_cache_scope: ModelCacheScope::ApiKey,
+        model_cache_scope: ModelCacheScope::Account,
         oauth: Some(OauthProviderHooks {
             auth_complete_event: "grok-auth-complete",
             has_session: crate::keychain::has_grok_oauth_session,
@@ -166,7 +167,40 @@ pub fn model_cache_scope_key(
     match entry.model_cache_scope {
         ModelCacheScope::ApiKey => api_key.unwrap_or("").to_string(),
         ModelCacheScope::Shared => "shared".to_string(),
+        ModelCacheScope::Account => account_cache_scope_key(entry, api_key),
     }
+}
+
+fn account_cache_scope_key(
+    entry: &CredentialedProviderRegistration,
+    api_key: Option<&str>,
+) -> String {
+    if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
+        return hashed_account_scope(entry.id, key);
+    }
+    match entry.id {
+        "grok" => crate::grok_oauth::refresh_token(&crate::keychain::grok_auth_file_path())
+            .map(|token| hashed_account_scope(entry.id, &token))
+            .unwrap_or_else(|_| "account".to_string()),
+        _ => "account".to_string(),
+    }
+}
+
+fn hashed_account_scope(provider_id: &str, secret: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(provider_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(secret.as_bytes());
+    format!(
+        "account:{}",
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }
 
 #[cfg(test)]
@@ -215,5 +249,55 @@ mod tests {
             assert_eq!(provider_display_name(entry.id), entry.display_name);
             assert_ne!(entry.display_name, "Unknown Provider");
         }
+    }
+
+    #[test]
+    fn grok_uses_account_model_cache_scope() {
+        let grok = provider("grok").unwrap();
+        assert_eq!(grok.model_fetch, ModelFetchKind::CustomGrok);
+        assert_eq!(grok.model_cache_scope, ModelCacheScope::Account);
+        assert!(grok.oauth.is_some());
+    }
+
+    #[test]
+    fn grok_account_cache_scope_changes_when_session_account_changes() {
+        let grok = provider("grok").unwrap();
+        let first = model_cache_scope_key(grok, Some("account-one-token"));
+        let second = model_cache_scope_key(grok, Some("account-two-token"));
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("account:"));
+        assert!(second.starts_with("account:"));
+        assert!(!first.contains("account-one-token"));
+        assert!(!second.contains("account-two-token"));
+    }
+
+    #[test]
+    fn grok_oauth_session_cache_scope_follows_refresh_token() {
+        let _lock = crate::keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::keychain::isolate_config_home(dir.path());
+        let grok = provider("grok").unwrap();
+        let grok_dir = dir.path().join("gospel").join("grok");
+        std::fs::create_dir_all(&grok_dir).unwrap();
+        let auth_path = grok_dir.join("auth.json");
+
+        std::fs::write(
+            &auth_path,
+            r#"{"access_token":"access-a","refresh_token":"refresh-a"}"#,
+        )
+        .unwrap();
+        let first = model_cache_scope_key(grok, None);
+
+        std::fs::write(
+            &auth_path,
+            r#"{"access_token":"access-b","refresh_token":"refresh-b"}"#,
+        )
+        .unwrap();
+        let second = model_cache_scope_key(grok, None);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("account:"));
+        assert!(second.starts_with("account:"));
     }
 }

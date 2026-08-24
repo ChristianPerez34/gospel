@@ -187,8 +187,16 @@ pub enum StreamEvent {
 pub struct LlmService;
 
 fn validate_api_key(provider: &str, api_key: &str) -> Result<(), LlmError> {
-    crate::provider_credentials::ensure_inference_ready(provider, api_key)
-        .map_err(|_| LlmError::ApiKeyMissing)
+    use crate::provider_credentials::CredentialError;
+
+    crate::provider_credentials::ensure_inference_ready(provider, api_key).map_err(|error| {
+        match error {
+            CredentialError::UnsupportedProvider(provider) => {
+                LlmError::UnsupportedProvider(provider)
+            }
+            _ => LlmError::ApiKeyMissing,
+        }
+    })
 }
 
 impl LlmService {
@@ -1155,6 +1163,16 @@ mod tests {
         let result = validate_api_key("openai", "");
 
         assert!(matches!(result, Err(LlmError::ApiKeyMissing)));
+    }
+
+    #[test]
+    fn validate_api_key_preserves_unsupported_provider_error() {
+        let result = validate_api_key("not-a-provider", "sk-test");
+
+        assert!(matches!(
+            result,
+            Err(LlmError::UnsupportedProvider(provider)) if provider == "not-a-provider"
+        ));
     }
 
     #[test]

@@ -68,8 +68,15 @@ pub async fn run_verification(
     response_to_verify: &str,
     user_prompt: &str,
 ) -> VerificationResult {
-    if crate::provider_credentials::ensure_inference_ready(provider, api_key).is_err() {
-        return unavailable("Verification unavailable: API key is not configured.");
+    if let Err(error) =
+        crate::provider_credentials::ensure_inference_ready(provider, api_key)
+    {
+        return match error {
+            crate::provider_credentials::CredentialError::UnsupportedProvider(_) => {
+                unavailable(&format!("Verification unavailable: {error}"))
+            }
+            _ => unavailable("Verification unavailable: API key is not configured."),
+        };
     }
 
     let prompt = build_verification_prompt(workspace, response_to_verify, user_prompt);
@@ -272,5 +279,24 @@ mod tests {
         // so it must appear before the first untrusted block as well.
         let workspace_label = prompt.find("Workspace root:").unwrap();
         assert!(workspace_label < first_begin);
+    }
+
+    #[tokio::test]
+    async fn run_verification_reports_unsupported_provider() {
+        let result = run_verification(
+            "not-a-provider",
+            "model",
+            "sk-test",
+            &workspace(),
+            "response",
+            "prompt",
+        )
+        .await;
+
+        assert_eq!(result.status, VerificationStatus::Unavailable);
+        assert_eq!(
+            result.summary,
+            "Verification unavailable: provider not-a-provider is not supported"
+        );
     }
 }
