@@ -199,6 +199,43 @@ describe("useChatStream", () => {
       expect(toastMessage).toBe("boom");
       expect(toastAction).toMatchObject({ label: "Retry" });
     });
+
+    it("entitlement failures toast Open Settings instead of Retry", async () => {
+      const onErrorToast = vi.fn();
+      const onOpenSettings = vi.fn();
+      renderChatStream({ onErrorToast, onOpenSettings });
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<{ code: string; message: string }>("llm-error", {
+          code: "ENTITLEMENT_FAILED",
+          message: "Signing in again will not fix this.",
+        });
+      });
+
+      expect(onErrorToast).toHaveBeenCalledWith(
+        "Signing in again will not fix this.",
+        expect.objectContaining({ label: "Open Settings" })
+      );
+    });
+
+    it("auth-expired failures toast Sign in again", async () => {
+      const onErrorToast = vi.fn();
+      renderChatStream({ onErrorToast });
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent<{ code: string; message: string }>("llm-error", {
+          code: "AUTH_EXPIRED",
+          message: "Sign in again.",
+        });
+      });
+
+      expect(onErrorToast).toHaveBeenCalledWith(
+        "Sign in again.",
+        expect.objectContaining({ label: "Sign in again" })
+      );
+    });
   });
 
   describe("tool and approval lifecycle", () => {

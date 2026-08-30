@@ -24,6 +24,7 @@ pub enum ModelFetchKind {
     CustomChatGpt,
     RigOauthCopilot,
     CustomGrok,
+    CustomXai,
     StaticHardcoded,
 }
 
@@ -87,6 +88,14 @@ pub const CREDENTIALED_PROVIDERS: &[CredentialedProviderRegistration] = &[
             has_session: crate::keychain::has_grok_oauth_session,
             delete_session: crate::keychain::delete_grok_auth_file,
         }),
+    },
+    CredentialedProviderRegistration {
+        id: "xai",
+        display_name: "xAI",
+        auth_kind: ProviderAuthKind::ApiKey,
+        model_fetch: ModelFetchKind::CustomXai,
+        model_cache_scope: ModelCacheScope::ApiKey,
+        oauth: None,
     },
     CredentialedProviderRegistration {
         id: "anthropic",
@@ -216,6 +225,7 @@ mod tests {
                 "chatgpt",
                 "github_copilot",
                 "grok",
+                "xai",
                 "anthropic",
                 "gemini",
                 "groq",
@@ -236,11 +246,24 @@ mod tests {
 
     #[test]
     fn api_key_providers_are_not_oauth() {
-        for id in ["openai", "anthropic", "gemini", "groq", "mistral"] {
+        for id in ["openai", "xai", "anthropic", "gemini", "groq", "mistral"] {
             assert!(!is_oauth_provider(id));
             assert_eq!(provider_auth_type(id), "api_key");
             assert!(provider(id).unwrap().oauth.is_none());
         }
+    }
+
+    #[test]
+    fn xai_api_key_provider_is_distinct_from_grok_oauth() {
+        let xai = provider("xai").unwrap();
+        let grok = provider("grok").unwrap();
+        assert_eq!(xai.display_name, "xAI");
+        assert_eq!(xai.auth_kind, ProviderAuthKind::ApiKey);
+        assert_eq!(xai.model_fetch, ModelFetchKind::CustomXai);
+        assert_eq!(xai.model_cache_scope, ModelCacheScope::ApiKey);
+        assert!(xai.oauth.is_none());
+        assert_eq!(grok.auth_kind, ProviderAuthKind::Oauth);
+        assert_ne!(xai.id, grok.id);
     }
 
     #[test]

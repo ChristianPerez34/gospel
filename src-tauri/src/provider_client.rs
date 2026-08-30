@@ -44,6 +44,11 @@ macro_rules! provider_client {
                     .map_err(|e| $client_err(e))?;
                 $body
             }
+            "xai" => {
+                let $client = rig::providers::xai::Client::new($api_key)
+                    .map_err(|e| $client_err(e.to_string()))?;
+                $body
+            }
             "anthropic" => {
                 let $client = rig::providers::anthropic::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;
@@ -103,11 +108,22 @@ pub(crate) async fn grok_access_token(api_key: &str) -> Result<String, String> {
     let auth_path = crate::keychain::grok_auth_file_path();
     match crate::grok_oauth::ensure_fresh_access_token(&auth_path).await {
         Ok(token) => Ok(token),
+        Err(e) if refresh_requires_reauth(&e) => Err(format!(
+            "Grok OAuth session expired or invalid; sign in again ({e})"
+        )),
         Err(e) => {
             tracing::warn!("Grok token refresh failed ({e}); using stored access token");
-            crate::grok_oauth::access_token(&auth_path)
+            crate::grok_oauth::access_token(&auth_path).map_err(|stored_err| {
+                format!(
+                    "Grok OAuth session expired or invalid; sign in again ({e}; {stored_err})"
+                )
+            })
         }
     }
+}
+
+fn refresh_requires_reauth(error: &str) -> bool {
+    crate::credential_failure::refresh_error_requires_reauth(error)
 }
 
 pub(crate) fn grok_subscription_client(
@@ -125,6 +141,7 @@ pub(crate) fn grok_subscription_client(
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
     struct DispatchSnapshot {
         host: String,
         authorization: String,
@@ -188,7 +205,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn grok_dispatch_uses_stored_oauth_provider_credential() {
+    async fn grok_dispatch_with_invalid_stored_refresh_requires_reauth() {
         let _lock = crate::keychain::lock_config_home();
         let dir = tempfile::tempdir().unwrap();
         let _home = crate::keychain::isolate_config_home(dir.path());
@@ -200,8 +217,16 @@ mod tests {
         )
         .unwrap();
 
-        let snapshot = grok_dispatch_snapshot("").await.unwrap();
-        assert_subscription_path(&snapshot, "stored-grok-oauth-token");
+        let err = grok_dispatch_snapshot("").await.unwrap_err();
+        let lower = err.to_lowercase();
+        assert!(
+            lower.contains("sign in again"),
+            "invalid refresh must direct the user to re-auth, got: {err}"
+        );
+        assert!(
+            crate::credential_failure::classify_credential_failure(&err)
+                == Some(crate::credential_failure::CredentialFailureKind::ReauthRequired)
+        );
     }
 
     #[test]
@@ -219,5 +244,38 @@ mod tests {
 
         assert_eq!(token, "stored-grok-oauth-token");
         assert_subscription_client(&client, "stored-grok-oauth-token");
+    }
+
+    fn assert_developer_api_path(snapshot: &DispatchSnapshot, api_key: &str) {
+        assert_eq!(snapshot.host, "https://api.x.ai");
+        assert!(!snapshot.host.contains("cli-chat-proxy"));
+        assert_eq!(snapshot.authorization, format!("Bearer {api_key}"));
+        assert!(snapshot.token_auth.is_empty());
+        assert!(snapshot.client_id.is_empty());
+        assert!(snapshot.client_version.is_empty());
+    }
+
+    async fn xai_dispatch_snapshot(api_key: &str) -> Result<DispatchSnapshot, String> {
+        provider_client!("xai", api_key, |e: String| e, |s: String| s, |client| {
+            Ok(dispatch_snapshot(client.base_url(), client.headers()))
+        })
+    }
+
+    #[tokio::test]
+    async fn xai_api_key_dispatch_uses_developer_api_not_subscription_proxy() {
+        let snapshot = xai_dispatch_snapshot("xai-payg-api-key").await.unwrap();
+        assert_developer_api_path(&snapshot, "xai-payg-api-key");
+    }
+
+    #[test]
+    fn invalid_refresh_error_requires_reauth() {
+        assert!(refresh_requires_reauth(
+            "Grok token refresh failed (HTTP 400): invalid_grant"
+        ));
+        assert!(refresh_requires_reauth(
+            "Grok OAuth Provider Credential not found"
+        ));
+        assert!(!refresh_requires_reauth("connection refused"));
+        assert!(!refresh_requires_reauth("HTTP 503 service unavailable"));
     }
 }
