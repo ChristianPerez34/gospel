@@ -3007,6 +3007,7 @@ Binary files a/icon.png and b/icon.png differ
     #[test]
     fn ensure_provider_session_passes_for_non_oauth_provider() {
         assert!(ensure_provider_session("openai").is_ok());
+        assert!(ensure_provider_session("xai").is_ok());
     }
 
     #[test]

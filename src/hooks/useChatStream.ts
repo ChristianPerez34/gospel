@@ -338,9 +338,14 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               clearCurrentTurn();
               optionsRef.current.onStatusChange?.("error");
 
-              if (err?.code === "API_KEY_MISSING") {
+              if (err?.code === "API_KEY_MISSING" || err?.code === "ENTITLEMENT_FAILED") {
                 optionsRef.current.onErrorToast?.(err.message, {
                   label: "Open Settings",
+                  onClick: optionsRef.current.onOpenSettings ?? (() => {}),
+                });
+              } else if (err?.code === "AUTH_EXPIRED") {
+                optionsRef.current.onErrorToast?.(err.message, {
+                  label: "Sign in again",
                   onClick: optionsRef.current.onOpenSettings ?? (() => {}),
                 });
               } else {

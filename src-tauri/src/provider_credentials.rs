@@ -142,11 +142,33 @@ mod tests {
     #[test]
     fn inference_ready_rejects_blank_key_for_api_key_providers() {
         assert!(ensure_inference_ready("openai", "").is_err());
+        assert!(ensure_inference_ready("xai", "").is_err());
     }
 
     #[test]
     fn oauth_session_check_skips_api_key_providers() {
         assert!(ensure_oauth_session("openai").is_ok());
+        assert!(ensure_oauth_session("xai").is_ok());
+    }
+
+    #[test]
+    fn xai_api_key_storage_is_supported_while_grok_rejects_api_keys() {
+        assert!(matches!(
+            store_api_key("grok", "should-not-store"),
+            Err(CredentialError::ApiKeyStorageUnsupported(_))
+        ));
+        // xAI is an API-key provider: the OAuth storage gate must not reject it.
+        // Keychain backends may still fail in headless CI; only the unsupported
+        // variant is a regression for this issue.
+        match store_api_key("xai", "gospel-xai-credential-gate-probe") {
+            Ok(()) | Err(CredentialError::Keychain(_)) | Err(CredentialError::NotConfigured(_)) => {}
+            Err(CredentialError::ApiKeyStorageUnsupported(_)) => {
+                panic!("xAI must support API-key storage like other pay-as-you-go providers")
+            }
+            Err(CredentialError::UnsupportedProvider(_)) => {
+                panic!("xAI must be a registered Credentialed Provider")
+            }
+        }
     }
 
     #[test]

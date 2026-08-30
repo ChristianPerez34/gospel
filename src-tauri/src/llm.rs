@@ -110,9 +110,24 @@ impl LlmError {
                 code: "API_KEY_MISSING".to_string(),
                 message: "API key not configured. Open Settings to add one.".to_string(),
             },
-            LlmError::ProviderError(msg) => LlmErrorDto {
-                code: "PROVIDER_ERROR".to_string(),
-                message: format!("Completion failed: {}", sanitize_provider_error_detail(msg)),
+            LlmError::ProviderError(msg) => match crate::credential_failure::classify_credential_failure(msg)
+            {
+                Some(crate::credential_failure::CredentialFailureKind::ReauthRequired) => {
+                    LlmErrorDto {
+                        code: "AUTH_EXPIRED".to_string(),
+                        message: crate::credential_failure::reauth_user_message().to_string(),
+                    }
+                }
+                Some(crate::credential_failure::CredentialFailureKind::EntitlementBlocked) => {
+                    LlmErrorDto {
+                        code: "ENTITLEMENT_FAILED".to_string(),
+                        message: crate::credential_failure::entitlement_user_message().to_string(),
+                    }
+                }
+                None => LlmErrorDto {
+                    code: "PROVIDER_ERROR".to_string(),
+                    message: format!("Completion failed: {}", sanitize_provider_error_detail(msg)),
+                },
             },
             LlmError::ModelUnavailable(model) => LlmErrorDto {
                 code: "MODEL_UNAVAILABLE".to_string(),
@@ -1396,6 +1411,30 @@ mod tests {
 
         assert_eq!(dto.code, "PROVIDER_ERROR");
         assert!(dto.message.contains("connection refused"));
+    }
+
+    #[test]
+    fn provider_error_dto_maps_entitlement_failures() {
+        let dto = LlmError::ProviderError(
+            "HTTP 403 Forbidden: entitlement check failed for subscription tier".to_string(),
+        )
+        .to_dto();
+
+        assert_eq!(dto.code, "ENTITLEMENT_FAILED");
+        assert!(dto.message.contains("Signing in again will not fix this"));
+        assert!(dto.message.contains("xAI API key"));
+    }
+
+    #[test]
+    fn provider_error_dto_maps_expired_refresh_to_reauth() {
+        let dto = LlmError::ProviderError(
+            "Grok OAuth session expired or invalid; sign in again (invalid_grant)".to_string(),
+        )
+        .to_dto();
+
+        assert_eq!(dto.code, "AUTH_EXPIRED");
+        assert!(dto.message.contains("Sign in again"));
+        assert!(!dto.message.contains("will not fix"));
     }
 
     #[test]

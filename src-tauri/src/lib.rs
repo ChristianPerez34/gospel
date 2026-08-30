@@ -7,6 +7,7 @@ pub mod approval_broker;
 pub mod context_search;
 mod conversation;
 pub mod corpus;
+mod credential_failure;
 mod grok_oauth;
 mod harness_plan;
 mod harness_profile;
@@ -897,6 +898,32 @@ mod availability_tests {
             .available_models
             .iter()
             .any(|model| model.provider == "grok"));
+    }
+
+    #[tokio::test]
+    async fn uncredentialed_xai_does_not_contribute_available_models() {
+        let _lock = keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = keychain::isolate_config_home(dir.path());
+
+        let visibility = models::ModelRegistry::all_providers()
+            .iter()
+            .map(|&provider| (provider.to_string(), provider == "xai"))
+            .collect();
+        let snapshot = build_model_availability(visibility, Vec::new(), false).await;
+        let xai = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == "xai")
+            .expect("xAI should be a registered provider");
+
+        assert!(!xai.credentialed);
+        assert_eq!(xai.model_fetch_status, "not_credentialed");
+        assert_eq!(xai.model_count, 0);
+        assert!(!snapshot
+            .available_models
+            .iter()
+            .any(|model| model.provider == "xai"));
     }
 
     fn grok_only_visibility(grok_visible: bool) -> HashMap<String, bool> {
