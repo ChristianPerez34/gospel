@@ -1425,6 +1425,7 @@ summary,
 
 .toast-notification {
   animation: toast-in 0.2s var(--gospel-ease-out-quart);
+  margin-bottom: var(--gospel-space-2);
   transition:
     opacity 150ms var(--gospel-ease-out-quart),
     transform 150ms var(--gospel-ease-out-quart);
@@ -1436,6 +1437,21 @@ summary,
   opacity: 0;
   transform: translateY(4px) scale(0.97);
   pointer-events: none;
+}
+
+.toast-stack-item {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--gospel-duration-fast) var(--gospel-ease-out-quart);
+}
+
+.toast-stack-item[data-dismissing="true"] {
+  grid-template-rows: 0fr;
+}
+
+.toast-stack-item-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 
 @keyframes slide-up {

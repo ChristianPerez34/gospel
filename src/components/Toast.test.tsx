@@ -1,6 +1,17 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Toast, ToastContainer, type ToastData, useToasts } from "./Toast";
+
+function ToastStackHost({ initial }: { initial: ToastData[] }) {
+  const [toasts, setToasts] = useState(initial);
+  return (
+    <ToastContainer
+      toasts={toasts}
+      onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+    />
+  );
+}
 
 describe("Toast Component", () => {
   beforeEach(() => {
@@ -357,6 +368,122 @@ describe("Toast Component", () => {
 
       expect(screen.getByText("Error msg")).toBeTruthy();
       expect(screen.getByText("Success msg")).toBeTruthy();
+    });
+
+    it("wraps each notification in a grid track so a multi-toast stack can collapse layout space", () => {
+      const toasts: ToastData[] = [
+        { id: "a", type: "error", message: "First toast" },
+        { id: "b", type: "success", message: "Second toast" },
+        { id: "c", type: "info", message: "Third toast" },
+      ];
+
+      const { container } = render(<ToastContainer toasts={toasts} onDismiss={vi.fn()} />);
+
+      const wrappers = container.querySelectorAll(".toast-stack-item");
+      expect(wrappers).toHaveLength(3);
+
+      for (const wrapper of wrappers) {
+        expect(wrapper.getAttribute("data-dismissing")).toBeNull();
+        const clip = wrapper.firstElementChild;
+        expect(clip?.classList.contains("toast-stack-item-clip")).toBe(true);
+        expect(clip?.querySelector("[role='alert']")).toBeTruthy();
+      }
+
+      expect(screen.getByText("First toast")).toBeTruthy();
+      expect(screen.getByText("Second toast")).toBeTruthy();
+      expect(screen.getByText("Third toast")).toBeTruthy();
+    });
+
+    it("collapses the middle toast's layout track on dismissal while neighbors stay in place", () => {
+      const toasts: ToastData[] = [
+        { id: "top", type: "error", message: "Top toast" },
+        { id: "middle", type: "success", message: "Middle toast" },
+        { id: "bottom", type: "info", message: "Bottom toast" },
+      ];
+      const onDismiss = vi.fn();
+
+      const { container } = render(<ToastContainer toasts={toasts} onDismiss={onDismiss} />);
+
+      const alerts = screen.getAllByRole("alert");
+      expect(alerts).toHaveLength(3);
+
+      const middleAlert = screen.getByText("Middle toast").closest("[role='alert']");
+      expect(middleAlert).toBeTruthy();
+      const middleClose = screen.getAllByRole("button", { name: "Dismiss notification" })[1];
+      fireEvent.click(middleClose);
+
+      const wrappers = container.querySelectorAll(".toast-stack-item");
+      expect(wrappers).toHaveLength(3);
+      expect(wrappers[0].getAttribute("data-dismissing")).toBeNull();
+      expect(wrappers[1].getAttribute("data-dismissing")).toBe("true");
+      expect(wrappers[2].getAttribute("data-dismissing")).toBeNull();
+      expect(middleAlert?.getAttribute("data-dismissing")).toBe("true");
+      expect(wrappers[1].firstElementChild?.classList.contains("toast-stack-item-clip")).toBe(true);
+      expect(onDismiss).not.toHaveBeenCalled();
+
+      expect(screen.getByText("Top toast")).toBeTruthy();
+      expect(screen.getByText("Middle toast")).toBeTruthy();
+      expect(screen.getByText("Bottom toast")).toBeTruthy();
+
+      fireEvent.transitionEnd(middleAlert as HTMLElement, { propertyName: "opacity" });
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+      expect(onDismiss).toHaveBeenCalledWith("middle");
+    });
+
+    it("keeps surrounding notifications mounted after the middle toast unmounts", () => {
+      const { container } = render(
+        <ToastStackHost
+          initial={[
+            { id: "top", type: "error", message: "Top toast" },
+            { id: "middle", type: "success", message: "Middle toast" },
+            { id: "bottom", type: "info", message: "Bottom toast" },
+          ]}
+        />
+      );
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Dismiss notification" })[1]);
+      const middleAlert = screen.getByText("Middle toast").closest("[role='alert']");
+      fireEvent.transitionEnd(middleAlert as HTMLElement, { propertyName: "opacity" });
+
+      expect(screen.queryByText("Middle toast")).toBeNull();
+      expect(screen.getByText("Top toast")).toBeTruthy();
+      expect(screen.getByText("Bottom toast")).toBeTruthy();
+      expect(container.querySelectorAll(".toast-stack-item")).toHaveLength(2);
+      expect(screen.getAllByRole("alert")).toHaveLength(2);
+    });
+
+    it("unmounts a dismissed stack item immediately under prefers-reduced-motion", () => {
+      const matchMediaSpy = vi.spyOn(window, "matchMedia").mockImplementation((query) => {
+        return {
+          matches: query.includes("prefers-reduced-motion: reduce"),
+          media: query,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        } as unknown as MediaQueryList;
+      });
+
+      const { container } = render(
+        <ToastStackHost
+          initial={[
+            { id: "top", type: "error", message: "Top toast" },
+            { id: "middle", type: "success", message: "Middle toast" },
+            { id: "bottom", type: "info", message: "Bottom toast" },
+          ]}
+        />
+      );
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Dismiss notification" })[1]);
+
+      expect(screen.queryByText("Middle toast")).toBeNull();
+      expect(screen.getByText("Top toast")).toBeTruthy();
+      expect(screen.getByText("Bottom toast")).toBeTruthy();
+      expect(container.querySelectorAll(".toast-stack-item")).toHaveLength(2);
+
+      matchMediaSpy.mockRestore();
     });
 
     it("adds toasts correctly using useToasts hook helpers", () => {
