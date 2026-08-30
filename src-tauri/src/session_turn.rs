@@ -174,6 +174,7 @@ pub trait SessionTurnVerification: Send + Sync {
 // Consolidated Deep Turn Orchestrator Seams (ADR-0004, ADR-0005, CONTEXT.md)
 // ============================================================================
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnSummary {
     pub full_response: String,
@@ -182,6 +183,7 @@ pub struct TurnSummary {
     pub tool_calls: usize,
 }
 
+#[allow(dead_code)]
 pub trait TurnPersistenceAdapter: Send + Sync {
     fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String>;
     fn save_turn_success(
@@ -219,6 +221,7 @@ impl<T: TurnPersistenceAdapter + ?Sized> TurnPersistenceAdapter for std::sync::A
     }
 }
 
+#[allow(dead_code)]
 pub trait TurnEventEmitter: Send + Sync {
     fn emit_event(&self, session_id: &str, run_id: &str, event: &SessionTurnEvent);
 }
@@ -229,6 +232,7 @@ impl<T: TurnEventEmitter + ?Sized> TurnEventEmitter for std::sync::Arc<T> {
     }
 }
 
+#[allow(dead_code)]
 pub trait TurnLlmAdapter: Send + Sync {
     fn stream_turn<'a>(
         &'a self,
@@ -237,12 +241,14 @@ pub trait TurnLlmAdapter: Send + Sync {
     ) -> SessionTurnFuture<'a, Result<StreamCompletionResult, LlmError>>;
 }
 
+#[allow(dead_code)]
 pub struct TurnOrchestrator<P, E, L> {
     pub persistence: P,
     pub emitter: E,
     pub llm: L,
 }
 
+#[allow(dead_code)]
 impl<P: TurnPersistenceAdapter, E: TurnEventEmitter, L: TurnLlmAdapter> TurnOrchestrator<P, E, L> {
     pub fn new(persistence: P, emitter: E, llm: L) -> Self {
         Self {
@@ -284,7 +290,7 @@ impl<P: TurnPersistenceAdapter, E: TurnEventEmitter, L: TurnLlmAdapter> TurnOrch
                         &completion.full_response,
                         history_json.as_deref(),
                     )
-                    .map_err(|e| LlmError::ProviderError(e))?;
+                    .map_err(LlmError::ProviderError)?;
 
                 Ok(TurnSummary {
                     full_response: completion.full_response,

@@ -89,7 +89,7 @@
   --animate-pulse: pulse 2s ease-in-out infinite;
   --animate-fade-slide-in: fadeSlideIn 0.25s cubic-bezier(0.25, 1, 0.5, 1);
   --animate-fade-slide-in-fast: fadeSlideIn 0.15s cubic-bezier(0.25, 1, 0.5, 1);
-  --animate-toast-in: toast-in 0.2s ease;
+  --animate-toast-in: toast-in 0.2s var(--gospel-ease-out-quart);
   --animate-slide-up: slide-up 0.2s ease;
   --animate-fade-in: fade-in 0.15s ease;
   --animate-appear-body: appear-body 0.15s cubic-bezier(0.25, 1, 0.5, 1);
@@ -1421,6 +1421,21 @@ summary,
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+.toast-notification {
+  animation: toast-in 0.2s var(--gospel-ease-out-quart);
+  transition:
+    opacity 150ms var(--gospel-ease-out-quart),
+    transform 150ms var(--gospel-ease-out-quart);
+  will-change: opacity, transform;
+}
+
+.toast-notification[data-dismissing="true"] {
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px) scale(0.97);
+  pointer-events: none;
 }
 
 @keyframes slide-up {

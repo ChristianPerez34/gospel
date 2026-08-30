@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 export interface ToastData {
@@ -33,27 +33,78 @@ const ICON_STYLES = {
   info: "text-accent-structure",
 };
 
+function getPrefersReducedMotion(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) {
+    return false;
+  }
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 export function Toast({ toast, onDismiss }: ToastProps) {
+  const [isDismissing, setIsDismissing] = useState(false);
+  const isDismissingRef = useRef(false);
+  const dismissedRef = useRef(false);
+  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   const hasAction = Boolean(toast.action);
   const hasSecondaryAction = Boolean(toast.secondaryAction);
+
+  const finishDismiss = useCallback(() => {
+    if (dismissedRef.current) return;
+    dismissedRef.current = true;
+    if (safetyTimerRef.current) {
+      clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = undefined;
+    }
+    onDismiss(toast.id);
+  }, [toast.id, onDismiss]);
+
+  const triggerDismiss = useCallback(() => {
+    if (isDismissingRef.current || dismissedRef.current) return;
+    isDismissingRef.current = true;
+
+    if (getPrefersReducedMotion()) {
+      finishDismiss();
+      return;
+    }
+
+    setIsDismissing(true);
+    safetyTimerRef.current = setTimeout(() => {
+      finishDismiss();
+    }, 200);
+  }, [finishDismiss]);
 
   useEffect(() => {
     const shouldAutoDismiss =
       toast.autoDismissMs && toast.autoDismissMs > 0 && !hasAction && !hasSecondaryAction;
-    if (shouldAutoDismiss) {
-      const timer = setTimeout(() => onDismiss(toast.id), toast.autoDismissMs);
+    if (shouldAutoDismiss && !isDismissingRef.current) {
+      const timer = setTimeout(() => {
+        triggerDismiss();
+      }, toast.autoDismissMs);
       return () => clearTimeout(timer);
     }
-  }, [toast.id, toast.autoDismissMs, hasAction, hasSecondaryAction, onDismiss]);
+  }, [toast.autoDismissMs, hasAction, hasSecondaryAction, triggerDismiss]);
 
-  const handleDismiss = useCallback(() => {
-    onDismiss(toast.id);
-  }, [toast.id, onDismiss]);
+  useEffect(() => {
+    return () => {
+      if (safetyTimerRef.current) {
+        clearTimeout(safetyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleTransitionEnd = (e: React.TransitionEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget && isDismissingRef.current) {
+      finishDismiss();
+    }
+  };
 
   return (
     <div
-      className={`flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] pointer-events-auto max-w-[380px] animate-toast-in transition-opacity duration-200 ${TYPE_STYLES[toast.type]}`}
+      className={`toast-notification flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] pointer-events-auto max-w-[380px] ${TYPE_STYLES[toast.type]}`}
       role="alert"
+      data-dismissing={isDismissing ? "true" : undefined}
+      onTransitionEnd={handleTransitionEnd}
     >
       <div className={`shrink-0 flex items-center ${ICON_STYLES[toast.type]}`}>
         {toast.type === "error" && (
@@ -110,6 +161,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
             onClick={(e) => {
               e.stopPropagation();
               toast.action!.onClick();
+              triggerDismiss();
             }}
           >
             {toast.action.label}
@@ -122,6 +174,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
             onClick={(e) => {
               e.stopPropagation();
               toast.secondaryAction!.onClick();
+              triggerDismiss();
             }}
           >
             {toast.secondaryAction.label}
@@ -130,7 +183,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         <Button
           variant="ghost"
           size="icon-xs"
-          onClick={handleDismiss}
+          onClick={triggerDismiss}
           aria-label="Dismiss notification"
         >
           <span aria-hidden="true">×</span>
