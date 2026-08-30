@@ -34,7 +34,7 @@ macro_rules! provider_client {
                 $body
             }
             "grok" => {
-                let access_token = $crate::provider_client::grok_dispatch_access_token($api_key)
+                let access_token = $crate::provider_client::grok_access_token($api_key)
                     .await
                     .map_err(|e| $client_err(e))?;
                 let $client = $crate::provider_client::grok_subscription_client(&access_token)
@@ -93,7 +93,7 @@ fn grok_subscription_headers() -> reqwest::header::HeaderMap {
     headers
 }
 
-pub(crate) async fn grok_dispatch_access_token(api_key: &str) -> Result<String, String> {
+pub(crate) async fn grok_access_token(api_key: &str) -> Result<String, String> {
     if !api_key.trim().is_empty() {
         return Ok(api_key.to_string());
     }
@@ -122,44 +122,6 @@ pub(crate) fn grok_subscription_client(
 mod tests {
     use super::*;
 
-    fn assert_subscription_client(client: &rig::providers::xai::Client, access_token: &str) {
-        let expected_auth = format!("Bearer {access_token}");
-        assert_eq!(client.base_url(), "https://cli-chat-proxy.grok.com");
-        assert!(!client.base_url().contains("api.x.ai"));
-        assert_eq!(
-            client
-                .headers()
-                .get(reqwest::header::AUTHORIZATION)
-                .and_then(|v| v.to_str().ok()),
-            Some(expected_auth.as_str())
-        );
-        assert_eq!(
-            client
-                .headers()
-                .get("x-xai-token-auth")
-                .and_then(|v| v.to_str().ok()),
-            Some("xai-grok-cli")
-        );
-        assert_eq!(
-            client
-                .headers()
-                .get("x-grok-client-identifier")
-                .and_then(|v| v.to_str().ok()),
-            Some("grok-shell")
-        );
-        assert_eq!(
-            client
-                .headers()
-                .get("x-grok-client-version")
-                .and_then(|v| v.to_str().ok()),
-            Some("0.2.93")
-        );
-        assert_eq!(
-            client.headers().get("accept").and_then(|v| v.to_str().ok()),
-            Some("text/event-stream")
-        );
-    }
-
     struct DispatchSnapshot {
         host: String,
         authorization: String,
@@ -169,39 +131,15 @@ mod tests {
         accept: String,
     }
 
-    #[tokio::test]
-    async fn grok_dispatch_constructs_subscription_client() {
-        async fn dispatch() -> Result<DispatchSnapshot, String> {
-            provider_client!(
-                "grok",
-                "grok-oauth-access-token",
-                |e: String| e,
-                |s: String| s,
-                |client| {
-                    Ok(DispatchSnapshot {
-                        host: client.base_url().to_string(),
-                        authorization: header_value(
-                            client.headers(),
-                            reqwest::header::AUTHORIZATION,
-                        ),
-                        token_auth: header_value(client.headers(), "x-xai-token-auth"),
-                        client_id: header_value(client.headers(), "x-grok-client-identifier"),
-                        client_version: header_value(client.headers(), "x-grok-client-version"),
-                        accept: header_value(client.headers(), "accept"),
-                    })
-                }
-            )
+    fn dispatch_snapshot(base_url: &str, headers: &reqwest::header::HeaderMap) -> DispatchSnapshot {
+        DispatchSnapshot {
+            host: base_url.to_string(),
+            authorization: header_value(headers, reqwest::header::AUTHORIZATION),
+            token_auth: header_value(headers, "x-xai-token-auth"),
+            client_id: header_value(headers, "x-grok-client-identifier"),
+            client_version: header_value(headers, "x-grok-client-version"),
+            accept: header_value(headers, "accept"),
         }
-
-        let snapshot = dispatch().await.unwrap();
-
-        assert_eq!(snapshot.host, "https://cli-chat-proxy.grok.com");
-        assert!(!snapshot.host.contains("api.x.ai"));
-        assert_eq!(snapshot.authorization, "Bearer grok-oauth-access-token");
-        assert_eq!(snapshot.token_auth, "xai-grok-cli");
-        assert_eq!(snapshot.client_id, "grok-shell");
-        assert_eq!(snapshot.client_version, "0.2.93");
-        assert_eq!(snapshot.accept, "text/event-stream");
     }
 
     fn header_value(
@@ -215,8 +153,56 @@ mod tests {
             .to_string()
     }
 
+    fn assert_subscription_path(snapshot: &DispatchSnapshot, access_token: &str) {
+        assert_eq!(snapshot.host, "https://cli-chat-proxy.grok.com");
+        assert!(!snapshot.host.contains("api.x.ai"));
+        assert_eq!(snapshot.authorization, format!("Bearer {access_token}"));
+        assert_eq!(snapshot.token_auth, "xai-grok-cli");
+        assert_eq!(snapshot.client_id, "grok-shell");
+        assert_eq!(snapshot.client_version, "0.2.93");
+        assert_eq!(snapshot.accept, "text/event-stream");
+    }
+
+    fn assert_subscription_client(client: &rig::providers::xai::Client, access_token: &str) {
+        assert_subscription_path(
+            &dispatch_snapshot(client.base_url(), client.headers()),
+            access_token,
+        );
+    }
+
+    async fn grok_dispatch_snapshot(api_key: &str) -> Result<DispatchSnapshot, String> {
+        provider_client!("grok", api_key, |e: String| e, |s: String| s, |client| {
+            Ok(dispatch_snapshot(client.base_url(), client.headers()))
+        })
+    }
+
+    #[tokio::test]
+    async fn grok_dispatch_constructs_subscription_client() {
+        let snapshot = grok_dispatch_snapshot("grok-oauth-access-token")
+            .await
+            .unwrap();
+        assert_subscription_path(&snapshot, "grok-oauth-access-token");
+    }
+
+    #[tokio::test]
+    async fn grok_dispatch_uses_stored_oauth_provider_credential() {
+        let _lock = crate::keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::keychain::isolate_config_home(dir.path());
+        let grok_dir = dir.path().join("gospel").join("grok");
+        std::fs::create_dir_all(&grok_dir).unwrap();
+        std::fs::write(
+            grok_dir.join("auth.json"),
+            r#"{"access_token":"stored-grok-oauth-token","refresh_token":"stored-refresh"}"#,
+        )
+        .unwrap();
+
+        let snapshot = grok_dispatch_snapshot("").await.unwrap();
+        assert_subscription_path(&snapshot, "stored-grok-oauth-token");
+    }
+
     #[test]
-    fn stored_oauth_credential_constructs_subscription_client() {
+    fn stored_oauth_provider_credential_constructs_subscription_client() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth.json");
         std::fs::write(
