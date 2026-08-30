@@ -575,6 +575,7 @@ impl ModelRegistry {
         GITHUB_COPILOT_TOOL_CAPABLE_MODELS.contains(&model)
     }
 
+    #[allow(dead_code)]
     pub fn is_oauth_provider(provider: &str) -> bool {
         crate::providers::is_oauth_provider(provider)
     }
@@ -589,7 +590,7 @@ impl ModelRegistry {
 
     pub fn all_providers() -> &'static [&'static str] {
         static PROVIDERS: Lazy<Vec<&'static str>> =
-            Lazy::new(|| crate::providers::provider_ids());
+            Lazy::new(crate::providers::provider_ids);
         PROVIDERS.as_slice()
     }
 
