@@ -100,94 +100,111 @@ export function Toast({ toast, onDismiss }: ToastProps) {
   };
 
   return (
-    <div
-      className={`toast-notification flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] pointer-events-auto max-w-[380px] ${TYPE_STYLES[toast.type]}`}
-      role="alert"
-      data-dismissing={isDismissing ? "true" : undefined}
-      onTransitionEnd={handleTransitionEnd}
-    >
-      <div className={`shrink-0 flex items-center ${ICON_STYLES[toast.type]}`}>
-        {toast.type === "error" && (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
-            <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
-            <line
-              x1="7"
-              y1="4"
-              x2="7"
-              y2="7.5"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-            />
-            <circle cx="7" cy="10" r="0.6" />
-          </svg>
-        )}
-        {toast.type === "success" && (
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 14 14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            aria-hidden="true"
-          >
-            <path d="M3 7L6 10L11 4" />
-          </svg>
-        )}
-        {toast.type === "info" && (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
-            <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
-            <circle cx="7" cy="4.5" r="0.6" />
-            <line
-              x1="7"
-              y1="6.5"
-              x2="7"
-              y2="10"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-            />
-          </svg>
-        )}
-      </div>
-      <span className="flex-1 text-[13px] text-text-secondary leading-snug">{toast.message}</span>
-      <div className="flex gap-1.5 shrink-0">
-        {toast.action && (
-          <Button
-            variant="secondary"
-            size="xs"
-            onClick={(e) => {
-              e.stopPropagation();
-              toast.action!.onClick();
-              triggerDismiss();
-            }}
-          >
-            {toast.action.label}
-          </Button>
-        )}
-        {toast.secondaryAction && (
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={(e) => {
-              e.stopPropagation();
-              toast.secondaryAction!.onClick();
-              triggerDismiss();
-            }}
-          >
-            {toast.secondaryAction.label}
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          onClick={triggerDismiss}
-          aria-label="Dismiss notification"
+    <div className="toast-stack-item" data-dismissing={isDismissing ? "true" : undefined}>
+      <div className="toast-stack-item-clip">
+        <div
+          className={`toast-notification flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] pointer-events-auto max-w-[380px] ${TYPE_STYLES[toast.type]}`}
+          role="alert"
+          onTransitionEnd={handleTransitionEnd}
         >
-          <span aria-hidden="true">×</span>
-        </Button>
+          <div className={`shrink-0 flex items-center ${ICON_STYLES[toast.type]}`}>
+            {toast.type === "error" && (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 14 14"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
+                <line
+                  x1="7"
+                  y1="4"
+                  x2="7"
+                  y2="7.5"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                />
+                <circle cx="7" cy="10" r="0.6" />
+              </svg>
+            )}
+            {toast.type === "success" && (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 14 14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M3 7L6 10L11 4" />
+              </svg>
+            )}
+            {toast.type === "info" && (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 14 14"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.2" />
+                <circle cx="7" cy="4.5" r="0.6" />
+                <line
+                  x1="7"
+                  y1="6.5"
+                  x2="7"
+                  y2="10"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            )}
+          </div>
+          <span className="flex-1 text-[13px] text-text-secondary leading-snug">
+            {toast.message}
+          </span>
+          <div className="flex gap-1.5 shrink-0">
+            {toast.action && (
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toast.action!.onClick();
+                  triggerDismiss();
+                }}
+              >
+                {toast.action.label}
+              </Button>
+            )}
+            {toast.secondaryAction && (
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toast.secondaryAction!.onClick();
+                  triggerDismiss();
+                }}
+              >
+                {toast.secondaryAction.label}
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={triggerDismiss}
+              aria-label="Dismiss notification"
+            >
+              <span aria-hidden="true">×</span>
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -202,7 +219,7 @@ export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-20 right-4 z-[--z-toast] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-20 right-4 z-[--z-toast] flex flex-col pointer-events-none">
       {toasts.map((toast) => (
         <Toast key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}

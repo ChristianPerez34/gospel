@@ -1431,11 +1431,30 @@ summary,
   will-change: opacity, transform;
 }
 
-.toast-notification[data-dismissing="true"] {
+.toast-stack-item[data-dismissing="true"] .toast-notification {
   animation: none;
   opacity: 0;
   transform: translateY(4px) scale(0.97);
   pointer-events: none;
+}
+
+.toast-stack-item {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--duration-fast) var(--ease-out-quart);
+}
+
+.toast-stack-item:not(:last-child) .toast-notification {
+  margin-bottom: var(--space-2);
+}
+
+.toast-stack-item[data-dismissing="true"] {
+  grid-template-rows: 0fr;
+}
+
+.toast-stack-item-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 
 @keyframes slide-up {
