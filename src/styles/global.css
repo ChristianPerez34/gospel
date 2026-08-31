@@ -1425,14 +1425,13 @@ summary,
 
 .toast-notification {
   animation: toast-in 0.2s var(--gospel-ease-out-quart);
-  margin-bottom: var(--gospel-space-2);
   transition:
     opacity 150ms var(--gospel-ease-out-quart),
     transform 150ms var(--gospel-ease-out-quart);
   will-change: opacity, transform;
 }
 
-.toast-notification[data-dismissing="true"] {
+.toast-stack-item[data-dismissing="true"] .toast-notification {
   animation: none;
   opacity: 0;
   transform: translateY(4px) scale(0.97);
@@ -1442,7 +1441,11 @@ summary,
 .toast-stack-item {
   display: grid;
   grid-template-rows: 1fr;
-  transition: grid-template-rows var(--gospel-duration-fast) var(--gospel-ease-out-quart);
+  transition: grid-template-rows var(--duration-fast) var(--ease-out-quart);
+}
+
+.toast-stack-item:not(:last-child) .toast-notification {
+  margin-bottom: var(--space-2);
 }
 
 .toast-stack-item[data-dismissing="true"] {

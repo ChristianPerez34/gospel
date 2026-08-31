@@ -105,7 +105,6 @@ export function Toast({ toast, onDismiss }: ToastProps) {
         <div
           className={`toast-notification flex items-center gap-2.5 py-2.5 px-3.5 bg-surface-elevated border rounded-md shadow-[var(--shadow-floating)] pointer-events-auto max-w-[380px] ${TYPE_STYLES[toast.type]}`}
           role="alert"
-          data-dismissing={isDismissing ? "true" : undefined}
           onTransitionEnd={handleTransitionEnd}
         >
           <div className={`shrink-0 flex items-center ${ICON_STYLES[toast.type]}`}>
