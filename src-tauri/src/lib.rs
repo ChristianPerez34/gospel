@@ -1368,6 +1368,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.chat_history,
                 request.matched_skills_section,
                 request.invoked_skill_section,
+                request.memory_section,
                 skill_script_tool,
                 move |event| on_event(session_turn::SessionTurnEvent::from(event)),
             )
@@ -1550,6 +1551,7 @@ async fn complete_streaming(
             llm: &adapters,
             events: &adapters,
             verification: &adapters,
+            memory: &session_turn::NoOpMemory,
         },
         session_turn::StreamingTurnRequest {
             run_id,

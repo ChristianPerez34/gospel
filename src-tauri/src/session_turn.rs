@@ -48,6 +48,7 @@ pub struct StreamingTurnDependencies<'a> {
     pub llm: &'a dyn SessionTurnLlm,
     pub events: &'a dyn SessionTurnEvents,
     pub verification: &'a dyn SessionTurnVerification,
+    pub memory: &'a dyn SessionTurnMemory,
 }
 
 pub trait SessionTurnWorkspace: Send + Sync {
@@ -126,6 +127,7 @@ pub struct SessionTurnStreamRequest<'a> {
     pub chat_history: Vec<Message>,
     pub matched_skills_section: Option<String>,
     pub invoked_skill_section: Option<String>,
+    pub memory_section: Option<String>,
     pub skill_script_tool: Option<RunSkillScriptTool>,
 }
 
@@ -168,6 +170,35 @@ pub trait SessionTurnEvents: Send + Sync {
 
 pub trait SessionTurnVerification: Send + Sync {
     fn schedule_verification(&self, job: VerificationJobRequest);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryRecallRequest {
+    pub prompt: String,
+    pub session_id: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryIngestJobRequest {
+    pub display_transcript: String,
+    pub session_id: String,
+    pub workspace_id: Option<String>,
+}
+
+pub trait SessionTurnMemory: Send + Sync {
+    fn recall(&self, request: MemoryRecallRequest) -> Result<Option<String>, String>;
+    fn schedule_ingest(&self, job: MemoryIngestJobRequest);
+}
+
+pub struct NoOpMemory;
+
+impl SessionTurnMemory for NoOpMemory {
+    fn recall(&self, _request: MemoryRecallRequest) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn schedule_ingest(&self, _job: MemoryIngestJobRequest) {}
 }
 
 // ============================================================================
@@ -387,6 +418,14 @@ pub async fn run_streaming_turn(
         tracing::warn!("Unknown skill '{}'; proceeding as normal turn", name);
     }
     let skill_script_tool = skill_script_tool(&all_skills, workspace_path.clone());
+    let memory_section = match deps.memory.recall(MemoryRecallRequest {
+        prompt: request.prompt.clone(),
+        session_id: request.session_id.clone(),
+        workspace_id: workspace_resolution.workspace_id.clone(),
+    }) {
+        Ok(section) => section.filter(|value| !value.trim().is_empty()),
+        Err(_) => None,
+    };
 
     let trace_sid = request.session_id.clone().unwrap_or_default();
     let trace_role = "main";
@@ -410,6 +449,7 @@ pub async fn run_streaming_turn(
                 chat_history,
                 matched_skills_section: prompt_preparation.matched_skills_section.clone(),
                 invoked_skill_section: prompt_preparation.invoked_skill_section.clone(),
+                memory_section,
                 skill_script_tool,
             },
             Box::new(move |event| {
@@ -444,6 +484,11 @@ pub async fn run_streaming_turn(
                     }
                     deps.conversation
                         .store_history(sid, persistence.history.clone());
+                    deps.memory.schedule_ingest(MemoryIngestJobRequest {
+                        display_transcript: persistence.display_transcript.clone(),
+                        session_id: sid.clone(),
+                        workspace_id: workspace_resolution.workspace_id.clone(),
+                    });
                 }
             }
 
@@ -1361,6 +1406,7 @@ mod tests {
         chat_history: Vec<Message>,
         matched_skills_section: Option<String>,
         invoked_skill_section: Option<String>,
+        memory_section: Option<String>,
         skill_script_available: bool,
     }
 
@@ -1388,6 +1434,11 @@ mod tests {
         done_responses: Mutex<Vec<(String, String)>>,
         emitted_errors: Mutex<Vec<(String, String)>>,
         verifications: Mutex<Vec<VerificationJobRequest>>,
+        persist_result: Mutex<Result<(), String>>,
+        recalled_section: Option<String>,
+        recall_error: Option<String>,
+        recall_requests: Mutex<Vec<MemoryRecallRequest>>,
+        ingests: Mutex<Vec<MemoryIngestJobRequest>>,
     }
 
     impl FakeSessionTurnAdapters {
@@ -1419,6 +1470,11 @@ mod tests {
                 done_responses: Mutex::new(Vec::new()),
                 emitted_errors: Mutex::new(Vec::new()),
                 verifications: Mutex::new(Vec::new()),
+                persist_result: Mutex::new(Ok(())),
+                recalled_section: None,
+                recall_error: None,
+                recall_requests: Mutex::new(Vec::new()),
+                ingests: Mutex::new(Vec::new()),
             }
         }
 
@@ -1432,6 +1488,7 @@ mod tests {
                 llm: self,
                 events: self,
                 verification: self,
+                memory: self,
             }
         }
     }
@@ -1494,6 +1551,7 @@ mod tests {
             display_transcript: &str,
             model_history: Option<&str>,
         ) -> Result<(), String> {
+            self.persist_result.lock().unwrap().clone()?;
             self.persisted_turns.lock().unwrap().push(PersistedTurn {
                 session_id: session_id.to_string(),
                 display_transcript: display_transcript.to_string(),
@@ -1568,6 +1626,7 @@ mod tests {
                     chat_history: request.chat_history.clone(),
                     matched_skills_section: request.matched_skills_section.clone(),
                     invoked_skill_section: request.invoked_skill_section.clone(),
+                    memory_section: request.memory_section.clone(),
                     skill_script_available: request.skill_script_tool.is_some(),
                 });
             on_event(SessionTurnEvent::TextToken("hello".to_string()));
@@ -1649,6 +1708,20 @@ mod tests {
     impl SessionTurnVerification for FakeSessionTurnAdapters {
         fn schedule_verification(&self, job: VerificationJobRequest) {
             self.verifications.lock().unwrap().push(job);
+        }
+    }
+
+    impl SessionTurnMemory for FakeSessionTurnAdapters {
+        fn recall(&self, request: MemoryRecallRequest) -> Result<Option<String>, String> {
+            self.recall_requests.lock().unwrap().push(request);
+            if let Some(error) = &self.recall_error {
+                return Err(error.clone());
+            }
+            Ok(self.recalled_section.clone())
+        }
+
+        fn schedule_ingest(&self, job: MemoryIngestJobRequest) {
+            self.ingests.lock().unwrap().push(job);
         }
     }
 
@@ -2371,10 +2444,7 @@ mod tests {
                 1,
             )]
         );
-        assert_eq!(
-            adapters.done_responses.lock().unwrap().len(),
-            1
-        );
+        assert_eq!(adapters.done_responses.lock().unwrap().len(), 1);
         assert_eq!(
             adapters.done_responses.lock().unwrap()[0].0,
             "run-success".to_string()
@@ -2653,6 +2723,396 @@ mod tests {
         assert_eq!(display[1]["content"], "Agent stopped");
         assert_eq!(display[1]["error"], false);
         assert_eq!(display[1]["controlled_stop"], true);
+        assert!(adapters.ingests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn production_memory_adapter_is_a_noop() {
+        let memory = NoOpMemory;
+        assert_eq!(
+            memory
+                .recall(MemoryRecallRequest {
+                    prompt: "write code".to_string(),
+                    session_id: Some("session-1".to_string()),
+                    workspace_id: Some("workspace-1".to_string()),
+                })
+                .unwrap(),
+            None
+        );
+        memory.schedule_ingest(MemoryIngestJobRequest {
+            display_transcript: "[]".to_string(),
+            session_id: "session-1".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+        });
+    }
+
+    fn successful_history_turn(prompt: &str, reply: &str) -> StreamCompletionResult {
+        StreamCompletionResult {
+            full_response: reply.to_string(),
+            history: Some(vec![user_message(prompt), assistant_message(reply)]),
+            source_edit_succeeded: false,
+            prompt_tokens: 4,
+            response_tokens: 2,
+            tool_calls: 0,
+        }
+    }
+
+    fn streaming_request(
+        run_id: &str,
+        prompt: &str,
+        session_id: Option<&str>,
+    ) -> StreamingTurnRequest {
+        StreamingTurnRequest {
+            run_id: run_id.to_string(),
+            provider: "openai".to_string(),
+            prompt: prompt.to_string(),
+            model: "gpt-test".to_string(),
+            variant: None,
+            session_id: session_id.map(str::to_string),
+            invoked_skill: None,
+            delegate_provider: "openai".to_string(),
+            delegate_model: "gpt-4o-mini".to_string(),
+            delegate_api_key: "api-key".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_turn_recalls_memory_from_user_prompt_before_stream() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "write code",
+            "```rust\nfn main() {}\n```",
+        )));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-recall", "write code", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let recalls = adapters.recall_requests.lock().unwrap();
+        assert_eq!(recalls.len(), 1);
+        assert_eq!(recalls[0].prompt, "write code");
+        assert_eq!(recalls[0].session_id.as_deref(), Some("session-1"));
+        assert_eq!(recalls[0].workspace_id.as_deref(), Some("workspace-1"));
+        assert!(adapters.stream_requests.lock().unwrap().len() == 1);
+    }
+
+    #[tokio::test]
+    async fn empty_memory_recall_injects_no_section_and_still_streams() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "write code",
+            "```rust\nfn main() {}\n```",
+        )));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-empty-recall", "write code", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        assert_eq!(adapters.recall_requests.lock().unwrap().len(), 1);
+        assert!(adapters.stream_requests.lock().unwrap()[0]
+            .memory_section
+            .is_none());
+        assert_eq!(adapters.done_responses.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn recalled_memory_is_a_harness_profile_sibling_not_appended_to_the_user_prompt() {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
+            successful_history_turn("write code", "```rust\nfn main() {}\n```"),
+        ));
+        adapters.recalled_section = Some("## Memory\nprefer bun".to_string());
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-memory-section", "write code", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let stream_request = &adapters.stream_requests.lock().unwrap()[0];
+        assert_eq!(stream_request.prompt, "write code");
+        assert_eq!(
+            stream_request.memory_section.as_deref(),
+            Some("## Memory\nprefer bun")
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_recall_error_is_ignored_and_the_turn_still_streams() {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
+            successful_history_turn("write code", "```rust\nfn main() {}\n```"),
+        ));
+        adapters.recall_error = Some("store unavailable".to_string());
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-recall-error", "write code", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        assert_eq!(adapters.recall_requests.lock().unwrap().len(), 1);
+        assert!(adapters.stream_requests.lock().unwrap()[0]
+            .memory_section
+            .is_none());
+        assert_eq!(adapters.done_responses.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn skill_match_keys_off_the_user_prompt_not_recalled_memory() {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
+            successful_history_turn("debug the failing stream", "ok"),
+        ));
+        adapters.skills = vec![skill(
+            "diagnose",
+            "debug broken behavior and failing tests",
+            "Reproduce first.",
+        )];
+        adapters.recalled_section = Some("## Memory\nprefer bun not npm".to_string());
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request(
+                "run-skill-match",
+                "debug the failing stream",
+                Some("session-1"),
+            ),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let stream_request = &adapters.stream_requests.lock().unwrap()[0];
+        assert_eq!(stream_request.prompt, "debug the failing stream");
+        assert!(stream_request
+            .matched_skills_section
+            .as_deref()
+            .unwrap()
+            .contains("diagnose"));
+        assert_eq!(
+            stream_request.memory_section.as_deref(),
+            Some("## Memory\nprefer bun not npm")
+        );
+        assert_eq!(
+            adapters.recall_requests.lock().unwrap()[0].prompt,
+            "debug the failing stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoked_skill_still_keys_off_the_user_prompt_not_recalled_memory() {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
+            successful_history_turn("write regression tests", "ok"),
+        ));
+        adapters.skills = vec![skill(
+            "tdd",
+            "test driven development workflow",
+            "Use red-green-refactor.",
+        )];
+        adapters.recalled_section = Some("## Memory\nprefer bun not npm".to_string());
+
+        let mut request = streaming_request(
+            "run-invoked-skill",
+            "/tdd write regression tests",
+            Some("session-1"),
+        );
+        request.invoked_skill = Some(InvokedSkillRequest {
+            name: "tdd".to_string(),
+            args: Some("write regression tests".to_string()),
+        });
+
+        let result = run_streaming_turn(adapters.deps(), request).await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let stream_request = &adapters.stream_requests.lock().unwrap()[0];
+        assert_eq!(stream_request.prompt, "write regression tests");
+        assert!(stream_request.matched_skills_section.is_none());
+        assert!(stream_request
+            .invoked_skill_section
+            .as_deref()
+            .unwrap()
+            .contains("Use red-green-refactor."));
+        assert_eq!(
+            adapters.recall_requests.lock().unwrap()[0].prompt,
+            "/tdd write regression tests"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_persist_schedules_memory_ingest_once() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "write code",
+            "```rust\nfn main() {}\n```",
+        )));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-ingest", "write code", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let ingests = adapters.ingests.lock().unwrap();
+        assert_eq!(ingests.len(), 1);
+        assert_eq!(ingests[0].session_id, "session-1");
+        assert_eq!(ingests[0].workspace_id.as_deref(), Some("workspace-1"));
+        let display: serde_json::Value =
+            serde_json::from_str(&ingests[0].display_transcript).unwrap();
+        assert_eq!(
+            display,
+            json!([
+                { "role": "user", "content": "write code" },
+                {
+                    "role": "assistant",
+                    "content": "```rust\nfn main() {}\n```",
+                    "blocks": [
+                        { "kind": "text", "id": "text-0", "text": "```rust\nfn main() {}\n```" }
+                    ]
+                },
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_failure_does_not_schedule_memory_ingest() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "write code",
+            "```rust\nfn main() {}\n```",
+        )));
+        *adapters.persist_result.lock().unwrap() = Err("disk full".to_string());
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-persist-fail", "write code", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        assert_eq!(adapters.recall_requests.lock().unwrap().len(), 1);
+        assert!(adapters.ingests.lock().unwrap().is_empty());
+        assert!(adapters.statuses.lock().unwrap().is_empty());
+        assert!(adapters.persisted_turns.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_failure_does_not_schedule_memory_ingest() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
+            "boom".to_string(),
+        )));
+        *adapters.failure_snapshot.lock().unwrap() = Some(SessionFailureSnapshot {
+            display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
+            model_history: Some(r#"[{"provider":"history"}]"#.to_string()),
+        });
+
+        let err = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-provider-fail", "hi", Some("session-1")),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.code, "PROVIDER_ERROR");
+        assert!(adapters.ingests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_only_session_still_recalls_and_schedules_memory_ingest() {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
+            successful_history_turn("inspect", "looks fine"),
+        ));
+        adapters.session_mode = crate::session_mode::SESSION_MODE_READ_ONLY.to_string();
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-read-only-memory", "inspect", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let recalls = adapters.recall_requests.lock().unwrap();
+        assert_eq!(recalls.len(), 1);
+        assert_eq!(recalls[0].prompt, "inspect");
+        drop(recalls);
+
+        let ingests = adapters.ingests.lock().unwrap();
+        assert_eq!(ingests.len(), 1);
+        assert_eq!(ingests[0].session_id, "session-1");
+        assert_eq!(ingests[0].workspace_id.as_deref(), Some("workspace-1"));
+    }
+
+    #[tokio::test]
+    async fn unscoped_session_recalls_memory_without_a_workspace_id() {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
+            successful_history_turn("hello", "hi there"),
+        ));
+        adapters.active_workspace = None;
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-unscoped", "hello", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let recalls = adapters.recall_requests.lock().unwrap();
+        assert_eq!(recalls.len(), 1);
+        assert_eq!(recalls[0].prompt, "hello");
+        assert_eq!(recalls[0].session_id.as_deref(), Some("session-1"));
+        assert!(recalls[0].workspace_id.is_none());
+        drop(recalls);
+
+        let ingests = adapters.ingests.lock().unwrap();
+        assert_eq!(ingests.len(), 1);
+        assert_eq!(ingests[0].session_id, "session-1");
+        assert!(ingests[0].workspace_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn successful_stream_without_model_history_does_not_schedule_memory_ingest() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+            full_response: "done".to_string(),
+            history: None,
+            source_edit_succeeded: false,
+            prompt_tokens: 1,
+            response_tokens: 1,
+            tool_calls: 0,
+        }));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-no-history", "hello", Some("session-1")),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        assert_eq!(adapters.recall_requests.lock().unwrap().len(), 1);
+        assert!(adapters.ingests.lock().unwrap().is_empty());
+        assert!(adapters.persisted_turns.lock().unwrap().is_empty());
     }
 
     struct TestPersistence {
@@ -2671,7 +3131,10 @@ mod tests {
 
     impl TurnPersistenceAdapter for TestPersistence {
         fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String> {
-            self.drafts_activated.lock().unwrap().push(session_id.to_string());
+            self.drafts_activated
+                .lock()
+                .unwrap()
+                .push(session_id.to_string());
             Ok(())
         }
 
@@ -2695,7 +3158,11 @@ mod tests {
             Ok(())
         }
 
-        fn save_turn_stopped(&self, _session_id: &str, _stopped_reason: &str) -> Result<(), String> {
+        fn save_turn_stopped(
+            &self,
+            _session_id: &str,
+            _stopped_reason: &str,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -2714,10 +3181,11 @@ mod tests {
 
     impl TurnEventEmitter for TestEmitter {
         fn emit_event(&self, session_id: &str, run_id: &str, event: &SessionTurnEvent) {
-            self.emitted
-                .lock()
-                .unwrap()
-                .push((session_id.to_string(), run_id.to_string(), event.clone()));
+            self.emitted.lock().unwrap().push((
+                session_id.to_string(),
+                run_id.to_string(),
+                event.clone(),
+            ));
         }
     }
 
@@ -2734,10 +3202,7 @@ mod tests {
             on_event(SessionTurnEvent::TextToken(self.response.clone()));
             let result = StreamCompletionResult {
                 full_response: self.response.clone(),
-                history: Some(vec![
-                    user_message("Hi"),
-                    assistant_message(&self.response),
-                ]),
+                history: Some(vec![user_message("Hi"), assistant_message(&self.response)]),
                 source_edit_succeeded: false,
                 prompt_tokens: 10,
                 response_tokens: 15,
