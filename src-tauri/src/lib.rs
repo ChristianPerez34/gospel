@@ -1541,6 +1541,7 @@ async fn complete_streaming(
     // independently (errors surface via `llm-error` events regardless).
     let session_key = session_id.clone();
     let cancelled_run_id = run_id.clone();
+    let memory = session_turn::NoOpMemory;
     let turn_future = session_turn::run_streaming_turn(
         session_turn::StreamingTurnDependencies {
             workspace: &adapters,
@@ -1551,7 +1552,7 @@ async fn complete_streaming(
             llm: &adapters,
             events: &adapters,
             verification: &adapters,
-            memory: &session_turn::NoOpMemory,
+            memory: &memory,
         },
         session_turn::StreamingTurnRequest {
             run_id,

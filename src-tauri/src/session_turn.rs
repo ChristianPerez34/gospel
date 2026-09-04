@@ -424,7 +424,14 @@ pub async fn run_streaming_turn(
         workspace_id: workspace_resolution.workspace_id.clone(),
     }) {
         Ok(section) => section.filter(|value| !value.trim().is_empty()),
-        Err(_) => None,
+        Err(error) => {
+            tracing::warn!(
+                "Memory recall failed for session {}: {}",
+                request.session_id.as_deref().unwrap_or("<none>"),
+                error
+            );
+            None
+        }
     };
 
     let trace_sid = request.session_id.clone().unwrap_or_default();
@@ -3113,6 +3120,33 @@ mod tests {
         assert_eq!(adapters.recall_requests.lock().unwrap().len(), 1);
         assert!(adapters.ingests.lock().unwrap().is_empty());
         assert!(adapters.persisted_turns.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_only_turn_recalls_memory_without_scheduling_ingest() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "hello", "hi there",
+        )));
+
+        let result = run_streaming_turn(
+            adapters.deps(),
+            streaming_request("run-local-only", "hello", None),
+        )
+        .await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let recalls = adapters.recall_requests.lock().unwrap();
+        assert_eq!(recalls.len(), 1);
+        assert_eq!(recalls[0].prompt, "hello");
+        assert!(recalls[0].session_id.is_none());
+        assert_eq!(recalls[0].workspace_id.as_deref(), Some("workspace-1"));
+        drop(recalls);
+
+        assert_eq!(adapters.stream_requests.lock().unwrap().len(), 1);
+        assert!(adapters.ingests.lock().unwrap().is_empty());
+        assert_eq!(adapters.done_responses.lock().unwrap().len(), 1);
     }
 
     struct TestPersistence {
