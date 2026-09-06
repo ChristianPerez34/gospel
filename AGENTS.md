@@ -30,7 +30,7 @@ Single-context layout — one `CONTEXT.md` and `docs/adr/` at the repo root. See
 
 ### Skill system
 
-Gospel discovers user-authored skills from the workspace and global data directory. See `docs/agents/skills.md` for the system overview, matcher spec, and slash command semantics. See `docs/agents/skills-frontmatter.md` for the SKILL.md schema and parser rules. See `docs/agents/skills-scripts.md` for script execution rules.
+Gospel discovers user-authored skills from the workspace and global data directory. See `docs/agents/skills.md` for the system overview, matcher spec, slash command semantics, and skill optimization. See `docs/agents/skills-frontmatter.md` for the SKILL.md schema and parser rules. See `docs/agents/skills-scripts.md` for script execution rules. See ADR-0011 for staged optimization.
 
 ## Shell, git, and GitHub CLI tools
 

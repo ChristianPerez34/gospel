@@ -214,19 +214,20 @@ impl Tool for RunSkillScriptTool {
             });
         };
 
-        let resolved = match resolve_skill_script(skill, &args.script, self.workspace_path.as_deref()) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                return Ok(RunSkillScriptOutput {
-                    success: false,
-                    stdout: String::new(),
-                    stderr: error.clone(),
-                    exit_code: -1,
-                    truncated: false,
-                    error: Some(error),
-                });
-            }
-        };
+        let resolved =
+            match resolve_skill_script(skill, &args.script, self.workspace_path.as_deref()) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return Ok(RunSkillScriptOutput {
+                        success: false,
+                        stdout: String::new(),
+                        stderr: error.clone(),
+                        exit_code: -1,
+                        truncated: false,
+                        error: Some(error),
+                    });
+                }
+            };
 
         let (command_label, reason) =
             build_script_approval_label(&args.skill, &args.script, Some(&resolved.interpreter));
@@ -900,7 +901,9 @@ async fn execute_skill_script(
         .and_then(|e| e.to_str())
         .map(|e| format!(".{}", e))
         .unwrap_or_default();
-    let parent_dir = canonical_script.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let parent_dir = canonical_script
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
 
     let mut verified_script = tempfile::Builder::new()
         .prefix("gospel-skill-")
@@ -1584,16 +1587,14 @@ mod tests {
     #[test]
     fn build_script_approval_label_falls_back_when_no_interpreter() {
         let (label, reason) = build_script_approval_label("my-skill", "hello", None);
-        assert_eq!(
-            label,
-            "Execute skill script 'hello' for skill 'my-skill'"
-        );
+        assert_eq!(label, "Execute skill script 'hello' for skill 'my-skill'");
         assert_eq!(reason, "Run script at my-skill/scripts/hello");
     }
 
     #[test]
     fn build_script_approval_label_reproduces_script_name() {
-        let (label, _) = build_script_approval_label("diagnose-skill", "load-context", Some("bash"));
+        let (label, _) =
+            build_script_approval_label("diagnose-skill", "load-context", Some("bash"));
         assert!(
             label.contains("load-context"),
             "expected script name in label, got: {label}"

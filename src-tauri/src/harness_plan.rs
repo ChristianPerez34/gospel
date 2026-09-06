@@ -178,11 +178,8 @@ pub fn parse_plan_markdown(content: &str) -> PlanFile {
                     let mut g = String::new();
                     flush_paragraph(&mut paragraph, &mut g);
                     if g.is_empty() && plan.next_action.is_none() {
-                        plan.next_action = Some(format!(
-                            "{}{}",
-                            if done { "[x] " } else { "[ ] " },
-                            text
-                        ));
+                        plan.next_action =
+                            Some(format!("{}{}", if done { "[x] " } else { "[ ] " }, text));
                     }
                 } else {
                     paragraph.push(line.to_string());
@@ -265,8 +262,9 @@ fn parse_heading(line: &str) -> Option<Section> {
     match name.as_str() {
         "goal" => Some(Section::Goal),
         "steps" => Some(Section::Steps),
-        "evidence / verification" | "evidence / verifications" | "evidence"
-        | "verification" => Some(Section::Evidence),
+        "evidence / verification" | "evidence / verifications" | "evidence" | "verification" => {
+            Some(Section::Evidence)
+        }
         "open questions / risks" | "open questions" | "risks" => Some(Section::OpenQuestions),
         "next action" => Some(Section::NextAction),
         _ => None,
@@ -341,10 +339,7 @@ Ready for review. Future phases can add overrides.
         assert!(plan.steps[1].done);
         assert!(!plan.steps[2].done);
         assert!(!plan.steps[3].done);
-        assert_eq!(
-            plan.steps[2].text,
-            "Wire the tools into llm.rs."
-        );
+        assert_eq!(plan.steps[2].text, "Wire the tools into llm.rs.");
         assert_eq!(plan.evidence.len(), 2);
         assert!(plan.evidence[0].contains("cargo test shell_tools"));
         assert_eq!(plan.open_questions.len(), 2);
@@ -412,7 +407,8 @@ Ready for review. Future phases can add overrides.
 
     #[test]
     fn partial_plan_goal_and_steps_only() {
-        let content = "## Goal\n\nShip the spike.\n\n## Steps\n\n- [ ] Investigate.\n- [x] Write parser.\n";
+        let content =
+            "## Goal\n\nShip the spike.\n\n## Steps\n\n- [ ] Investigate.\n- [x] Write parser.\n";
         let plan = parse_plan_markdown(content);
         assert_eq!(plan.goal.as_deref(), Some("Ship the spike."));
         assert_eq!(plan.steps.len(), 2);

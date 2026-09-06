@@ -41,6 +41,7 @@ interface CommandPaletteProps {
   workspaceNames?: Record<string, string>;
   recentWorkspaces?: Workspace[];
   onSelectWorkspace?: (workspace: Workspace) => boolean | undefined;
+  onOpenSkillOpt?: () => void;
 }
 
 function includesQuery(result: PaletteResult, query: string) {
@@ -89,6 +90,7 @@ export function CommandPalette({
   workspaceNames,
   recentWorkspaces = [],
   onSelectWorkspace,
+  onOpenSkillOpt,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -250,6 +252,19 @@ export function CommandPalette({
         keywords: "workspace switch directory",
         action: closeAfter(onOpenWorkspaceSwitcher),
       },
+      ...(onOpenSkillOpt
+        ? [
+            {
+              id: "optimize-skill",
+              group: "Commands" as const,
+              icon: "S",
+              label: "Optimize skill",
+              detail: "Harvest sessions and stage a gated skill edit",
+              keywords: "optimize skill skillopt stage adopt tdd",
+              action: closeAfter(onOpenSkillOpt),
+            },
+          ]
+        : []),
       ...modelResults,
     ];
 
@@ -273,6 +288,7 @@ export function CommandPalette({
     onSelectWorkspace,
     onVariantChange,
     onToggleSessions,
+    onOpenSkillOpt,
     query,
     recentWorkspaces,
     selectedModelId,

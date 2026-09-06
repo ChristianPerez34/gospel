@@ -140,6 +140,16 @@ describe("CommandPalette", () => {
     expect(onVariantChange).toHaveBeenCalledWith(null);
   });
 
+  it("opens skill optimization from the commands group", () => {
+    const onOpenSkillOpt = vi.fn();
+    renderPalette({ onOpenSkillOpt });
+    fireEvent.change(screen.getByLabelText("Search commands"), {
+      target: { value: "optimize skill" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Optimize skill/ }));
+    expect(onOpenSkillOpt).toHaveBeenCalled();
+  });
+
   it("lists matching workspaces under Workspaces and switches on select", () => {
     const gospelApp: Workspace = {
       id: "w1",

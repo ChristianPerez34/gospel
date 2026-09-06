@@ -1,10 +1,10 @@
-use std::fmt;
-use std::path::PathBuf;
-use std::sync::Arc;
 use crate::review::multi::{run_multi_focus_review, MultiReviewResult};
 use crate::review::{
     run_review, ReviewConfig, ReviewFocus, ReviewMode, ReviewProgressEmitter, ReviewResult,
 };
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// The primary entry point for code review execution.
 ///
@@ -167,7 +167,9 @@ fn flatten_multi_review_result(multi_result: MultiReviewResult) -> Result<Review
                 .map(|(f, e)| format!("{f}: {e}"))
                 .collect::<Vec<_>>()
                 .join("; ");
-            Err(format!("Multi-focus review produced no results. Errors: {err_summary}"))
+            Err(format!(
+                "Multi-focus review produced no results. Errors: {err_summary}"
+            ))
         } else {
             Err("Multi-focus review produced no results".to_string())
         }
@@ -177,8 +179,8 @@ fn flatten_multi_review_result(multi_result: MultiReviewResult) -> Result<Review
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use crate::review::{NoopReviewProgressEmitter, ReviewComment, Severity, SignalTier};
+    use std::collections::BTreeMap;
 
     #[tokio::test]
     async fn engine_rejects_empty_focuses_list() {
@@ -230,7 +232,10 @@ mod tests {
             mode_parts(&ReviewMode::PullRequest { pr_number: 42 }),
             ("pr".to_string(), Some(42))
         );
-        assert_eq!(mode_parts(&ReviewMode::FullScan), ("scan".to_string(), None));
+        assert_eq!(
+            mode_parts(&ReviewMode::FullScan),
+            ("scan".to_string(), None)
+        );
     }
 
     fn sample_comment(id: &str, focus: ReviewFocus) -> ReviewComment {
@@ -316,4 +321,3 @@ mod tests {
         );
     }
 }
-

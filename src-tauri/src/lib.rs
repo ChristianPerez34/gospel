@@ -16,14 +16,15 @@ mod llm;
 pub mod mcp;
 mod models;
 mod oauth;
+mod provider_client;
 mod provider_credentials;
 mod providers;
-mod provider_client;
 mod review;
 pub mod session_mode;
 pub mod session_store;
 mod session_turn;
 mod shell_tools;
+mod skill_opt;
 pub mod skills;
 pub mod subprocess_output;
 mod text_utils;
@@ -902,12 +903,7 @@ mod availability_tests {
     fn grok_only_visibility(grok_visible: bool) -> HashMap<String, bool> {
         models::ModelRegistry::all_providers()
             .iter()
-            .map(|&provider| {
-                (
-                    provider.to_string(),
-                    provider == "grok" && grok_visible,
-                )
-            })
+            .map(|&provider| (provider.to_string(), provider == "grok" && grok_visible))
             .collect()
     }
 
@@ -1178,7 +1174,9 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
             .store
             .as_ref()
             .ok_or_else(|| "session store unavailable".to_string())?;
-        if let Some(snapshot) = session_turn::SessionTurnSessions::failure_snapshot(self, session_id) {
+        if let Some(snapshot) =
+            session_turn::SessionTurnSessions::failure_snapshot(self, session_id)
+        {
             let persistence = session_turn::failure_turn_persistence(
                 &snapshot.display_transcript,
                 snapshot.model_history.as_deref(),
@@ -1201,7 +1199,9 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
             .store
             .as_ref()
             .ok_or_else(|| "session store unavailable".to_string())?;
-        if let Some(snapshot) = session_turn::SessionTurnSessions::failure_snapshot(self, session_id) {
+        if let Some(snapshot) =
+            session_turn::SessionTurnSessions::failure_snapshot(self, session_id)
+        {
             let persistence = session_turn::failure_turn_persistence(
                 &snapshot.display_transcript,
                 snapshot.model_history.as_deref(),
@@ -2060,8 +2060,7 @@ fn read_harness_plan(
     // path's `validate_harness_write_target` guard).
     corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &plan_path)
         .map_err(|e| e.to_string())?;
-    let canonical_plan =
-        corpus::symlink_guard::canonical(&plan_path).map_err(|e| e.to_string())?;
+    let canonical_plan = corpus::symlink_guard::canonical(&plan_path).map_err(|e| e.to_string())?;
     if !corpus::symlink_guard::is_within(&workspace_root, &canonical_plan) {
         return Err(format!(
             "Resolved plan path {} escapes the workspace root",
@@ -2105,6 +2104,394 @@ fn reload_skills(
 
     let skills = skill_cache.loader.load(workspace_path.as_deref());
     Ok(skills.iter().map(skills::SkillSummary::from).collect())
+}
+
+const SKILL_OPT_SESSION_CAP: usize = 50;
+
+#[derive(Serialize)]
+struct HarvestSkillTasksResult {
+    skill: String,
+    train: Vec<skill_opt::SkillTask>,
+    selection: Vec<skill_opt::SkillTask>,
+}
+
+fn harvest_workspace_skill_tasks(
+    app_config: &AppConfigState,
+    session_store: &SessionStoreState,
+    skill_name: &str,
+) -> Result<
+    (
+        PathBuf,
+        Vec<skill_opt::SkillTask>,
+        Vec<skill_opt::SkillTask>,
+    ),
+    String,
+> {
+    let workspace = match &app_config.store {
+        Some(store) => store
+            .get_active_workspace()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "No active workspace".to_string())?,
+        None => {
+            return Err(app_config
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "App config store is unavailable".to_string()))
+        }
+    };
+
+    let sessions = match &session_store.store {
+        Some(store) => store
+            .list_sessions_for_workspace(Some(&workspace.id))
+            .map_err(|e| e.to_string())?,
+        None => {
+            return Err(session_store
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "Session store is unavailable".to_string()))
+        }
+    };
+
+    let mut sessions: Vec<_> = sessions.into_iter().take(SKILL_OPT_SESSION_CAP).collect();
+    sessions.reverse();
+
+    let mut transcripts = Vec::new();
+    for record in sessions {
+        let Some(store) = session_store.store.as_ref() else {
+            break;
+        };
+        let Ok(Some(detail)) = store.get_session(&record.id) else {
+            continue;
+        };
+        transcripts.push(skill_opt::HarvestedTranscript {
+            session_id: detail.id,
+            display_transcript: detail.display_transcript,
+        });
+    }
+
+    let tasks = skill_opt::harvest_skill_tasks(skill_name, &transcripts);
+    let (train, selection) = skill_opt::split_skill_tasks(&tasks);
+    Ok((PathBuf::from(workspace.path), train, selection))
+}
+
+#[tauri::command]
+fn harvest_skill_optimization_tasks(
+    app_config: tauri::State<'_, AppConfigState>,
+    session_store: tauri::State<'_, SessionStoreState>,
+    skill_name: String,
+) -> Result<HarvestSkillTasksResult, String> {
+    let (_workspace_path, train, selection) =
+        harvest_workspace_skill_tasks(app_config.inner(), session_store.inner(), &skill_name)?;
+    Ok(HarvestSkillTasksResult {
+        skill: skill_name,
+        train,
+        selection,
+    })
+}
+
+#[tauri::command]
+async fn run_skill_selection_replay(
+    app_config: tauri::State<'_, AppConfigState>,
+    session_store: tauri::State<'_, SessionStoreState>,
+    skill_name: String,
+    candidate_skill_md: String,
+    edits: Vec<skill_opt::SkillEdit>,
+    provider: String,
+    model: String,
+    variant: Option<String>,
+) -> Result<skill_opt::OptimizationConclusion, String> {
+    let (workspace_path, train, selection) =
+        harvest_workspace_skill_tasks(app_config.inner(), session_store.inner(), &skill_name)?;
+    let mut tasks = train;
+    tasks.extend(selection);
+    let current_skill_md = skill_opt::current_skill_document(&workspace_path, &skill_name)
+        .map_err(|e| e.to_string())?;
+    let api_key = provider_credentials::api_key_for_rig(&provider).map_err(|e| e.to_string())?;
+    let workspace = harness_profile::ActiveWorkspaceContext {
+        workspace_path: workspace_path.clone(),
+        corpus_available: false,
+        session_mode: session_mode::SessionMode::ReadOnly,
+    };
+    let executor = skill_opt::LlmStudentExecutor {
+        llm: skill_opt::StreamCompletionStudentLlm {
+            provider: provider.clone(),
+            model: model.clone(),
+            variant,
+            api_key: api_key.clone(),
+            workspace: workspace.clone(),
+        },
+    };
+    let verifier = skill_opt::VerificationAgentVerifier {
+        provider,
+        model,
+        api_key,
+        workspace,
+    };
+    skill_opt::run_selection_replay(
+        &workspace_path,
+        &skill_name,
+        &current_skill_md,
+        &candidate_skill_md,
+        &edits,
+        &tasks,
+        &executor,
+        &verifier,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn optimize_skill_from_sessions(
+    app_config: tauri::State<'_, AppConfigState>,
+    session_store: tauri::State<'_, SessionStoreState>,
+    skill_name: String,
+    provider: String,
+    model: String,
+    variant: Option<String>,
+) -> Result<skill_opt::OptimizationConclusion, String> {
+    let (workspace_path, train, selection) =
+        harvest_workspace_skill_tasks(app_config.inner(), session_store.inner(), &skill_name)?;
+    let mut tasks = train;
+    tasks.extend(selection);
+    let current_skill_md = skill_opt::current_skill_document(&workspace_path, &skill_name)
+        .map_err(|e| e.to_string())?;
+    let api_key = provider_credentials::api_key_for_rig(&provider).map_err(|e| e.to_string())?;
+    let workspace = harness_profile::ActiveWorkspaceContext {
+        workspace_path: workspace_path.clone(),
+        corpus_available: false,
+        session_mode: session_mode::SessionMode::ReadOnly,
+    };
+    let optimizer = skill_opt::StreamCompletionSkillOptimizer {
+        provider: provider.clone(),
+        model: model.clone(),
+        variant: variant.clone(),
+        api_key: api_key.clone(),
+        workspace: workspace.clone(),
+    };
+    let executor = skill_opt::LlmStudentExecutor {
+        llm: skill_opt::StreamCompletionStudentLlm {
+            provider: provider.clone(),
+            model: model.clone(),
+            variant,
+            api_key: api_key.clone(),
+            workspace: workspace.clone(),
+        },
+    };
+    let verifier = skill_opt::VerificationAgentVerifier {
+        provider,
+        model,
+        api_key,
+        workspace,
+    };
+    skill_opt::optimize_and_replay(
+        &workspace_path,
+        &skill_name,
+        &current_skill_md,
+        &tasks,
+        &optimizer,
+        &executor,
+        &verifier,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn apply_skill_edits(
+    skill_md: String,
+    edits: Vec<skill_opt::SkillEdit>,
+    budget: Option<usize>,
+) -> Result<skill_opt::ApplyEditsResult, String> {
+    skill_opt::apply_edits(
+        &skill_md,
+        &edits,
+        budget.unwrap_or(skill_opt::DEFAULT_EDIT_BUDGET),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn evaluate_skill_selection_gate(current: Vec<f64>, candidate: Vec<f64>) -> skill_opt::GateVerdict {
+    skill_opt::evaluate_selection_gate(&current, &candidate)
+}
+
+#[tauri::command]
+fn record_rejected_skill_edits(
+    app_config: tauri::State<'_, AppConfigState>,
+    skill_name: String,
+    edits: Vec<skill_opt::SkillEdit>,
+    current_mean: f64,
+    candidate_mean: f64,
+) -> Result<String, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .ok_or_else(|| "No active workspace".to_string())?,
+        None => {
+            return Err(app_config
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "App config store is unavailable".to_string()))
+        }
+    };
+
+    skill_opt::record_rejected_edits(
+        &workspace_path,
+        &skill_name,
+        &edits,
+        current_mean,
+        candidate_mean,
+    )
+    .map(|path| path.display().to_string())
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn stage_optimized_skill(
+    app_config: tauri::State<'_, AppConfigState>,
+    skill_name: String,
+    skill_md: String,
+) -> Result<String, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .ok_or_else(|| "No active workspace".to_string())?,
+        None => {
+            return Err(app_config
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "App config store is unavailable".to_string()))
+        }
+    };
+
+    skill_opt::stage_skill(&workspace_path, &skill_name, &skill_md)
+        .map(|path| path.display().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn prepare_student_skill_turn(
+    skill_name: String,
+    skill_md: String,
+    prompt: String,
+) -> Result<skill_opt::StudentTurn, String> {
+    skill_opt::prepare_student_turn(&skill_name, &skill_md, &prompt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn conclude_skill_optimization(
+    app_config: tauri::State<'_, AppConfigState>,
+    skill_name: String,
+    candidate_skill_md: String,
+    edits: Vec<skill_opt::SkillEdit>,
+    current_scores: Vec<f64>,
+    candidate_scores: Vec<f64>,
+) -> Result<skill_opt::OptimizationConclusion, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .ok_or_else(|| "No active workspace".to_string())?,
+        None => {
+            return Err(app_config
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "App config store is unavailable".to_string()))
+        }
+    };
+
+    skill_opt::conclude_optimization(
+        &workspace_path,
+        &skill_name,
+        &candidate_skill_md,
+        &edits,
+        &current_scores,
+        &candidate_scores,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct SkillReplayScore {
+    current: Vec<f64>,
+    candidate: Vec<f64>,
+    verdict: skill_opt::GateVerdict,
+}
+
+#[tauri::command]
+fn score_skill_replay(
+    current: Vec<verification::VerificationStatus>,
+    candidate: Vec<verification::VerificationStatus>,
+) -> SkillReplayScore {
+    let (current_scores, candidate_scores) = skill_opt::paired_scores(&current, &candidate);
+    let verdict = skill_opt::evaluate_selection_gate(&current_scores, &candidate_scores);
+    SkillReplayScore {
+        current: current_scores,
+        candidate: candidate_scores,
+        verdict,
+    }
+}
+
+#[tauri::command]
+fn list_staged_skills(
+    app_config: tauri::State<'_, AppConfigState>,
+) -> Result<Vec<skill_opt::StagedSkillSummary>, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .ok_or_else(|| "No active workspace".to_string())?,
+        None => {
+            return Err(app_config
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "App config store is unavailable".to_string()))
+        }
+    };
+
+    skill_opt::list_staged_skills(&workspace_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn adopt_staged_skill(
+    app_config: tauri::State<'_, AppConfigState>,
+    skill_cache: tauri::State<'_, SkillCache>,
+    skill_name: String,
+) -> Result<SkillSummary, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+            .ok_or_else(|| "No active workspace".to_string())?,
+        None => {
+            return Err(app_config
+                .init_warning
+                .clone()
+                .unwrap_or_else(|| "App config store is unavailable".to_string()))
+        }
+    };
+
+    skill_opt::adopt_skill(&workspace_path, &skill_name).map_err(|e| e.to_string())?;
+    skill_cache.loader.invalidate(&workspace_path);
+    let skills = skill_cache.loader.load(Some(&workspace_path));
+    skills
+        .iter()
+        .find(|skill| skill.name == skill_name)
+        .map(skills::SkillSummary::from)
+        .ok_or_else(|| format!("Adopted skill '{skill_name}' was not rediscovered"))
 }
 
 #[tauri::command]
@@ -3086,6 +3473,18 @@ pub fn run() {
             get_active_workspace,
             list_skills,
             reload_skills,
+            harvest_skill_optimization_tasks,
+            run_skill_selection_replay,
+            optimize_skill_from_sessions,
+            apply_skill_edits,
+            evaluate_skill_selection_gate,
+            record_rejected_skill_edits,
+            stage_optimized_skill,
+            prepare_student_skill_turn,
+            conclude_skill_optimization,
+            score_skill_replay,
+            list_staged_skills,
+            adopt_staged_skill,
             create_session,
             update_session_model_selection,
             update_session_mode,
@@ -3364,11 +3763,7 @@ mod streaming_run_handles_tests {
         // Cancelling a session that was never streamed must not error.
         handles.cancel("never-streamed");
         // The map stays empty.
-        assert!(handles
-            .inner
-            .lock()
-            .unwrap()
-            .is_empty());
+        assert!(handles.inner.lock().unwrap().is_empty());
     }
 
     #[test]

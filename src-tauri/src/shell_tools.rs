@@ -576,7 +576,9 @@ fn is_path_like(s: &str) -> bool {
         return false;
     }
     // Reject other clearly non-path-like free-form values (e.g. containing quotes or JSON-like braces/brackets)
-    if s.chars().any(|c| matches!(c, '"' | '\'' | '{' | '}' | '[' | ']')) {
+    if s.chars()
+        .any(|c| matches!(c, '"' | '\'' | '{' | '}' | '[' | ']'))
+    {
         return false;
     }
     true
@@ -593,9 +595,10 @@ fn is_path_like_extended(value: &str) -> bool {
     if value.starts_with(['"', '\'']) {
         return false;
     }
-    if value.chars().any(|c| {
-        c.is_control() || matches!(c, ';' | '|' | '&' | '$' | '`' | '<' | '>')
-    }) {
+    if value
+        .chars()
+        .any(|c| c.is_control() || matches!(c, ';' | '|' | '&' | '$' | '`' | '<' | '>'))
+    {
         return false;
     }
     if value
@@ -1180,9 +1183,7 @@ impl CommandExecutor {
         }
 
         let mut command = tokio::process::Command::new(program);
-        command
-            .args(args)
-            .current_dir(&self.workspace_root);
+        command.args(args).current_dir(&self.workspace_root);
 
         let label = command_label(program, args);
 
@@ -1652,7 +1653,11 @@ mod tests {
         // Allow free-form/whitespace-containing args that might contain secret keywords
         assert_ne!(
             policy.classify_git(
-                &["commit".to_string(), "-m".to_string(), "fixed credentials bug".to_string()],
+                &[
+                    "commit".to_string(),
+                    "-m".to_string(),
+                    "fixed credentials bug".to_string()
+                ],
                 &workspace()
             ),
             blocked
@@ -1688,19 +1693,29 @@ mod tests {
 
     #[test]
     fn rm_rf_root_blocked() {
-        assert!(is_blocked_shell_pattern("rm", &["-rf".to_string(), "/".to_string()]));
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &["-rf".to_string(), "/".to_string()]
+        ));
     }
 
     #[test]
     fn rm_fr_root_blocked() {
-        assert!(is_blocked_shell_pattern("rm", &["-fr".to_string(), "/".to_string()]));
+        assert!(is_blocked_shell_pattern(
+            "rm",
+            &["-fr".to_string(), "/".to_string()]
+        ));
     }
 
     #[test]
     fn rm_long_recursive_force_root_blocked() {
         assert!(is_blocked_shell_pattern(
             "rm",
-            &["--recursive".to_string(), "--force".to_string(), "/".to_string()],
+            &[
+                "--recursive".to_string(),
+                "--force".to_string(),
+                "/".to_string()
+            ],
         ));
     }
 
@@ -1753,11 +1768,7 @@ mod tests {
     fn rm_dir_long_flag_does_not_set_recursive() {
         assert!(!is_blocked_shell_pattern(
             "rm",
-            &[
-                "--dir".to_string(),
-                "--force".to_string(),
-                "/".to_string()
-            ],
+            &["--dir".to_string(), "--force".to_string(), "/".to_string()],
         ));
         assert!(!parse_rm_flags(&["--dir".to_string(), "-d".to_string()]).recursive);
     }
@@ -2138,10 +2149,7 @@ mod tests {
             CommandSafety::ReadOnly
         );
         assert_eq!(
-            policy.classify_git(
-                &["remote".to_string(), "-v".to_string()],
-                &workspace()
-            ),
+            policy.classify_git(&["remote".to_string(), "-v".to_string()], &workspace()),
             CommandSafety::ReadOnly
         );
         assert_eq!(

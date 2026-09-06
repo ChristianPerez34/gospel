@@ -22,11 +22,16 @@ import { SessionDrawer } from "./SessionDrawer";
 import { SettingsModal } from "./SettingsModal";
 import { ToastContainer, useToasts } from "./Toast";
 import { TopBar } from "./TopBar";
+import { SkillOptPanel } from "./SkillOptPanel";
 import { WorkbenchLayout } from "./WorkbenchLayout";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 type SettingsTab = "general" | "models" | "data";
 type TrappedSurface = "sessions" | null;
+
+function isSkillOptPanelRequest(): boolean {
+  return new URLSearchParams(window.location.search).get("panel") === "skill-opt";
+}
 
 interface BackendSessionRecord {
   id: string;
@@ -104,6 +109,7 @@ export function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [skillOptOpen, setSkillOptOpen] = useState(isSkillOptPanelRequest);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
   const commandPaletteOpenRef = useRef(false);
@@ -1015,8 +1021,18 @@ export function AppShell() {
         onVariantChange={applyVariantSelection}
         recentWorkspaces={workspaces}
         onSelectWorkspace={handleSwitchWorkspace}
+        onOpenSkillOpt={() => setSkillOptOpen(true)}
         restoreFocusRef={commandPaletteRestoreRef}
       />
+      {skillOptOpen && (
+        <SkillOptPanel
+          workspacePath={activeWorkspace?.path ?? ""}
+          provider={selectedModel?.provider ?? ""}
+          model={selectedModel?.model ?? ""}
+          variant={selectedModel?.variant ?? null}
+          onClose={() => setSkillOptOpen(false)}
+        />
+      )}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

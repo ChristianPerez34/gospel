@@ -32,6 +32,12 @@
 - **Skill Source**: The origin of a discovered skill. Either `Workspace` (from the active workspace's `.agents/skills/` directory) or `Global` (from the user's global data directory). Workspace skills take precedence over global skills when names collide.
 - **Skill Match**: An automatic per-turn process that compares the user's prompt tokens against the name and description of all discovered skills. The top-3 matches above a score threshold are emitted as a `## Active Skills` section in the system preamble. Workspace skills win score ties over global skills.
 - **Skill Invocation**: A user-initiated slash command (`/<skill-name>`) that suppresses the auto-match list and injects the full skill body into the system preamble for that turn. Unknown skill names fall back to normal turn behaviour with a warning.
+- **Skill Optimization Run**: An offline, opt-in pass that harvests Skill Invocations from Display Transcripts, proposes bounded edits to one skill document, and keeps a candidate only through the Selection Gate. It does not change model weights and does not write discovered skills until Skill Adoption.
+- **Skill Task**: One harvested user prompt used as a scored item during a Skill Optimization Run. Training items generate edit proposals; selection items feed the Selection Gate.
+- **Selection Gate**: The accept/reject rule for a candidate skill: keep it only when its mean score on held-out Skill Tasks is strictly greater than the current skill's mean. Ties reject.
+- **Rejected Edit Buffer**: A record of candidate edits the Selection Gate refused, kept as negative feedback for later proposals and never injected into the agent preamble.
+- **Staged Skill**: A candidate `SKILL.md` written under `.gospel/skill-opt/<name>/` after a Skill Optimization Run. It is inspectable harness substrate, not a discovered Skill, until Skill Adoption.
+- **Skill Adoption**: The explicit user action that copies a Staged Skill into `<workspace>/.agents/skills/<name>/SKILL.md` and reloads discovery. Gospel never auto-writes discovered skills.
 - **Agent Harness**: The totality of surfaces through which a human steers an AI agent's behaviour over a session or across sessions. Borrowed from the framing that code plays three roles: instruction (telling the agent what to do), verification (checking what the agent did), and context (giving the agent information to work with).
 - **Harness Interface**: The complete set of touch-points where steering signals enter the system — the system preamble, skills, tools, conversation history, and any persistent artifacts. The Harness Interface is the boundary between the human's intent and the agent's execution.
 - **Harness Profile**: The resolved subset of the Harness Interface presented to one Agent role for one Turn, based on the role, Active Workspace Context, Session Mode, and corpus availability.
@@ -84,7 +90,7 @@ These mechanisms handle instruction and context well, but verification and long-
 
 The first deliberate Harness Mechanism addition: a persistent, inspectable plan file that serves as the agent's outer loop for multi-step work.
 
-**Substrate**: `.gospel/` directory (the shared harness substrate). The `.gospel/corpus/` subdirectory is reserved for internal corpus data.
+**Substrate**: `.gospel/` directory (the shared harness substrate). The `.gospel/corpus/` subdirectory is reserved for internal corpus data. The `.gospel/skill-opt/` subdirectory holds Staged Skills until Skill Adoption.
 
 **Primary artifact**: `.gospel/PLAN.md` — a lightweight plan file with required structure:
 - **Goal**: one-sentence description of what we are trying to accomplish.

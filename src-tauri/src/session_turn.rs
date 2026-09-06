@@ -299,7 +299,9 @@ impl<P: TurnPersistenceAdapter, E: TurnEventEmitter, L: TurnLlmAdapter> TurnOrch
             }
             Err(err) => {
                 let err_msg = err.to_string();
-                self.persistence.save_turn_failure(session_id, &err_msg).ok();
+                self.persistence
+                    .save_turn_failure(session_id, &err_msg)
+                    .ok();
                 Err(err)
             }
         }
@@ -1933,15 +1935,18 @@ mod tests {
             json!({ "runId": "run-1", "id": "call-1", "name": "read_file", "arguments": { "path": "src/lib.rs" } })
         );
 
-        let edit_payload = ui_event_payload(&SessionTurnEvent::ToolCall {
-            id: "call-2".to_string(),
-            name: "source_edit".to_string(),
-            arguments: json!({
-                "path": "src/lib.rs",
-                "old_text": "secret old snippet",
-                "new_text": "secret new snippet"
-            }),
-        }, run_id);
+        let edit_payload = ui_event_payload(
+            &SessionTurnEvent::ToolCall {
+                id: "call-2".to_string(),
+                name: "source_edit".to_string(),
+                arguments: json!({
+                    "path": "src/lib.rs",
+                    "old_text": "secret old snippet",
+                    "new_text": "secret new snippet"
+                }),
+            },
+            run_id,
+        );
         assert_eq!(edit_payload.name, "llm-tool-call");
         assert_eq!(
             edit_payload.payload,
@@ -1957,32 +1962,41 @@ mod tests {
             })
         );
 
-        let result = ui_event_payload(&SessionTurnEvent::ToolResult {
-            id: "call-1".to_string(),
-            name: "read_file".to_string(),
-            result: "contents".to_string(),
-        }, run_id);
+        let result = ui_event_payload(
+            &SessionTurnEvent::ToolResult {
+                id: "call-1".to_string(),
+                name: "read_file".to_string(),
+                result: "contents".to_string(),
+            },
+            run_id,
+        );
         assert_eq!(result.name, "llm-tool-result");
         assert_eq!(
             result.payload,
             json!({ "runId": "run-1", "id": "call-1", "name": "read_file", "result": "contents" })
         );
 
-        let warning = ui_event_payload(&SessionTurnEvent::LoopWarning {
-            count: 3,
-            tool_name: "read_file".to_string(),
-        }, run_id);
+        let warning = ui_event_payload(
+            &SessionTurnEvent::LoopWarning {
+                count: 3,
+                tool_name: "read_file".to_string(),
+            },
+            run_id,
+        );
         assert_eq!(warning.name, "llm-loop-warning");
         assert_eq!(
             warning.payload,
             json!({ "runId": "run-1", "count": 3, "toolName": "read_file" })
         );
 
-        let stopped = ui_event_payload(&SessionTurnEvent::LoopStopped {
-            count: 5,
-            tool_name: "read_file".to_string(),
-            message: "Agent stopped".to_string(),
-        }, run_id);
+        let stopped = ui_event_payload(
+            &SessionTurnEvent::LoopStopped {
+                count: 5,
+                tool_name: "read_file".to_string(),
+                message: "Agent stopped".to_string(),
+            },
+            run_id,
+        );
         assert_eq!(stopped.name, "llm-loop-stopped");
         assert_eq!(
             stopped.payload,
@@ -1993,22 +2007,28 @@ mod tests {
     #[test]
     fn reasoning_event_emits_ephemeral_payload_and_no_trace() {
         let run_id = "run-1";
-        let delta = ui_event_payload(&SessionTurnEvent::Reasoning {
-            id: "rs-1".to_string(),
-            text: "thinking ".to_string(),
-            phase: crate::llm::ReasoningPhase::Delta,
-        }, run_id);
+        let delta = ui_event_payload(
+            &SessionTurnEvent::Reasoning {
+                id: "rs-1".to_string(),
+                text: "thinking ".to_string(),
+                phase: crate::llm::ReasoningPhase::Delta,
+            },
+            run_id,
+        );
         assert_eq!(delta.name, "llm-reasoning");
         assert_eq!(
             delta.payload,
             json!({ "runId": "run-1", "id": "rs-1", "text": "thinking ", "phase": "delta" })
         );
 
-        let complete = ui_event_payload(&SessionTurnEvent::Reasoning {
-            id: "rs-1".to_string(),
-            text: "thinking done".to_string(),
-            phase: crate::llm::ReasoningPhase::Complete,
-        }, run_id);
+        let complete = ui_event_payload(
+            &SessionTurnEvent::Reasoning {
+                id: "rs-1".to_string(),
+                text: "thinking done".to_string(),
+                phase: crate::llm::ReasoningPhase::Complete,
+            },
+            run_id,
+        );
         assert_eq!(complete.name, "llm-reasoning");
         assert_eq!(
             complete.payload,
@@ -2365,10 +2385,7 @@ mod tests {
                 1,
             )]
         );
-        assert_eq!(
-            adapters.done_responses.lock().unwrap().len(),
-            1
-        );
+        assert_eq!(adapters.done_responses.lock().unwrap().len(), 1);
         assert_eq!(
             adapters.done_responses.lock().unwrap()[0].0,
             "run-success".to_string()
@@ -2665,7 +2682,10 @@ mod tests {
 
     impl TurnPersistenceAdapter for TestPersistence {
         fn activate_draft_if_needed(&self, session_id: &str) -> Result<(), String> {
-            self.drafts_activated.lock().unwrap().push(session_id.to_string());
+            self.drafts_activated
+                .lock()
+                .unwrap()
+                .push(session_id.to_string());
             Ok(())
         }
 
@@ -2689,7 +2709,11 @@ mod tests {
             Ok(())
         }
 
-        fn save_turn_stopped(&self, _session_id: &str, _stopped_reason: &str) -> Result<(), String> {
+        fn save_turn_stopped(
+            &self,
+            _session_id: &str,
+            _stopped_reason: &str,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -2708,10 +2732,11 @@ mod tests {
 
     impl TurnEventEmitter for TestEmitter {
         fn emit_event(&self, session_id: &str, run_id: &str, event: &SessionTurnEvent) {
-            self.emitted
-                .lock()
-                .unwrap()
-                .push((session_id.to_string(), run_id.to_string(), event.clone()));
+            self.emitted.lock().unwrap().push((
+                session_id.to_string(),
+                run_id.to_string(),
+                event.clone(),
+            ));
         }
     }
 
@@ -2728,10 +2753,7 @@ mod tests {
             on_event(SessionTurnEvent::TextToken(self.response.clone()));
             let result = StreamCompletionResult {
                 full_response: self.response.clone(),
-                history: Some(vec![
-                    user_message("Hi"),
-                    assistant_message(&self.response),
-                ]),
+                history: Some(vec![user_message("Hi"), assistant_message(&self.response)]),
                 source_edit_succeeded: false,
                 prompt_tokens: 10,
                 response_tokens: 15,

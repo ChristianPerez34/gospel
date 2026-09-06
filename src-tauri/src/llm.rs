@@ -1157,7 +1157,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn validate_api_key_rejects_blank_key_for_non_oauth_provider() {
         let result = validate_api_key("openai", "");
@@ -1332,7 +1331,10 @@ mod tests {
         let first = ensure_active_reasoning_id(&mut active, &mut seq);
         assert_eq!(first, "reasoning-1");
         // Reuses the same id while still active.
-        assert_eq!(ensure_active_reasoning_id(&mut active, &mut seq), "reasoning-1");
+        assert_eq!(
+            ensure_active_reasoning_id(&mut active, &mut seq),
+            "reasoning-1"
+        );
 
         active = None;
         let second = ensure_active_reasoning_id(&mut active, &mut seq);
@@ -1385,7 +1387,9 @@ mod tests {
         // Complete Reasoning arrives with a provider-supplied id, but
         // the loop prefers the active fallback id so the frontend can
         // collapse the complete onto the accumulated deltas.
-        let complete_id = active.clone().unwrap_or_else(|| "provider-rs-9".to_string());
+        let complete_id = active
+            .clone()
+            .unwrap_or_else(|| "provider-rs-9".to_string());
         assert_eq!(complete_id, "reasoning-1");
         assert_ne!(complete_id, "provider-rs-9");
     }
