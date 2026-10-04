@@ -701,16 +701,23 @@ struct TestStruct {
         let mut corpus = Corpus::new();
         extract_directory(&mut corpus, dir.path(), &[]).unwrap();
 
-        let has_outside = corpus.nodes.values().any(|n| matches!(
-            &n.node_type,
-            NodeType::File { path, .. } if path.contains("outside.rs")
-        ));
-        assert!(!has_outside, "symlinked outside file should not be ingested");
+        let has_outside = corpus.nodes.values().any(|n| {
+            matches!(
+                &n.node_type,
+                NodeType::File { path, .. } if path.contains("outside.rs")
+            )
+        });
+        assert!(
+            !has_outside,
+            "symlinked outside file should not be ingested"
+        );
 
-        let has_inside = corpus.nodes.values().any(|n| matches!(
-            &n.node_type,
-            NodeType::File { path, .. } if path.contains("inside.rs")
-        ));
+        let has_inside = corpus.nodes.values().any(|n| {
+            matches!(
+                &n.node_type,
+                NodeType::File { path, .. } if path.contains("inside.rs")
+            )
+        });
         assert!(has_inside, "in-workspace file should be ingested");
     }
 }

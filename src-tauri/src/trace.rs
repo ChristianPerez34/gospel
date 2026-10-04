@@ -242,10 +242,8 @@ static KEY_VALUE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .map(|k| regex::escape(k))
         .collect::<Vec<_>>()
         .join("|");
-    Regex::new(&format!(
-        r#""({alternation})"\s*:\s*"((?:[^"\\]|\\.)*)""#
-    ))
-    .expect("key-value regex is valid")
+    Regex::new(&format!(r#""({alternation})"\s*:\s*"((?:[^"\\]|\\.)*)""#))
+        .expect("key-value regex is valid")
 });
 
 static BEARER_RE: LazyLock<Regex> =
@@ -257,8 +255,7 @@ static QUERY_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
         .map(|k| regex::escape(k))
         .collect::<Vec<_>>()
         .join("|");
-    Regex::new(&format!(r"([?&])({alternation})=([^&\s]+)"))
-        .expect("query token regex is valid")
+    Regex::new(&format!(r"([?&])({alternation})=([^&\s]+)")).expect("query token regex is valid")
 });
 
 static TOKEN_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -311,7 +308,11 @@ fn redact_sensitive(json_str: &mut String) {
         .captures_iter(json_str)
         .map(|cap| {
             let m = cap.get(0).expect("capture has match");
-            let key = cap.get(1).expect("capture has key group").as_str().to_string();
+            let key = cap
+                .get(1)
+                .expect("capture has key group")
+                .as_str()
+                .to_string();
             (m.start(), m.end(), format!("\"{key}\":\"[REDACTED]\""))
         })
         .collect();
@@ -489,8 +490,7 @@ mod tests {
 
     #[test]
     fn redacts_pretty_printed_json_with_whitespace() {
-        let mut s = "{\"api_key\": \"sk-REDACTEDFAKE123456789\", \"other\": \"value\"}"
-            .to_string();
+        let mut s = "{\"api_key\": \"sk-REDACTEDFAKE123456789\", \"other\": \"value\"}".to_string();
         redact_sensitive(&mut s);
         assert!(s.contains("[REDACTED]"));
         assert!(!s.contains("sk-REDACTEDFAKE123456789"));

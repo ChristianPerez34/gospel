@@ -18,6 +18,17 @@ interface CorpusAutoBuildComplete {
 
 interface UseChatStreamOptions {
   onMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
+  /** Routed completion for a specific session. When provided, llm-done /
+   * llm-error / cancel finalize via this instead of the focused onMessages,
+   * enabling free switching between running tasks. */
+  onMessagesForSession?: (
+    sessionId: string | null,
+    updater: (prev: Message[]) => Message[]
+  ) => void;
+  /** Live turn updates for background (non-focused) sessions. */
+  onLiveTurnForSession?: (sessionId: string | null, turn: CurrentTurn | null) => void;
+  /** Per-session status updates. Falls back to onStatusChange for focused. */
+  onStatusForSession?: (sessionId: string | null, status: AgentStatus) => void;
   onStatusChange?: (status: AgentStatus) => void;
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
@@ -148,6 +159,15 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   const [currentTurn, setCurrentTurn] = useState<CurrentTurn | null>(null);
   const currentTurnRef = useRef<CurrentTurn | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
+  /** All in-flight run ids (control-plane: multiple tasks may run at once). */
+  const activeRunIdsRef = useRef<Set<string>>(new Set());
+  /** runId -> sessionId captured at startStream time (events carry runId only). */
+  const runSessionMapRef = useRef<Map<string, string | null>>(new Map());
+  /** Live turns for background (non-focused) sessions, keyed by sessionId. */
+  const backgroundTurnsRef = useRef<Map<string | null, CurrentTurn>>(new Map());
+  const backgroundPendingRef = useRef<Map<string | null, string>>(new Map());
+  const backgroundFrameRef = useRef<Map<string | null, FrameHandle>>(new Map());
+  const prevFocusedSessionRef = useRef<string | null | undefined>(undefined);
   const turnSequenceRef = useRef(0);
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -226,6 +246,154 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     setCurrentTurn(null);
   }, []);
 
+  const getFocusedSession = useCallback((): string | null => {
+    return optionsRef.current.sessionId ?? null;
+  }, []);
+
+  const sessionForRun = useCallback(
+    (runId: unknown): string | null => {
+      if (typeof runId !== "string") return getFocusedSession();
+      return runSessionMapRef.current.get(runId) ?? getFocusedSession();
+    },
+    [getFocusedSession]
+  );
+
+  const emitStatus = useCallback(
+    (sessionId: string | null, status: AgentStatus) => {
+      optionsRef.current.onStatusForSession?.(sessionId, status);
+      if (sessionId === getFocusedSession()) {
+        optionsRef.current.onStatusChange?.(status);
+      }
+    },
+    [getFocusedSession]
+  );
+
+  const updateBackgroundTurn = useCallback(
+    (sessionId: string | null, updater: (turn: CurrentTurn) => CurrentTurn) => {
+      const existing = backgroundTurnsRef.current.get(sessionId) ?? {
+        id: `turn-${Date.now()}-bg`,
+        blocks: [],
+        createdAt: new Date(),
+      };
+      const next = updater(existing);
+      backgroundTurnsRef.current.set(sessionId, next);
+      optionsRef.current.onLiveTurnForSession?.(sessionId, next);
+      return next;
+    },
+    []
+  );
+
+  const flushBackgroundPending = useCallback(
+    (sessionId: string | null) => {
+      const frame = backgroundFrameRef.current.get(sessionId);
+      if (frame != null) {
+        cancelFrameHandle(frame);
+        backgroundFrameRef.current.delete(sessionId);
+      }
+      const buffered = backgroundPendingRef.current.get(sessionId) ?? "";
+      if (!buffered) return;
+      backgroundPendingRef.current.set(sessionId, "");
+      updateBackgroundTurn(sessionId, (turn) => {
+        const blocks = [...turn.blocks];
+        const last = blocks[blocks.length - 1];
+        if (last && last.kind === "text") {
+          blocks[blocks.length - 1] = { ...last, text: last.text + buffered };
+        } else {
+          blocks.push({ kind: "text", id: `text-${blocks.length}`, text: buffered });
+        }
+        return { ...turn, blocks };
+      });
+    },
+    [updateBackgroundTurn]
+  );
+
+  const clearRun = useCallback((runId: string | null) => {
+    if (runId) {
+      activeRunIdsRef.current.delete(runId);
+      runSessionMapRef.current.delete(runId);
+    }
+    if (activeRunIdRef.current && runId === activeRunIdRef.current) {
+      const remaining = Array.from(activeRunIdsRef.current);
+      activeRunIdRef.current =
+        remaining.length > 0 ? (remaining[remaining.length - 1] ?? null) : null;
+    }
+  }, []);
+
+  // When the user switches tasks mid-stream, stash the visible live turn into
+  // the background map for the previous task and restore the new task's live
+  // turn (if any). This keeps free switching lossless. Stash only when the
+  // previous task actually has an in-flight run; otherwise the visible turn
+  // already belongs to the incoming task (new-task interim) and must stay.
+  useEffect(() => {
+    const focused = options.sessionId ?? null;
+    const prev = prevFocusedSessionRef.current;
+    if (prev === undefined) {
+      prevFocusedSessionRef.current = focused;
+      return;
+    }
+    if (prev === focused) return;
+    prevFocusedSessionRef.current = focused;
+    const prevHasActiveRun =
+      prev != null &&
+      Array.from(runSessionMapRef.current.entries()).some(
+        ([runId, mapped]) => mapped === prev && activeRunIdsRef.current.has(runId)
+      );
+    // Flush + stash outgoing only for a previously streaming task.
+    if (pendingFrameRef.current != null) {
+      cancelFrameHandle(pendingFrameRef.current);
+      pendingFrameRef.current = null;
+    }
+    const outgoingText = pendingTextRef.current;
+    pendingTextRef.current = "";
+    if (prevHasActiveRun && prev != null) {
+      if (outgoingText && currentTurnRef.current) {
+        const turn = currentTurnRef.current;
+        const blocks = [...turn.blocks];
+        const last = blocks[blocks.length - 1];
+        if (last && last.kind === "text") {
+          blocks[blocks.length - 1] = { ...last, text: last.text + outgoingText };
+        } else {
+          blocks.push({ kind: "text", id: `text-${blocks.length}`, text: outgoingText });
+        }
+        const stashed = { ...turn, blocks };
+        backgroundTurnsRef.current.set(prev, stashed);
+        optionsRef.current.onLiveTurnForSession?.(prev, stashed);
+      } else if (currentTurnRef.current) {
+        backgroundTurnsRef.current.set(prev, currentTurnRef.current);
+        optionsRef.current.onLiveTurnForSession?.(prev, currentTurnRef.current);
+      }
+      // Restore incoming.
+      const incoming = backgroundTurnsRef.current.get(focused) ?? null;
+      currentTurnRef.current = incoming;
+      setCurrentTurn(incoming);
+    } else if (outgoingText && currentTurnRef.current) {
+      // No active run for prev (e.g. new-task interim with pending text):
+      // fold it into the visible turn without swapping views.
+      const turn = currentTurnRef.current;
+      const blocks = [...turn.blocks];
+      const last = blocks[blocks.length - 1];
+      if (last && last.kind === "text") {
+        blocks[blocks.length - 1] = { ...last, text: last.text + outgoingText };
+      } else {
+        blocks.push({ kind: "text", id: `text-${blocks.length}`, text: outgoingText });
+      }
+      const next = { ...turn, blocks };
+      currentTurnRef.current = next;
+      setCurrentTurn(next);
+    }
+    // Otherwise (idle switch): leave the visible turn alone; incoming idle
+    // tasks correctly show null and incoming streaming tasks will populate
+    // via their background restore on their next event... except when the
+    // background turn already exists — restore it now.
+    if (!prevHasActiveRun) {
+      const incoming = backgroundTurnsRef.current.get(focused);
+      if (incoming) {
+        currentTurnRef.current = incoming;
+        setCurrentTurn(incoming);
+      }
+    }
+  }, [options.sessionId]);
+
   useEffect(() => {
     let cancelled = false;
     let cleanup: (() => void) | null = null;
@@ -243,12 +411,55 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           return u;
         });
 
-      // Stale-event guard: ignore events whose runId does not match the active
-      // run. An event with a runId when there is no active run (e.g. after cancel
-      // or reset) is also stale. Events with no runId (e.g. approval-* from the
-      // broker) pass through as defense in depth.
-      const isStale = (runId: unknown): boolean =>
-        runId != null && runId !== activeRunIdRef.current;
+      // Stale-event guard: ignore events whose runId is not in the active
+      // set. Multiple tasks may run concurrently, so every started run stays
+      // active until done/error/cancel. Events with no runId (e.g. approval-*
+      // from the broker, legacy string payloads) pass through to focused.
+      // Unknown string runIds are always stale (e.g. post-cancel late events).
+      const isStale = (runId: unknown): boolean => {
+        if (runId == null) return false;
+        if (typeof runId !== "string") return false;
+        if (!runSessionMapRef.current.has(runId)) return true;
+        return !activeRunIdsRef.current.has(runId);
+      };
+      const isBackground = (runId: unknown): boolean => {
+        if (runId == null) return false;
+        if (typeof runId !== "string") return false;
+        const focused = getFocusedSession();
+        // No focused task (draft/new-task interim): treat live events as
+        // foreground so the just-started run renders immediately.
+        if (focused == null) return false;
+        const mapped = runSessionMapRef.current.get(runId);
+        if (mapped === undefined) return false;
+        return mapped !== focused;
+      };
+      // When a completion arrives without a runId (legacy/test payloads)
+      // while no task is focused, attribute it to the single in-flight run
+      // so background completions still land in the right transcript.
+      const singleActiveSession = (): string | null => {
+        const sessions = new Set<string | null>();
+        for (const [runId, mapped] of runSessionMapRef.current.entries()) {
+          if (activeRunIdsRef.current.has(runId)) sessions.add(mapped);
+        }
+        if (sessions.size === 1) {
+          const only = Array.from(sessions)[0];
+          return only ?? null;
+        }
+        return null;
+      };
+      const clearRunsForSession = (sessionId: string | null) => {
+        for (const [runId, mapped] of Array.from(runSessionMapRef.current.entries())) {
+          if (mapped === sessionId && activeRunIdsRef.current.has(runId)) {
+            activeRunIdsRef.current.delete(runId);
+            runSessionMapRef.current.delete(runId);
+            if (activeRunIdRef.current === runId) activeRunIdRef.current = null;
+          }
+        }
+        if (activeRunIdsRef.current.size > 0 && !activeRunIdRef.current) {
+          const remaining = Array.from(activeRunIdsRef.current);
+          activeRunIdRef.current = remaining[remaining.length - 1] ?? null;
+        }
+      };
       try {
         await Promise.all([
           track(
@@ -258,6 +469,20 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const runId = typeof payload === "string" ? null : payload?.runId;
               if (isStale(runId)) return;
               if (!token) return;
+              if (isBackground(runId)) {
+                const sessionId = sessionForRun(runId);
+                const prev = backgroundPendingRef.current.get(sessionId) ?? "";
+                backgroundPendingRef.current.set(sessionId, prev + token);
+                if (!backgroundFrameRef.current.has(sessionId)) {
+                  const handle = scheduleFlush(() => {
+                    backgroundFrameRef.current.delete(sessionId);
+                    flushBackgroundPending(sessionId);
+                  });
+                  backgroundFrameRef.current.set(sessionId, handle);
+                }
+                emitStatus(sessionId, "thinking");
+                return;
+              }
               // Buffer the token and schedule at most one frame flush. The
               // flush preserves original text order by appending the whole
               // buffer to the last text block.
@@ -274,10 +499,59 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             listen<LlmDonePayload>("llm-done", (event) => {
               const payload = event.payload;
               if (typeof payload !== "string" && isStale(payload?.runId)) return;
+              const runId = typeof payload === "string" ? null : (payload?.runId ?? null);
+              if (runId != null && isBackground(runId)) {
+                const sessionId = sessionForRun(runId);
+                flushBackgroundPending(sessionId);
+                const finalTurn = backgroundTurnsRef.current.get(sessionId);
+                const payloadContent =
+                  typeof payload === "string" ? payload : (payload?.response ?? "");
+                const rawBlocks = finalTurn?.blocks ?? [];
+                const blocks = dropReasoningBlocks(rawBlocks);
+                const derivedContent = joinTextBlocks(blocks);
+                const content = payloadContent || derivedContent || "";
+                const messageId = finalTurn?.id ?? generateTurnId();
+                if (content || blocks.length > 0) {
+                  const message: Message = {
+                    id: messageId,
+                    role: "agent",
+                    content: content || "Completed.",
+                    timestamp: new Date(),
+                    blocks: blocks.length > 0 ? blocks : undefined,
+                  };
+                  if (optionsRef.current.onMessagesForSession) {
+                    optionsRef.current.onMessagesForSession(sessionId, (prev) => [
+                      ...prev,
+                      message,
+                    ]);
+                  } else {
+                    optionsRef.current.onMessages?.((prev) => [...prev, message]);
+                  }
+                }
+                backgroundTurnsRef.current.delete(sessionId);
+                backgroundPendingRef.current.delete(sessionId);
+                optionsRef.current.onLiveTurnForSession?.(sessionId, null);
+                emitStatus(sessionId, "connected");
+                clearRun(typeof runId === "string" ? runId : null);
+                return;
+              }
               // Flush any buffered text before capturing the authoritative
               // final turn so no final tokens are lost.
               flushPendingText();
-              const finalTurn = currentTurnRef.current;
+              // Prefer the run's session; fall back to the single in-flight
+              // session when the completion carries no runId and no task is
+              // focused (background completion after a view switch).
+              const focusedBefore = getFocusedSession();
+              const fallbackSingle =
+                runId == null && focusedBefore == null ? singleActiveSession() : null;
+              const completionSession = fallbackSingle ?? focusedBefore;
+              // If the completion belongs to a background session (view moved
+              // on), finalize from its stashed turn instead of the empty view.
+              const completionIsBackground =
+                fallbackSingle != null && backgroundTurnsRef.current.has(fallbackSingle);
+              const finalTurn = completionIsBackground
+                ? (backgroundTurnsRef.current.get(completionSession) ?? null)
+                : currentTurnRef.current;
               const payloadContent =
                 typeof payload === "string" ? payload : (payload?.response ?? "");
               const rawBlocks = finalTurn?.blocks ?? [];
@@ -292,26 +566,86 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const messageId = finalTurn?.id ?? generateTurnId();
 
               if (content || blocks.length > 0) {
-                optionsRef.current.onMessages?.((prev) => [
-                  ...prev,
-                  {
-                    id: messageId,
-                    role: "agent",
-                    content: content || "Completed.",
-                    timestamp: new Date(),
-                    blocks: blocks.length > 0 ? blocks : undefined,
-                  },
-                ]);
+                const message: Message = {
+                  id: messageId,
+                  role: "agent",
+                  content: content || "Completed.",
+                  timestamp: new Date(),
+                  blocks: blocks.length > 0 ? blocks : undefined,
+                };
+                if (optionsRef.current.onMessagesForSession) {
+                  optionsRef.current.onMessagesForSession(completionSession, (prev) => [
+                    ...prev,
+                    message,
+                  ]);
+                } else {
+                  optionsRef.current.onMessages?.((prev) => [...prev, message]);
+                }
               }
 
               clearCurrentTurn();
-              optionsRef.current.onStatusChange?.("connected");
+              if (typeof runId === "string") {
+                clearRun(runId);
+              } else if (fallbackSingle != null) {
+                clearRunsForSession(fallbackSingle);
+              }
+              const focusedDone = completionSession;
+              // Clear any stashed background turn for the completed session
+              // so a later switch does not resurrect it.
+              backgroundTurnsRef.current.delete(focusedDone);
+              backgroundPendingRef.current.delete(focusedDone);
+              optionsRef.current.onLiveTurnForSession?.(focusedDone, null);
+              emitStatus(focusedDone, "connected");
             })
           ),
           track(
             listen<LlmErrorPayload>("llm-error", (event) => {
               const err = event.payload;
               if (isStale(err?.runId)) return;
+              const runId = err?.runId ?? null;
+              if (typeof runId === "string" && isBackground(runId)) {
+                const sessionId = sessionForRun(runId);
+                flushBackgroundPending(sessionId);
+                const finalTurn = backgroundTurnsRef.current.get(sessionId);
+                const messageId = finalTurn?.id ?? generateTurnId();
+                const rawBlocks = finalTurn?.blocks ?? [];
+                const blocks = dropReasoningBlocks(rawBlocks);
+                const derivedContent = joinTextBlocks(blocks);
+                if (err?.message || derivedContent || blocks.length > 0) {
+                  const message: Message = {
+                    id: messageId,
+                    role: "agent",
+                    content: derivedContent || "",
+                    timestamp: new Date(),
+                    error: err?.message || "Completion failed.",
+                    blocks: blocks.length > 0 ? blocks : undefined,
+                  };
+                  if (optionsRef.current.onMessagesForSession) {
+                    optionsRef.current.onMessagesForSession(sessionId, (prev) => [
+                      ...prev,
+                      message,
+                    ]);
+                  } else {
+                    optionsRef.current.onMessages?.((prev) => [...prev, message]);
+                  }
+                }
+                backgroundTurnsRef.current.delete(sessionId);
+                optionsRef.current.onLiveTurnForSession?.(sessionId, null);
+                emitStatus(sessionId, "error");
+                clearRun(runId);
+                if (err?.code === "API_KEY_MISSING") {
+                  optionsRef.current.onErrorToast?.(err.message, {
+                    label: "Open Settings",
+                    onClick: optionsRef.current.onOpenSettings ?? (() => {}),
+                  });
+                } else {
+                  optionsRef.current.onErrorToast?.(err?.message || "Completion failed.", {
+                    label: "Retry",
+                    onClick: optionsRef.current.onRetry ?? (() => {}),
+                  });
+                }
+                return;
+              }
               // Flush buffered text before finalizing so a quick failure
               // cannot lose trailing tokens.
               flushPendingText();
@@ -322,21 +656,28 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const derivedContent = joinTextBlocks(blocks);
 
               if (err?.message || derivedContent || blocks.length > 0) {
-                optionsRef.current.onMessages?.((prev) => [
-                  ...prev,
-                  {
-                    id: messageId,
-                    role: "agent",
-                    content: derivedContent || "",
-                    timestamp: new Date(),
-                    error: err?.message || "Completion failed.",
-                    blocks: blocks.length > 0 ? blocks : undefined,
-                  },
-                ]);
+                const message: Message = {
+                  id: messageId,
+                  role: "agent",
+                  content: derivedContent || "",
+                  timestamp: new Date(),
+                  error: err?.message || "Completion failed.",
+                  blocks: blocks.length > 0 ? blocks : undefined,
+                };
+                const focused = getFocusedSession();
+                if (optionsRef.current.onMessagesForSession) {
+                  optionsRef.current.onMessagesForSession(focused, (prev) => [...prev, message]);
+                } else {
+                  optionsRef.current.onMessages?.((prev) => [...prev, message]);
+                }
               }
 
               clearCurrentTurn();
-              optionsRef.current.onStatusChange?.("error");
+              clearRun(typeof runId === "string" ? runId : null);
+              const focusedErr = getFocusedSession();
+              backgroundTurnsRef.current.delete(focusedErr);
+              optionsRef.current.onLiveTurnForSession?.(focusedErr, null);
+              emitStatus(focusedErr, "error");
 
               if (err?.code === "API_KEY_MISSING") {
                 optionsRef.current.onErrorToast?.(err.message, {
@@ -355,6 +696,25 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             listen<LlmToolCallPayload>("llm-tool-call", (event) => {
               const payload = event.payload;
               if (isStale(payload?.runId)) return;
+              if (isBackground(payload?.runId)) {
+                const sessionId = sessionForRun(payload?.runId);
+                flushBackgroundPending(sessionId);
+                updateBackgroundTurn(sessionId, (turn) => ({
+                  ...turn,
+                  blocks: [
+                    ...turn.blocks,
+                    {
+                      kind: "tool",
+                      id: payload.id,
+                      name: payload.name,
+                      arguments: payload.arguments,
+                      status: "calling" as const,
+                    },
+                  ],
+                }));
+                emitStatus(sessionId, "acting");
+                return;
+              }
               // Flush buffered text before appending a tool block so the
               // visible timeline keeps text before tool calls.
               flushPendingText();
@@ -371,13 +731,50 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   },
                 ],
               }));
-              optionsRef.current.onStatusChange?.("acting");
+              emitStatus(getFocusedSession(), "acting");
             })
           ),
           track(
             listen<LlmToolResultPayload>("llm-tool-result", (event) => {
               const payload = event.payload;
               if (isStale(payload?.runId)) return;
+              if (isBackground(payload?.runId)) {
+                const sessionId = sessionForRun(payload?.runId);
+                flushBackgroundPending(sessionId);
+                updateBackgroundTurn(sessionId, (turn) => {
+                  const idx = turn.blocks.findIndex(
+                    (b): b is TurnBlock & { kind: "tool" } =>
+                      b.kind === "tool" && b.id === payload.id
+                  );
+                  if (idx >= 0) {
+                    const blocks = [...turn.blocks];
+                    const existing = blocks[idx];
+                    if (existing.kind === "tool") {
+                      blocks[idx] = {
+                        ...existing,
+                        result: payload.result,
+                        status: "completed",
+                      };
+                    }
+                    return { ...turn, blocks };
+                  }
+                  return {
+                    ...turn,
+                    blocks: [
+                      ...turn.blocks,
+                      {
+                        kind: "tool",
+                        id: payload.id,
+                        name: payload.name,
+                        result: payload.result,
+                        status: "completed" as const,
+                      },
+                    ],
+                  };
+                });
+                emitStatus(sessionId, "acting");
+                return;
+              }
               // Flush buffered text before pairing a tool result so a late
               // text token cannot interleave between a tool call and result.
               flushPendingText();
@@ -415,13 +812,51 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   ],
                 };
               });
-              optionsRef.current.onStatusChange?.("acting");
+              emitStatus(getFocusedSession(), "acting");
             })
           ),
           track(
             listen<LlmReasoningPayload>("llm-reasoning", (event) => {
               const { runId, id, text, phase } = event.payload;
               if (isStale(runId)) return;
+              if (isBackground(runId)) {
+                const sessionId = sessionForRun(runId);
+                flushBackgroundPending(sessionId);
+                updateBackgroundTurn(sessionId, (turn) => {
+                  const idx = turn.blocks.findIndex(
+                    (b): b is Extract<TurnBlock, { kind: "reasoning" }> =>
+                      b.kind === "reasoning" && b.id === id
+                  );
+                  if (phase === "complete") {
+                    if (idx >= 0) {
+                      const blocks = [...turn.blocks];
+                      blocks[idx] = { kind: "reasoning", id, text, phase: "complete" };
+                      return { ...turn, blocks };
+                    }
+                    return {
+                      ...turn,
+                      blocks: [...turn.blocks, { kind: "reasoning", id, text, phase: "complete" }],
+                    };
+                  }
+                  if (idx >= 0) {
+                    const blocks = [...turn.blocks];
+                    const existing = blocks[idx];
+                    if (existing.kind === "reasoning") {
+                      blocks[idx] = {
+                        ...existing,
+                        text: existing.text + text,
+                        phase: "delta",
+                      };
+                    }
+                    return { ...turn, blocks };
+                  }
+                  return {
+                    ...turn,
+                    blocks: [...turn.blocks, { kind: "reasoning", id, text, phase: "delta" }],
+                  };
+                });
+                return;
+              }
               // Flush buffered text before appending/mutating a reasoning
               // block so reasoning does not appear before trailing text.
               flushPendingText();
@@ -562,60 +997,141 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       cancelFrameHandle(pendingFrameRef.current);
       pendingFrameRef.current = null;
       pendingTextRef.current = "";
+      for (const handle of backgroundFrameRef.current.values()) {
+        cancelFrameHandle(handle);
+      }
+      backgroundFrameRef.current.clear();
+      backgroundPendingRef.current.clear();
       cleanup?.();
     };
-  }, [updateCurrentTurn, generateTurnId, clearCurrentTurn, flushPendingText]);
+  }, [
+    updateCurrentTurn,
+    generateTurnId,
+    clearCurrentTurn,
+    clearRun,
+    flushPendingText,
+    flushBackgroundPending,
+    updateBackgroundTurn,
+    emitStatus,
+    sessionForRun,
+    getFocusedSession,
+  ]);
 
-  const startStream = useCallback(async (opts: StartStreamOptions) => {
-    const runId = crypto.randomUUID();
-    activeRunIdRef.current = runId;
-    await invoke<string>("complete_streaming", {
-      provider: opts.provider,
-      prompt: opts.prompt,
-      model: opts.model,
-      variant: opts.variant ?? null,
-      sessionId: opts.sessionId ?? null,
-      invokedSkill: opts.invokedSkill ?? null,
-      runId,
-    });
-  }, []);
-
-  const cancelStream = useCallback(async () => {
-    const runId = activeRunIdRef.current;
-    if (!runId) return;
-    const sessionId = optionsRef.current.sessionId;
-    if (sessionId) {
-      try {
-        await invoke<void>("cancel_streaming", { sessionId });
-      } catch {
-        // best-effort; the backend may already have finalized
+  const startStream = useCallback(
+    async (opts: StartStreamOptions) => {
+      const runId = crypto.randomUUID();
+      activeRunIdRef.current = runId;
+      activeRunIdsRef.current.add(runId);
+      runSessionMapRef.current.set(runId, opts.sessionId ?? null);
+      // Starting a new turn for the focused session clears any stashed
+      // background turn for that session so a stale live view cannot resurface.
+      if ((opts.sessionId ?? null) === getFocusedSession()) {
+        backgroundTurnsRef.current.delete(opts.sessionId ?? null);
+        optionsRef.current.onLiveTurnForSession?.(opts.sessionId ?? null, null);
       }
-    }
-    // Finalize the current turn as cancelled locally. Mirror the llm-error
-    // finalize path: persist a plain-language "cancelled" assistant message so
-    // the transcript records the controlled stop, and clear streaming state.
-    // Flush buffered text first so a cancelled turn cannot lose trailing
-    // tokens, then clear (which cancels any pending frame deterministically).
-    flushPendingText();
-    const finalTurn = currentTurnRef.current;
-    const rawBlocks = finalTurn?.blocks ?? [];
-    const blocks = dropReasoningBlocks(rawBlocks);
-    const derivedContent = joinTextBlocks(blocks);
-    const messageId = finalTurn?.id ?? generateTurnId();
-    const cancelContent = derivedContent ? derivedContent : "Stream cancelled by user.";
-    optionsRef.current.onMessages?.((prev) => [
-      ...prev,
-      {
+      await invoke<string>("complete_streaming", {
+        provider: opts.provider,
+        prompt: opts.prompt,
+        model: opts.model,
+        variant: opts.variant ?? null,
+        sessionId: opts.sessionId ?? null,
+        invokedSkill: opts.invokedSkill ?? null,
+        runId,
+      });
+      return runId;
+    },
+    [getFocusedSession]
+  );
+
+  const cancelStreamForSession = useCallback(
+    async (targetSessionId: string | null) => {
+      const sid = targetSessionId ?? optionsRef.current.sessionId ?? null;
+      // Find the latest run for this session.
+      let targetRun: string | null = null;
+      for (const [runId, mapped] of runSessionMapRef.current.entries()) {
+        if (mapped === sid && activeRunIdsRef.current.has(runId)) targetRun = runId;
+      }
+      const isFocused = sid === getFocusedSession();
+      const hasLiveTurn = isFocused
+        ? currentTurnRef.current != null || pendingTextRef.current !== ""
+        : backgroundTurnsRef.current.has(sid) ||
+          (backgroundPendingRef.current.get(sid) ?? "") !== "";
+      // No active run and no live turn: no-op (preserve legacy behavior).
+      if (!targetRun && !hasLiveTurn) return;
+      if (sid) {
+        try {
+          await invoke<void>("cancel_streaming", { sessionId: sid });
+        } catch {
+          // best-effort; the backend may already have finalized
+        }
+      }
+      if (isFocused) {
+        flushPendingText();
+        const finalTurn = currentTurnRef.current;
+        const rawBlocks = finalTurn?.blocks ?? [];
+        const blocks = dropReasoningBlocks(rawBlocks);
+        const derivedContent = joinTextBlocks(blocks);
+        const messageId = finalTurn?.id ?? generateTurnId();
+        const cancelContent = derivedContent ? derivedContent : "Stream cancelled by user.";
+        const message: Message = {
+          id: messageId,
+          role: "agent",
+          content: cancelContent,
+          timestamp: new Date(),
+          blocks: blocks.length > 0 ? blocks : undefined,
+        };
+        if (optionsRef.current.onMessagesForSession) {
+          optionsRef.current.onMessagesForSession(sid, (prev) => [...prev, message]);
+        } else {
+          optionsRef.current.onMessages?.((prev) => [...prev, message]);
+        }
+        clearCurrentTurn();
+        backgroundTurnsRef.current.delete(sid);
+        optionsRef.current.onLiveTurnForSession?.(sid, null);
+        if (targetRun) clearRun(targetRun);
+        emitStatus(sid, "connected");
+        return;
+      }
+      // Background cancel: finalize into that session's transcript.
+      flushBackgroundPending(sid);
+      const finalTurn = backgroundTurnsRef.current.get(sid);
+      const rawBlocks = finalTurn?.blocks ?? [];
+      const blocks = dropReasoningBlocks(rawBlocks);
+      const derivedContent = joinTextBlocks(blocks);
+      const messageId = finalTurn?.id ?? generateTurnId();
+      const cancelContent = derivedContent ? derivedContent : "Stream cancelled by user.";
+      const message: Message = {
         id: messageId,
         role: "agent",
         content: cancelContent,
         timestamp: new Date(),
         blocks: blocks.length > 0 ? blocks : undefined,
-      },
-    ]);
-    clearCurrentTurn();
-    optionsRef.current.onStatusChange?.("connected");
-  }, [clearCurrentTurn, generateTurnId, flushPendingText]);
+      };
+      if (optionsRef.current.onMessagesForSession) {
+        optionsRef.current.onMessagesForSession(sid, (prev) => [...prev, message]);
+      } else {
+        optionsRef.current.onMessages?.((prev) => [...prev, message]);
+      }
+      backgroundTurnsRef.current.delete(sid);
+      backgroundPendingRef.current.delete(sid);
+      optionsRef.current.onLiveTurnForSession?.(sid, null);
+      if (targetRun) clearRun(targetRun);
+      emitStatus(sid, "connected");
+    },
+    [
+      clearCurrentTurn,
+      generateTurnId,
+      flushPendingText,
+      flushBackgroundPending,
+      clearRun,
+      emitStatus,
+      getFocusedSession,
+    ]
+  );
+
+  const cancelStream = useCallback(async () => {
+    await cancelStreamForSession(optionsRef.current.sessionId ?? null);
+  }, [cancelStreamForSession]);
 
   const resolveApproval = useCallback(async (id: string, decision: ApprovalDecision) => {
     // Default to invoking the Tauri command if the consumer did not supply
@@ -629,14 +1145,22 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   }, []);
 
   const resetStream = useCallback(() => {
-    clearCurrentTurn();
-  }, [clearCurrentTurn]);
+    const focused = optionsRef.current.sessionId ?? null;
+    cancelFrameHandle(pendingFrameRef.current);
+    pendingFrameRef.current = null;
+    pendingTextRef.current = "";
+    currentTurnRef.current = null;
+    setCurrentTurn(null);
+    backgroundTurnsRef.current.delete(focused);
+    optionsRef.current.onLiveTurnForSession?.(focused, null);
+  }, []);
 
   return {
     currentTurn,
     startStream,
     resetStream,
     cancelStream,
+    cancelStreamForSession,
     resolveApproval,
   };
 }

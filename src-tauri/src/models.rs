@@ -39,7 +39,6 @@ mod model_lists {
         GROK_2_1212, GROK_2_VISION_1212, GROK_3, GROK_3_FAST, GROK_3_MINI, GROK_3_MINI_FAST, GROK_4,
     };
 
-
     pub const OPENAI_MODELS: &[&str] = &[
         GPT_5_5,
         GPT_5_2,
@@ -589,8 +588,7 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        static PROVIDERS: Lazy<Vec<&'static str>> =
-            Lazy::new(crate::providers::provider_ids);
+        static PROVIDERS: Lazy<Vec<&'static str>> = Lazy::new(crate::providers::provider_ids);
         PROVIDERS.as_slice()
     }
 

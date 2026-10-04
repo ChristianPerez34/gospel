@@ -56,15 +56,13 @@ describe("TopBar", () => {
     expect(onSessionModeChange).toHaveBeenCalledWith("Build");
   });
 
-  it("disables the workspace switch button while the agent is active", () => {
+  it("keeps the workspace switch button enabled while the agent is active", () => {
     renderTopBar({ status: "thinking" });
 
     const switchButton = screen.getByRole("button", {
       name: "Switch workspace",
     }) as HTMLButtonElement;
-    expect(switchButton.disabled).toBe(true);
-    expect(switchButton.className).not.toContain("hover:bg-surface-overlay");
-    expect(switchButton.className).toContain("cursor-not-allowed");
+    expect(switchButton.disabled).toBe(false);
   });
 
   it("calls onSessionTitleChange with the trimmed title on Enter", () => {
@@ -114,18 +112,16 @@ describe("TopBar", () => {
     );
   });
 
-  it("disables the session title editor while streaming", () => {
+  it("keeps the session title editor enabled while streaming", () => {
     const onSessionTitleChange = vi.fn();
     renderTopBar({ sessionTitle: "Streaming session", status: "thinking", onSessionTitleChange });
 
     const editButton = screen.getByRole("button", { name: "Edit session title" });
     expect(editButton.hasAttribute("disabled")).toBe(false);
-    expect(editButton.getAttribute("aria-disabled")).toBe("true");
-    expect(editButton.getAttribute("title")).toBe("Session title can't be edited while streaming");
+    expect(editButton.getAttribute("aria-disabled")).toBe("false");
 
-    // Clicking a disabled button does not enter edit mode.
+    // Clicking enters edit mode even while streaming (control plane).
     fireEvent.click(editButton);
-    expect(screen.queryByRole("textbox", { name: "Session title" })).toBeNull();
-    expect(onSessionTitleChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox", { name: "Session title" })).not.toBeNull();
   });
 });

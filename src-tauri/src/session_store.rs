@@ -1676,8 +1676,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("sessions.sqlite3");
 
-        let store = SessionStore::from_connection(rusqlite::Connection::open(&db_path).unwrap())
-            .unwrap();
+        let store =
+            SessionStore::from_connection(rusqlite::Connection::open(&db_path).unwrap()).unwrap();
         let unscoped = store
             .create_unscoped_session_for_test("Unscoped", "openai", "gpt-4")
             .unwrap();

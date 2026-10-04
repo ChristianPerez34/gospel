@@ -36,7 +36,10 @@ struct FocusEmitter {
 
 impl ReviewProgressEmitter for FocusEmitter {
     fn emit_progress(&self, event: ReviewProgressEvent) {
-        if matches!(event.phase, ReviewPhase::Done { .. } | ReviewPhase::Failed { .. }) {
+        if matches!(
+            event.phase,
+            ReviewPhase::Done { .. } | ReviewPhase::Failed { .. }
+        ) {
             return;
         }
         let mut event = event;
@@ -84,9 +87,8 @@ pub async fn run_multi_focus_review(
     api_key: String,
     emitter: Arc<dyn ReviewProgressEmitter>,
 ) -> Result<MultiReviewResult, String> {
-    let child: ChildReviewFn = Arc::new(|config, path, key, emitter| {
-        Box::pin(run_review(config, path, key, emitter))
-    });
+    let child: ChildReviewFn =
+        Arc::new(|config, path, key, emitter| Box::pin(run_review(config, path, key, emitter)));
     run_multi_focus_review_with_child(
         provider,
         model,

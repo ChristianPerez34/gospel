@@ -45,3 +45,23 @@ The skill discovery cache is a `RwLock<HashMap<PathBuf, Vec<Skill>>>` keyed by c
 - `set_active_workspace` drops the cache entry for the old and new paths.
 - `reload_skills` Tauri command clears the active entry and re-scans.
 - No TTL — explicit invalidation only.
+
+## Skill optimization
+
+Gospel can harvest Skill Invocations from Display Transcripts and stage a bounded edit of one skill under `.gospel/skill-opt/<name>/`. Discovered skills change only through Skill Adoption (`adopt_staged_skill`), never by auto-writing `.agents/skills/`.
+
+- **Harvest**: slash-invoked user turns for the named skill. Keeps the stripped prompt and subsequent tool *names*. Drops tool arguments, results, Model History, and Trace Log.
+- **Split**: harvests the 50 most recently updated workspace sessions (oldest of those first). With two or more tasks, the last 20% (at least one) is the selection split, so gating uses the most recent Skill Tasks. A single task cannot gate.
+- **Patches**: add/delete/replace/insert/append, default budget 4. Missing, ambiguous, empty, no-op, and slow-update-region edits are skipped. Frontmatter is not editable.
+- **Selection Gate**: accept only when the candidate mean is strictly greater than the current mean. Ties reject. Rejected edits append to `.gospel/skill-opt/<name>/rejected.json`.
+- **Protected region**: `<!-- gospel:slow-update -->` … `<!-- /gospel:slow-update -->` in the body cannot be overwritten by step-level edits.
+- **Student injection**: candidate evaluation uses the full body (`## Invoked Skill`), not the description-only auto-match list. `prepare_student_skill_turn` builds that turn.
+- **Scoring**: Verification Agent `pass` = 1.0, `concerns` = 0.5, `fail` = 0.0. `unavailable` is omitted from the Selection Gate mean.
+- **Conclude**: `conclude_skill_optimization` stages a candidate on accept and appends the Rejected Edit Buffer on reject. It never writes `.agents/skills/`.
+- **Replay scores**: `score_skill_replay` pairs current vs candidate Verification Agent outcomes, drops any pair with `unavailable`, then runs the Selection Gate.
+- **Replay runner**: `replay_and_conclude` executes each Skill Task twice as a student turn (full body, no auto-match), scores both with a `SkillReplayVerifier`, then concludes. `LlmStudentExecutor` + `StreamCompletionStudentLlm` is the production student (Read-Only Session Mode, invoked skill body, empty history). `VerificationAgentVerifier` is the production scorer and calls the Verification Agent.
+- **Adopt UI**: `list_staged_skills` feeds the debug panel (`?panel=skill-opt`). Adopt copies a Staged Skill into `.agents/skills/<name>/SKILL.md` and reloads discovery.
+- **Opt-in replay**: `run_skill_selection_replay` harvests Skill Tasks, refuses to call the model when the selection split is empty, then replays only the hold-out with `LlmStudentExecutor` + `VerificationAgentVerifier` and concludes. It is not run automatically.
+- **Opt-in optimizer**: `optimize_skill_from_sessions` asks a Read-Only optimizer model for a JSON edit array (budget 4, rejected-edit buffer in the prompt), applies patches, then runs selection replay. Empty hold-out skips the optimizer. Empty/unusable edits skip the student. Never auto-adopts. Open the panel from the command palette (**Optimize skill**) or `?panel=skill-opt`. It uses the current session model, shows gate scores plus a body diff, and surfaces errors. Adopt remains explicit.
+
+See ADR-0011.

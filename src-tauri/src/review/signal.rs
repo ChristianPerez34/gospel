@@ -605,12 +605,7 @@ mod tests {
 
     #[test]
     fn tier2_rules_override_model_noise_for_focus_domain_finding() {
-        let mut finding = comment(
-            Severity::Low,
-            None,
-            "maintainability",
-            SignalTier::Noise,
-        );
+        let mut finding = comment(Severity::Low, None, "maintainability", SignalTier::Noise);
         finding.focus = ReviewFocus::Style;
 
         assert_eq!(
