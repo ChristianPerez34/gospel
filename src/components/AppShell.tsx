@@ -19,10 +19,10 @@ import { CommandPalette } from "./CommandPalette";
 import { InputBar } from "./InputBar";
 import { SessionDrawer } from "./SessionDrawer";
 import { SettingsModal } from "./SettingsModal";
+import { SkillOptPanel } from "./SkillOptPanel";
 import { TaskRail } from "./TaskRail";
 import { ToastContainer, useToasts } from "./Toast";
 import { TopBar } from "./TopBar";
-import { SkillOptPanel } from "./SkillOptPanel";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 type SettingsTab = "general" | "models" | "data";

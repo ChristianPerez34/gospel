@@ -270,12 +270,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
   const updateBackgroundTurn = useCallback(
     (sessionId: string | null, updater: (turn: CurrentTurn) => CurrentTurn) => {
-      const existing =
-        backgroundTurnsRef.current.get(sessionId) ?? {
-          id: `turn-${Date.now()}-bg`,
-          blocks: [],
-          createdAt: new Date(),
-        };
+      const existing = backgroundTurnsRef.current.get(sessionId) ?? {
+        id: `turn-${Date.now()}-bg`,
+        blocks: [],
+        createdAt: new Date(),
+      };
       const next = updater(existing);
       backgroundTurnsRef.current.set(sessionId, next);
       optionsRef.current.onLiveTurnForSession?.(sessionId, next);
@@ -308,20 +307,17 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     [updateBackgroundTurn]
   );
 
-  const clearRun = useCallback(
-    (runId: string | null) => {
-      if (runId) {
-        activeRunIdsRef.current.delete(runId);
-        runSessionMapRef.current.delete(runId);
-      }
-      if (activeRunIdRef.current && runId === activeRunIdRef.current) {
-        const remaining = Array.from(activeRunIdsRef.current);
-        activeRunIdRef.current =
-          remaining.length > 0 ? (remaining[remaining.length - 1] ?? null) : null;
-      }
-    },
-    []
-  );
+  const clearRun = useCallback((runId: string | null) => {
+    if (runId) {
+      activeRunIdsRef.current.delete(runId);
+      runSessionMapRef.current.delete(runId);
+    }
+    if (activeRunIdRef.current && runId === activeRunIdRef.current) {
+      const remaining = Array.from(activeRunIdsRef.current);
+      activeRunIdRef.current =
+        remaining.length > 0 ? (remaining[remaining.length - 1] ?? null) : null;
+    }
+  }, []);
 
   // When the user switches tasks mid-stream, stash the visible live turn into
   // the background map for the previous task and restore the new task's live
@@ -503,8 +499,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             listen<LlmDonePayload>("llm-done", (event) => {
               const payload = event.payload;
               if (typeof payload !== "string" && isStale(payload?.runId)) return;
-              const runId =
-                typeof payload === "string" ? null : (payload?.runId ?? null);
+              const runId = typeof payload === "string" ? null : (payload?.runId ?? null);
               if (runId != null && isBackground(runId)) {
                 const sessionId = sessionForRun(runId);
                 flushBackgroundPending(sessionId);
@@ -671,10 +666,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 };
                 const focused = getFocusedSession();
                 if (optionsRef.current.onMessagesForSession) {
-                  optionsRef.current.onMessagesForSession(focused, (prev) => [
-                    ...prev,
-                    message,
-                  ]);
+                  optionsRef.current.onMessagesForSession(focused, (prev) => [...prev, message]);
                 } else {
                   optionsRef.current.onMessages?.((prev) => [...prev, message]);
                 }
@@ -1025,28 +1017,31 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     getFocusedSession,
   ]);
 
-  const startStream = useCallback(async (opts: StartStreamOptions) => {
-    const runId = crypto.randomUUID();
-    activeRunIdRef.current = runId;
-    activeRunIdsRef.current.add(runId);
-    runSessionMapRef.current.set(runId, opts.sessionId ?? null);
-    // Starting a new turn for the focused session clears any stashed
-    // background turn for that session so a stale live view cannot resurface.
-    if ((opts.sessionId ?? null) === getFocusedSession()) {
-      backgroundTurnsRef.current.delete(opts.sessionId ?? null);
-      optionsRef.current.onLiveTurnForSession?.(opts.sessionId ?? null, null);
-    }
-    await invoke<string>("complete_streaming", {
-      provider: opts.provider,
-      prompt: opts.prompt,
-      model: opts.model,
-      variant: opts.variant ?? null,
-      sessionId: opts.sessionId ?? null,
-      invokedSkill: opts.invokedSkill ?? null,
-      runId,
-    });
-    return runId;
-  }, [getFocusedSession]);
+  const startStream = useCallback(
+    async (opts: StartStreamOptions) => {
+      const runId = crypto.randomUUID();
+      activeRunIdRef.current = runId;
+      activeRunIdsRef.current.add(runId);
+      runSessionMapRef.current.set(runId, opts.sessionId ?? null);
+      // Starting a new turn for the focused session clears any stashed
+      // background turn for that session so a stale live view cannot resurface.
+      if ((opts.sessionId ?? null) === getFocusedSession()) {
+        backgroundTurnsRef.current.delete(opts.sessionId ?? null);
+        optionsRef.current.onLiveTurnForSession?.(opts.sessionId ?? null, null);
+      }
+      await invoke<string>("complete_streaming", {
+        provider: opts.provider,
+        prompt: opts.prompt,
+        model: opts.model,
+        variant: opts.variant ?? null,
+        sessionId: opts.sessionId ?? null,
+        invokedSkill: opts.invokedSkill ?? null,
+        runId,
+      });
+      return runId;
+    },
+    [getFocusedSession]
+  );
 
   const cancelStreamForSession = useCallback(
     async (targetSessionId: string | null) => {
@@ -1123,7 +1118,15 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       if (targetRun) clearRun(targetRun);
       emitStatus(sid, "connected");
     },
-    [clearCurrentTurn, generateTurnId, flushPendingText, flushBackgroundPending, clearRun, emitStatus, getFocusedSession]
+    [
+      clearCurrentTurn,
+      generateTurnId,
+      flushPendingText,
+      flushBackgroundPending,
+      clearRun,
+      emitStatus,
+      getFocusedSession,
+    ]
   );
 
   const cancelStream = useCallback(async () => {

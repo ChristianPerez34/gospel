@@ -31,8 +31,7 @@ export function SkillOptPanel({
   } = useStagedSkills(workspacePath);
   const [skillName, setSkillName] = useState("");
   const trimmedName = skillName.trim();
-  const harvestReady =
-    harvest?.skill === trimmedName && (harvest?.selectionCount ?? 0) > 0;
+  const harvestReady = harvest?.skill === trimmedName && (harvest?.selectionCount ?? 0) > 0;
   const canOptimize =
     Boolean(workspacePath && trimmedName && provider && model && harvestReady) &&
     !loading &&

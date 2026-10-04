@@ -142,7 +142,7 @@ describe("useStagedSkills", () => {
 
     await act(async () => {
       await expect(
-        result.current.optimize("tdd", { provider: "openai", model: "gpt-5.5" }),
+        result.current.optimize("tdd", { provider: "openai", model: "gpt-5.5" })
       ).rejects.toThrow();
     });
 

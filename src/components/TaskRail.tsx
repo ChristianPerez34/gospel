@@ -91,11 +91,7 @@ export function TaskRail({
   if (collapsed) return null;
 
   return (
-    <aside
-      className="task-rail"
-      aria-label="Tasks"
-      data-testid="task-rail"
-    >
+    <aside className="task-rail" aria-label="Tasks" data-testid="task-rail">
       <div className="task-rail-head">
         <div className="task-rail-search-row">
           <svg
@@ -175,10 +171,7 @@ export function TaskRail({
                         aria-current={isActive ? "true" : undefined}
                         title={`${title} — ${projectLabel(group.key)}`}
                       >
-                        <span
-                          className={`task-rail-dot is-${st}`}
-                          aria-hidden="true"
-                        />
+                        <span className={`task-rail-dot is-${st}`} aria-hidden="true" />
                         <span className="task-rail-main">
                           <span className="task-rail-title">{title}</span>
                           <span className="task-rail-meta">

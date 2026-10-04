@@ -82,13 +82,13 @@ export function useStagedSkills(workspacePath?: string) {
         throw error;
       }
     },
-    [fetchStaged],
+    [fetchStaged]
   );
 
   const optimize = useCallback(
     async (
       skillName: string,
-      selection: { provider: string; model: string; variant?: string | null },
+      selection: { provider: string; model: string; variant?: string | null }
     ) => {
       setOptimizing(true);
       try {
@@ -107,7 +107,7 @@ export function useStagedSkills(workspacePath?: string) {
         setOptimizing(false);
       }
     },
-    [fetchStaged],
+    [fetchStaged]
   );
 
   // The backend resolves staging against the active workspace; the path signals that change.

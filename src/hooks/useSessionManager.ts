@@ -87,9 +87,9 @@ export function useSessionManager({
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [draftSessionMode, setDraftSessionMode] = useState<SessionMode>("Build");
-  const [liveTurnsBySession, setLiveTurnsBySession] = useState<
-    Record<string, CurrentTurn | null>
-  >({});
+  const [liveTurnsBySession, setLiveTurnsBySession] = useState<Record<string, CurrentTurn | null>>(
+    {}
+  );
   const [statusBySession, setStatusBySession] = useState<Record<string, AgentStatus>>({});
   const statusRef = useRef(status);
   statusRef.current = status;
@@ -174,22 +174,22 @@ export function useSessionManager({
     [onSessionsChange]
   );
 
-  const handleLiveTurnForSession = useCallback((sessionId: string | null, turn: CurrentTurn | null) => {
-    if (!sessionId) return;
-    setLiveTurnsBySession((prev) => ({ ...prev, [sessionId]: turn }));
-  }, []);
-
-  const handleStatusForSession = useCallback(
-    (sessionId: string | null, next: AgentStatus) => {
-      if (sessionId) {
-        setStatusBySession((prev) => ({ ...prev, [sessionId]: next }));
-      }
-      if (sessionId === activeSessionIdRef.current) {
-        setStatus(next);
-      }
+  const handleLiveTurnForSession = useCallback(
+    (sessionId: string | null, turn: CurrentTurn | null) => {
+      if (!sessionId) return;
+      setLiveTurnsBySession((prev) => ({ ...prev, [sessionId]: turn }));
     },
     []
   );
+
+  const handleStatusForSession = useCallback((sessionId: string | null, next: AgentStatus) => {
+    if (sessionId) {
+      setStatusBySession((prev) => ({ ...prev, [sessionId]: next }));
+    }
+    if (sessionId === activeSessionIdRef.current) {
+      setStatus(next);
+    }
+  }, []);
 
   const {
     currentTurn,

@@ -598,6 +598,7 @@ async fn run_exploration_agent(
         role_guidance: Some(EXPLORATION_AGENT_PROMPT.to_string()),
         matched_skills_section: None,
         invoked_skill_section: None,
+        memory_section: None,
         main_tool_inputs: None,
     })
     .map_err(|error| LlmError::ProviderError(error.to_string()))?;
@@ -687,6 +688,7 @@ pub async fn stream_completion<F>(
     chat_history: Vec<Message>,
     matched_skills_section: Option<String>,
     invoked_skill_section: Option<String>,
+    memory_section: Option<String>,
     skill_script_tool: Option<crate::skills::RunSkillScriptTool>,
     mut on_event: F,
 ) -> Result<StreamCompletionResult, LlmError>
@@ -734,6 +736,7 @@ where
         role_guidance: None,
         matched_skills_section,
         invoked_skill_section,
+        memory_section,
         main_tool_inputs: Some(MainToolInputs {
             provider: provider.to_string(),
             model: model.to_string(),
@@ -1123,6 +1126,7 @@ mod tests {
             None,
             None,
             vec![],
+            None,
             None,
             None,
             None,

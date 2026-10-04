@@ -84,6 +84,7 @@ pub async fn run_verification(
         role_guidance: Some(VERIFICATION_SYSTEM_PROMPT.to_string()),
         matched_skills_section: None,
         invoked_skill_section: None,
+        memory_section: None,
         main_tool_inputs: None,
     }) {
         Ok(profile) => profile,

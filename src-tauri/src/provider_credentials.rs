@@ -102,6 +102,7 @@ pub fn ensure_inference_ready(
 }
 
 /// OAuth providers must be credentialed before review/model-fetch work that depends on a session.
+#[allow(dead_code)]
 pub fn ensure_oauth_session(provider_id: &str) -> Result<(), CredentialError> {
     let entry = find_provider(provider_id)
         .ok_or_else(|| CredentialError::UnsupportedProvider(provider_id.to_string()))?;

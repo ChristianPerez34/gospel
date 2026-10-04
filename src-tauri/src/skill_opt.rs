@@ -242,6 +242,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
             None,
             Some(invoked_skill_section.to_string()),
             None,
+            None,
             |_| {},
         )
         .await
@@ -270,6 +271,7 @@ where
     Ok(statuses)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn replay_and_conclude<E, V>(
     workspace: &Path,
     name: &str,
@@ -300,6 +302,7 @@ where
     .map_err(|error| SkillReplayError::Failed(error.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_selection_replay<E, V>(
     workspace: &Path,
     name: &str,
@@ -459,6 +462,7 @@ impl SkillOptimizer for StreamCompletionSkillOptimizer {
                 "## Skill optimizer\n\nReturn only a JSON array of bounded skill edits."
                     .to_string(),
             ),
+            None,
             None,
             |_| {},
         )

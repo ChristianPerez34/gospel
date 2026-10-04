@@ -36,9 +36,7 @@ describe("SkillOptPanel", () => {
   });
 
   it("adopts a staged skill without offering adopt for rejects-only entries", () => {
-    render(
-      <SkillOptPanel workspacePath="/tmp/gospel" provider="openai" model="gpt-5.5" />,
-    );
+    render(<SkillOptPanel workspacePath="/tmp/gospel" provider="openai" model="gpt-5.5" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Adopt tdd" }));
     expect(adopt).toHaveBeenCalledWith("tdd");
@@ -50,9 +48,7 @@ describe("SkillOptPanel", () => {
   });
 
   it("optimizes the named skill with the session model", () => {
-    render(
-      <SkillOptPanel workspacePath="/tmp/gospel" provider="openai" model="gpt-5.5" />,
-    );
+    render(<SkillOptPanel workspacePath="/tmp/gospel" provider="openai" model="gpt-5.5" />);
 
     fireEvent.change(screen.getByLabelText("Skill to optimize"), {
       target: { value: "tdd" },

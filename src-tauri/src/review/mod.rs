@@ -2236,6 +2236,7 @@ pub(crate) async fn run_workspace_agent(
         role_guidance: Some(config.preamble.to_string()),
         matched_skills_section: None,
         invoked_skill_section: None,
+        memory_section: None,
         main_tool_inputs: None,
     })
     .map_err(|error| ReviewAgentError::Provider(error.to_string()))?;
