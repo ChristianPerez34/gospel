@@ -20,7 +20,6 @@ mod provider_client;
 mod provider_credentials;
 mod providers;
 mod review;
-pub mod session_mode;
 pub mod session_store;
 mod session_turn;
 mod shell_tools;
@@ -1239,17 +1238,6 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn session_mode(&self, session_id: &str) -> Result<String, String> {
-        match &self.session_store_state.store {
-            Some(store) => store
-                .get_session(session_id)
-                .map_err(|e| e.to_string())?
-                .map(|session| session.mode)
-                .ok_or_else(|| format!("Session not found: {}", session_id)),
-            None => Err("session store unavailable".to_string()),
-        }
-    }
-
     fn unresolved_notes(&self, session_id: &str) -> Vec<session_store::SessionNote> {
         match &self.session_store_state.store {
             Some(store) => store.list_unresolved_notes(session_id).unwrap_or_default(),
@@ -2214,7 +2202,7 @@ async fn run_skill_selection_replay(
     let workspace = harness_profile::ActiveWorkspaceContext {
         workspace_path: workspace_path.clone(),
         corpus_available: false,
-        session_mode: session_mode::SessionMode::ReadOnly,
+        source_edit_allowed: false,
     };
     let executor = skill_opt::LlmStudentExecutor {
         llm: skill_opt::StreamCompletionStudentLlm {
@@ -2264,7 +2252,7 @@ async fn optimize_skill_from_sessions(
     let workspace = harness_profile::ActiveWorkspaceContext {
         workspace_path: workspace_path.clone(),
         corpus_available: false,
-        session_mode: session_mode::SessionMode::ReadOnly,
+        source_edit_allowed: false,
     };
     let optimizer = skill_opt::StreamCompletionSkillOptimizer {
         provider: provider.clone(),
@@ -2508,9 +2496,7 @@ fn create_session(
     model: String,
     variant: Option<String>,
     workspace_id: Option<String>,
-    mode: Option<String>,
 ) -> Result<SessionRecord, String> {
-    let mode = mode.unwrap_or_else(|| session_mode::SESSION_MODE_BUILD.to_string());
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => store
@@ -2520,7 +2506,6 @@ fn create_session(
                 &model,
                 variant.as_deref(),
                 workspace_id.as_deref(),
-                &mode,
             )
             .map_err(|e| e.to_string()),
         None => Err(session_store
@@ -2544,27 +2529,6 @@ fn update_session_model_selection(
             validate_session_access(store, &session_id, app_config.inner())?;
             store
                 .update_model_selection(&session_id, &provider, &model, variant.as_deref())
-                .map_err(|e| e.to_string())
-        }
-        None => Err(session_store
-            .init_warning
-            .clone()
-            .unwrap_or_else(|| "Session store is unavailable".to_string())),
-    }
-}
-
-#[tauri::command]
-fn update_session_mode(
-    session_store: tauri::State<'_, SessionStoreState>,
-    app_config: tauri::State<'_, AppConfigState>,
-    session_id: String,
-    mode: String,
-) -> Result<(), String> {
-    match &session_store.store {
-        Some(store) => {
-            validate_session_access(store, &session_id, app_config.inner())?;
-            store
-                .update_session_mode(&session_id, &mode)
                 .map_err(|e| e.to_string())
         }
         None => Err(session_store
@@ -3491,7 +3455,6 @@ pub fn run() {
             adopt_staged_skill,
             create_session,
             update_session_model_selection,
-            update_session_mode,
             update_session_title,
             get_session,
             list_sessions,

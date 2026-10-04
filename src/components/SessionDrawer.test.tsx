@@ -57,19 +57,6 @@ describe("SessionDrawer", () => {
     expect(screen.queryByText("Main")).toBeNull();
   });
 
-  it("shows a plan badge for read-only sessions", () => {
-    renderDrawer({
-      sessions: [
-        {
-          ...sessions[0],
-          mode: "ReadOnly",
-        },
-      ],
-    });
-
-    expect(screen.getByText("Plan")).toBeTruthy();
-  });
-
   it("calls onSelect for clicked session", () => {
     const onSelect = vi.fn();
     renderDrawer({ onSelect });

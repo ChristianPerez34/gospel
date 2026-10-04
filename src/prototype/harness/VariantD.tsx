@@ -435,9 +435,9 @@ function ReviewersTab({
 }
 
 // Composer — the prompt input, pinned at the bottom of the conversation column.
-// Includes the agent controls row: model selector, variant selector, and
-// build/plan mode toggle. All "how should the agent work" controls live here,
-// next to where the user steers.
+// Includes the agent controls row: model selector and variant selector.
+// All "how should the agent work" controls live here, next to where the
+// user steers.
 const MODELS = ["Claude", "GPT-4o", "Gemini", "Llama"] as const;
 const VARIANTS: Record<string, readonly string[]> = {
   Claude: ["Haiku", "Sonnet", "Opus"],
@@ -445,13 +445,11 @@ const VARIANTS: Record<string, readonly string[]> = {
   Gemini: ["Flash", "Pro", "Ultra"],
   Llama: ["8B", "70B", "405B"],
 };
-type Mode = "build" | "plan";
 
 function Composer({ disabled }: { disabled: boolean }) {
   const [v, setV] = useState("");
   const [model, setModel] = useState<string>("Claude");
   const [variant, setVariant] = useState<string>("Sonnet");
-  const [mode, setMode] = useState<Mode>("build");
   const [modelOpen, setModelOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
   const canSend = !disabled && v.trim().length > 0;
@@ -464,7 +462,7 @@ function Composer({ disabled }: { disabled: boolean }) {
 
   return (
     <div style={inputWrap}>
-      {/* controls row — model, variant, mode toggle */}
+      {/* controls row — model, variant */}
       <div style={controlsRow}>
         <div style={selectorGroup}>
           {/* model selector */}
@@ -529,15 +527,6 @@ function Composer({ disabled }: { disabled: boolean }) {
             )}
           </div>
         </div>
-        {/* mode toggle — build / plan */}
-        <div style={modeToggle}>
-          <button type="button" style={modeBtn(mode === "build")} onClick={() => setMode("build")}>
-            build
-          </button>
-          <button type="button" style={modeBtn(mode === "plan")} onClick={() => setMode("plan")}>
-            plan
-          </button>
-        </div>
       </div>
 
       {/* input card */}
@@ -547,9 +536,7 @@ function Composer({ disabled }: { disabled: boolean }) {
           placeholder={
             disabled
               ? "agent is working — you can steer anytime"
-              : mode === "plan"
-                ? "Describe what you want — Gospel will plan before building…"
-                : "Message Gospel…  (⏎ to send · ⇧⏎ for newline · / for skills)"
+              : "Message Gospel…  (⏎ to send · ⇧⏎ for newline · / for skills)"
           }
           value={v}
           disabled={disabled}
@@ -563,7 +550,7 @@ function Composer({ disabled }: { disabled: boolean }) {
           rows={2}
         />
         <button type="button" style={sendBtn(canSend)} disabled={!canSend}>
-          {mode === "plan" ? "Plan" : "Send"}
+          Send
           <span style={sendHint}>⏎</span>
         </button>
       </div>
@@ -1990,29 +1977,6 @@ const selectorItem = (active: boolean): React.CSSProperties => ({
 });
 const selectorCheck: React.CSSProperties = { color: "var(--accent-action)", fontSize: 10 };
 
-/* mode toggle — build / plan */
-const modeToggle: React.CSSProperties = {
-  display: "inline-flex",
-  background: "var(--surface-base)",
-  border: "1px solid var(--surface-line)",
-  borderRadius: "var(--radius-sm)",
-  padding: 2,
-  gap: 2,
-};
-const modeBtn = (active: boolean): React.CSSProperties => ({
-  background: active ? "var(--accent-action)" : "transparent",
-  color: active ? "var(--text-inverse)" : "var(--text-muted)",
-  border: "none",
-  borderRadius: "var(--radius-xs)",
-  padding: "3px 12px",
-  fontSize: 11,
-  fontFamily: "var(--font-mono)",
-  fontWeight: 600,
-  cursor: "pointer",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  transition: "background 150ms var(--ease-out-quart), color 150ms var(--ease-out-quart)",
-});
 const inputInner: React.CSSProperties = {
   display: "flex",
   alignItems: "flex-end",

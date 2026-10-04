@@ -6,7 +6,6 @@ use crate::review::tools::{
     create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
     create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
 };
-use crate::session_mode::SessionMode;
 use crate::shell_tools::CommandApproval;
 use crate::shell_tools::{
     create_run_git_command_tool, create_run_github_cli_command_tool, create_run_shell_command_tool,
@@ -16,8 +15,7 @@ use crate::workspace_tools::{
     build_base_workspace_tools, build_base_workspace_tools_with_external_approval,
     create_context_search_tool, create_source_edit_tool, create_write_harness_file_tool,
     ExternalPathApproval, CONTEXT_SEARCH_SYSTEM_PROMPT, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
-    READ_ONLY_SESSION_SYSTEM_PROMPT, READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT,
-    WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 use rig::tool::ToolDyn;
 use serde::{Deserialize, Serialize};
@@ -46,7 +44,11 @@ pub enum AgentRole {
 pub struct ActiveWorkspaceContext {
     pub workspace_path: std::path::PathBuf,
     pub corpus_available: bool,
-    pub session_mode: SessionMode,
+    /// Whether the Main agent's Harness Profile may register workspace source
+    /// mutation tools (`source_edit`). Always `true` for Session turns;
+    /// internal consumers such as skill optimization set `false` to replay a
+    /// turn without write access.
+    pub source_edit_allowed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -368,7 +370,7 @@ pub fn resolve_harness_profile(
     tools.push(Box::new(create_record_review_outcome_tool(
         workspace_path.clone(),
     )));
-    if workspace.session_mode.allows_source_edit() {
+    if workspace.source_edit_allowed {
         tools.push(Box::new(create_source_edit_tool(workspace_path.clone())));
     }
     if workspace.corpus_available {
@@ -439,21 +441,14 @@ fn compose_preamble(
     }
 
     if let Some(workspace) = workspace {
-        let workspace_guidance =
-            if role == AgentRole::Main && workspace.session_mode.allows_source_edit() {
-                WORKSPACE_TOOLS_SYSTEM_PROMPT
-            } else {
-                READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT
-            };
+        let workspace_guidance = if role == AgentRole::Main && workspace.source_edit_allowed {
+            WORKSPACE_TOOLS_SYSTEM_PROMPT
+        } else {
+            READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT
+        };
         push_section(&mut sections, Some(workspace_guidance.to_string()));
 
         if role == AgentRole::Main {
-            if !workspace.session_mode.allows_source_edit() {
-                push_section(
-                    &mut sections,
-                    Some(READ_ONLY_SESSION_SYSTEM_PROMPT.to_string()),
-                );
-            }
             push_section(&mut sections, Some(SHELL_TOOLS_SYSTEM_PROMPT.to_string()));
             push_section(&mut sections, Some(REVIEW_TOOLS_SYSTEM_PROMPT.to_string()));
             push_section(
@@ -537,7 +532,6 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_mode::SessionMode;
     use rig::agent::AgentBuilder;
     use rig::test_utils::MockCompletionModel;
     use std::path::PathBuf;
@@ -556,7 +550,7 @@ mod tests {
     fn request(
         role: AgentRole,
         workspace_available: bool,
-        mode: SessionMode,
+        source_edit_allowed: bool,
         corpus_available: bool,
     ) -> HarnessProfileRequest {
         HarnessProfileRequest {
@@ -564,7 +558,7 @@ mod tests {
             workspace: workspace_available.then(|| ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available,
-                session_mode: mode,
+                source_edit_allowed,
             }),
             role_guidance: Some(format!("Guidance for {role:?}")),
             matched_skills_section: (role == AgentRole::Main)
@@ -578,7 +572,7 @@ mod tests {
     fn expected_tool_names(
         role: AgentRole,
         workspace_available: bool,
-        mode: SessionMode,
+        source_edit_allowed: bool,
         corpus_available: bool,
     ) -> Vec<String> {
         if !workspace_available {
@@ -593,7 +587,7 @@ mod tests {
                 "run_security_review",
                 "record_review_outcome",
             ]);
-            if mode == SessionMode::Build {
+            if source_edit_allowed {
                 names.push("source_edit");
             }
         }
@@ -616,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_matrix_covers_roles_workspace_modes_and_corpus() {
+    fn contract_matrix_covers_roles_source_edit_and_corpus() {
         let roles = [
             AgentRole::Main,
             AgentRole::Exploration,
@@ -626,12 +620,12 @@ mod tests {
         ];
         for role in roles {
             for workspace_available in [false, true] {
-                for mode in [SessionMode::Build, SessionMode::ReadOnly] {
+                for source_edit_allowed in [true, false] {
                     for corpus_available in [false, true] {
                         let result = resolve_harness_profile(request(
                             role,
                             workspace_available,
-                            mode,
+                            source_edit_allowed,
                             corpus_available,
                         ));
                         if !workspace_available && role != AgentRole::Main {
@@ -647,7 +641,12 @@ mod tests {
                         let summary = profile.summary();
                         assert_eq!(
                             names,
-                            expected_tool_names(role, workspace_available, mode, corpus_available,)
+                            expected_tool_names(
+                                role,
+                                workspace_available,
+                                source_edit_allowed,
+                                corpus_available,
+                            )
                         );
                         assert_eq!(summary.role, role);
                         assert_eq!(summary.workspace_available, workspace_available);
@@ -660,7 +659,7 @@ mod tests {
 
                         let source_edit_expected = workspace_available
                             && role == AgentRole::Main
-                            && mode == SessionMode::Build;
+                            && source_edit_allowed;
                         assert_eq!(
                             names.contains(&"source_edit".to_string()),
                             source_edit_expected
@@ -698,15 +697,10 @@ mod tests {
                             assert!(preamble.contains("Harness Control Area"));
                             assert!(preamble.contains("Shell, Git, and GitHub CLI Tools"));
                             assert!(preamble.contains("Review Tools"));
-                            assert_eq!(
-                                preamble.contains("Read-Only Session"),
-                                mode == SessionMode::ReadOnly
-                            );
                         } else {
                             assert!(!preamble.contains("Harness Control Area"));
                             assert!(!preamble.contains("Shell, Git, and GitHub CLI Tools"));
                             assert!(!preamble.contains("Review Tools"));
-                            assert!(!preamble.contains("Read-Only Session"));
                         }
 
                         let serialized = serde_json::to_string(&summary).expect("summary JSON");
@@ -761,7 +755,7 @@ mod tests {
             workspace: Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
-                session_mode: SessionMode::ReadOnly,
+                source_edit_allowed: true,
             }),
             role_guidance: None,
             matched_skills_section: None,
@@ -788,7 +782,7 @@ mod tests {
             workspace: Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
-                session_mode: SessionMode::ReadOnly,
+                source_edit_allowed: true,
             }),
             role_guidance: None,
             matched_skills_section: None,
@@ -819,7 +813,7 @@ mod tests {
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
-            let profile = resolve_harness_profile(request(role, true, SessionMode::Build, false))
+            let profile = resolve_harness_profile(request(role, true, true, false))
                 .expect("profile");
             let guards = profile.guards;
             assert_eq!(guards.max_turns, max_turns);
@@ -839,7 +833,7 @@ mod tests {
             workspace: Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
-                session_mode: SessionMode::Build,
+                source_edit_allowed: true,
             }),
             role_guidance: Some("Verify".to_string()),
             matched_skills_section: None,
@@ -859,7 +853,7 @@ mod tests {
 
     #[test]
     fn memory_section_is_a_main_preamble_sibling_and_ignored_for_other_roles() {
-        let mut main_request = request(AgentRole::Main, false, SessionMode::Build, false);
+        let mut main_request = request(AgentRole::Main, false, true, false);
         main_request.memory_section = Some("## Memory\nprefer bun".to_string());
         let main = resolve_harness_profile(main_request).expect("unscoped Main profile");
         let main_preamble = main.preamble.unwrap_or_default();
@@ -876,7 +870,7 @@ mod tests {
             AgentRole::ReviewDetector,
             AgentRole::ReviewValidator,
         ] {
-            let mut other = request(role, true, SessionMode::Build, false);
+            let mut other = request(role, true, true, false);
             other.memory_section = Some("## Memory\nprefer bun".to_string());
             let profile = resolve_harness_profile(other).expect("workspace profile");
             let preamble = profile.preamble.unwrap_or_default();

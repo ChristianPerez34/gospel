@@ -1,16 +1,14 @@
-import { Cpu, Hammer, Lock } from "lucide-react";
+import { Cpu } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
-import type { AgentStatus, SessionMode, Workspace } from "../types";
+import type { AgentStatus, Workspace } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
 interface TopBarProps {
   workspace: Workspace;
   sessionTitle: string;
-  sessionMode: SessionMode;
   model: string;
   status: AgentStatus;
   onWorkspaceSwitch: () => void;
-  onSessionModeChange: (mode: SessionMode) => Promise<void>;
   onSessionTitleChange: (title: string) => void;
   onToggleSessions: () => void;
   onOpenSettings: () => void;
@@ -21,11 +19,9 @@ interface TopBarProps {
 export function TopBar({
   workspace,
   sessionTitle,
-  sessionMode,
   model,
   status,
   onWorkspaceSwitch,
-  onSessionModeChange,
   onSessionTitleChange,
   onToggleSessions,
   onOpenSettings,
@@ -56,10 +52,6 @@ export function TopBar({
     }
     setEditing(false);
   };
-
-  const nextMode: SessionMode = sessionMode === "Build" ? "ReadOnly" : "Build";
-  const modeLabel = sessionMode === "Build" ? "Build" : "Plan";
-  const nextModeLabel = nextMode === "Build" ? "Build" : "Plan";
 
   const sessionToggleClass = sessionsOpen
     ? "bg-surface-overlay text-accent-structure"
@@ -185,23 +177,6 @@ export function TopBar({
             {sessionTitle || "New session"}
           </button>
         )}
-        <div className="topbar-session-mode-wrap">
-          <button
-            type="button"
-            className={`topbar-session-mode hit-target ${sessionMode === "ReadOnly" ? "is-readonly" : ""}`}
-            onClick={() => void onSessionModeChange(nextMode)}
-            aria-label={`Session mode: ${modeLabel}. Change to ${nextModeLabel}.`}
-            aria-pressed={sessionMode === "ReadOnly"}
-            title={`Session mode: ${modeLabel}`}
-          >
-            {sessionMode === "ReadOnly" ? (
-              <Lock aria-hidden="true" />
-            ) : (
-              <Hammer aria-hidden="true" />
-            )}
-            <span>{modeLabel}</span>
-          </button>
-        </div>
       </div>
       <div className="topbar-actions flex items-center gap-3 shrink-0">
         <div

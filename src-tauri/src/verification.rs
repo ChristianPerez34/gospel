@@ -252,7 +252,7 @@ mod tests {
 
     fn workspace() -> ActiveWorkspaceContext {
         serde_json::from_str::<ActiveWorkspaceContext>(
-            r#"{"workspace_path":"/tmp/gospel-verification-test","corpus_available":false,"session_mode":"Build"}"#,
+            r#"{"workspace_path":"/tmp/gospel-verification-test","corpus_available":false,"source_edit_allowed":true}"#,
         )
         .expect("ActiveWorkspaceContext deserializes")
     }

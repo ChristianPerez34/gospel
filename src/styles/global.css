@@ -527,12 +527,6 @@ summary,
   white-space: nowrap;
 }
 
-.task-rail-plan {
-  color: var(--accent-signal);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
 .task-rail-live {
   color: var(--status-success);
 }
@@ -800,22 +794,6 @@ summary,
 .session-row.is-active .session-row-dot {
   background: var(--accent-action);
   opacity: 1;
-}
-
-.session-readonly-badge {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 3px;
-  color: var(--accent-signal);
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  white-space: nowrap;
-}
-
-.session-readonly-badge svg {
-  width: 12px;
-  height: 12px;
 }
 
 .session-mode-switch {
@@ -1108,51 +1086,6 @@ summary,
 
 .app-topbar button[aria-pressed="true"] {
   background: color-mix(in srgb, var(--surface-overlay) 74%, var(--accent-action) 12%);
-}
-
-.topbar-session-mode-wrap {
-  position: relative;
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-}
-
-.topbar-session-mode {
-  display: inline-flex;
-  min-height: 32px;
-  max-width: 116px;
-  align-items: center;
-  gap: var(--space-1);
-  border: 1px solid color-mix(in srgb, var(--surface-overlay) 78%, var(--text-muted) 12%);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  padding: 0 var(--space-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  transition:
-    background-color var(--duration-fast) var(--ease-out-quart),
-    border-color var(--duration-fast) var(--ease-out-quart),
-    color var(--duration-fast) var(--ease-out-quart);
-}
-
-.topbar-session-mode:hover,
-.topbar-session-mode.is-readonly {
-  border-color: color-mix(in srgb, var(--accent-signal) 38%, var(--surface-overlay) 62%);
-  background: color-mix(in srgb, var(--surface-overlay) 82%, var(--accent-signal) 18%);
-  color: var(--text-secondary);
-}
-
-.topbar-session-mode svg {
-  width: 13px;
-  height: 13px;
-  flex: 0 0 auto;
-}
-
-.topbar-session-mode span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .topbar-model-badge {
@@ -1609,16 +1542,6 @@ summary,
   .topbar-session-title,
   .topbar-divider,
   .topbar-status-label {
-    display: none;
-  }
-
-  .topbar-session-mode {
-    width: 32px;
-    padding: 0;
-    justify-content: center;
-  }
-
-  .topbar-session-mode span {
     display: none;
   }
 
