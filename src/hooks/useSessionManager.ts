@@ -55,6 +55,12 @@ export interface UseSessionManagerResult {
   currentTurn: CurrentTurn | null;
   isStreaming: boolean;
   isThinking: boolean;
+  /** Sessions with an in-flight turn (control-plane running indicator). */
+  streamingSessionIds: string[];
+  /** Live (unfinalized) turn per session, including background tasks. */
+  liveTurnsBySession: Record<string, CurrentTurn | null>;
+  /** Latest known status per session. */
+  statusBySession: Record<string, AgentStatus>;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
   handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
@@ -62,6 +68,7 @@ export interface UseSessionManagerResult {
   handleSessionModeChange: (mode: SessionMode) => Promise<void>;
   resolveApproval: (id: string, decision: "approve" | "deny") => Promise<void>;
   cancelStream: () => Promise<void>;
+  cancelStreamForSession: (sessionId: string | null) => Promise<void>;
 }
 
 export function useSessionManager({
@@ -80,6 +87,10 @@ export function useSessionManager({
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [draftSessionMode, setDraftSessionMode] = useState<SessionMode>("Build");
+  const [liveTurnsBySession, setLiveTurnsBySession] = useState<
+    Record<string, CurrentTurn | null>
+  >({});
+  const [statusBySession, setStatusBySession] = useState<Record<string, AgentStatus>>({});
   const statusRef = useRef(status);
   statusRef.current = status;
   const latestSelectedSessionRef = useRef<string | null>(null);
@@ -92,11 +103,10 @@ export function useSessionManager({
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
-  // Status changes retry a workspace reset that was deferred while streaming.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Status is an intentional trigger.
+  // Control plane: workspace switches no longer wait for streams to finish.
+  // Selecting a task from another project switches workspace and keeps every
+  // in-flight turn running; the reset below only clears the draft view.
   useEffect(() => {
-    if (statusRef.current === "thinking" || statusRef.current === "acting") return;
-
     const workspaceChanged = prevWorkspaceRef.current !== activeWorkspaceId;
     if (!workspaceChanged) return;
 
@@ -114,7 +124,7 @@ export function useSessionManager({
     setActiveSessionId(null);
     setMessages([]);
     setDraftSessionMode("Build");
-  }, [activeWorkspaceId, status]);
+  }, [activeWorkspaceId]);
 
   const handleModelVariantWarning = useCallback(
     (warning: ModelVariantWarningPayload) => {
@@ -136,8 +146,63 @@ export function useSessionManager({
     [onModelVariantFallback, onSessionsChange]
   );
 
-  const { currentTurn, startStream, resetStream, cancelStream, resolveApproval } = useChatStream({
+  const handleMessagesForSession = useCallback(
+    (sessionId: string | null, updater: (prev: Message[]) => Message[]) => {
+      const focused = activeSessionIdRef.current;
+      if (sessionId === focused) {
+        setMessages(updater);
+        return;
+      }
+      // Background task completed while viewing another task: append to that
+      // task's stored transcript so switching back shows the result.
+      if (!sessionId) {
+        setMessages(updater);
+        return;
+      }
+      onSessionsChange((prev) =>
+        prev.map((session) =>
+          session.id === sessionId
+            ? {
+                ...session,
+                messages: updater(session.messages),
+                timestamp: new Date(),
+              }
+            : session
+        )
+      );
+    },
+    [onSessionsChange]
+  );
+
+  const handleLiveTurnForSession = useCallback((sessionId: string | null, turn: CurrentTurn | null) => {
+    if (!sessionId) return;
+    setLiveTurnsBySession((prev) => ({ ...prev, [sessionId]: turn }));
+  }, []);
+
+  const handleStatusForSession = useCallback(
+    (sessionId: string | null, next: AgentStatus) => {
+      if (sessionId) {
+        setStatusBySession((prev) => ({ ...prev, [sessionId]: next }));
+      }
+      if (sessionId === activeSessionIdRef.current) {
+        setStatus(next);
+      }
+    },
+    []
+  );
+
+  const {
+    currentTurn,
+    startStream,
+    resetStream,
+    cancelStream,
+    cancelStreamForSession,
+    resolveApproval,
+  } = useChatStream({
     onMessages: setMessages,
+    onMessagesForSession: handleMessagesForSession,
+    onLiveTurnForSession: handleLiveTurnForSession,
+    onStatusForSession: handleStatusForSession,
     onStatusChange: setStatus,
     onErrorToast: onError,
     onSuccessToast: onSuccess,
@@ -145,6 +210,27 @@ export function useSessionManager({
     onModelVariantWarning: handleModelVariantWarning,
     sessionId: activeSessionId,
   });
+
+  // Keep the focused status in sync when switching tasks: show that task's
+  // latest known status (running tasks stay green while viewed elsewhere).
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const known = statusBySession[activeSessionId];
+    if (known) setStatus(known);
+  }, [activeSessionId, statusBySession]);
+
+  const streamingSessionIds = Object.entries(statusBySession)
+    .filter(([, s]) => s === "thinking" || s === "acting")
+    .map(([id]) => id);
+  // The focused turn also counts as streaming even before the per-session map
+  // catches up (status state updates synchronously on send).
+  if (
+    activeSessionId &&
+    (status === "thinking" || status === "acting") &&
+    !streamingSessionIds.includes(activeSessionId)
+  ) {
+    streamingSessionIds.push(activeSessionId);
+  }
 
   const isStreaming = status === "thinking" || status === "acting";
   const isThinking = status === "thinking";
@@ -200,6 +286,10 @@ export function useSessionManager({
       };
       setMessages((prev) => [...prev, userMsg]);
       setStatus("thinking");
+      const sendSessionId = activeSessionIdRef.current;
+      if (sendSessionId) {
+        setStatusBySession((prev) => ({ ...prev, [sendSessionId]: "thinking" }));
+      }
       resetStream();
 
       let effectiveSessionId = activeSessionId;
@@ -241,12 +331,16 @@ export function useSessionManager({
         onSessionsChange((prev) => [newSession, ...prev]);
         setActiveSessionId(sessionId);
         activeSessionIdRef.current = sessionId;
+        setStatusBySession((prev) => ({ ...prev, [sessionId]: "thinking" }));
         effectiveSessionId = sessionId;
         streamSessionId = isLocalOnly ? null : sessionId;
       } else {
         const existing = sessions.find((session) => session.id === activeSessionId);
         const isLocalOnly = existing?.backendCreated === false;
         streamSessionId = isLocalOnly ? null : effectiveSessionId;
+        if (effectiveSessionId) {
+          setStatusBySession((prev) => ({ ...prev, [effectiveSessionId as string]: "thinking" }));
+        }
       }
 
       try {
@@ -260,6 +354,10 @@ export function useSessionManager({
         });
       } catch (e) {
         setStatus("error");
+        const failedId = effectiveSessionId ?? activeSessionIdRef.current;
+        if (failedId) {
+          setStatusBySession((prev) => ({ ...prev, [failedId]: "error" }));
+        }
         resetStream();
         onError?.(`Failed to send: ${e}`, {
           label: "Open Settings",
@@ -284,7 +382,6 @@ export function useSessionManager({
 
   const handleSessionSelect = useCallback(
     async (session: Session) => {
-      if (statusRef.current === "thinking" || statusRef.current === "acting") return;
       const selectionId = session.id;
       latestSelectedSessionRef.current = selectionId;
 
@@ -341,7 +438,10 @@ export function useSessionManager({
             });
 
             setActiveSessionId(selectedSession.id);
+            activeSessionIdRef.current = selectedSession.id;
             setMessages(loadedMessages);
+            const knownLoaded = statusBySession[selectedSession.id];
+            if (knownLoaded) setStatus(knownLoaded);
             onSessionsChange((prev) => {
               const updated = {
                 ...selectedSession,
@@ -362,13 +462,25 @@ export function useSessionManager({
 
         if (latestSelectedSessionRef.current !== selectionId) return;
         setActiveSessionId(selectedSession.id);
+        activeSessionIdRef.current = selectedSession.id;
         setMessages(selectedSession.messages);
+        // Restore that task's last known status so running tasks show live
+        // while viewed and idle tasks do not inherit the previous spinner.
+        // The live turn itself is restored by the stream hook's focus switch.
+        setStatus((current) => {
+          const known = statusBySession[selectedSession.id];
+          if (known) return known;
+          // If the previous view was streaming but this task has no known
+          // status, fall back to connected/idle instead of the stale spinner.
+          if (current === "thinking" || current === "acting") return "connected";
+          return current;
+        });
       } catch (e) {
         if (latestSelectedSessionRef.current !== selectionId) return;
         onError?.(`Unable to open session: ${e}`);
       }
     },
-    [activeWorkspaceId, onError, onSessionsChange, onSwitchWorkspace]
+    [activeWorkspaceId, onError, onSessionsChange, onSwitchWorkspace, statusBySession]
   );
 
   const handleNewSession = useCallback(() => {
@@ -419,6 +531,9 @@ export function useSessionManager({
     currentTurn,
     isStreaming,
     isThinking,
+    streamingSessionIds,
+    liveTurnsBySession,
+    statusBySession,
     handleSend,
     handleSessionSelect,
     handleNewSession,
@@ -426,5 +541,6 @@ export function useSessionManager({
     handleSessionModeChange,
     resolveApproval,
     cancelStream,
+    cancelStreamForSession,
   };
 }

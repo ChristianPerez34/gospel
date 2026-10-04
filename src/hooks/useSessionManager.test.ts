@@ -1226,12 +1226,10 @@ describe("useSessionManager", () => {
   });
 
   describe("streaming lifecycle races", () => {
-    it("workspace switch mid-stream defers reset until turn completion", async () => {
-      // AppShell gates the workspace switcher + TopBar switch button while
-      // `session.isStreaming`. The guard relies on this hook's workspace-reset
-      // effect being a no-op when the active workspace changes mid-stream:
-      // `activeSessionId`, `messages`, and the streamed `currentTurn` must
-      // stay bound to the original session until the turn completes.
+    it("workspace switch mid-stream resets the view but preserves the background turn", async () => {
+      // Control plane: workspace switches no longer block on streams. The
+      // view resets immediately while the in-flight turn is stashed per
+      // session so switching back restores it lossless.
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
         if (cmd === "create_session") return { id: "backend-stream" };
         return undefined;
@@ -1265,27 +1263,23 @@ describe("useSessionManager", () => {
       expect(result.current.currentTurn).not.toBeNull();
       const streamedTurnId = result.current.currentTurn!.id;
 
-      // AppShell-equivalent workspace switch fires a new activeWorkspaceId
-      // while the turn is still live. The hook's reset effect must defer it.
+      // Workspace switch resets the view immediately; the live turn is
+      // stashed per session instead of staying bound to the view.
       act(() => {
         activeWorkspaceId = "ws-b";
         rerender();
       });
 
-      expect(result.current.activeSessionId).toBe(originalSessionId);
-      expect(result.current.messages.map((m) => m.role)).toEqual(["user"]);
-      expect(result.current.currentTurn?.id).toBe(streamedTurnId);
-      expect(result.current.currentTurn?.blocks).toEqual([
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.messages).toEqual([]);
+      expect(result.current.currentTurn).toBeNull();
+      expect(result.current.liveTurnsBySession[originalSessionId!]?.blocks).toEqual([
         { kind: "text", id: "text-0", text: "live token" },
       ]);
+      expect(result.current.streamingSessionIds).toContain(originalSessionId);
 
-      // The workspace change is deferred until the turn completes. When the
-      // status returns to "connected" (via llm-done), the deferred-reset
-      // effect fires and clears `activeSessionId` + `messages` — the
-      // snap-to-empty the AppShell guard prevents by blocking the switch in
-      // the first place. The streamed turn still finalized into the original
-      // session record before the reset wiped the active-session view, so
-      // the user's tokens are not lost (the regression net for plan 014).
+      // Completion routes to the background session record even though the
+      // view moved on.
       act(() => {
         triggerEvent("llm-done", { response: "live token" });
       });
@@ -1294,8 +1288,6 @@ describe("useSessionManager", () => {
       const originalSession = result.current.sessions.find((s) => s.id === originalSessionId);
       expect(originalSession?.messages.map((m) => m.role)).toEqual(["user", "agent"]);
       expect(originalSession?.messages[1]?.id).toBe(streamedTurnId);
-      // The deferred reset wiped the active-session view — the leak the
-      // AppShell guard prevents. Plan 014 will revisit this deferred path.
       expect(result.current.activeSessionId).toBeNull();
       expect(result.current.messages).toEqual([]);
     });

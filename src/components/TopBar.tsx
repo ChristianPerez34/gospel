@@ -65,10 +65,11 @@ export function TopBar({
     ? "bg-surface-overlay text-accent-structure"
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
   const computeActive = status === "thinking" || status === "acting";
-  const titleEditingDisabled = computeActive;
-  const workspaceSwitchClass = computeActive
-    ? "text-text-muted cursor-not-allowed"
-    : "text-text-secondary hover:bg-surface-overlay hover:text-text-primary";
+  // Control plane: switching projects and renaming tasks never blocks on
+  // streams. In-flight turns keep running against their captured context.
+  const titleEditingDisabled = false;
+  const workspaceSwitchClass =
+    "text-text-secondary hover:bg-surface-overlay hover:text-text-primary";
 
   return (
     <header className="app-topbar spatial-topbar px-4 bg-surface-base shrink-0">
@@ -78,9 +79,9 @@ export function TopBar({
           ref={sessionToggleRef}
           className={`hit-target w-8 h-8 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${sessionToggleClass}`}
           onClick={onToggleSessions}
-          aria-label="Toggle session history"
+          aria-label="Toggle tasks"
           aria-pressed={sessionsOpen}
-          title="Sessions"
+          title="Tasks"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect
@@ -125,9 +126,8 @@ export function TopBar({
           type="button"
           className={`hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body ${workspaceSwitchClass}`}
           onClick={onWorkspaceSwitch}
-          disabled={computeActive}
           aria-label="Switch workspace"
-          title="Switch workspace"
+          title={workspace.path || "Switch workspace"}
         >
           <span className="topbar-workspace-text text-body-sm font-medium truncate max-w-[220px]">
             {workspace.name}
