@@ -159,7 +159,7 @@ describe("AppShell session title editing", () => {
     expect(updateTitleCalls).toHaveLength(0);
   });
 
-  it("blocks WorkspaceSwitcher selection while a turn is streaming", async () => {
+  it("allows WorkspaceSwitcher selection while a turn is streaming", async () => {
     let activeWorkspace = sampleWorkspace;
     const workspaces = [sampleWorkspace, otherWorkspace];
 
@@ -206,6 +206,9 @@ describe("AppShell session title editing", () => {
     });
     expect(await screen.findByText("live token")).toBeDefined();
 
+    // Control plane: switching workspaces never blocks on streams. The view
+    // resets to the new workspace draft while the running task stays live in
+    // the task rail.
     await act(async () => {
       fireEvent.click(otherWorkspaceButton);
     });
@@ -213,20 +216,18 @@ describe("AppShell session title editing", () => {
     const setActiveWorkspaceCalls = vi
       .mocked(invoke)
       .mock.calls.filter(([cmd]) => cmd === "set_active_workspace");
-    expect(setActiveWorkspaceCalls).toHaveLength(0);
+    expect(setActiveWorkspaceCalls).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
-      "Test Workspace"
+      "Other Workspace"
     );
-    expect(screen.getByText("live token")).toBeDefined();
+    expect(screen.getByTestId("task-rail")).toBeDefined();
+    expect(screen.getByTestId("task-rail").textContent).toContain("streaming prompt");
 
     await act(async () => {
       triggerEvent("llm-done", { response: "live token" });
     });
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe(
-        "streaming prompt"
-      );
-    });
+    // The completed turn landed in the background task record.
+    expect(screen.getByTestId("task-rail").textContent).toContain("streaming prompt");
   });
 
   it("switches Active Workspace Context from the command palette", async () => {
@@ -279,7 +280,7 @@ describe("AppShell session title editing", () => {
     });
   });
 
-  it("keeps the command palette open when workspace switch is blocked by a stream", async () => {
+  it("switches workspace from the command palette while a turn is streaming", async () => {
     let activeWorkspace = sampleWorkspace;
     const workspaces = [sampleWorkspace, otherWorkspace];
 
@@ -327,11 +328,13 @@ describe("AppShell session title editing", () => {
 
     expect(
       vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "set_active_workspace")
-    ).toHaveLength(0);
-    expect(screen.getByLabelText("Search commands")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
-      "Test Workspace"
-    );
+    ).toHaveLength(1);
+    expect(screen.queryByLabelText("Search commands")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+        "Other Workspace"
+      );
+    });
   });
 
   it("updates local session title and calls update_session_title invoke when backendCreated is true", async () => {

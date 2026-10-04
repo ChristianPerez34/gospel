@@ -396,7 +396,7 @@ describe("useChatStream", () => {
       const { result } = renderChatStream({ onMessages, onStatusChange });
       await act(async () => {});
 
-      let streamingPromise: Promise<void> | undefined;
+      let streamingPromise: Promise<string> | undefined;
       act(() => {
         streamingPromise = result.current.startStream({
           provider: "openai",
@@ -497,7 +497,7 @@ describe("useChatStream", () => {
       });
       await act(async () => {});
 
-      let streamingPromise: Promise<void> | undefined;
+      let streamingPromise: Promise<string> | undefined;
       act(() => {
         streamingPromise = result.current.startStream({
           provider: "openai",

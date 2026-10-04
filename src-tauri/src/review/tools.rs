@@ -305,7 +305,10 @@ async fn run_review_tool(
     );
 
     let engine = ReviewEngine::new();
-    match engine.execute(request, Arc::new(NoopReviewProgressEmitter)).await {
+    match engine
+        .execute(request, Arc::new(NoopReviewProgressEmitter))
+        .await
+    {
         Ok(review) => {
             let findings = review
                 .comments

@@ -246,15 +246,9 @@ mod tests {
         let mut command = Command::new("sh");
         command.arg("-c").arg("sleep 5");
 
-        let out = run_with_bounded_output(
-            "sleep",
-            command,
-            Duration::from_millis(200),
-            1024,
-            1024,
-        )
-        .await
-        .expect("run resolves with timed_out=true");
+        let out = run_with_bounded_output("sleep", command, Duration::from_millis(200), 1024, 1024)
+            .await
+            .expect("run resolves with timed_out=true");
 
         assert!(out.timed_out);
     }

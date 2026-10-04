@@ -613,6 +613,7 @@ async fn run_exploration_agent(
         role_guidance: Some(EXPLORATION_AGENT_PROMPT.to_string()),
         matched_skills_section: None,
         invoked_skill_section: None,
+        memory_section: None,
         main_tool_inputs: None,
     })
     .map_err(|error| LlmError::ProviderError(error.to_string()))?;
@@ -702,6 +703,7 @@ pub async fn stream_completion<F>(
     chat_history: Vec<Message>,
     matched_skills_section: Option<String>,
     invoked_skill_section: Option<String>,
+    memory_section: Option<String>,
     skill_script_tool: Option<crate::skills::RunSkillScriptTool>,
     mut on_event: F,
 ) -> Result<StreamCompletionResult, LlmError>
@@ -749,6 +751,7 @@ where
         role_guidance: None,
         matched_skills_section,
         invoked_skill_section,
+        memory_section,
         main_tool_inputs: Some(MainToolInputs {
             provider: provider.to_string(),
             model: model.to_string(),
@@ -1141,6 +1144,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             |event| events.push(event),
         )
         .await
@@ -1171,7 +1175,6 @@ mod tests {
             assert!(result.is_err());
         }
     }
-
 
     #[test]
     fn validate_api_key_rejects_blank_key_for_non_oauth_provider() {
@@ -1347,7 +1350,10 @@ mod tests {
         let first = ensure_active_reasoning_id(&mut active, &mut seq);
         assert_eq!(first, "reasoning-1");
         // Reuses the same id while still active.
-        assert_eq!(ensure_active_reasoning_id(&mut active, &mut seq), "reasoning-1");
+        assert_eq!(
+            ensure_active_reasoning_id(&mut active, &mut seq),
+            "reasoning-1"
+        );
 
         active = None;
         let second = ensure_active_reasoning_id(&mut active, &mut seq);
@@ -1400,7 +1406,9 @@ mod tests {
         // Complete Reasoning arrives with a provider-supplied id, but
         // the loop prefers the active fallback id so the frontend can
         // collapse the complete onto the accumulated deltas.
-        let complete_id = active.clone().unwrap_or_else(|| "provider-rs-9".to_string());
+        let complete_id = active
+            .clone()
+            .unwrap_or_else(|| "provider-rs-9".to_string());
         assert_eq!(complete_id, "reasoning-1");
         assert_ne!(complete_id, "provider-rs-9");
     }

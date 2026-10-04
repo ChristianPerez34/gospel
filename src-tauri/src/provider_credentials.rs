@@ -81,7 +81,9 @@ pub fn ensure_inference_ready(
     supplied_api_key: &str,
 ) -> Result<(), CredentialError> {
     match find_provider(provider_id) {
-        None => Err(CredentialError::UnsupportedProvider(provider_id.to_string())),
+        None => Err(CredentialError::UnsupportedProvider(
+            provider_id.to_string(),
+        )),
         Some(entry) if entry.auth_kind == ProviderAuthKind::Oauth => {
             if is_credentialed(provider_id) {
                 Ok(())
@@ -116,7 +118,9 @@ pub fn ensure_oauth_session(provider_id: &str) -> Result<(), CredentialError> {
 
 pub fn store_api_key(provider_id: &str, api_key: &str) -> Result<(), CredentialError> {
     if find_provider(provider_id).is_some_and(|entry| entry.auth_kind == ProviderAuthKind::Oauth) {
-        return Err(CredentialError::ApiKeyStorageUnsupported(provider_id.to_string()));
+        return Err(CredentialError::ApiKeyStorageUnsupported(
+            provider_id.to_string(),
+        ));
     }
     crate::keychain::store(provider_id, api_key).map_err(CredentialError::from)
 }

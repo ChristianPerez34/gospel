@@ -396,7 +396,8 @@ mod tests {
 
         let mut store = ConversationStore::new();
         let large = "z".repeat(MAX_HISTORY_BYTES * 2);
-        let reasoning = Reasoning::new_with_signature(&large, None).optional_id(Some("rs-1".to_string()));
+        let reasoning =
+            Reasoning::new_with_signature(&large, None).optional_id(Some("rs-1".to_string()));
         let message = Message::Assistant {
             id: None,
             content: rig::one_or_many::OneOrMany::one(AssistantContent::Reasoning(reasoning)),

@@ -213,6 +213,7 @@ pub struct HarnessProfileRequest {
     pub role_guidance: Option<String>,
     pub matched_skills_section: Option<String>,
     pub invoked_skill_section: Option<String>,
+    pub memory_section: Option<String>,
     pub main_tool_inputs: Option<MainToolInputs>,
 }
 
@@ -282,6 +283,7 @@ pub fn resolve_harness_profile(
                 request.role_guidance,
                 request.matched_skills_section,
                 request.invoked_skill_section,
+                request.memory_section,
                 &[],
             ),
             tools: request
@@ -311,6 +313,7 @@ pub fn resolve_harness_profile(
             request.role,
             Some(&workspace),
             request.role_guidance,
+            None,
             None,
             None,
             &tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
@@ -396,6 +399,7 @@ pub fn resolve_harness_profile(
         request.role_guidance,
         request.matched_skills_section,
         request.invoked_skill_section,
+        request.memory_section,
         &tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
     );
 
@@ -424,12 +428,14 @@ fn compose_preamble(
     role_guidance: Option<String>,
     matched_skills_section: Option<String>,
     invoked_skill_section: Option<String>,
+    memory_section: Option<String>,
     tool_names: &[String],
 ) -> Option<String> {
     let mut sections = Vec::new();
     if role == AgentRole::Main {
         push_section(&mut sections, invoked_skill_section);
         push_section(&mut sections, matched_skills_section);
+        push_section(&mut sections, memory_section);
     }
 
     if let Some(workspace) = workspace {
@@ -564,6 +570,7 @@ mod tests {
             matched_skills_section: (role == AgentRole::Main)
                 .then(|| "private matched Skill text".to_string()),
             invoked_skill_section: None,
+            memory_section: None,
             main_tool_inputs: (role == AgentRole::Main).then(main_tool_inputs),
         }
     }
@@ -719,6 +726,7 @@ mod tests {
             role_guidance: None,
             matched_skills_section: Some("matched Skill guidance".to_string()),
             invoked_skill_section: None,
+            memory_section: None,
             main_tool_inputs: None,
         })
         .expect("unscoped Main profile");
@@ -737,6 +745,7 @@ mod tests {
                 role_guidance: None,
                 matched_skills_section: None,
                 invoked_skill_section: None,
+                memory_section: None,
                 main_tool_inputs: None,
             })
             .err()
@@ -757,6 +766,7 @@ mod tests {
             role_guidance: None,
             matched_skills_section: None,
             invoked_skill_section: None,
+            memory_section: None,
             main_tool_inputs: None,
         })
         .err()
@@ -783,6 +793,7 @@ mod tests {
             role_guidance: None,
             matched_skills_section: None,
             invoked_skill_section: None,
+            memory_section: None,
             main_tool_inputs: Some(inputs),
         })
         .err()
@@ -833,6 +844,7 @@ mod tests {
             role_guidance: Some("Verify".to_string()),
             matched_skills_section: None,
             invoked_skill_section: None,
+            memory_section: None,
             main_tool_inputs: None,
         })
         .expect("profile");
@@ -843,5 +855,35 @@ mod tests {
             .default_max_turns(profile.guards.max_turns)
             .tools(profile.tools)
             .build();
+    }
+
+    #[test]
+    fn memory_section_is_a_main_preamble_sibling_and_ignored_for_other_roles() {
+        let mut main_request = request(AgentRole::Main, false, SessionMode::Build, false);
+        main_request.memory_section = Some("## Memory\nprefer bun".to_string());
+        let main = resolve_harness_profile(main_request).expect("unscoped Main profile");
+        let main_preamble = main.preamble.unwrap_or_default();
+        assert!(main_preamble.contains("private matched Skill text"));
+        assert!(main_preamble.contains("## Memory\nprefer bun"));
+        assert!(
+            main_preamble.find("private matched Skill text").unwrap()
+                < main_preamble.find("## Memory\nprefer bun").unwrap()
+        );
+
+        for role in [
+            AgentRole::Exploration,
+            AgentRole::Verification,
+            AgentRole::ReviewDetector,
+            AgentRole::ReviewValidator,
+        ] {
+            let mut other = request(role, true, SessionMode::Build, false);
+            other.memory_section = Some("## Memory\nprefer bun".to_string());
+            let profile = resolve_harness_profile(other).expect("workspace profile");
+            let preamble = profile.preamble.unwrap_or_default();
+            assert!(
+                !preamble.contains("## Memory"),
+                "{role:?} preamble must not include recalled Memory"
+            );
+        }
     }
 }

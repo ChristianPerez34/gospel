@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
-import { useReviewProgress } from "../hooks/useReviewProgress";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useWorkspaces } from "../hooks/useWorkspaces";
@@ -20,13 +19,18 @@ import { CommandPalette } from "./CommandPalette";
 import { InputBar } from "./InputBar";
 import { SessionDrawer } from "./SessionDrawer";
 import { SettingsModal } from "./SettingsModal";
+import { SkillOptPanel } from "./SkillOptPanel";
+import { TaskRail } from "./TaskRail";
 import { ToastContainer, useToasts } from "./Toast";
 import { TopBar } from "./TopBar";
-import { WorkbenchLayout } from "./WorkbenchLayout";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 type SettingsTab = "general" | "models" | "data";
 type TrappedSurface = "sessions" | null;
+
+function isSkillOptPanelRequest(): boolean {
+  return new URLSearchParams(window.location.search).get("panel") === "skill-opt";
+}
 
 interface BackendSessionRecord {
   id: string;
@@ -100,16 +104,17 @@ function sameModelSelection(
 
 export function AppShell() {
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
+  const [taskRailCollapsed, setTaskRailCollapsed] = useState(false);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [skillOptOpen, setSkillOptOpen] = useState(isSkillOptPanelRequest);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
   const commandPaletteOpenRef = useRef(false);
   const chatColumnRef = useRef<HTMLDivElement>(null);
   const { themePreference, resolvedTheme, setThemePreference } = useThemePreference();
-  const reviewProgress = useReviewProgress();
 
   const trappedSurface: TrappedSurface = sessionDrawerOpen ? "sessions" : null;
 
@@ -332,11 +337,12 @@ export function AppShell() {
 
   const handleSwitchWorkspace = useCallback(
     (ws: Workspace) => {
-      if (session.isStreaming) return false;
+      // Control plane: workspace switches never block on streams. In-flight
+      // turns keep running against their captured workspace context.
       void switchWorkspace(ws.id);
       return true;
     },
-    [session.isStreaming, switchWorkspace]
+    [switchWorkspace]
   );
 
   const ensureSessionWorkspaceActive = useCallback(
@@ -353,7 +359,17 @@ export function AppShell() {
 
   const handleArchiveSessions = useCallback(
     async (targets: Session[]) => {
-      if (session.isStreaming || targets.length === 0) return;
+      if (targets.length === 0) return;
+      const running = new Set(session.streamingSessionIds);
+      const blocked = targets.filter((t) => running.has(t.id));
+      if (blocked.length > 0) {
+        showError(
+          blocked.length === 1
+            ? "Stop the running task before archiving it."
+            : "Stop running tasks before archiving them."
+        );
+        return;
+      }
 
       try {
         for (const group of groupSessionsByWorkspace(targets)) {
@@ -379,7 +395,7 @@ export function AppShell() {
 
   const handleRestoreArchivedSessions = useCallback(
     async (targets: Session[]) => {
-      if (session.isStreaming || targets.length === 0) return;
+      if (targets.length === 0) return;
 
       try {
         for (const group of groupSessionsByWorkspace(targets)) {
@@ -397,12 +413,12 @@ export function AppShell() {
         showError(`Failed to restore session: ${e}`);
       }
     },
-    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess]
+    [ensureSessionWorkspaceActive, reloadArchiveData, showError, showSuccess]
   );
 
   const handleDeleteArchivedSessions = useCallback(
     async (targets: Session[]) => {
-      if (session.isStreaming || targets.length === 0) return;
+      if (targets.length === 0) return;
       const label =
         targets.length === 1
           ? `"${targets[0]?.title || "Untitled"}"`
@@ -427,7 +443,7 @@ export function AppShell() {
         showError(`Failed to delete archived session: ${e}`);
       }
     },
-    [ensureSessionWorkspaceActive, reloadArchiveData, session.isStreaming, showError, showSuccess]
+    [ensureSessionWorkspaceActive, reloadArchiveData, showError, showSuccess]
   );
 
   const handleExportArchivedSessions = useCallback(
@@ -748,7 +764,7 @@ export function AppShell() {
   const handleSessionTitleChange = useCallback(
     async (title: string) => {
       const current = activeSessionRef.current;
-      if (!current || session.isStreaming) return;
+      if (!current) return;
 
       const previous = current.title;
       setSessions((prev) =>
@@ -782,11 +798,20 @@ export function AppShell() {
       const previousUpdate = sessionTitleUpdateChainRef.current ?? Promise.resolve();
       sessionTitleUpdateChainRef.current = previousUpdate.then(persistTitle, persistTitle);
     },
-    [session.isStreaming, showError]
+    [showError]
   );
 
   const toggleSessionDrawer = useCallback(() => {
     setSessionDrawerOpen((open) => !open);
+  }, []);
+
+  const toggleTaskRail = useCallback(() => {
+    setTaskRailCollapsed((collapsed) => !collapsed);
+  }, []);
+
+  const openHistoryDrawer = useCallback(() => {
+    setShowArchivedSessions(true);
+    setSessionDrawerOpen(true);
   }, []);
 
   useEffect(() => {
@@ -822,6 +847,13 @@ export function AppShell() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  const anyTaskRunning = session.streamingSessionIds.length > 0;
+  const headerStatus = anyTaskRunning
+    ? session.status === "error"
+      ? session.status
+      : "acting"
+    : session.status;
+
   return (
     <div className="app-shell" data-theme={resolvedTheme} data-theme-preference={themePreference}>
       <TopBar
@@ -830,64 +862,72 @@ export function AppShell() {
         sessionMode={session.activeSessionMode}
         onSessionModeChange={session.handleSessionModeChange}
         onSessionTitleChange={handleSessionTitleChange}
-        model={currentModelName}
-        status={session.status}
+        model={
+          anyTaskRunning && !session.isStreaming
+            ? `${currentModelName} · ${session.streamingSessionIds.length} live`
+            : currentModelName
+        }
+        status={headerStatus}
         onWorkspaceSwitch={() => {
-          if (session.isStreaming) return;
           setWorkspaceSwitcherOpen(true);
         }}
-        onToggleSessions={toggleSessionDrawer}
+        onToggleSessions={toggleTaskRail}
         onOpenSettings={openSettings}
-        sessionsOpen={sessionDrawerOpen}
+        sessionsOpen={!taskRailCollapsed}
         sessionToggleRef={sessionToggleRef}
       />
-      <div className="app-layout" data-session-drawer-open={sessionDrawerOpen ? "true" : "false"}>
+      <div
+        className="app-layout"
+        data-session-drawer-open={sessionDrawerOpen ? "true" : "false"}
+        data-task-rail-collapsed={taskRailCollapsed ? "true" : "false"}
+      >
+        <TaskRail
+          sessions={allSessions}
+          activeSessionId={session.activeSessionId}
+          streamingSessionIds={session.streamingSessionIds}
+          statusBySession={session.statusBySession}
+          workspaces={workspaces}
+          workspaceNames={workspaceNames}
+          activeWorkspaceId={activeWorkspace?.id}
+          onSelect={(s) => {
+            void session.handleSessionSelect(s);
+          }}
+          onNewTask={() => {
+            session.handleNewSession();
+          }}
+          onOpenHistory={openHistoryDrawer}
+          collapsed={taskRailCollapsed}
+        />
         <div
           className="app-workspace"
           ref={chatColumnRef}
           aria-hidden={surfaceTrapOpen ? "true" : undefined}
         >
-          <WorkbenchLayout
-            messages={session.messages}
-            currentTurn={session.currentTurn}
-            isStreaming={session.isStreaming}
-            reviewProgress={reviewProgress}
-            reviewProvider={selectedModel?.provider}
-            reviewModel={selectedModel?.model}
-            workspacePath={activeWorkspace?.path}
-            canSendTurn={!session.isStreaming}
-            onFixFinding={(prompt) => session.handleSend(prompt)}
-            onError={showError}
-            onSuccess={showSuccess}
-            onResolveApproval={session.resolveApproval}
-            conversationSlot={
-              <>
-                <ChatView
-                  messages={session.messages}
-                  workspacePath={activeWorkspace?.path ?? ""}
-                  isThinking={session.isThinking}
-                  currentTurn={session.currentTurn}
-                  onResolveApproval={session.resolveApproval}
-                />
-                <InputBar
-                  models={models}
-                  selectedModel={selectedModelId}
-                  selectedVariant={selectedModel?.variant ?? null}
-                  onModelChange={applyModelSelection}
-                  onVariantChange={applyVariantSelection}
-                  onSend={session.handleSend}
-                  onCancelStream={() => void session.cancelStream()}
-                  isStreaming={session.isStreaming}
-                  disabled={session.isStreaming || models.length === 0}
-                  unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
-                  unavailableDetail={noModels.detail}
-                  unavailableActionLabel={noModels.actionLabel}
-                  onUnavailableAction={() => openSettings("models")}
-                  workspacePath={activeWorkspace?.path}
-                />
-              </>
-            }
-          />
+          <div className="task-detail">
+            <ChatView
+              messages={session.messages}
+              workspacePath={activeWorkspace?.path ?? ""}
+              isThinking={session.isThinking}
+              currentTurn={session.currentTurn}
+              onResolveApproval={session.resolveApproval}
+            />
+            <InputBar
+              models={models}
+              selectedModel={selectedModelId}
+              selectedVariant={selectedModel?.variant ?? null}
+              onModelChange={applyModelSelection}
+              onVariantChange={applyVariantSelection}
+              onSend={session.handleSend}
+              onCancelStream={() => void session.cancelStream()}
+              isStreaming={session.isStreaming}
+              disabled={session.isStreaming || models.length === 0}
+              unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
+              unavailableDetail={noModels.detail}
+              unavailableActionLabel={noModels.actionLabel}
+              onUnavailableAction={() => openSettings("models")}
+              workspacePath={activeWorkspace?.path}
+            />
+          </div>
         </div>
       </div>
       <SessionDrawer
@@ -900,7 +940,6 @@ export function AppShell() {
         onShowArchivedChange={setShowArchivedSessions}
         archiveStats={archiveStats}
         onSelect={(s) => {
-          if (session.isStreaming) return;
           void session.handleSessionSelect(s);
           closeSessionDrawer();
         }}
@@ -922,9 +961,8 @@ export function AppShell() {
         onDeleteExpiredArchivedSessions={() => {
           void handleDeleteExpiredArchivedSessions();
         }}
-        archiveActionsDisabled={session.isStreaming}
+        archiveActionsDisabled={false}
         onNewSession={() => {
-          if (session.isStreaming) return;
           session.handleNewSession();
           closeSessionDrawer();
         }}
@@ -938,7 +976,6 @@ export function AppShell() {
           workspaces={workspaces}
           activeWorkspaceId={activeWorkspace?.id ?? ""}
           onSelect={(ws) => {
-            if (session.isStreaming) return;
             void switchWorkspace(ws.id);
           }}
           onAdd={() => {
@@ -996,16 +1033,13 @@ export function AppShell() {
         workspaceNames={workspaceNames}
         onClose={() => setCommandPaletteOpen(false)}
         onSelectSession={(s) => {
-          if (session.isStreaming) return;
           void session.handleSessionSelect(s);
         }}
         onNewSession={() => {
-          if (session.isStreaming) return;
           session.handleNewSession();
         }}
         onOpenSettings={openSettings}
         onOpenWorkspaceSwitcher={() => {
-          if (session.isStreaming) return;
           setWorkspaceSwitcherOpen(true);
         }}
         onToggleSessions={toggleSessionDrawer}
@@ -1015,8 +1049,18 @@ export function AppShell() {
         onVariantChange={applyVariantSelection}
         recentWorkspaces={workspaces}
         onSelectWorkspace={handleSwitchWorkspace}
+        onOpenSkillOpt={() => setSkillOptOpen(true)}
         restoreFocusRef={commandPaletteRestoreRef}
       />
+      {skillOptOpen && (
+        <SkillOptPanel
+          workspacePath={activeWorkspace?.path ?? ""}
+          provider={selectedModel?.provider ?? ""}
+          model={selectedModel?.model ?? ""}
+          variant={selectedModel?.variant ?? null}
+          onClose={() => setSkillOptOpen(false)}
+        />
+      )}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

@@ -136,7 +136,10 @@ pub fn provider(id: &str) -> Option<&'static CredentialedProviderRegistration> {
 }
 
 pub fn provider_ids() -> Vec<&'static str> {
-    CREDENTIALED_PROVIDERS.iter().map(|entry| entry.id).collect()
+    CREDENTIALED_PROVIDERS
+        .iter()
+        .map(|entry| entry.id)
+        .collect()
 }
 
 pub fn oauth_provider_ids() -> Vec<&'static str> {
