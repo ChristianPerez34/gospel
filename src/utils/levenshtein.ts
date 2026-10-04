@@ -19,3 +19,21 @@ export function levenshtein(a: string, b: string): number {
 
   return dp[m][n];
 }
+
+export function findClosestSkill(
+  query: string,
+  skills: { name: string }[],
+  maxDistance = 3
+): string | null {
+  const lower = query.toLowerCase();
+  let bestName = "";
+  let bestDist = Infinity;
+  for (const s of skills) {
+    const dist = levenshtein(lower, s.name.toLowerCase());
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestName = s.name;
+    }
+  }
+  return bestDist <= maxDistance && bestName ? bestName : null;
+}

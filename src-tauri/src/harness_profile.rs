@@ -376,6 +376,8 @@ pub fn resolve_harness_profile(
     if workspace.corpus_available {
         append_corpus_tools(&mut tools, workspace_path.clone());
     }
+    // Shell tools stay registered on read-only turns: with no command
+    // approval configured (e.g. skill-opt replays) mutating commands are denied.
     tools.push(Box::new(create_run_shell_command_tool(
         workspace_path.clone(),
         command_approval.clone(),

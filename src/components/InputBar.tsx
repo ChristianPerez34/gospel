@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useSkills } from "../hooks/useSkills";
 import type { ModelOption } from "../types";
-import { levenshtein } from "../utils/levenshtein";
+import { findClosestSkill } from "../utils/levenshtein";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 
 interface InputBarProps {
@@ -281,18 +281,10 @@ export function InputBar({
           const lower = match[1].toLowerCase();
           const exact = skills.find((s) => s.name.toLowerCase() === lower);
           if (!exact) {
-            let bestName = "";
-            let bestDist = Infinity;
-            for (const s of skills) {
-              const dist = levenshtein(lower, s.name.toLowerCase());
-              if (dist < bestDist) {
-                bestDist = dist;
-                bestName = s.name;
-              }
-            }
-            if (bestName && bestDist <= 3) {
+            const best = findClosestSkill(lower, skills);
+            if (best) {
               e.preventDefault();
-              handleSlashSelect(bestName);
+              handleSlashSelect(best);
               return;
             }
           }

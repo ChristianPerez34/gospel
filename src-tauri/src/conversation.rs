@@ -58,13 +58,6 @@ impl ConversationStore {
             .or_default();
         *entry = new_messages;
     }
-
-    pub fn clear(&mut self, session_id: &str) {
-        self.conversations.remove(session_id);
-        if let Some(pos) = self.access_order.iter().position(|id| id == session_id) {
-            self.access_order.remove(pos);
-        }
-    }
 }
 
 fn prune_history_for_storage(mut messages: Vec<Message>) -> Vec<Message> {
@@ -340,15 +333,6 @@ mod tests {
         };
         assert!(text.text.contains("[truncated]"));
         assert!(text.text.len() < large.len());
-    }
-
-    #[test]
-    fn clear_removes_conversation() {
-        let mut store = ConversationStore::new();
-        store.store_history("s1", vec![make_user_message("hello")]);
-        store.clear("s1");
-        let retrieved = store.get_history("s1");
-        assert!(retrieved.is_empty());
     }
 
     #[test]
