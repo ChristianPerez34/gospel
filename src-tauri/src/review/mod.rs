@@ -24,7 +24,7 @@ use crate::harness_profile::{
 use crate::provider_client::provider_client;
 use crate::workspace_tools::is_secret_like;
 use futures::StreamExt;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
@@ -1185,7 +1185,7 @@ fn truncate_tool_result(result: &str) -> String {
     format!("{}…", &result[..end])
 }
 
-static DIFF_SECRET_RE: Lazy<Regex> = Lazy::new(|| {
+static DIFF_SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token|private[_-]?key|client[_-]?secret)['"]?\s*[:=]\s*['"]?[^'"\s]{8,}['"]?"#)
         .expect("static secret regex is valid")
 });

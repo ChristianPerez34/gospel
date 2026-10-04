@@ -1,4 +1,4 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -382,11 +382,12 @@ impl CachedModelList {
     }
 }
 
-pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+pub static MODEL_CACHE: LazyLock<Arc<RwLock<HashMap<String, CachedModelList>>>> =
+    LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 type PendingMap = Arc<RwLock<HashMap<String, Arc<Notify>>>>;
-pub static PENDING_REQUESTS: Lazy<PendingMap> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+pub static PENDING_REQUESTS: LazyLock<PendingMap> =
+    LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 
@@ -588,7 +589,7 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        static PROVIDERS: Lazy<Vec<&'static str>> = Lazy::new(crate::providers::provider_ids);
+        static PROVIDERS: LazyLock<Vec<&'static str>> = LazyLock::new(crate::providers::provider_ids);
         PROVIDERS.as_slice()
     }
 

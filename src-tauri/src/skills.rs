@@ -596,7 +596,7 @@ impl SkillLoader {
     }
 }
 
-static STOPWORDS: once_cell::sync::Lazy<Vec<String>> = once_cell::sync::Lazy::new(|| {
+static STOPWORDS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
     let data = include_str!("skills/stopwords.json");
     serde_json::from_str(data).unwrap_or_default()
 });

@@ -1,6 +1,6 @@
 use crate::text_utils::truncate_text_bytes;
 use globset::{Glob, GlobMatcher, GlobSet, GlobSetBuilder};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
@@ -51,7 +51,7 @@ You can inspect the active Gospel workspace with live tools.
 
 ### Read-Only Workspace Access
 
-- This Agent role does not provide workspace source mutation tools.
+- This turn does not provide workspace source mutation tools.
 - Do not claim to have edited workspace source files.
 "#;
 
@@ -127,7 +127,7 @@ const VISITED_ENTRY_CAP: usize = 5000;
 const DISPLAY_LINE_CHAR_CAP: usize = 500;
 const BINARY_SAMPLE_BYTES: usize = 4096;
 
-static HIDDEN_ALLOWLIST: Lazy<GlobSet> = Lazy::new(|| {
+static HIDDEN_ALLOWLIST: LazyLock<GlobSet> = LazyLock::new(|| {
     build_globset(&[
         ".github",
         ".github/**",

@@ -184,8 +184,6 @@ pub enum StreamEvent {
     },
 }
 
-pub struct LlmService;
-
 fn validate_api_key(provider: &str, api_key: &str) -> Result<(), LlmError> {
     use crate::provider_credentials::CredentialError;
 
@@ -197,32 +195,6 @@ fn validate_api_key(provider: &str, api_key: &str) -> Result<(), LlmError> {
             _ => LlmError::ApiKeyMissing,
         }
     })
-}
-
-impl LlmService {
-    pub async fn completion(
-        provider: &str,
-        prompt: &str,
-        model: &str,
-        api_key: &str,
-    ) -> Result<String, LlmError> {
-        validate_api_key(provider, api_key)?;
-
-        let response = provider_client!(
-            provider,
-            api_key,
-            LlmError::ProviderError,
-            LlmError::UnsupportedProvider,
-            |client| {
-                let agent = client.agent(model).build();
-                agent
-                    .prompt(prompt)
-                    .await
-                    .map_err(|e| LlmError::ProviderError(e.to_string()))?
-            }
-        );
-        Ok(response)
-    }
 }
 
 #[derive(Debug)]
@@ -1099,15 +1071,6 @@ mod tests {
             model: "gpt-4o-mini".to_string(),
             api_key: "secret-api-key".to_string(),
         }
-    }
-
-    #[tokio::test]
-    async fn completion_rejects_blank_api_key() {
-        let error = LlmService::completion("openai", "hello", "gpt-4o-mini", "  ")
-            .await
-            .unwrap_err();
-
-        assert!(matches!(error, LlmError::ApiKeyMissing));
     }
 
     #[tokio::test]
