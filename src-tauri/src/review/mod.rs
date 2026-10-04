@@ -457,7 +457,7 @@ pub async fn run_review(
     let workspace = ActiveWorkspaceContext {
         workspace_path,
         corpus_available: false,
-        session_mode: crate::session_mode::SessionMode::Build,
+        source_edit_allowed: true,
     };
     let emitter: &dyn ReviewProgressEmitter = &*emitter;
     let focus = config.focus;
@@ -2881,7 +2881,7 @@ Binary files a/icon.png and b/icon.png differ
         let workspace = ActiveWorkspaceContext {
             workspace_path: std::env::current_dir().unwrap(),
             corpus_available: false,
-            session_mode: crate::session_mode::SessionMode::Build,
+            source_edit_allowed: true,
         };
         let error = run_workspace_agent(AgentConfig {
             provider: "not-a-provider",
@@ -3362,7 +3362,7 @@ Binary files a/icon.png and b/icon.png differ
             &ActiveWorkspaceContext {
                 workspace_path: std::env::current_dir().unwrap(),
                 corpus_available: false,
-                session_mode: crate::session_mode::SessionMode::Build,
+                source_edit_allowed: true,
             },
             ReviewFocus::Security,
             ReviewMode::Local,
@@ -3383,7 +3383,7 @@ Binary files a/icon.png and b/icon.png differ
         let workspace = ActiveWorkspaceContext {
             workspace_path: std::env::current_dir().unwrap(),
             corpus_available: false,
-            session_mode: crate::session_mode::SessionMode::Build,
+            source_edit_allowed: true,
         };
         let binary_diff =
             "diff --git a/icon.png b/icon.png\nBinary files a/icon.png and b/icon.png differ\n";

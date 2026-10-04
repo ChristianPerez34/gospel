@@ -10,7 +10,6 @@ import {
   type ArchivePolicy,
   type ArchiveStats,
   modelOptionId,
-  normalizeSessionMode,
   type Session,
   type Workspace,
 } from "../types";
@@ -39,7 +38,6 @@ interface BackendSessionRecord {
   model: string;
   variant?: string | null;
   status: string;
-  mode?: string | null;
   workspace_id: string | null;
   updated_at: string;
 }
@@ -201,7 +199,6 @@ export function AppShell() {
       provider: session.provider,
       model: session.model,
       variant: session.variant ?? null,
-      mode: normalizeSessionMode(session.mode),
       timestamp: new Date(session.updated_at),
       messages: [],
       status: (session.status === "active" ? "idle" : "error") as Session["status"],
@@ -218,7 +215,6 @@ export function AppShell() {
         provider: session.provider,
         model: session.model,
         variant: session.variant ?? null,
-        mode: normalizeSessionMode(session.mode),
         timestamp: new Date(session.archived_at),
         messages: [],
         status: "archived" as const,
@@ -859,8 +855,6 @@ export function AppShell() {
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
-        sessionMode={session.activeSessionMode}
-        onSessionModeChange={session.handleSessionModeChange}
         onSessionTitleChange={handleSessionTitleChange}
         model={
           anyTaskRunning && !session.isStreaming

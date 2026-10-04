@@ -1093,7 +1093,7 @@ mod tests {
             workspace: ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: false,
-                session_mode: crate::session_mode::SessionMode::Build,
+                source_edit_allowed: true,
             },
             provider: "openai".to_string(),
             model: "gpt-4o-mini".to_string(),

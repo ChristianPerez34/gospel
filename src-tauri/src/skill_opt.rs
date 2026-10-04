@@ -225,7 +225,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
         invoked_skill_section: &str,
     ) -> Result<String, SkillReplayError> {
         let mut workspace = self.workspace.clone();
-        workspace.session_mode = crate::session_mode::SessionMode::ReadOnly;
+        workspace.source_edit_allowed = false;
         let result = crate::llm::stream_completion(
             &self.provider,
             prompt,
@@ -443,7 +443,7 @@ pub struct StreamCompletionSkillOptimizer {
 impl SkillOptimizer for StreamCompletionSkillOptimizer {
     async fn propose_edits(&self, prompt: &str) -> Result<String, SkillReplayError> {
         let mut workspace = self.workspace.clone();
-        workspace.session_mode = crate::session_mode::SessionMode::ReadOnly;
+        workspace.source_edit_allowed = false;
         let result = crate::llm::stream_completion(
             &self.provider,
             prompt,

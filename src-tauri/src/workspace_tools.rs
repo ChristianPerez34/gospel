@@ -55,13 +55,6 @@ You can inspect the active Gospel workspace with live tools.
 - Do not claim to have edited workspace source files.
 "#;
 
-pub const READ_ONLY_SESSION_SYSTEM_PROMPT: &str = r#"
-## Read-Only Session
-
-- This Session does not provide workspace source mutation tools.
-- Harness control artifacts remain available through the Harness Control Area contract.
-"#;
-
 pub const CONTEXT_SEARCH_SYSTEM_PROMPT: &str = r#"
 ## Context Search
 

@@ -273,3 +273,7 @@ model variant to use, what mode (build / plan)?"
 All three controls are in the composer — where the user is already looking when
 they steer. The header stays clean (just status + replay). The controls are
 compact (11px mono, small padding) so they don't eat into the textarea space.
+
+> **Update (ADR-0012):** the Build/Plan toggle was removed. Build is the only
+> session mode — models plan on request without a dedicated mode, so the
+> composer keeps just the model and variant selectors.
