@@ -27,6 +27,7 @@ interface RenderChatStreamOptions {
   onStatusChange?: (status: string) => void;
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
+  onOpenSettings?: () => void;
   onResolveApproval?: (id: string, decision: string) => Promise<unknown>;
   sessionId?: string | null;
 }

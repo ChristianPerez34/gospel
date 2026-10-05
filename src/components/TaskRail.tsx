@@ -180,9 +180,6 @@ export function TaskRail({
                                 ? `${session.model} · ${session.variant}`
                                 : session.model}
                             </span>
-                            {session.mode === "ReadOnly" && (
-                              <span className="task-rail-plan">Plan</span>
-                            )}
                             {live && <span className="task-rail-live">live</span>}
                             <time>{formatTime(session.timestamp)}</time>
                           </span>

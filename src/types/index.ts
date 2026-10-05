@@ -8,8 +8,6 @@ export type ThemePreference = "dark" | "light" | "system";
 
 export type ResolvedTheme = "dark" | "light";
 
-export type SessionMode = "Build" | "ReadOnly";
-
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 
 export type SignalTier = "tier_1" | "tier_2" | "noise" | "unclassified";
@@ -80,139 +78,6 @@ export interface ReviewResult {
   suppressed_count: number;
   snr_percent: number;
   user_visible: boolean;
-}
-
-export interface MultiReviewResult {
-  results: ReviewResult[];
-  errors: Record<string, string>;
-  summary: string;
-  files_scanned: number;
-  total_findings: number;
-  total_suppressed: number;
-}
-
-export type ReviewFocusFilter = ReviewFocus | "All";
-
-export interface ReviewOutcomeOutput {
-  success: boolean;
-  message: string;
-  run_id: string;
-  comment_id: string;
-  outcome: ReviewOutcome;
-  recorded_at: string;
-}
-
-// ── Real-time review progress (review-progress event) ──
-
-export interface ChunkFailure {
-  kind: string;
-  detail: string;
-}
-
-export interface PhaseFailure {
-  detail: string;
-}
-
-export type ChunkStatus = "starting" | "running" | "done" | { failed: ChunkFailure };
-
-export type PhaseStatus = "running" | "done" | { failed: PhaseFailure };
-
-export type MultiFocusStatus = "running" | "done" | { failed: PhaseFailure };
-
-export type ReviewPhase =
-  | {
-      type: "detector";
-      chunk: number;
-      totalChunks: number;
-      files: string[];
-      candidateCount: number;
-      status: ChunkStatus;
-    }
-  | {
-      type: "validator";
-      candidateCount: number;
-      status: PhaseStatus;
-    }
-  | {
-      type: "detectorTool";
-      chunk: number;
-      toolName: string;
-      event:
-        | { call: { id: string; arguments: unknown } }
-        | { result: { id: string; summary: string } };
-    }
-  | {
-      type: "validatorTool";
-      toolName: string;
-      event:
-        | { call: { id: string; arguments: unknown } }
-        | { result: { id: string; summary: string } };
-    }
-  | { type: "finalize"; status: PhaseStatus }
-  | { type: "done"; findings: number; suppressed: number }
-  | { type: "failed"; detail: string }
-  | {
-      /** Aggregate multi-focus run-start handshake. */
-      type: "multiFocusStart";
-      total: number;
-    }
-  | {
-      type: "multiFocus";
-      focus: ReviewFocus;
-      completed: number;
-      total: number;
-      findings: number;
-      suppressed: number;
-      status: MultiFocusStatus;
-    };
-
-export interface ReviewProgressEvent {
-  run_id: string;
-  focus?: ReviewFocus;
-  provider?: string;
-  model?: string;
-  phase: ReviewPhase;
-  timestamp: number;
-}
-
-/** Per-node state derived in the hook from the event stream. */
-export type ReviewNodeState = "idle" | "active" | "done" | "failed";
-
-export interface ReviewDetectorState {
-  chunk: number;
-  totalChunks: number;
-  candidateCount: number;
-  status: ReviewNodeState;
-}
-
-export interface ReviewPipelineState {
-  detector: ReviewDetectorState;
-  validator: ReviewNodeState;
-  finalize: ReviewNodeState;
-  /** Whole-run outcome once known. */
-  done: boolean;
-  failed: boolean;
-  failureDetail: string | null;
-  findings: number;
-  suppressed: number;
-}
-
-export interface ReviewActivityEntry {
-  timestamp: number;
-  phase: ReviewPhase["type"];
-  focus?: ReviewFocus;
-  text: string;
-}
-
-export interface ReviewToolActivity {
-  id: string;
-  focus: ReviewFocus;
-  stage: "detector" | "validator";
-  chunk: number;
-  toolName: string;
-  arguments?: unknown;
-  result?: string;
-  status: "calling" | "completed";
 }
 
 export interface ToolCallActivity {
@@ -331,7 +196,6 @@ export interface Session {
   provider: string;
   model: string;
   variant?: string | null;
-  mode?: SessionMode;
   timestamp: Date;
   messages: Message[];
   status: "idle" | "active" | "error" | "archived";
@@ -484,16 +348,7 @@ export interface ModelOption {
   variants?: AvailableModelVariant[];
 }
 
-export interface ProviderStatus {
-  provider: string;
-  configured: boolean;
-}
-
 export function modelOptionId(provider: string, model: string, variant?: string | null): string {
   const base = `${provider.toLowerCase()}::${model}`;
   return variant ? `${base}::${variant}` : base;
-}
-
-export function normalizeSessionMode(mode?: string | null): SessionMode {
-  return mode === "ReadOnly" ? "ReadOnly" : "Build";
 }

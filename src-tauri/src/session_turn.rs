@@ -3,7 +3,6 @@ use crate::llm::{
     self, LlmError, ReasoningPayload, ReasoningPhase, StreamCompletionResult, StreamEvent,
 };
 use crate::models::ModelRegistry;
-use crate::session_mode::{SessionMode, SESSION_MODE_BUILD};
 use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
 use crate::trace;
@@ -75,8 +74,6 @@ pub trait SessionTurnSessions: Send + Sync {
         active_workspace_id: Option<&str>,
     ) -> Result<(), String>;
 
-    fn session_mode(&self, session_id: &str) -> Result<String, String>;
-
     fn unresolved_notes(&self, session_id: &str) -> Vec<SessionNote>;
 
     fn failure_snapshot(&self, session_id: &str) -> Option<SessionFailureSnapshot>;
@@ -129,6 +126,9 @@ pub struct SessionTurnStreamRequest<'a> {
     pub invoked_skill_section: Option<String>,
     pub memory_section: Option<String>,
     pub skill_script_tool: Option<RunSkillScriptTool>,
+    /// Conversation id forwarded to providers that accept a session header
+    /// (OpenCode Go) for routing and prompt-cache optimization.
+    pub session_id: Option<&'a str>,
 }
 
 pub trait SessionTurnLlm: Send + Sync {
@@ -353,7 +353,7 @@ pub async fn run_streaming_turn(
     let workspace_resolution =
         resolve_streaming_active_workspace(deps.workspace, active_workspace).await;
     let workspace_path = workspace_resolution.workspace_path.clone();
-    let mut workspace_context = workspace_resolution.tool_context.clone();
+    let workspace_context = workspace_resolution.tool_context.clone();
 
     eprintln!(
         "[CORPUS-AUTO] complete_streaming workspace path: {}",
@@ -368,21 +368,13 @@ pub async fn run_streaming_turn(
         .api_key(&request.provider)
         .map_err(|error| error.to_dto())?;
 
-    let session_mode = if let Some(sid) = &request.session_id {
+    if let Some(sid) = &request.session_id {
         if let Err(e) = deps
             .sessions
             .validate_workspace_binding(sid, workspace_resolution.workspace_id.as_deref())
         {
             return Err(LlmError::ProviderError(e.to_string()).to_dto());
         }
-        deps.sessions
-            .session_mode(sid)
-            .map_err(|e| LlmError::ProviderError(e).to_dto())?
-    } else {
-        SESSION_MODE_BUILD.to_string()
-    };
-    if let Some(context) = workspace_context.as_mut() {
-        context.session_mode = SessionMode::from_stored(&session_mode);
     }
     let resolved_model_variant = ModelRegistry::resolve_model_variant(
         &request.provider,
@@ -460,6 +452,7 @@ pub async fn run_streaming_turn(
                 invoked_skill_section: prompt_preparation.invoked_skill_section.clone(),
                 memory_section,
                 skill_script_tool,
+                session_id: request.session_id.as_deref(),
             },
             Box::new(move |event| {
                 events.emit_stream_event(&trace_sid, trace_role, &run_id_for_closure, &event);
@@ -1260,7 +1253,7 @@ pub fn resolve_active_workspace_context(
             tool_context: Some(ActiveWorkspaceContext {
                 workspace_path: selection.path,
                 corpus_available: true,
-                session_mode: SessionMode::Build,
+                source_edit_allowed: true,
             }),
             corpus_failure_reason: None,
         },
@@ -1271,7 +1264,7 @@ pub fn resolve_active_workspace_context(
                 tool_context: Some(ActiveWorkspaceContext {
                     workspace_path: selection.path,
                     corpus_available: false,
-                    session_mode: SessionMode::Build,
+                    source_edit_allowed: true,
                 }),
                 corpus_failure_reason: Some(reason),
             }
@@ -1426,7 +1419,6 @@ mod tests {
         corpus_failure_emissions: Mutex<usize>,
         api_key: String,
         validated_bindings: Mutex<Vec<(String, Option<String>)>>,
-        session_mode: String,
         unresolved_notes: Vec<SessionNote>,
         failure_snapshot: Mutex<Option<SessionFailureSnapshot>>,
         persisted_turns: Mutex<Vec<PersistedTurn>>,
@@ -1462,7 +1454,6 @@ mod tests {
                 corpus_failure_emissions: Mutex::new(0),
                 api_key: "api-key".to_string(),
                 validated_bindings: Mutex::new(Vec::new()),
-                session_mode: SESSION_MODE_BUILD.to_string(),
                 unresolved_notes: Vec::new(),
                 failure_snapshot: Mutex::new(None),
                 persisted_turns: Mutex::new(Vec::new()),
@@ -1540,10 +1531,6 @@ mod tests {
                 active_workspace_id.map(str::to_string),
             ));
             Ok(())
-        }
-
-        fn session_mode(&self, _session_id: &str) -> Result<String, String> {
-            Ok(self.session_mode.clone())
         }
 
         fn unresolved_notes(&self, _session_id: &str) -> Vec<SessionNote> {
@@ -2240,7 +2227,7 @@ mod tests {
         let workspace = ActiveWorkspaceContext {
             workspace_path: PathBuf::from("/tmp/workspace"),
             corpus_available: true,
-            session_mode: SessionMode::Build,
+            source_edit_allowed: true,
         };
 
         assert!(verification_job_request(
@@ -2447,7 +2434,7 @@ mod tests {
             Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 corpus_available: true,
-                session_mode: SessionMode::Build,
+                source_edit_allowed: true,
             })
         );
         drop(stream_requests);
@@ -2570,50 +2557,6 @@ mod tests {
                 "gpt-5.2".to_string(),
                 None,
             )]
-        );
-    }
-
-    #[tokio::test]
-    async fn streaming_turn_passes_read_only_session_mode_to_workspace_tools() {
-        let history = vec![user_message("inspect"), assistant_message("Done.")];
-        let mut adapters =
-            FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
-                full_response: "Done.".to_string(),
-                history: Some(history),
-                source_edit_succeeded: false,
-                prompt_tokens: 2,
-                response_tokens: 1,
-                tool_calls: 0,
-            }));
-        adapters.session_mode = crate::session_mode::SESSION_MODE_READ_ONLY.to_string();
-
-        let result = run_streaming_turn(
-            adapters.deps(),
-            StreamingTurnRequest {
-                run_id: "run-read-only".to_string(),
-                provider: "openai".to_string(),
-                prompt: "inspect".to_string(),
-                model: "gpt-test".to_string(),
-                variant: None,
-                session_id: Some("session-1".to_string()),
-                invoked_skill: None,
-                delegate_provider: "openai".to_string(),
-                delegate_model: "gpt-4o-mini".to_string(),
-                delegate_api_key: "api-key".to_string(),
-            },
-        )
-        .await;
-        if let Err(err) = result {
-            panic!("turn failed: {} {}", err.code, err.message);
-        }
-
-        let stream_requests = adapters.stream_requests.lock().unwrap();
-        assert_eq!(
-            stream_requests[0]
-                .workspace
-                .as_ref()
-                .map(|workspace| workspace.session_mode.as_str()),
-            Some(crate::session_mode::SESSION_MODE_READ_ONLY)
         );
     }
 
@@ -3062,15 +3005,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_only_session_still_recalls_and_schedules_memory_ingest() {
-        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
+    async fn streaming_turn_recalls_and_schedules_memory_ingest() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
             successful_history_turn("inspect", "looks fine"),
         ));
-        adapters.session_mode = crate::session_mode::SESSION_MODE_READ_ONLY.to_string();
 
         let result = run_streaming_turn(
             adapters.deps(),
-            streaming_request("run-read-only-memory", "inspect", Some("session-1")),
+            streaming_request("run-memory-ingest", "inspect", Some("session-1")),
         )
         .await;
         if let Err(err) = result {

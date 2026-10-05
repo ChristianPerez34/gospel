@@ -7,16 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type {
-  AgentStatus,
-  CurrentTurn,
-  Message,
-  ModelOption,
-  Session,
-  SessionMode,
-  TurnBlock,
-} from "../types";
-import { normalizeSessionMode } from "../types";
+import type { AgentStatus, CurrentTurn, Message, ModelOption, Session, TurnBlock } from "../types";
 import { type ModelVariantWarningPayload, useChatStream } from "./useChatStream";
 import type { SelectedModel } from "./useModelAvailability";
 
@@ -64,8 +55,6 @@ export interface UseSessionManagerResult {
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
   handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
-  activeSessionMode: SessionMode;
-  handleSessionModeChange: (mode: SessionMode) => Promise<void>;
   resolveApproval: (id: string, decision: "approve" | "deny") => Promise<void>;
   cancelStream: () => Promise<void>;
   cancelStreamForSession: (sessionId: string | null) => Promise<void>;
@@ -86,7 +75,6 @@ export function useSessionManager({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
-  const [draftSessionMode, setDraftSessionMode] = useState<SessionMode>("Build");
   const [liveTurnsBySession, setLiveTurnsBySession] = useState<Record<string, CurrentTurn | null>>(
     {}
   );
@@ -123,7 +111,6 @@ export function useSessionManager({
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
-    setDraftSessionMode("Build");
   }, [activeWorkspaceId]);
 
   const handleModelVariantWarning = useCallback(
@@ -234,10 +221,6 @@ export function useSessionManager({
 
   const isStreaming = status === "thinking" || status === "acting";
   const isThinking = status === "thinking";
-  const activeSession = sessions.find((session) => session.id === activeSessionId);
-  const activeSessionMode = activeSession
-    ? normalizeSessionMode(activeSession.mode)
-    : draftSessionMode;
 
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
@@ -296,7 +279,6 @@ export function useSessionManager({
       let streamSessionId: string | null = effectiveSessionId;
       if (!activeSessionId) {
         const title = userMsg.content.slice(0, 50) + (userMsg.content.length > 50 ? "..." : "");
-        const mode = draftSessionMode;
 
         // Try backend session creation first
         let backendSession: { id: string } | null = null;
@@ -307,7 +289,6 @@ export function useSessionManager({
             model: selectedModel.model,
             variant: selectedModel.variant ?? null,
             workspaceId: activeWorkspaceId ?? null,
-            mode,
           });
         } catch (e) {
           console.warn("Backend session creation failed, using local session:", e);
@@ -321,7 +302,6 @@ export function useSessionManager({
           provider: selectedModel.provider,
           model: selectedModel.model,
           variant: selectedModel.variant ?? null,
-          mode,
           timestamp: new Date(),
           messages: [userMsg],
           status: "active",
@@ -368,7 +348,6 @@ export function useSessionManager({
     [
       activeSessionId,
       activeWorkspaceId,
-      draftSessionMode,
       models,
       onError,
       onOpenSettings,
@@ -407,7 +386,6 @@ export function useSessionManager({
           try {
             const detail = await invoke<{
               id: string;
-              mode?: string | null;
               display_transcript: string;
             }>("get_session", { sessionId: selectedSession.id });
 
@@ -445,7 +423,6 @@ export function useSessionManager({
             onSessionsChange((prev) => {
               const updated = {
                 ...selectedSession,
-                mode: normalizeSessionMode(detail.mode),
                 messages: loadedMessages,
               };
               if (!prev.some((s) => s.id === selectedSession.id)) {
@@ -487,41 +464,8 @@ export function useSessionManager({
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
-    setDraftSessionMode("Build");
     resetStream();
   }, [resetStream]);
-
-  const handleSessionModeChange = useCallback(
-    async (mode: SessionMode) => {
-      if (!activeSessionId) {
-        setDraftSessionMode(mode);
-        return;
-      }
-
-      const target = sessions.find((session) => session.id === activeSessionId);
-      const previousMode = normalizeSessionMode(target?.mode);
-      onSessionsChange((prev) =>
-        prev.map((session) => (session.id === activeSessionId ? { ...session, mode } : session))
-      );
-
-      if (!target?.backendCreated) return;
-
-      try {
-        await invoke("update_session_mode", {
-          sessionId: activeSessionId,
-          mode,
-        });
-      } catch (e) {
-        onSessionsChange((prev) =>
-          prev.map((session) =>
-            session.id === activeSessionId ? { ...session, mode: previousMode } : session
-          )
-        );
-        onError?.(`Failed to update session mode: ${e}`);
-      }
-    },
-    [activeSessionId, onError, onSessionsChange, sessions]
-  );
 
   return {
     sessions,
@@ -537,8 +481,6 @@ export function useSessionManager({
     handleSend,
     handleSessionSelect,
     handleNewSession,
-    activeSessionMode,
-    handleSessionModeChange,
     resolveApproval,
     cancelStream,
     cancelStreamForSession,

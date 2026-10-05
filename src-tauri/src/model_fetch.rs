@@ -62,6 +62,9 @@ pub async fn fetch_models_for_provider(
             Some(ModelFetchKind::RigMistral) => {
                 fetch_mistral_models_impl(api_key.unwrap_or("")).await
             }
+            Some(ModelFetchKind::CustomOpenCodeGo) => {
+                fetch_opencode_go_models_impl(api_key.unwrap_or("")).await
+            }
             Some(ModelFetchKind::StaticHardcoded) | None => {
                 Ok(ModelRegistry::hardcoded_models_for(provider_id))
             }
@@ -145,6 +148,45 @@ async fn fetch_mistral_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Stri
         .collect();
 
     tracing::info!("Fetched {} models from Mistral", models.len());
+    Ok(models)
+}
+
+/// OpenCode Go publishes an OpenAI-format model list at
+/// `GET https://opencode.ai/zen/go/v1/models`. Falls back to the documented
+/// model list so a flaky listing endpoint does not hide the provider.
+async fn fetch_opencode_go_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
+    let fallback_models = ModelRegistry::hardcoded_models_for("opencode_go");
+
+    let client = rig::providers::openai::Client::builder()
+        .api_key(api_key)
+        .base_url(crate::provider_client::OPENCODE_GO_OPENAI_BASE_URL)
+        .http_headers(crate::provider_client::opencode_go_headers(None))
+        .build()
+        .map_err(|e| format!("failed to create OpenCode Go client: {}", e))?;
+
+    let list = match client.list_models().await {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to fetch OpenCode Go models: {}; using hardcoded base only",
+                e
+            );
+            return Ok(fallback_models);
+        }
+    };
+
+    let models: Vec<ModelInfo> = list
+        .data
+        .into_iter()
+        .map(|m| ModelRegistry::model_info("opencode_go", &m.id))
+        .collect();
+
+    if models.is_empty() {
+        tracing::warn!("OpenCode Go API returned no models; using hardcoded base only");
+        return Ok(fallback_models);
+    }
+
+    tracing::info!("Fetched {} models from OpenCode Go", models.len());
     Ok(models)
 }
 

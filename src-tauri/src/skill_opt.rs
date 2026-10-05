@@ -225,7 +225,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
         invoked_skill_section: &str,
     ) -> Result<String, SkillReplayError> {
         let mut workspace = self.workspace.clone();
-        workspace.session_mode = crate::session_mode::SessionMode::ReadOnly;
+        workspace.source_edit_allowed = false;
         let result = crate::llm::stream_completion(
             &self.provider,
             prompt,
@@ -241,6 +241,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
             Vec::new(),
             None,
             Some(invoked_skill_section.to_string()),
+            None,
             None,
             None,
             |_| {},
@@ -443,7 +444,7 @@ pub struct StreamCompletionSkillOptimizer {
 impl SkillOptimizer for StreamCompletionSkillOptimizer {
     async fn propose_edits(&self, prompt: &str) -> Result<String, SkillReplayError> {
         let mut workspace = self.workspace.clone();
-        workspace.session_mode = crate::session_mode::SessionMode::ReadOnly;
+        workspace.source_edit_allowed = false;
         let result = crate::llm::stream_completion(
             &self.provider,
             prompt,
@@ -462,6 +463,7 @@ impl SkillOptimizer for StreamCompletionSkillOptimizer {
                 "## Skill optimizer\n\nReturn only a JSON array of bounded skill edits."
                     .to_string(),
             ),
+            None,
             None,
             None,
             |_| {},
@@ -508,6 +510,7 @@ impl SkillReplayVerifier for VerificationAgentVerifier {
             &self.workspace,
             response,
             prompt,
+            None,
         )
         .await
         .status

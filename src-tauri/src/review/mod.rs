@@ -24,7 +24,7 @@ use crate::harness_profile::{
 use crate::provider_client::provider_client;
 use crate::workspace_tools::is_secret_like;
 use futures::StreamExt;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::CompletionClient;
@@ -457,7 +457,7 @@ pub async fn run_review(
     let workspace = ActiveWorkspaceContext {
         workspace_path,
         corpus_available: false,
-        session_mode: crate::session_mode::SessionMode::Build,
+        source_edit_allowed: true,
     };
     let emitter: &dyn ReviewProgressEmitter = &*emitter;
     let focus = config.focus;
@@ -1185,7 +1185,7 @@ fn truncate_tool_result(result: &str) -> String {
     format!("{}…", &result[..end])
 }
 
-static DIFF_SECRET_RE: Lazy<Regex> = Lazy::new(|| {
+static DIFF_SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token|private[_-]?key|client[_-]?secret)['"]?\s*[:=]\s*['"]?[^'"\s]{8,}['"]?"#)
         .expect("static secret regex is valid")
 });
@@ -2271,7 +2271,9 @@ pub(crate) async fn run_workspace_agent(
 
     provider_client!(
         config.provider,
+        config.model,
         config.api_key,
+        None,
         ReviewAgentError::Provider,
         ReviewAgentError::Provider,
         |client| { run_from_client!(client, config.model) }
@@ -2881,7 +2883,7 @@ Binary files a/icon.png and b/icon.png differ
         let workspace = ActiveWorkspaceContext {
             workspace_path: std::env::current_dir().unwrap(),
             corpus_available: false,
-            session_mode: crate::session_mode::SessionMode::Build,
+            source_edit_allowed: true,
         };
         let error = run_workspace_agent(AgentConfig {
             provider: "not-a-provider",
@@ -3363,7 +3365,7 @@ Binary files a/icon.png and b/icon.png differ
             &ActiveWorkspaceContext {
                 workspace_path: std::env::current_dir().unwrap(),
                 corpus_available: false,
-                session_mode: crate::session_mode::SessionMode::Build,
+                source_edit_allowed: true,
             },
             ReviewFocus::Security,
             ReviewMode::Local,
@@ -3384,7 +3386,7 @@ Binary files a/icon.png and b/icon.png differ
         let workspace = ActiveWorkspaceContext {
             workspace_path: std::env::current_dir().unwrap(),
             corpus_available: false,
-            session_mode: crate::session_mode::SessionMode::Build,
+            source_edit_allowed: true,
         };
         let binary_diff =
             "diff --git a/icon.png b/icon.png\nBinary files a/icon.png and b/icon.png differ\n";

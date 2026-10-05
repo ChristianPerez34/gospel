@@ -25,6 +25,7 @@ pub enum ModelFetchKind {
     RigOauthCopilot,
     CustomGrok,
     CustomXai,
+    CustomOpenCodeGo,
     StaticHardcoded,
 }
 
@@ -126,6 +127,14 @@ pub const CREDENTIALED_PROVIDERS: &[CredentialedProviderRegistration] = &[
         display_name: "Mistral",
         auth_kind: ProviderAuthKind::ApiKey,
         model_fetch: ModelFetchKind::RigMistral,
+        model_cache_scope: ModelCacheScope::ApiKey,
+        oauth: None,
+    },
+    CredentialedProviderRegistration {
+        id: "opencode_go",
+        display_name: "OpenCode Go",
+        auth_kind: ProviderAuthKind::ApiKey,
+        model_fetch: ModelFetchKind::CustomOpenCodeGo,
         model_cache_scope: ModelCacheScope::ApiKey,
         oauth: None,
     },
@@ -232,7 +241,8 @@ mod tests {
                 "anthropic",
                 "gemini",
                 "groq",
-                "mistral"
+                "mistral",
+                "opencode_go"
             ]
         );
     }
@@ -249,7 +259,7 @@ mod tests {
 
     #[test]
     fn api_key_providers_are_not_oauth() {
-        for id in ["openai", "xai", "anthropic", "gemini", "groq", "mistral"] {
+        for id in ["openai", "xai", "anthropic", "gemini", "groq", "mistral", "opencode_go"] {
             assert!(!is_oauth_provider(id));
             assert_eq!(provider_auth_type(id), "api_key");
             assert!(provider(id).unwrap().oauth.is_none());

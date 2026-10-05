@@ -21,7 +21,6 @@ mod provider_client;
 mod provider_credentials;
 mod providers;
 mod review;
-pub mod session_mode;
 pub mod session_store;
 mod session_turn;
 mod shell_tools;
@@ -58,7 +57,6 @@ use app_config::{AppConfigError, AppConfigState, AppConfigStore, Workspace};
 use approval_broker::{
     ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalRequest, ApprovalResolution,
 };
-use clap::Parser;
 use conversation::{ConversationState, ConversationStore};
 use corpus::commands::{
     build_corpus, context_search, get_corpus_neighbors, get_corpus_status, get_corpus_summary,
@@ -66,10 +64,10 @@ use corpus::commands::{
 };
 use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
-use llm::{LlmError, LlmService};
+use llm::LlmError;
 use models::{ModelInfo, ModelRegistry};
 use oauth::OauthChallenge;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::Serialize;
 use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
@@ -90,9 +88,10 @@ use workspace_tools::{
     ExternalPathApproval, ExternalPathApprovalFuture, ExternalPathApprovalRequest, PathKind,
 };
 
-static CORPUS_BUILD_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
-static REJECTION_STORE_LOCK: Lazy<tokio::sync::Mutex<()>> =
-    Lazy::new(|| tokio::sync::Mutex::new(()));
+static CORPUS_BUILD_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+static REJECTION_STORE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
 
 pub struct SkillCache {
@@ -272,22 +271,28 @@ impl CommandApproval for BrokerCommandApproval {
     }
 }
 
-#[derive(Parser, Debug)]
-#[command(name = "gospel", about = "Gospel AI coding assistant")]
-#[command(version)]
+#[derive(Debug, Default)]
 struct Cli {
-    #[arg(short = 'd', long = "dir")]
     dir: Option<String>,
+}
+
+impl Cli {
+    fn parse() -> Self {
+        let mut dir = None;
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if arg == "-d" || arg == "--dir" {
+                dir = args.next();
+            } else if let Some(rest) = arg.strip_prefix("--dir=") {
+                dir = Some(rest.to_string());
+            }
+        }
+        Self { dir }
+    }
 }
 
 #[derive(Serialize)]
 struct ApiKeyStatus {
-    configured: bool,
-}
-
-#[derive(Serialize)]
-struct ProviderStatus {
-    provider: String,
     configured: bool,
 }
 
@@ -358,11 +363,6 @@ pub(crate) fn validate_active_workspace_path(path: &Path) -> Result<(), String> 
 }
 
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
 async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
     provider_credentials::store_api_key(&provider, &api_key).map_err(|e| e.to_string())
 }
@@ -370,42 +370,6 @@ async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
 #[tauri::command]
 fn delete_api_key(provider: String) -> Result<(), String> {
     provider_credentials::delete_api_key(&provider).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_api_key_status(provider: String) -> ApiKeyStatus {
-    ApiKeyStatus {
-        configured: keychain::provider_has_credentials(&provider),
-    }
-}
-
-#[tauri::command]
-fn get_models(provider: String) -> Vec<String> {
-    models::ModelRegistry::models_for_provider(&provider)
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
-}
-
-#[tauri::command]
-fn get_configured_providers() -> Vec<ProviderStatus> {
-    models::ModelRegistry::all_providers()
-        .iter()
-        .map(|&p| ProviderStatus {
-            provider: p.to_string(),
-            configured: keychain::provider_has_credentials(p),
-        })
-        .collect()
-}
-
-#[tauri::command]
-async fn get_available_models(
-    app_config: tauri::State<'_, AppConfigState>,
-) -> Result<Vec<ModelInfo>, String> {
-    let (visibility, warnings) = read_visibility_snapshot(&app_config);
-    Ok(build_model_availability(visibility, warnings, false)
-        .await
-        .available_models)
 }
 
 #[tauri::command]
@@ -981,149 +945,6 @@ mod corpus_auto_build_event_tests {
     }
 }
 
-#[tauri::command]
-async fn complete(
-    app: tauri::AppHandle,
-    app_config: tauri::State<'_, AppConfigState>,
-    provider: String,
-    prompt: String,
-    model: String,
-) -> Result<String, llm::LlmErrorDto> {
-    let workspace_path = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
-        None => None,
-    };
-    eprintln!(
-        "[CORPUS-AUTO] complete workspace path: {}",
-        workspace_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string())
-    );
-
-    if let Some(path) = &workspace_path {
-        ensure_workspace_corpus(&app, path)
-            .await
-            .map_err(|e| LlmError::ProviderError(e).to_dto())?;
-    }
-
-    let full_prompt = match workspace_path {
-        Some(path) => format!("[Workspace: {}]\n\n{}", path.display(), prompt),
-        None => prompt,
-    };
-
-    let api_key = provider_credentials::api_key_for_rig(&provider)
-        .map_err(|_| LlmError::ApiKeyMissing.to_dto())?;
-    LlmService::completion(&provider, &full_prompt, &model, &api_key)
-        .await
-        .map_err(|e| e.to_dto())
-}
-
-#[tauri::command]
-async fn test_connection(provider: String, model: String) -> Result<bool, String> {
-    let api_key = provider_credentials::api_key_for_rig(&provider).map_err(|e| e.to_string())?;
-    let response =
-        LlmService::completion(&provider, "Say 'pong' and nothing else.", &model, &api_key).await;
-    match response {
-        Ok(_) => Ok(true),
-        Err(e) => Err(e.to_dto().message),
-    }
-}
-
-fn active_review_workspace_path(app_config: &AppConfigState) -> Result<PathBuf, String> {
-    let workspace = match &app_config.store {
-        Some(store) => store
-            .get_active_workspace()
-            .map_err(|e| format!("Failed to get active workspace: {}", e))?,
-        None => {
-            return Err(app_config
-                .init_warning
-                .clone()
-                .unwrap_or_else(|| "App config store is unavailable".to_string()))
-        }
-    }
-    .ok_or_else(|| "No active workspace selected".to_string())?;
-    let workspace_path = PathBuf::from(workspace.path);
-    validate_active_workspace_path(&workspace_path)?;
-    Ok(workspace_path)
-}
-
-fn review_api_key(provider: &str) -> Result<String, String> {
-    provider_credentials::api_key_for_rig(provider)
-        .map_err(|_| format!("API key not configured for {}", provider))
-}
-
-#[tauri::command]
-async fn gospel_review(
-    app: tauri::AppHandle,
-    app_config: tauri::State<'_, AppConfigState>,
-    config: review::ReviewConfig,
-) -> Result<review::ReviewResult, String> {
-    let workspace_path = active_review_workspace_path(&app_config)?;
-    let api_key = review_api_key(&config.provider)?;
-    let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
-
-    let mode_enum = review::ReviewMode::parse(&config.mode, config.pr_number)?;
-
-    let request = review::ReviewRequest::new(
-        workspace_path,
-        mode_enum,
-        vec![config.focus],
-        config.provider,
-        config.model,
-        api_key,
-    );
-
-    let engine = review::ReviewEngine::new();
-    engine.execute(request, emitter).await
-}
-
-#[tauri::command]
-async fn gospel_multi_review(
-    app: tauri::AppHandle,
-    app_config: tauri::State<'_, AppConfigState>,
-    provider: String,
-    model: String,
-    mode: String,
-    pr_number: Option<u64>,
-    focuses: Option<Vec<review::ReviewFocus>>,
-) -> Result<review::multi::MultiReviewResult, String> {
-    let workspace_path = active_review_workspace_path(&app_config)?;
-    let api_key = review_api_key(&provider)?;
-    let focus_list = focuses.unwrap_or_else(|| review::multi::ALL_FOCUSES.to_vec());
-    let emitter = Arc::new(TauriReviewProgressEmitter { app: app.clone() });
-
-    let mode_enum = review::ReviewMode::parse(&mode, pr_number)?;
-
-    let request = review::ReviewRequest::new(
-        workspace_path,
-        mode_enum,
-        focus_list,
-        provider,
-        model,
-        api_key,
-    );
-
-    let engine = review::ReviewEngine::new();
-    engine.execute_multi(request, emitter).await
-}
-
-/// Tauri-backed [`review::ReviewProgressEmitter`] that forwards every event to
-/// the `review-progress` webview event. Mirrors the
-/// `TauriSessionTurnAdapters` pattern: the trait lives in `review::progress`
-/// (decoupled from Tauri), the real impl lives here next to the command.
-struct TauriReviewProgressEmitter<R: tauri::Runtime> {
-    app: tauri::AppHandle<R>,
-}
-
-impl<R: tauri::Runtime> review::ReviewProgressEmitter for TauriReviewProgressEmitter<R> {
-    fn emit_progress(&self, event: review::ReviewProgressEvent) {
-        if let Err(err) = self.app.emit("review-progress", event) {
-            tracing::warn!(error = %err, "failed to emit review-progress event");
-        }
-    }
-}
-
 struct TauriSessionTurnAdapters<'a> {
     app: &'a tauri::AppHandle,
     app_config: &'a AppConfigState,
@@ -1266,17 +1087,6 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn session_mode(&self, session_id: &str) -> Result<String, String> {
-        match &self.session_store_state.store {
-            Some(store) => store
-                .get_session(session_id)
-                .map_err(|e| e.to_string())?
-                .map(|session| session.mode)
-                .ok_or_else(|| format!("Session not found: {}", session_id)),
-            None => Err("session store unavailable".to_string()),
-        }
-    }
-
     fn unresolved_notes(&self, session_id: &str) -> Vec<session_store::SessionNote> {
         match &self.session_store_state.store {
             Some(store) => store.list_unresolved_notes(session_id).unwrap_or_default(),
@@ -1397,6 +1207,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.invoked_skill_section,
                 request.memory_section,
                 skill_script_tool,
+                request.session_id,
                 move |event| on_event(session_turn::SessionTurnEvent::from(event)),
             )
             .await
@@ -1495,6 +1306,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
                 &job.workspace,
                 &job.response_to_verify,
                 &job.user_prompt,
+                job.session_id.as_deref(),
             )
             .await;
 
@@ -1664,57 +1476,11 @@ mod delegate_completion_config_tests {
 }
 
 #[tauri::command]
-fn clear_conversation_history(
-    conversation_state: tauri::State<'_, ConversationState>,
-    session_store: tauri::State<'_, SessionStoreState>,
-    app_config: tauri::State<'_, AppConfigState>,
-    session_id: String,
-) -> Result<(), String> {
-    match &session_store.store {
-        Some(store) => clear_conversation_history_with_access(
-            conversation_state.inner(),
-            store,
-            app_config.inner(),
-            &session_id,
-        ),
-        None => Err(session_store
-            .init_warning
-            .clone()
-            .unwrap_or_else(|| "Session store is unavailable".to_string())),
-    }
-}
-
-fn clear_conversation_history_with_access(
-    conversation_state: &ConversationState,
-    session_store: &SessionStore,
-    app_config: &AppConfigState,
-    session_id: &str,
-) -> Result<(), String> {
-    validate_session_access(session_store, session_id, app_config)?;
-    conversation_state.store.lock().unwrap().clear(session_id);
-    Ok(())
-}
-
-#[tauri::command]
 async fn start_provider_oauth(
     app: tauri::AppHandle,
     provider: String,
 ) -> Result<OauthChallenge, String> {
     oauth::start_provider_oauth(app, &provider).await
-}
-
-#[tauri::command]
-fn is_chatgpt_authenticated() -> ApiKeyStatus {
-    ApiKeyStatus {
-        configured: keychain::provider_has_credentials("chatgpt"),
-    }
-}
-
-#[tauri::command]
-fn is_github_copilot_authenticated() -> ApiKeyStatus {
-    ApiKeyStatus {
-        configured: keychain::provider_has_credentials("github_copilot"),
-    }
 }
 
 #[tauri::command]
@@ -1730,16 +1496,6 @@ fn list_oauth_providers() -> Vec<String> {
         .into_iter()
         .map(str::to_string)
         .collect()
-}
-
-#[tauri::command]
-fn logout_chatgpt() -> Result<(), String> {
-    provider_credentials::logout_oauth("chatgpt").map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn logout_github_copilot() -> Result<(), String> {
-    provider_credentials::logout_oauth("github_copilot").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2241,7 +1997,7 @@ async fn run_skill_selection_replay(
     let workspace = harness_profile::ActiveWorkspaceContext {
         workspace_path: workspace_path.clone(),
         corpus_available: false,
-        session_mode: session_mode::SessionMode::ReadOnly,
+        source_edit_allowed: false,
     };
     let executor = skill_opt::LlmStudentExecutor {
         llm: skill_opt::StreamCompletionStudentLlm {
@@ -2291,7 +2047,7 @@ async fn optimize_skill_from_sessions(
     let workspace = harness_profile::ActiveWorkspaceContext {
         workspace_path: workspace_path.clone(),
         corpus_available: false,
-        session_mode: session_mode::SessionMode::ReadOnly,
+        source_edit_allowed: false,
     };
     let optimizer = skill_opt::StreamCompletionSkillOptimizer {
         provider: provider.clone(),
@@ -2535,9 +2291,7 @@ fn create_session(
     model: String,
     variant: Option<String>,
     workspace_id: Option<String>,
-    mode: Option<String>,
 ) -> Result<SessionRecord, String> {
-    let mode = mode.unwrap_or_else(|| session_mode::SESSION_MODE_BUILD.to_string());
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => store
@@ -2547,7 +2301,6 @@ fn create_session(
                 &model,
                 variant.as_deref(),
                 workspace_id.as_deref(),
-                &mode,
             )
             .map_err(|e| e.to_string()),
         None => Err(session_store
@@ -2571,27 +2324,6 @@ fn update_session_model_selection(
             validate_session_access(store, &session_id, app_config.inner())?;
             store
                 .update_model_selection(&session_id, &provider, &model, variant.as_deref())
-                .map_err(|e| e.to_string())
-        }
-        None => Err(session_store
-            .init_warning
-            .clone()
-            .unwrap_or_else(|| "Session store is unavailable".to_string())),
-    }
-}
-
-#[tauri::command]
-fn update_session_mode(
-    session_store: tauri::State<'_, SessionStoreState>,
-    app_config: tauri::State<'_, AppConfigState>,
-    session_id: String,
-    mode: String,
-) -> Result<(), String> {
-    match &session_store.store {
-        Some(store) => {
-            validate_session_access(store, &session_id, app_config.inner())?;
-            store
-                .update_session_mode(&session_id, &mode)
                 .map_err(|e| e.to_string())
         }
         None => Err(session_store
@@ -3461,13 +3193,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
             set_api_key,
             delete_api_key,
-            get_api_key_status,
-            get_models,
-            get_configured_providers,
-            get_available_models,
             get_model_availability,
             set_provider_visibility,
             list_mcp_servers,
@@ -3480,20 +3207,11 @@ pub fn run() {
             refresh_mcp_server,
             preview_import_mcp_servers,
             apply_import_mcp_servers,
-            complete,
             complete_streaming,
             cancel_streaming,
-            clear_conversation_history,
-            test_connection,
-            gospel_review,
-            gospel_multi_review,
             start_provider_oauth,
-            is_chatgpt_authenticated,
-            is_github_copilot_authenticated,
             is_provider_authenticated,
             list_oauth_providers,
-            logout_chatgpt,
-            logout_github_copilot,
             logout_provider_oauth,
             pick_workspace_directory,
             resolve_approval_request,
@@ -3518,7 +3236,6 @@ pub fn run() {
             adopt_staged_skill,
             create_session,
             update_session_model_selection,
-            update_session_mode,
             update_session_title,
             get_session,
             list_sessions,
@@ -4065,7 +3782,6 @@ mod session_export {
 mod session_access {
     use super::*;
     use crate::app_config::AppConfigStore;
-    use rig::completion::message::{Message, Text, UserContent};
     use tempfile::tempdir;
 
     fn setup() -> (
@@ -4187,43 +3903,5 @@ mod session_access {
             authorized_session_detail(&session_store, &second_session.id, &app_state).unwrap_err();
 
         assert!(error.contains("active workspace"));
-    }
-
-    #[test]
-    fn clearing_conversation_history_rejects_other_workspace_without_mutation() {
-        let (_root, app_state, session_store, _first_id, second_id) = setup();
-        let second_session = session_store
-            .create_session("second", "openai", "gpt-4", Some(&second_id))
-            .unwrap();
-        let conversation_state = ConversationState {
-            store: Mutex::new(ConversationStore::new()),
-        };
-        conversation_state.store.lock().unwrap().store_history(
-            &second_session.id,
-            vec![Message::User {
-                content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
-                    text: "keep me".to_string(),
-                    additional_params: Some(serde_json::json!({})),
-                })),
-            }],
-        );
-
-        let result = clear_conversation_history_with_access(
-            &conversation_state,
-            &session_store,
-            &app_state,
-            &second_session.id,
-        );
-
-        assert!(result.is_err());
-        assert_eq!(
-            conversation_state
-                .store
-                .lock()
-                .unwrap()
-                .get_history(&second_session.id)
-                .len(),
-            1
-        );
     }
 }

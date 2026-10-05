@@ -1,4 +1,4 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -175,6 +175,41 @@ mod model_lists {
         GROK_2_1212,
         GROK_2_VISION_1212,
     ];
+
+    // OpenCode Go catalog (https://opencode.ai/docs/go/). Live list comes from
+    // https://opencode.ai/zen/go/v1/models; this is the documented fallback.
+    pub const OPENCODE_GO_MODELS: &[&str] = &[
+        "grok-4.7",
+        "grok-4.6",
+        "glm-5.3-flash",
+        "glm-5.3",
+        "glm-5.2",
+        "gpt-6-luna",
+        "gpt-5.6-luna",
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.6",
+        "longcat-2.0",
+        "longcat-2.5-preview-free",
+        "mimo-v2.6-flash",
+        "mimo-v2.6-pro",
+        "mimo-v2.5",
+        "mimo-v2.5-pro",
+        "minimax-m3",
+        "minimax-m2.7",
+        "muse-spark-1.3-contributor",
+        "muse-spark-1.2-contributor",
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.7-plus",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+        "hy4-preview",
+        "hy3",
+        "space-bunny-free",
+    ];
 }
 
 #[cfg(test)]
@@ -315,12 +350,45 @@ mod model_lists {
         "grok-2-1212",
         "grok-2-vision-1212",
     ];
+
+    pub const OPENCODE_GO_MODELS: &[&str] = &[
+        "grok-4.7",
+        "grok-4.6",
+        "glm-5.3-flash",
+        "glm-5.3",
+        "glm-5.2",
+        "gpt-6-luna",
+        "gpt-5.6-luna",
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.6",
+        "longcat-2.0",
+        "longcat-2.5-preview-free",
+        "mimo-v2.6-flash",
+        "mimo-v2.6-pro",
+        "mimo-v2.5",
+        "mimo-v2.5-pro",
+        "minimax-m3",
+        "minimax-m2.7",
+        "muse-spark-1.3-contributor",
+        "muse-spark-1.2-contributor",
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.7-plus",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+        "hy4-preview",
+        "hy3",
+        "space-bunny-free",
+    ];
 }
 
 use model_lists::{
     ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS,
     GITHUB_COPILOT_MODELS, GITHUB_COPILOT_TOOL_CAPABLE_MODELS, GROK_MODELS, GROQ_MODELS,
-    MISTRAL_MODELS, OPENAI_MODELS,
+    MISTRAL_MODELS, OPENAI_MODELS, OPENCODE_GO_MODELS,
 };
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -382,11 +450,12 @@ impl CachedModelList {
     }
 }
 
-pub static MODEL_CACHE: Lazy<Arc<RwLock<HashMap<String, CachedModelList>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+pub static MODEL_CACHE: LazyLock<Arc<RwLock<HashMap<String, CachedModelList>>>> =
+    LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 type PendingMap = Arc<RwLock<HashMap<String, Arc<Notify>>>>;
-pub static PENDING_REQUESTS: Lazy<PendingMap> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+pub static PENDING_REQUESTS: LazyLock<PendingMap> =
+    LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 
@@ -563,6 +632,7 @@ impl ModelRegistry {
             "gemini" => GEMINI_MODELS,
             "groq" => GROQ_MODELS,
             "mistral" => MISTRAL_MODELS,
+            "opencode_go" => OPENCODE_GO_MODELS,
             _ => &[],
         }
     }
@@ -589,7 +659,7 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        static PROVIDERS: Lazy<Vec<&'static str>> = Lazy::new(crate::providers::provider_ids);
+        static PROVIDERS: LazyLock<Vec<&'static str>> = LazyLock::new(crate::providers::provider_ids);
         PROVIDERS.as_slice()
     }
 
@@ -1129,7 +1199,8 @@ mod tests {
                 "anthropic",
                 "gemini",
                 "groq",
-                "mistral"
+                "mistral",
+                "opencode_go"
             ]
         );
         assert!(ModelRegistry::is_oauth_provider("chatgpt"));
