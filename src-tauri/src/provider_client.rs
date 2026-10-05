@@ -161,7 +161,8 @@ pub(crate) fn grok_subscription_client(
 /// (<https://opencode.ai/docs/go/>): MiniMax and Qwen models speak Anthropic
 /// Messages, Grok/GPT Luna/Muse Spark speak OpenAI Responses, and every other
 /// model speaks OpenAI Chat Completions. Unknown models default to chat
-/// completions, which is where OpenCode adds new open-model families.
+/// completions, which is where OpenCode adds new open-model families; update
+/// the mapping if OpenCode adds a future Anthropic-Messages family.
 pub(crate) const OPENCODE_GO_OPENAI_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 pub(crate) const OPENCODE_GO_ANTHROPIC_BASE_URL: &str = "https://opencode.ai/zen/go";
 
@@ -325,7 +326,7 @@ mod tests {
         assert!(generated.get("x-opencode-session").is_some());
     }
 
-    async fn opencode_go_dispatch_base_url(model: &str) -> Result<String, String> {
+    async fn opencode_go_dispatch_snapshot(model: &str) -> Result<(String, String), String> {
         provider_client!(
             "opencode_go",
             model,
@@ -333,23 +334,42 @@ mod tests {
             Some("conversation-123"),
             |e: String| e,
             |s: String| s,
-            |client| { Ok(client.base_url().to_string()) }
+            |client| {
+                Ok((
+                    client.base_url().to_string(),
+                    std::any::type_name_of_val(&client).to_string(),
+                ))
+            }
         )
     }
 
     #[tokio::test]
     async fn opencode_go_dispatch_routes_models_to_documented_endpoints() {
-        assert_eq!(
-            opencode_go_dispatch_base_url("glm-5.3").await.unwrap(),
-            "https://opencode.ai/zen/go/v1"
+        // Responses and Chat Completions share the .../zen/go/v1 base; the
+        // client type is what pins which wire protocol each family uses.
+        let (responses_base, responses_client) =
+            opencode_go_dispatch_snapshot("grok-4.7").await.unwrap();
+        assert_eq!(responses_base, "https://opencode.ai/zen/go/v1");
+        assert!(
+            responses_client.contains("Responses"),
+            "grok-4.7 should use the Responses client, got: {responses_client}"
         );
-        assert_eq!(
-            opencode_go_dispatch_base_url("grok-4.7").await.unwrap(),
-            "https://opencode.ai/zen/go/v1"
+
+        let (completions_base, completions_client) =
+            opencode_go_dispatch_snapshot("glm-5.3").await.unwrap();
+        assert_eq!(completions_base, "https://opencode.ai/zen/go/v1");
+        assert!(
+            completions_client.contains("Completions"),
+            "glm-5.3 should use the Chat Completions client, got: {completions_client}"
         );
-        assert_eq!(
-            opencode_go_dispatch_base_url("minimax-m3").await.unwrap(),
-            "https://opencode.ai/zen/go"
+        assert_ne!(responses_client, completions_client);
+
+        let (anthropic_base, anthropic_client) =
+            opencode_go_dispatch_snapshot("minimax-m3").await.unwrap();
+        assert_eq!(anthropic_base, "https://opencode.ai/zen/go");
+        assert!(
+            anthropic_client.contains("Anthropic"),
+            "minimax-m3 should use the Anthropic client, got: {anthropic_client}"
         );
     }
 

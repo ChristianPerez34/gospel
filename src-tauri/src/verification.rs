@@ -67,6 +67,7 @@ pub async fn run_verification(
     workspace: &ActiveWorkspaceContext,
     response_to_verify: &str,
     user_prompt: &str,
+    session_id: Option<&str>,
 ) -> VerificationResult {
     if let Err(error) = crate::provider_credentials::ensure_inference_ready(provider, api_key) {
         return match error {
@@ -97,7 +98,7 @@ pub async fn run_verification(
         .expect("Verification Harness Profiles always have a deadline");
     let output = match timeout(
         deadline,
-        run_verification_agent(provider, model, api_key, profile, &prompt),
+        run_verification_agent(provider, model, api_key, session_id, profile, &prompt),
     )
     .await
     {
@@ -119,6 +120,7 @@ async fn run_verification_agent(
     provider: &str,
     model: &str,
     api_key: &str,
+    session_id: Option<&str>,
     profile: HarnessProfile,
     prompt: &str,
 ) -> Result<String, String> {
@@ -194,7 +196,7 @@ async fn run_verification_agent(
         provider,
         model,
         api_key,
-        None,
+        session_id,
         |e: String| e,
         |s: String| format!("unsupported provider: {}", s),
         |client| { verify_from_client!(client, model) }
@@ -293,6 +295,7 @@ mod tests {
             &workspace(),
             "response",
             "prompt",
+            None,
         )
         .await;
 

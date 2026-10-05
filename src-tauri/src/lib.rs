@@ -1279,6 +1279,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
                 &job.workspace,
                 &job.response_to_verify,
                 &job.user_prompt,
+                job.session_id.as_deref(),
             )
             .await;
 

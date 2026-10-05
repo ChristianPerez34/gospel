@@ -510,6 +510,7 @@ impl SkillReplayVerifier for VerificationAgentVerifier {
             &self.workspace,
             response,
             prompt,
+            None,
         )
         .await
         .status
