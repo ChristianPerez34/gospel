@@ -192,7 +192,9 @@ async fn run_verification_agent(
 
     provider_client!(
         provider,
+        model,
         api_key,
+        None,
         |e: String| e,
         |s: String| format!("unsupported provider: {}", s),
         |client| { verify_from_client!(client, model) }

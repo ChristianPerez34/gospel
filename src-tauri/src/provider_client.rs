@@ -5,16 +5,20 @@
 ///
 /// Usage:
 /// ```ignore
-/// provider_client!(provider, api_key, client_err, unsupported_err, |client| {
+/// provider_client!(provider, model, api_key, session, client_err, unsupported_err, |client| {
 ///     let agent = client.agent(model).build();
 ///     agent.prompt(prompt).await.map_err(client_err)?
 /// })
 /// ```
 ///
+/// - `$model`: model id; providers serving multiple wire protocols (OpenCode Go)
+///   use it to pick the correct client
+/// - `$session`: `Option<&str>` conversation id for providers that accept a
+///   session header; a fresh UUID is generated when absent
 /// - `$client_err`: expression converting client construction `String` errors
 /// - `$unsupported_err`: expression converting the unsupported-provider `String`
 macro_rules! provider_client {
-    ($provider:expr, $api_key:expr, $client_err:expr, $unsupported_err:expr, |$client:ident| $body:block) => {
+    ($provider:expr, $model:expr, $api_key:expr, $session:expr, $client_err:expr, $unsupported_err:expr, |$client:ident| $body:block) => {
         match $provider {
             "openai" => {
                 let $client = rig::providers::openai::Client::new($api_key)
@@ -63,6 +67,38 @@ macro_rules! provider_client {
                 let $client = rig::providers::mistral::Client::new($api_key)
                     .map_err(|e| $client_err(e.to_string()))?;
                 $body
+            }
+            "opencode_go" => {
+                let opencode_headers = $crate::provider_client::opencode_go_headers($session);
+                match $crate::provider_client::opencode_go_protocol(&$model) {
+                    $crate::provider_client::OpencodeGoProtocol::AnthropicMessages => {
+                        let $client = rig::providers::anthropic::Client::builder()
+                            .api_key($api_key)
+                            .base_url($crate::provider_client::OPENCODE_GO_ANTHROPIC_BASE_URL)
+                            .http_headers(opencode_headers)
+                            .build()
+                            .map_err(|e| $client_err(e.to_string()))?;
+                        $body
+                    }
+                    $crate::provider_client::OpencodeGoProtocol::OpenAiResponses => {
+                        let $client = rig::providers::openai::Client::builder()
+                            .api_key($api_key)
+                            .base_url($crate::provider_client::OPENCODE_GO_OPENAI_BASE_URL)
+                            .http_headers(opencode_headers)
+                            .build()
+                            .map_err(|e| $client_err(e.to_string()))?;
+                        $body
+                    }
+                    $crate::provider_client::OpencodeGoProtocol::OpenAiChatCompletions => {
+                        let $client = rig::providers::openai::CompletionsClient::builder()
+                            .api_key($api_key)
+                            .base_url($crate::provider_client::OPENCODE_GO_OPENAI_BASE_URL)
+                            .http_headers(opencode_headers)
+                            .build()
+                            .map_err(|e| $client_err(e.to_string()))?;
+                        $body
+                    }
+                }
             }
             other => return Err($unsupported_err(other.to_string())),
         }
@@ -121,6 +157,49 @@ pub(crate) fn grok_subscription_client(
         .map_err(|e| e.to_string())
 }
 
+/// OpenCode Go serves one upstream endpoint per model family
+/// (<https://opencode.ai/docs/go/>): MiniMax and Qwen models speak Anthropic
+/// Messages, Grok/GPT Luna/Muse Spark speak OpenAI Responses, and every other
+/// model speaks OpenAI Chat Completions. Unknown models default to chat
+/// completions, which is where OpenCode adds new open-model families.
+pub(crate) const OPENCODE_GO_OPENAI_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+pub(crate) const OPENCODE_GO_ANTHROPIC_BASE_URL: &str = "https://opencode.ai/zen/go";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpencodeGoProtocol {
+    OpenAiResponses,
+    OpenAiChatCompletions,
+    AnthropicMessages,
+}
+
+pub(crate) fn opencode_go_protocol(model: &str) -> OpencodeGoProtocol {
+    let id = model.to_lowercase();
+    if id.starts_with("minimax-") || id.starts_with("qwen") {
+        OpencodeGoProtocol::AnthropicMessages
+    } else if id.starts_with("grok-") || id.starts_with("gpt-") || id.starts_with("muse-") {
+        OpencodeGoProtocol::OpenAiResponses
+    } else {
+        OpencodeGoProtocol::OpenAiChatCompletions
+    }
+}
+
+pub(crate) fn opencode_go_headers(session: Option<&str>) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static(concat!("gospel/", env!("CARGO_PKG_VERSION"))),
+    );
+    let session = session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(&session) {
+        headers.insert("x-opencode-session", value);
+    }
+    headers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,7 +253,7 @@ mod tests {
     }
 
     async fn grok_dispatch_snapshot(api_key: &str) -> Result<DispatchSnapshot, String> {
-        provider_client!("grok", api_key, |e: String| e, |s: String| s, |client| {
+        provider_client!("grok", "grok-4", api_key, None, |e: String| e, |s: String| s, |client| {
             Ok(dispatch_snapshot(client.base_url(), client.headers()))
         })
     }
@@ -202,6 +281,76 @@ mod tests {
 
         let snapshot = grok_dispatch_snapshot("").await.unwrap();
         assert_subscription_path(&snapshot, "stored-grok-oauth-token");
+    }
+
+    #[test]
+    fn opencode_go_protocol_maps_documented_model_families() {
+        use OpencodeGoProtocol::*;
+
+        for model in ["minimax-m3", "minimax-m2.7", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus"] {
+            assert_eq!(opencode_go_protocol(model), AnthropicMessages, "{model}");
+        }
+        for model in ["grok-4.7", "grok-4.6", "gpt-6-luna", "gpt-5.6-luna", "muse-spark-1.3-contributor"] {
+            assert_eq!(opencode_go_protocol(model), OpenAiResponses, "{model}");
+        }
+        for model in [
+            "glm-5.3",
+            "kimi-k3",
+            "longcat-2.0",
+            "deepseek-v4-flash",
+            "mimo-v2.6-pro",
+            "hy4-preview",
+            "hy3",
+            "space-bunny-free",
+            "some-future-model",
+        ] {
+            assert_eq!(opencode_go_protocol(model), OpenAiChatCompletions, "{model}");
+        }
+    }
+
+    #[test]
+    fn opencode_go_headers_identify_client_and_session() {
+        let headers = opencode_go_headers(Some("conversation-123"));
+        assert_eq!(
+            headers.get("x-opencode-session").and_then(|v| v.to_str().ok()),
+            Some("conversation-123")
+        );
+        let user_agent = headers
+            .get(reqwest::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(user_agent.starts_with("gospel/"), "user agent: {user_agent}");
+
+        let generated = opencode_go_headers(None);
+        assert!(generated.get("x-opencode-session").is_some());
+    }
+
+    async fn opencode_go_dispatch_base_url(model: &str) -> Result<String, String> {
+        provider_client!(
+            "opencode_go",
+            model,
+            "sk-test",
+            Some("conversation-123"),
+            |e: String| e,
+            |s: String| s,
+            |client| { Ok(client.base_url().to_string()) }
+        )
+    }
+
+    #[tokio::test]
+    async fn opencode_go_dispatch_routes_models_to_documented_endpoints() {
+        assert_eq!(
+            opencode_go_dispatch_base_url("glm-5.3").await.unwrap(),
+            "https://opencode.ai/zen/go/v1"
+        );
+        assert_eq!(
+            opencode_go_dispatch_base_url("grok-4.7").await.unwrap(),
+            "https://opencode.ai/zen/go/v1"
+        );
+        assert_eq!(
+            opencode_go_dispatch_base_url("minimax-m3").await.unwrap(),
+            "https://opencode.ai/zen/go"
+        );
     }
 
     #[test]

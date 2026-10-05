@@ -243,6 +243,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
             Some(invoked_skill_section.to_string()),
             None,
             None,
+            None,
             |_| {},
         )
         .await
@@ -462,6 +463,7 @@ impl SkillOptimizer for StreamCompletionSkillOptimizer {
                 "## Skill optimizer\n\nReturn only a JSON array of bounded skill edits."
                     .to_string(),
             ),
+            None,
             None,
             None,
             |_| {},

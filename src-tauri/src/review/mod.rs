@@ -2271,7 +2271,9 @@ pub(crate) async fn run_workspace_agent(
 
     provider_client!(
         config.provider,
+        config.model,
         config.api_key,
+        None,
         ReviewAgentError::Provider,
         ReviewAgentError::Provider,
         |client| { run_from_client!(client, config.model) }
