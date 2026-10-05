@@ -126,6 +126,9 @@ pub struct SessionTurnStreamRequest<'a> {
     pub invoked_skill_section: Option<String>,
     pub memory_section: Option<String>,
     pub skill_script_tool: Option<RunSkillScriptTool>,
+    /// Conversation id forwarded to providers that accept a session header
+    /// (OpenCode Go) for routing and prompt-cache optimization.
+    pub session_id: Option<&'a str>,
 }
 
 pub trait SessionTurnLlm: Send + Sync {
@@ -449,6 +452,7 @@ pub async fn run_streaming_turn(
                 invoked_skill_section: prompt_preparation.invoked_skill_section.clone(),
                 memory_section,
                 skill_script_tool,
+                session_id: request.session_id.as_deref(),
             },
             Box::new(move |event| {
                 events.emit_stream_event(&trace_sid, trace_role, &run_id_for_closure, &event);

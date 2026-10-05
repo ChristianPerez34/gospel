@@ -243,6 +243,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
             Some(invoked_skill_section.to_string()),
             None,
             None,
+            None,
             |_| {},
         )
         .await
@@ -464,6 +465,7 @@ impl SkillOptimizer for StreamCompletionSkillOptimizer {
             ),
             None,
             None,
+            None,
             |_| {},
         )
         .await
@@ -508,6 +510,7 @@ impl SkillReplayVerifier for VerificationAgentVerifier {
             &self.workspace,
             response,
             prompt,
+            None,
         )
         .await
         .status

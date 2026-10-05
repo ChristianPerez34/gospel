@@ -259,6 +259,8 @@ struct DelegateExplorationTool {
     model: String,
     #[serde(default)]
     api_key: String,
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 impl std::fmt::Debug for DelegateExplorationTool {
@@ -322,6 +324,7 @@ impl Tool for DelegateExplorationTool {
             &self.provider,
             &self.model,
             &self.api_key,
+            self.session_id.as_deref(),
             &self.workspace,
             &args,
         )
@@ -558,6 +561,7 @@ async fn run_exploration_agent(
     provider: &str,
     model: &str,
     api_key: &str,
+    session_id: Option<&str>,
     workspace: &ActiveWorkspaceContext,
     args: &DelegateExplorationArgs,
 ) -> Result<DelegateExplorationOutput, LlmError> {
@@ -637,7 +641,9 @@ async fn run_exploration_agent(
 
     provider_client!(
         provider,
+        model,
         api_key,
+        session_id,
         LlmError::ProviderError,
         LlmError::UnsupportedProvider,
         |client| { Ok(exploration_from_client!(client, model)) }
@@ -662,6 +668,7 @@ pub async fn stream_completion<F>(
     invoked_skill_section: Option<String>,
     memory_section: Option<String>,
     skill_script_tool: Option<crate::skills::RunSkillScriptTool>,
+    session_id: Option<&str>,
     mut on_event: F,
 ) -> Result<StreamCompletionResult, LlmError>
 where
@@ -696,6 +703,7 @@ where
                 provider: delegate_provider.to_string(),
                 model: delegate_model.to_string(),
                 api_key: delegate_api_key.to_string(),
+                session_id: session_id.map(str::to_string),
             },
         )));
     }
@@ -937,7 +945,9 @@ where
 
     provider_client!(
         provider,
+        model,
         api_key,
+        session_id,
         LlmError::ProviderError,
         LlmError::UnsupportedProvider,
         |client| {
@@ -1070,6 +1080,7 @@ mod tests {
             provider: "openai".to_string(),
             model: "gpt-4o-mini".to_string(),
             api_key: "secret-api-key".to_string(),
+            session_id: None,
         }
     }
 
@@ -1089,6 +1100,7 @@ mod tests {
             None,
             None,
             vec![],
+            None,
             None,
             None,
             None,

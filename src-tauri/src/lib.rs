@@ -1180,6 +1180,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.invoked_skill_section,
                 request.memory_section,
                 skill_script_tool,
+                request.session_id,
                 move |event| on_event(session_turn::SessionTurnEvent::from(event)),
             )
             .await
@@ -1278,6 +1279,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
                 &job.workspace,
                 &job.response_to_verify,
                 &job.user_prompt,
+                job.session_id.as_deref(),
             )
             .await;
 
