@@ -45,6 +45,15 @@ export function noModelCopy(snapshot: ModelAvailabilityCopySource | null): NoMod
       const failed = snapshot.providers.find(
         (p) => p.visible && p.credentialed && p.model_fetch_status === "failed"
       );
+      if (failed?.error_kind === "entitlement_failed") {
+        return {
+          title: "Subscription not entitled",
+          detail:
+            failed.error_detail ||
+            "Your account is signed in but not entitled. Signing in again will not fix this — upgrade or use an xAI API key.",
+          actionLabel: "Open Settings",
+        };
+      }
       return {
         title: "Could not load models",
         detail: failed?.error_detail || "A credentialed provider failed while loading models.",

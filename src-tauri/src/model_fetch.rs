@@ -50,6 +50,9 @@ pub async fn fetch_models_for_provider(
             Some(ModelFetchKind::CustomChatGpt) => fetch_chatgpt_models_impl().await,
             Some(ModelFetchKind::RigOauthCopilot) => fetch_github_copilot_models_impl().await,
             Some(ModelFetchKind::CustomGrok) => fetch_grok_models_impl(api_key).await,
+            Some(ModelFetchKind::CustomXai) => {
+                fetch_xai_models_impl(api_key.unwrap_or("")).await
+            }
             Some(ModelFetchKind::RigAnthropic) => {
                 fetch_anthropic_models_impl(api_key.unwrap_or("")).await
             }
@@ -313,15 +316,39 @@ async fn fetch_grok_models_impl(api_key: Option<&str>) -> Result<Vec<ModelInfo>,
             let auth_path = crate::keychain::grok_auth_file_path();
             match crate::grok_oauth::ensure_fresh_access_token(&auth_path).await {
                 Ok(token) => token,
+                Err(e) if crate::credential_failure::refresh_error_requires_reauth(&e) => {
+                    return Err(format!(
+                        "Grok OAuth session expired or invalid; sign in again ({e})"
+                    ));
+                }
                 Err(e) => {
                     tracing::warn!("Grok token refresh failed ({e}); using stored access token");
-                    crate::grok_oauth::access_token(&auth_path)?
+                    crate::grok_oauth::access_token(&auth_path).map_err(|stored_err| {
+                        format!(
+                            "Grok OAuth session expired or invalid; sign in again ({e}; {stored_err})"
+                        )
+                    })?
                 }
             }
         }
     };
 
-    let fallback_models = ModelRegistry::hardcoded_models_for("grok");
+    fetch_xai_developer_models("grok", &access_token).await
+}
+
+async fn fetch_xai_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("xAI API key not configured".to_string());
+    }
+    fetch_xai_developer_models("xai", key).await
+}
+
+async fn fetch_xai_developer_models(
+    provider_id: &str,
+    access_token: &str,
+) -> Result<Vec<ModelInfo>, String> {
+    let fallback_models = ModelRegistry::hardcoded_models_for(provider_id);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -339,15 +366,33 @@ async fn fetch_grok_models_impl(api_key: Option<&str>) -> Result<Vec<ModelInfo>,
     let body: serde_json::Value = match resp {
         Ok(r) if r.status().is_success() => r.json().await.unwrap_or(serde_json::Value::Null),
         Ok(r) => {
+            let status = r.status();
+            let body_text = r.text().await.unwrap_or_default();
+            if let Some(kind) =
+                crate::credential_failure::classify_credential_failure(&format!(
+                    "HTTP {status} {body_text}"
+                ))
+            {
+                return Err(match kind {
+                    crate::credential_failure::CredentialFailureKind::ReauthRequired => {
+                        format!("HTTP {status} unauthorized while listing {provider_id} models")
+                    }
+                    crate::credential_failure::CredentialFailureKind::EntitlementBlocked => {
+                        format!(
+                            "HTTP {status} entitlement/tier-gate while listing {provider_id} models: {body_text}"
+                        )
+                    }
+                });
+            }
             tracing::warn!(
-                "Grok API returned status {}; using hardcoded base only",
-                r.status()
+                "{provider_id} API returned status {}; using hardcoded base only",
+                status
             );
             return Ok(fallback_models);
         }
         Err(e) => {
             tracing::warn!(
-                "Failed to fetch Grok models: {}; using hardcoded base only",
+                "Failed to fetch {provider_id} models: {}; using hardcoded base only",
                 e
             );
             return Ok(fallback_models);
@@ -361,17 +406,17 @@ async fn fetch_grok_models_impl(api_key: Option<&str>) -> Result<Vec<ModelInfo>,
                 if should_include_grok_model(id)
                     && !models.iter().any(|existing| existing.model == id)
                 {
-                    models.push(ModelRegistry::model_info("grok", id));
+                    models.push(ModelRegistry::model_info(provider_id, id));
                 }
             }
         }
     }
 
     if models.is_empty() {
-        tracing::warn!("Grok API returned no compatible models; using hardcoded base only");
+        tracing::warn!("{provider_id} API returned no compatible models; using hardcoded base only");
         return Ok(fallback_models);
     }
 
-    tracing::info!("Resolved {} compatible models for Grok", models.len());
+    tracing::info!("Resolved {} compatible models for {provider_id}", models.len());
     Ok(models)
 }

@@ -627,6 +627,7 @@ impl ModelRegistry {
             "chatgpt" => CHATGPT_MODELS,
             "github_copilot" => GITHUB_COPILOT_MODELS,
             "grok" => GROK_MODELS,
+            "xai" => GROK_MODELS,
             "anthropic" => ANTHROPIC_MODELS,
             "gemini" => GEMINI_MODELS,
             "groq" => GROQ_MODELS,
@@ -838,15 +839,25 @@ fn chatgpt_reasoning_effort_supported(model: &str) -> bool {
 }
 
 fn sanitize_model_fetch_error(error: &str) -> (String, String) {
+    use crate::credential_failure::{
+        classify_credential_failure, entitlement_model_fetch_detail, CredentialFailureKind,
+    };
+
+    if let Some(kind) = classify_credential_failure(error) {
+        return match kind {
+            CredentialFailureKind::ReauthRequired => (
+                "auth_failed".to_string(),
+                "Provider credentials need attention.".to_string(),
+            ),
+            CredentialFailureKind::EntitlementBlocked => (
+                "entitlement_failed".to_string(),
+                entitlement_model_fetch_detail().to_string(),
+            ),
+        };
+    }
+
     let lower = error.to_lowercase();
-    let kind = if lower.contains("401")
-        || lower.contains("403")
-        || lower.contains("unauthorized")
-        || lower.contains("access_token")
-        || lower.contains("oauth")
-    {
-        "auth_failed"
-    } else if lower.contains("timeout") || lower.contains("timed out") {
+    let kind = if lower.contains("timeout") || lower.contains("timed out") {
         "timeout"
     } else if lower.contains("429")
         || lower.contains("rate limit")
@@ -856,6 +867,13 @@ fn sanitize_model_fetch_error(error: &str) -> (String, String) {
         "rate_limited"
     } else if lower.contains("parse") || lower.contains("json") {
         "bad_response"
+    } else if lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("access_token")
+        || lower.contains("oauth")
+    {
+        // Legacy auth signals that did not match the credential classifier.
+        "auth_failed"
     } else {
         "fetch_failed"
     };
@@ -1136,6 +1154,35 @@ mod tests {
     }
 
     #[test]
+    fn test_xai_is_registered_as_api_key_provider() {
+        assert!(ModelRegistry::all_providers().contains(&"xai"));
+        assert_eq!(ModelRegistry::provider_display_name("xai"), "xAI");
+        assert!(!ModelRegistry::is_oauth_provider("xai"));
+        assert_eq!(ModelRegistry::provider_auth_type("xai"), "api_key");
+        assert_eq!(
+            ModelRegistry::models_for_provider("xai"),
+            ModelRegistry::models_for_provider("grok")
+        );
+        assert!(ModelRegistry::hardcoded_models_for("xai")
+            .iter()
+            .all(|model| model.provider == "xai"));
+    }
+
+    #[test]
+    fn sanitize_model_fetch_error_distinguishes_entitlement_from_reauth() {
+        let (kind, detail) = sanitize_model_fetch_error(
+            "HTTP 403 Forbidden: entitlement check failed for subscription tier",
+        );
+        assert_eq!(kind, "entitlement_failed");
+        assert!(detail.contains("Signing in again will not fix this"));
+
+        let (kind, detail) =
+            sanitize_model_fetch_error("Grok OAuth session expired or invalid; sign in again");
+        assert_eq!(kind, "auth_failed");
+        assert_eq!(detail, "Provider credentials need attention.");
+    }
+
+    #[test]
     fn oauth_provider_ids_are_the_registered_credentialed_oauth_providers() {
         assert_eq!(
             crate::providers::oauth_provider_ids(),
@@ -1148,6 +1195,7 @@ mod tests {
                 "chatgpt",
                 "github_copilot",
                 "grok",
+                "xai",
                 "anthropic",
                 "gemini",
                 "groq",

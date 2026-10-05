@@ -15,7 +15,8 @@
       "!src-tauri/gen/schemas",
       "!.gospel/corpus",
       "!.agents",
-      "!.codex"
+      "!.codex",
+      "!.devin"
     ]
   },
   "formatter": {
@@ -35,7 +36,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended",
+      "recommended": true,
       "correctness": {
         "noUnusedVariables": "warn",
         "noUnusedImports": "warn",
