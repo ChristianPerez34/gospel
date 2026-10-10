@@ -460,6 +460,20 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           activeRunIdRef.current = remaining[remaining.length - 1] ?? null;
         }
       };
+      // Mutate a turn for an arbitrary session: focused turns go through
+      // updateCurrentTurn; background turns update the stash and republish
+      // via updateBackgroundTurn (which lazily creates an empty turn when
+      // the session has none yet).
+      const updateTurnForSession = (
+        sessionId: string | null,
+        updater: (turn: CurrentTurn) => CurrentTurn
+      ) => {
+        if (sessionId === getFocusedSession()) {
+          updateCurrentTurn(updater);
+          return;
+        }
+        updateBackgroundTurn(sessionId, updater);
+      };
       try {
         await Promise.all([
           track(
@@ -927,10 +941,18 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
           track(
             listen<ApprovalRequest>("approval-requested", (event) => {
+              // Route the card to the run's owning session; payloads without
+              // run_id fall back to the focused session (legacy emitters).
+              const runId = event.payload.run_id ?? null;
+              const sid = sessionForRun(runId);
               // Flush buffered text before appending an approval block so
               // the approval card appears after trailing text.
-              flushPendingText();
-              updateCurrentTurn((turn) => {
+              if (sid === getFocusedSession()) {
+                flushPendingText();
+              } else {
+                flushBackgroundPending(sid);
+              }
+              updateTurnForSession(sid, (turn) => {
                 if (
                   turn.blocks.some(
                     (b): b is Extract<TurnBlock, { kind: "approval" }> =>
@@ -961,10 +983,16 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
           track(
             listen<ApprovalResolution>("approval-resolved", (event) => {
+              const runId = event.payload.run_id ?? null;
+              const sid = sessionForRun(runId);
               // Flush buffered text before mutating approval block status.
-              flushPendingText();
+              if (sid === getFocusedSession()) {
+                flushPendingText();
+              } else {
+                flushBackgroundPending(sid);
+              }
               const status = event.payload.outcome;
-              updateCurrentTurn((turn) => ({
+              updateTurnForSession(sid, (turn) => ({
                 ...turn,
                 blocks: turn.blocks.map((block) =>
                   block.kind === "approval" && block.id === event.payload.id

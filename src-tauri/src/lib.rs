@@ -221,6 +221,10 @@ impl ApprovalEventEmitter for TauriApprovalEventEmitter {
 #[derive(Clone)]
 struct BrokerExternalPathApproval {
     broker: Arc<ApprovalBroker>,
+    /// Streaming run that owns the turn requesting approval; forwarded onto
+    /// every broker request so the frontend routes the card to this run's
+    /// session rather than whichever session is focused.
+    run_id: Option<String>,
 }
 
 impl ExternalPathApproval for BrokerExternalPathApproval {
@@ -229,6 +233,7 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
         request: ExternalPathApprovalRequest,
     ) -> ExternalPathApprovalFuture<'a> {
         let broker = self.broker.clone();
+        let run_id = self.run_id.clone();
         let reason = match request.kind {
             PathKind::File => "This file is outside the active workspace.",
             PathKind::Directory => "This directory is outside the active workspace.",
@@ -236,11 +241,14 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
         };
         Box::pin(async move {
             broker
-                .request(ApprovalRequest::external_path(
-                    request.tool_name,
-                    request.path,
-                    reason,
-                ))
+                .request(
+                    ApprovalRequest::external_path(
+                        request.tool_name,
+                        request.path,
+                        reason,
+                    )
+                    .with_run_id(run_id.as_deref()),
+                )
                 .await
         })
     }
@@ -249,6 +257,10 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
 #[derive(Clone)]
 struct BrokerCommandApproval {
     broker: Arc<ApprovalBroker>,
+    /// Streaming run that owns the turn requesting approval; forwarded onto
+    /// every broker request so the frontend routes the card to this run's
+    /// session rather than whichever session is focused.
+    run_id: Option<String>,
 }
 
 impl CommandApproval for BrokerCommandApproval {
@@ -257,15 +269,19 @@ impl CommandApproval for BrokerCommandApproval {
         request: CommandApprovalRequest,
     ) -> CommandApprovalFuture<'a> {
         let broker = self.broker.clone();
+        let run_id = self.run_id.clone();
         Box::pin(async move {
             let destructive = matches!(request.risk, CommandRisk::Destructive);
             broker
-                .request(ApprovalRequest::command(
-                    request.tool_name,
-                    request.command_label,
-                    request.reason,
-                    destructive,
-                ))
+                .request(
+                    ApprovalRequest::command(
+                        request.tool_name,
+                        request.command_label,
+                        request.reason,
+                        destructive,
+                    )
+                    .with_run_id(run_id.as_deref()),
+                )
                 .await
         })
     }
@@ -1181,9 +1197,11 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
             let external_path_approval: Arc<dyn ExternalPathApproval> =
                 Arc::new(BrokerExternalPathApproval {
                     broker: broker.clone(),
+                    run_id: request.run_id.map(str::to_string),
                 });
             let command_approval: Arc<dyn CommandApproval> = Arc::new(BrokerCommandApproval {
                 broker: broker.clone(),
+                run_id: request.run_id.map(str::to_string),
             });
             let mut skill_script_tool = request.skill_script_tool;
             if let Some(tool) = &mut skill_script_tool {

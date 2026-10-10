@@ -55,6 +55,10 @@ pub struct ApprovalRequest {
     pub summary: String,
     pub reason: String,
     pub risk: ApprovalRisk,
+    /// Streaming run that owns this request. The frontend uses it to route
+    /// the approval card to the correct session's live turn; `None` falls
+    /// back to the focused session.
+    pub run_id: Option<String>,
 }
 
 impl ApprovalRequest {
@@ -83,6 +87,7 @@ impl ApprovalRequest {
                 ApprovalRisk::Mutating
             },
             tool_name,
+            run_id: None,
         }
     }
 
@@ -99,7 +104,15 @@ impl ApprovalRequest {
             reason: reason.into(),
             risk: ApprovalRisk::ExternalAccess,
             tool_name: tool_name.into(),
+            run_id: None,
         }
+    }
+
+    /// Tag the request with the owning streaming run so the frontend can
+    /// route the approval card to the correct session's turn.
+    pub fn with_run_id(mut self, run_id: Option<&str>) -> Self {
+        self.run_id = run_id.map(str::to_string);
+        self
     }
 }
 
@@ -135,6 +148,9 @@ impl ApprovalOutcome {
 pub struct ApprovalResolution {
     pub id: String,
     pub outcome: ApprovalOutcome,
+    /// Echo of the originating request's run id so the frontend routes the
+    /// status transition to the same turn that rendered the request card.
+    pub run_id: Option<String>,
 }
 
 /// What the broker needs from the host to publish events. Keeping this as a
@@ -181,6 +197,7 @@ impl ApprovalBroker {
     /// resolves to `false` so callers default to "do not execute".
     pub async fn request(&self, request: ApprovalRequest) -> bool {
         let id = request.id.clone();
+        let run_id = request.run_id.clone();
 
         let (sender, receiver) = oneshot::channel();
         {
@@ -213,7 +230,7 @@ impl ApprovalBroker {
 
         let outcome = ApprovalOutcome::from_decision(decision, timed_out);
         self.emitter
-            .emit_resolved(&ApprovalResolution { id, outcome });
+            .emit_resolved(&ApprovalResolution { id, outcome, run_id });
 
         matches!(outcome, ApprovalOutcome::Approved)
     }
@@ -308,6 +325,46 @@ mod tests {
         assert_eq!(
             emitter.resolved.lock().unwrap()[0].outcome,
             ApprovalOutcome::Approved
+        );
+    }
+
+    #[tokio::test]
+    async fn resolution_echoes_request_run_id() {
+        let (broker, emitter) = test_broker();
+        let request = ApprovalRequest::command(
+            "run_shell_command",
+            "cargo publish",
+            "Publishes the crate.",
+            false,
+        )
+        .with_run_id(Some("r-1"));
+        let id = request.id.clone();
+        let broker_for_task = broker.clone();
+        let task = tokio::spawn(async move { broker_for_task.request(request).await });
+
+        // Poll until the spawned task has registered and emitted.
+        for _ in 0..64 {
+            if broker.pending_count() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(broker.pending_count(), 1);
+        assert_eq!(
+            emitter.requested.lock().unwrap()[0].run_id.as_deref(),
+            Some("r-1"),
+            "the emitted request must carry the run id"
+        );
+
+        assert!(broker.resolve(&id, ApprovalDecision::Approve));
+        assert!(task.await.unwrap());
+        let resolved = emitter.resolved.lock().unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].id, id);
+        assert_eq!(
+            resolved[0].run_id.as_deref(),
+            Some("r-1"),
+            "the resolution must echo the request's run id"
         );
     }
 
