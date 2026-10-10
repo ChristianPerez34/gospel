@@ -163,6 +163,25 @@ impl StreamingRunHandles {
             handles.remove(session_id);
         }
     }
+
+    /// True while a streaming turn is registered for the session id.
+    fn contains(&self, session_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("streaming handles poisoned")
+            .contains_key(session_id)
+    }
+
+    /// Snapshot of session ids with an in-flight streaming turn. Callers use
+    /// this to exclude live sessions from bulk mutations like maintenance.
+    fn in_flight_session_ids(&self) -> std::collections::HashSet<String> {
+        self.inner
+            .lock()
+            .expect("streaming handles poisoned")
+            .keys()
+            .cloned()
+            .collect()
+    }
 }
 
 impl ApprovalBrokerState {
@@ -2398,6 +2417,7 @@ fn get_session(
 fn list_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
@@ -2412,9 +2432,11 @@ fn list_sessions(
 
     match &session_store.store {
         Some(store) => {
-            // Clean up stale drafts on list
-            let _ = store.clean_stale_drafts();
-            let _ = store.run_archive_maintenance(workspace_id.as_deref());
+            // Clean up stale drafts on list, skipping sessions whose turn is
+            // still streaming so the completed turn can persist.
+            let in_flight = streaming_handles.in_flight_session_ids();
+            let _ = store.clean_stale_drafts(&in_flight);
+            let _ = store.run_archive_maintenance(workspace_id.as_deref(), &in_flight);
             store
                 .list_sessions_for_workspace(workspace_id.as_deref())
                 .map_err(|e| e.to_string())
@@ -2430,6 +2452,7 @@ fn list_sessions(
 fn list_archived_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
@@ -2444,7 +2467,8 @@ fn list_archived_sessions(
 
     match &session_store.store {
         Some(store) => {
-            let _ = store.run_archive_maintenance(workspace_id.as_deref());
+            let in_flight = streaming_handles.in_flight_session_ids();
+            let _ = store.run_archive_maintenance(workspace_id.as_deref(), &in_flight);
             store
                 .list_archived_sessions_for_workspace(workspace_id.as_deref())
                 .map_err(|e| e.to_string())
@@ -2538,12 +2562,16 @@ fn get_archive_stats(
 fn run_archive_maintenance(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<ArchiveMaintenanceResult, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
         Some(store) => store
-            .run_archive_maintenance(workspace_id.as_deref())
+            .run_archive_maintenance(
+                workspace_id.as_deref(),
+                &streaming_handles.in_flight_session_ids(),
+            )
             .map_err(|e| e.to_string()),
         None => Ok(ArchiveMaintenanceResult {
             archived_count: 0,
@@ -2556,11 +2584,18 @@ fn run_archive_maintenance(
 fn archive_session(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     session_id: String,
 ) -> Result<ArchivedSessionRecord, String> {
     match &session_store.store {
         Some(store) => {
             validate_session_access(store, &session_id, app_config.inner())?;
+            if streaming_handles.contains(&session_id) {
+                return Err(
+                    "session has an in-flight turn; cancel it or wait for it to finish"
+                        .to_string(),
+                );
+            }
             store
                 .archive_session(&session_id)
                 .map_err(|e| e.to_string())
@@ -2576,12 +2611,22 @@ fn archive_session(
 fn archive_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     session_ids: Vec<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
     match &session_store.store {
         Some(store) => {
             for session_id in &session_ids {
                 validate_session_access(store, session_id, app_config.inner())?;
+            }
+            if session_ids
+                .iter()
+                .any(|session_id| streaming_handles.contains(session_id))
+            {
+                return Err(
+                    "session has an in-flight turn; cancel it or wait for it to finish"
+                        .to_string(),
+                );
             }
             store
                 .archive_sessions_by_ids(&session_ids)
@@ -2705,11 +2750,18 @@ fn delete_expired_archived_sessions(
 fn delete_session_cmd(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     session_id: String,
 ) -> Result<(), String> {
     match &session_store.store {
         Some(store) => {
             validate_session_access(store, &session_id, app_config.inner())?;
+            if streaming_handles.contains(&session_id) {
+                return Err(
+                    "session has an in-flight turn; cancel it or wait for it to finish"
+                        .to_string(),
+                );
+            }
             store.delete_session(&session_id).map_err(|e| e.to_string())
         }
         None => Err(session_store
@@ -2722,9 +2774,12 @@ fn delete_session_cmd(
 #[tauri::command]
 fn cleanup_stale_drafts(
     session_store: tauri::State<'_, SessionStoreState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
 ) -> Result<usize, String> {
     match &session_store.store {
-        Some(store) => store.clean_stale_drafts().map_err(|e| e.to_string()),
+        Some(store) => store
+            .clean_stale_drafts(&streaming_handles.in_flight_session_ids())
+            .map_err(|e| e.to_string()),
         None => Ok(0),
     }
 }
@@ -3553,6 +3608,31 @@ mod streaming_run_handles_tests {
 
         handles.remove_if_run_matches("session-1", "run-2");
         assert!(!handles.inner.lock().unwrap().contains_key("session-1"));
+    }
+
+    #[test]
+    fn streaming_handles_snapshot_lists_in_flight_sessions() {
+        let handles = StreamingRunHandles::new();
+        assert!(!handles.contains("session-1"));
+        assert!(handles.in_flight_session_ids().is_empty());
+
+        let (handle_1, _reg_1) = futures::future::AbortHandle::new_pair();
+        let (handle_2, _reg_2) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-1", handle_1);
+        handles.insert("session-2", "run-2", handle_2);
+
+        let in_flight = handles.in_flight_session_ids();
+        assert_eq!(in_flight.len(), 2);
+        assert!(in_flight.contains("session-1"));
+        assert!(in_flight.contains("session-2"));
+        assert!(handles.contains("session-1"));
+        assert!(!handles.contains("session-3"));
+
+        handles.cancel("session-1");
+        assert!(!handles.contains("session-1"));
+        let in_flight = handles.in_flight_session_ids();
+        assert_eq!(in_flight.len(), 1);
+        assert!(in_flight.contains("session-2"));
     }
 }
 

@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -742,12 +742,13 @@ impl SessionStore {
         &self,
         workspace_id: Option<&str>,
         hours: i64,
+        exclude: &HashSet<String>,
     ) -> Result<Vec<ArchivedSessionRecord>, SessionStoreError> {
         if hours <= 0 {
             return Ok(Vec::new());
         }
 
-        let ids = {
+        let mut ids = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare(
                 "SELECT id
@@ -763,6 +764,9 @@ impl SessionStore {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        // Skip sessions with an in-flight streaming turn; they are picked up by
+        // a later maintenance pass once the turn completes.
+        ids.retain(|id| !exclude.contains(id));
 
         self.archive_sessions_by_ids(&ids)
     }
@@ -791,10 +795,11 @@ impl SessionStore {
     pub fn run_archive_maintenance(
         &self,
         workspace_id: Option<&str>,
+        exclude: &HashSet<String>,
     ) -> Result<ArchiveMaintenanceResult, SessionStoreError> {
         let policy = self.get_archive_policy(workspace_id)?;
         let archived_count = self
-            .archive_sessions_older_than_hours(workspace_id, policy.auto_archive_hours)?
+            .archive_sessions_older_than_hours(workspace_id, policy.auto_archive_hours, exclude)?
             .len();
         let deleted_count =
             self.delete_archived_sessions_older_than_days(workspace_id, policy.retention_days)?;
@@ -1091,14 +1096,27 @@ impl SessionStore {
         Ok(notes)
     }
 
-    pub fn clean_stale_drafts(&self) -> Result<usize, SessionStoreError> {
+    pub fn clean_stale_drafts(
+        &self,
+        exclude: &HashSet<String>,
+    ) -> Result<usize, SessionStoreError> {
         let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM sessions WHERE status = 'draft' AND display_transcript = '[]'
-             AND updated_at < datetime('now', '-1 hour')",
-            params![],
-        )?;
-        Ok(rows)
+        let mut ids = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM sessions WHERE status = 'draft' AND display_transcript = '[]'
+                 AND updated_at < datetime('now', '-1 hour')",
+            )?;
+            let rows = stmt.query_map(params![], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        // A Draft Session mid-first-turn is registered in StreamingRunHandles;
+        // skip it so the in-flight turn can still persist.
+        ids.retain(|id| !exclude.contains(id));
+        let mut deleted = 0;
+        for id in &ids {
+            deleted += conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        }
+        Ok(deleted)
     }
 
     pub fn workspace_session_count(&self, workspace_id: &str) -> Result<i64, SessionStoreError> {
@@ -1792,7 +1810,9 @@ mod tests {
         store.update_status(&recent.id, "active").unwrap();
         set_session_updated_at(&store, &old.id, "-2 hours");
 
-        let result = store.run_archive_maintenance(Some("ws1")).unwrap();
+        let result = store
+            .run_archive_maintenance(Some("ws1"), &HashSet::new())
+            .unwrap();
 
         assert_eq!(result.archived_count, 1);
         assert_eq!(result.deleted_count, 0);
@@ -1804,9 +1824,101 @@ mod tests {
         assert_eq!(stats.archived_count, 1);
         assert_eq!(stats.expired_count, 1);
 
-        let cleanup = store.run_archive_maintenance(Some("ws1")).unwrap();
+        let cleanup = store
+            .run_archive_maintenance(Some("ws1"), &HashSet::new())
+            .unwrap();
         assert_eq!(cleanup.deleted_count, 1);
         assert!(store.get_archived_session(&old.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn archive_maintenance_skips_excluded_in_flight_ids() {
+        let store = test_store();
+        store.set_archive_policy(Some("ws1"), 7, 1).unwrap();
+        let in_flight_session = store
+            .create_session("Streaming", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let idle = store
+            .create_session("Idle", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        store.update_status(&in_flight_session.id, "active").unwrap();
+        store.update_status(&idle.id, "active").unwrap();
+        set_session_updated_at(&store, &in_flight_session.id, "-2 hours");
+        set_session_updated_at(&store, &idle.id, "-2 hours");
+
+        let exclude = HashSet::from([in_flight_session.id.clone()]);
+        let result = store
+            .run_archive_maintenance(Some("ws1"), &exclude)
+            .unwrap();
+
+        assert_eq!(result.archived_count, 1);
+        assert!(store
+            .get_session(&in_flight_session.id)
+            .unwrap()
+            .is_some());
+        assert!(store.get_archived_session(&idle.id).unwrap().is_some());
+
+        // Once the turn finishes the session is no longer excluded; the next
+        // maintenance pass archives it normally.
+        let next_pass = store
+            .run_archive_maintenance(Some("ws1"), &HashSet::new())
+            .unwrap();
+        assert_eq!(next_pass.archived_count, 1);
+        assert!(store
+            .get_archived_session(&in_flight_session.id)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn clean_stale_drafts_skips_excluded_in_flight_ids() {
+        let store = test_store();
+        let in_flight_draft = store
+            .create_session("Streaming Draft", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let stale_draft = store
+            .create_session("Stale Draft", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        set_session_updated_at(&store, &in_flight_draft.id, "-2 hours");
+        set_session_updated_at(&store, &stale_draft.id, "-2 hours");
+
+        let exclude = HashSet::from([in_flight_draft.id.clone()]);
+        let deleted = store.clean_stale_drafts(&exclude).unwrap();
+
+        assert_eq!(deleted, 1);
+        assert!(store.get_session(&in_flight_draft.id).unwrap().is_some());
+        assert!(store.get_session(&stale_draft.id).unwrap().is_none());
+
+        // A later sweep with nothing in flight removes the survivor.
+        assert_eq!(store.clean_stale_drafts(&HashSet::new()).unwrap(), 1);
+        assert!(store.get_session(&in_flight_draft.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn archive_sessions_older_than_hours_excludes_ids() {
+        let store = test_store();
+        let in_flight_session = store
+            .create_session("Streaming", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let idle = store
+            .create_session("Idle", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        store.update_status(&in_flight_session.id, "active").unwrap();
+        store.update_status(&idle.id, "active").unwrap();
+        set_session_updated_at(&store, &in_flight_session.id, "-2 hours");
+        set_session_updated_at(&store, &idle.id, "-2 hours");
+
+        let exclude = HashSet::from([in_flight_session.id.clone()]);
+        let archived = store
+            .archive_sessions_older_than_hours(Some("ws1"), 1, &exclude)
+            .unwrap();
+
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, idle.id);
+        assert!(store
+            .get_session(&in_flight_session.id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
