@@ -707,20 +707,36 @@ impl ModelRegistry {
             }
         }
 
-        // Register/check pending request atomically to avoid races and duplicate fetches
-        let (is_waiter, notify, must_rejoin) = {
+        // Register/check pending request atomically to avoid races and duplicate fetches.
+        // The waiter's Notified future is created and enabled while still holding the
+        // write lock, so registration happens-before the guard releases. Without this,
+        // a leader that completes between the map read and the waiter's first poll
+        // drops the wakeup (notify_waiters stores no permit for latecomers) and the
+        // waiter hangs forever.
+        let is_waiter;
+        let notify;
+        let must_rejoin;
+        let mut wait = None;
+        {
             let mut pending = PENDING_REQUESTS.write().await;
-            if let Some(notify) = pending.get(cache_key) {
-                (true, notify.clone(), force_refresh)
+            if let Some(n) = pending.get(cache_key) {
+                notify = n.clone();
+                let mut w = Box::pin(notify.notified());
+                w.as_mut().enable();
+                is_waiter = true;
+                must_rejoin = force_refresh;
+                wait = Some(w);
             } else {
-                let notify = Arc::new(Notify::new());
+                notify = Arc::new(Notify::new());
                 pending.insert(cache_key.to_string(), notify.clone());
-                (false, notify, false)
+                is_waiter = false;
+                must_rejoin = false;
             }
-        };
+        }
 
         if is_waiter {
-            notify.notified().await;
+            wait.expect("waiter future is registered while holding the lock")
+                .await;
             if must_rejoin {
                 drop(notify);
                 return Self::fetch_and_cache_impl(cache_key, provider, fetch_fn).await;
@@ -1315,5 +1331,69 @@ mod tests {
         }
 
         assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiter_wakes_when_leader_finished_before_first_poll() {
+        clear_model_state().await;
+
+        let cache_key = "lost-wakeup-cache-key";
+        let leader_notify = Arc::new(Notify::new());
+        {
+            let mut pending = PENDING_REQUESTS.write().await;
+            pending.insert(cache_key.to_string(), leader_notify.clone());
+        }
+
+        // Spawn the waiter; the pending entry makes it take the waiter path.
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                ModelRegistry::get_or_fetch(cache_key, "openai", false, || async {
+                    Err("fetch_fn must not run for a waiter".to_string())
+                }),
+            )
+            .await
+        });
+
+        // Wait until the spawned waiter has picked up the pending entry and
+        // released the PENDING_REQUESTS lock: its Notify clone bumps the strong
+        // count to 3 (map entry + this clone + the waiter's clone).
+        let registration = async {
+            while Arc::strong_count(&leader_notify) < 3 {
+                tokio::task::yield_now().await;
+            }
+            // Once the write lock is available again, the waiter's registration
+            // block — including enable() on its Notified — has completed.
+            let _pending = PENDING_REQUESTS.write().await;
+        };
+        tokio::time::timeout(Duration::from_secs(5), registration)
+            .await
+            .expect("waiter never reached its registration block");
+
+        // Populate the cache as a completed leader fetch would...
+        {
+            let mut cache = MODEL_CACHE.write().await;
+            cache.insert(
+                cache_key.to_string(),
+                CachedModelList {
+                    models: vec![ModelRegistry::model_info("openai", "gpt-4o")],
+                    fetched_at: Instant::now(),
+                    ttl: Duration::from_secs(60),
+                },
+            );
+        }
+        // ...then fire the wake while the waiter may not have polled yet.
+        leader_notify.notify_waiters();
+
+        let result = task
+            .await
+            .expect("waiter task panicked")
+            .expect("waiter timed out waiting for wakeup");
+        assert!(result.is_fresh);
+        assert_eq!(result.models.len(), 1);
+        assert_eq!(result.models[0].model, "gpt-4o");
+        assert!(result.error_kind.is_none());
+
+        clear_model_state().await;
     }
 }
