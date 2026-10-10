@@ -489,6 +489,53 @@ describe("useSessionManager", () => {
       );
     });
 
+    it("routes a local-only run's stream events to its frontend session id", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "list_sessions") return [];
+        if (cmd === "create_session") throw new Error("backend down");
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("hello world");
+      });
+
+      const localId = result.current.sessions[0]!.id;
+      expect(localId).toMatch(/^s-/);
+      expect(result.current.activeSessionId).toBe(localId);
+
+      // The backend sessionId passed to complete_streaming is null, but
+      // startStream also received runSessionId = the frontend Session.id —
+      // observable here as the run's events routing to the focused session
+      // instead of being treated as background (or attributed to null).
+      const streamCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === "complete_streaming");
+      const runId = (streamCall?.[1] as { runId?: string } | undefined)?.runId;
+      expect(runId).toBeTruthy();
+
+      await act(async () => {
+        triggerEvent("llm-token", { runId, token: "local stream" });
+      });
+
+      expect(
+        result.current.currentTurn?.blocks.some(
+          (b) => b.kind === "text" && b.text === "local stream"
+        )
+      ).toBe(true);
+
+      await act(async () => {
+        triggerEvent("llm-done", { runId, response: "local reply" });
+      });
+
+      // The completion finalized onto the local session's transcript — the
+      // visible view — not some other session or a null-session fallback.
+      expect(result.current.messages.some((m) => m.content === "local reply")).toBe(true);
+      expect(result.current.sessions[0]!.messages.some((m) => m.content === "local reply")).toBe(
+        true
+      );
+    });
+
     it("sends the selected variant for same-slug model variants", async () => {
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
         if (cmd === "create_session") return { id: "variant-backend-session" };
