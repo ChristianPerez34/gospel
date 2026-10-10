@@ -226,6 +226,12 @@ impl CommandPolicy {
             return CommandSafety::Mutating;
         }
 
+        if matches!(subcommand.as_str(), "diff" | "show" | "log")
+            && git_subcommand_writes_output(&args[1..])
+        {
+            return CommandSafety::Mutating;
+        }
+
         // Read-only subcommands.
         if matches!(
             subcommand.as_str(),
@@ -426,6 +432,15 @@ fn gh_api_uses_mutating_method(args: &[String]) -> bool {
             || arg.starts_with("--field=")
             || arg.starts_with("--raw-field=")
         {
+            has_field_params = true;
+        }
+
+        if arg == "--input" {
+            has_field_params = true;
+            let _ = iter.next();
+            continue;
+        }
+        if arg.starts_with("--input=") {
             has_field_params = true;
         }
     }
@@ -770,6 +785,10 @@ fn is_read_only_shell_program(program: &str, args: &[String]) -> bool {
         return false;
     }
 
+    if program == "rg" && rg_uses_preprocessor(args) {
+        return false;
+    }
+
     if program == "sort" && sort_has_output_destination(args) {
         return false;
     }
@@ -794,6 +813,20 @@ fn git_remote_is_read_only(args: &[String]) -> bool {
         args.get(verb_index).map(String::as_str),
         None | Some("show")
     )
+}
+
+fn git_subcommand_writes_output(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "--output" || arg.starts_with("--output="))
+}
+
+fn rg_uses_preprocessor(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--pre"
+            || arg == "--pre-glob"
+            || arg.starts_with("--pre=")
+            || arg.starts_with("--pre-glob=")
+    })
 }
 
 fn sort_has_output_destination(args: &[String]) -> bool {
@@ -1901,6 +1934,44 @@ mod tests {
     }
 
     #[test]
+    fn classify_shell_rg_pre_is_mutating() {
+        let policy = CommandPolicy;
+        for args in [
+            vec![
+                "--pre".to_string(),
+                "./script.sh".to_string(),
+                "foo".to_string(),
+            ],
+            vec!["--pre=./script.sh".to_string(), "foo".to_string()],
+            vec![
+                "--pre-glob".to_string(),
+                "*.bin".to_string(),
+                "--pre".to_string(),
+                "./s".to_string(),
+                "foo".to_string(),
+            ],
+        ] {
+            assert_eq!(
+                policy.classify_shell("rg", &args, &workspace()),
+                CommandSafety::Mutating
+            );
+        }
+    }
+
+    #[test]
+    fn classify_shell_rg_plain_stays_read_only() {
+        let policy = CommandPolicy;
+        assert_eq!(
+            policy.classify_shell(
+                "rg",
+                &["foo".to_string(), "src/".to_string()],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
     fn classify_shell_preserves_git_and_gh_hard_blocks() {
         let policy = CommandPolicy;
         assert!(matches!(
@@ -2135,6 +2206,40 @@ mod tests {
         );
         assert_eq!(
             policy.classify_git(&["log".to_string(), "--oneline".to_string()], &workspace()),
+            CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
+    fn classify_git_output_destination_is_mutating() {
+        let policy = CommandPolicy;
+        for args in [
+            vec!["diff".to_string(), "--output=x.patch".to_string()],
+            vec!["show".to_string(), "--output=x".to_string()],
+            vec!["log".to_string(), "--output".to_string(), "x".to_string()],
+        ] {
+            assert_eq!(
+                policy.classify_git(&args, &workspace()),
+                CommandSafety::Mutating
+            );
+        }
+        // `--oneline` and the `--output-indicator-*` diff flags do not write
+        // files and must stay read-only.
+        assert_eq!(
+            policy.classify_git(
+                &["diff".to_string(), "--oneline".to_string()],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+        assert_eq!(
+            policy.classify_git(
+                &[
+                    "diff".to_string(),
+                    "--output-indicator-context=all".to_string()
+                ],
+                &workspace()
+            ),
             CommandSafety::ReadOnly
         );
     }
@@ -2475,6 +2580,54 @@ mod tests {
                     "repos/foo".to_string(),
                     "--field".to_string(),
                     "probe=true".to_string()
+                ],
+                &workspace()
+            ),
+            CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
+    fn classify_gh_api_input_is_mutating() {
+        let policy = CommandPolicy;
+        for args in [
+            vec![
+                "api".to_string(),
+                "repos/foo".to_string(),
+                "--input".to_string(),
+                "body.json".to_string(),
+            ],
+            vec![
+                "api".to_string(),
+                "repos/foo".to_string(),
+                "--input=body.json".to_string(),
+            ],
+        ] {
+            assert_eq!(
+                policy.classify_gh(&args, &workspace()),
+                CommandSafety::Mutating
+            );
+        }
+        assert_eq!(
+            policy.classify_gh(&["api".to_string(), "repos/foo".to_string()], &workspace()),
+            CommandSafety::ReadOnly
+        );
+    }
+
+    #[test]
+    fn classify_gh_api_input_with_explicit_get() {
+        let policy = CommandPolicy;
+        // An explicit read-only method overrides the body params, matching the
+        // existing `-f`/`--field` contract (`-X GET ... -f q=...` is read-only).
+        assert_eq!(
+            policy.classify_gh(
+                &[
+                    "api".to_string(),
+                    "repos/foo".to_string(),
+                    "--input".to_string(),
+                    "body.json".to_string(),
+                    "-X".to_string(),
+                    "GET".to_string(),
                 ],
                 &workspace()
             ),
