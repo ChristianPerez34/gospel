@@ -98,6 +98,10 @@ fn build_context_search_index(
 }
 
 fn should_skip_for_indexing(path: &str) -> bool {
+    if crate::workspace_tools::is_secret_like(Path::new(path)) {
+        return true;
+    }
+
     let skip_patterns = [
         "node_modules",
         "target",
@@ -545,6 +549,23 @@ mod tests {
             ".gospel/context_search/search_index.db"
         ));
         assert!(should_skip_for_indexing("Cargo.lock"));
+
+        assert!(should_skip_for_indexing(".env.development"));
+        assert!(should_skip_for_indexing(".env.test"));
+        assert!(should_skip_for_indexing(".npmrc"));
+        assert!(should_skip_for_indexing(".ssh/id_rsa"));
+        assert!(should_skip_for_indexing("keys/id_ed25519"));
+        assert!(should_skip_for_indexing("credentials.json"));
+        assert!(should_skip_for_indexing("config/secrets.yaml"));
+        assert!(should_skip_for_indexing("server.pem"));
+        assert!(should_skip_for_indexing("client.key"));
+        assert!(should_skip_for_indexing("cert.p12"));
+
+        assert!(!should_skip_for_indexing(".env.example"));
+        assert!(!should_skip_for_indexing(".env.sample"));
+        assert!(!should_skip_for_indexing(".env.template"));
+        assert!(!should_skip_for_indexing("src/main.rs"));
+        assert!(!should_skip_for_indexing("docs/credential-rotation.md"));
 
         assert!(!should_skip_for_indexing("src/node_modules_helper.rs"));
         assert!(!should_skip_for_indexing("src/targeted.rs"));

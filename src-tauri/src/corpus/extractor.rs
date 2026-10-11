@@ -482,6 +482,10 @@ pub fn extract_directory(
     collect_files(root_path, &mut files, ignore_patterns, &canonical_root)?;
 
     for file_path in files {
+        if crate::workspace_tools::is_secret_like(&file_path) {
+            continue;
+        }
+
         if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
             if let Some(language) = ExtractorLanguage::from_extension(ext) {
                 if let Ok(mut extractor) = Extractor::new(language) {
@@ -508,6 +512,9 @@ fn collect_files(
     }
 
     if metadata.is_file() {
+        if crate::workspace_tools::is_secret_like(current) {
+            return Ok(());
+        }
         let Ok(canonical_current) = crate::corpus::symlink_guard::canonical(current) else {
             return Ok(());
         };
@@ -719,5 +726,53 @@ struct TestStruct {
             )
         });
         assert!(has_inside, "in-workspace file should be ingested");
+    }
+
+    #[test]
+    fn test_extract_directory_skips_secret_like_files() {
+        let dir = TempDir::new().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // Safe file
+        std::fs::write(src_dir.join("main.rs"), "pub fn main() {}").unwrap();
+
+        // Secret-named source files
+        std::fs::write(
+            src_dir.join("credentials.ts"),
+            "export const apiKey = 'secret';",
+        )
+        .unwrap();
+        std::fs::write(src_dir.join("secrets.rs"), "pub fn get_token() {}").unwrap();
+        std::fs::write(src_dir.join("id_rsa.rs"), "pub fn get_key() {}").unwrap();
+
+        let mut corpus = Corpus::new();
+        extract_directory(&mut corpus, dir.path(), &[]).unwrap();
+
+        let ingested_paths: Vec<_> = corpus
+            .nodes
+            .values()
+            .filter_map(|n| match &n.node_type {
+                NodeType::File { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            ingested_paths.iter().any(|p| p.ends_with("main.rs")),
+            "safe main.rs should be ingested"
+        );
+        assert!(
+            !ingested_paths.iter().any(|p| p.ends_with("credentials.ts")),
+            "credentials.ts should not be ingested"
+        );
+        assert!(
+            !ingested_paths.iter().any(|p| p.ends_with("secrets.rs")),
+            "secrets.rs should not be ingested"
+        );
+        assert!(
+            !ingested_paths.iter().any(|p| p.ends_with("id_rsa.rs")),
+            "id_rsa.rs should not be ingested"
+        );
     }
 }
