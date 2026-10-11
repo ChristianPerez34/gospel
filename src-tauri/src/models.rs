@@ -713,32 +713,24 @@ impl ModelRegistry {
         // a leader that completes between the map read and the waiter's first poll
         // drops the wakeup (notify_waiters stores no permit for latecomers) and the
         // waiter hangs forever.
-        let is_waiter;
         let notify;
-        let must_rejoin;
-        let mut wait = None;
-        {
+        let (must_rejoin, wait) = {
             let mut pending = PENDING_REQUESTS.write().await;
             if let Some(n) = pending.get(cache_key) {
                 notify = n.clone();
                 let mut w = Box::pin(notify.notified());
                 w.as_mut().enable();
-                is_waiter = true;
-                must_rejoin = force_refresh;
-                wait = Some(w);
+                (force_refresh, Some(w))
             } else {
                 notify = Arc::new(Notify::new());
                 pending.insert(cache_key.to_string(), notify.clone());
-                is_waiter = false;
-                must_rejoin = false;
+                (false, None)
             }
-        }
+        };
 
-        if is_waiter {
-            wait.expect("waiter future is registered while holding the lock")
-                .await;
+        if let Some(wait) = wait {
+            wait.await;
             if must_rejoin {
-                drop(notify);
                 return Self::fetch_and_cache_impl(cache_key, provider, fetch_fn).await;
             }
             let cache = MODEL_CACHE.read().await;
@@ -822,25 +814,6 @@ impl ModelRegistry {
             }
         }
     }
-
-    #[allow(dead_code)]
-    pub async fn wait_for_fetch(cache_key: &str) -> Option<ModelInfoWithFreshness> {
-        let notify = {
-            let pending = PENDING_REQUESTS.read().await;
-            pending.get(cache_key)?.clone()
-        };
-        notify.notified().await;
-
-        // Fetch completed, check cache for result
-        let cache = MODEL_CACHE.read().await;
-        let entry = cache.get(cache_key)?;
-        Some(ModelInfoWithFreshness {
-            models: entry.models.clone(),
-            is_fresh: entry.is_fresh(),
-            error_kind: None,
-            error_detail: None,
-        })
-    }
 }
 
 fn openai_reasoning_effort_supported(model: &str) -> bool {
@@ -907,6 +880,12 @@ fn sanitize_model_fetch_error(error: &str) -> (String, String) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The async tests share the process-wide MODEL_CACHE / PENDING_REQUESTS
+    // globals and clear_model_state() wipes the whole maps, so they must not
+    // run in parallel or one test deletes the other's in-flight entry.
+    static TEST_SERIAL: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
 
     async fn clear_model_state() {
         let mut cache = MODEL_CACHE.write().await;
@@ -1295,6 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_or_fetch_waits_for_inflight_request() {
+        let _serial = TEST_SERIAL.lock().await;
         clear_model_state().await;
 
         let cache_key = "inflight-model-cache-key";
@@ -1333,8 +1313,15 @@ mod tests {
         assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
     }
 
+    /// Regression test for the waiter path of `get_or_fetch`: with a pending
+    /// entry pre-inserted, the caller must take the waiter branch and wake
+    /// when the leader completes. The `Notified` future is `enable()`d under
+    /// the pending lock, so a `notify_waiters()` that fires before the
+    /// waiter's first poll still wakes it; the timeouts below turn a lost
+    /// wakeup into a test failure instead of a hang.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn waiter_wakes_when_leader_finished_before_first_poll() {
+        let _serial = TEST_SERIAL.lock().await;
         clear_model_state().await;
 
         let cache_key = "lost-wakeup-cache-key";
@@ -1358,19 +1345,23 @@ mod tests {
         // Wait until the spawned waiter has picked up the pending entry and
         // released the PENDING_REQUESTS lock: its Notify clone bumps the strong
         // count to 3 (map entry + this clone + the waiter's clone).
-        let registration = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             while Arc::strong_count(&leader_notify) < 3 {
                 tokio::task::yield_now().await;
             }
             // Once the write lock is available again, the waiter's registration
             // block — including enable() on its Notified — has completed.
             let _pending = PENDING_REQUESTS.write().await;
-        };
-        tokio::time::timeout(Duration::from_secs(5), registration)
-            .await
-            .expect("waiter never reached its registration block");
+        })
+        .await
+        .expect("waiter never reached its registration block");
 
-        // Populate the cache as a completed leader fetch would...
+        // Mirror a completing leader fetch: drop the pending entry, populate
+        // the cache, then wake waiters.
+        {
+            let mut pending = PENDING_REQUESTS.write().await;
+            pending.remove(cache_key);
+        }
         {
             let mut cache = MODEL_CACHE.write().await;
             cache.insert(
@@ -1382,7 +1373,6 @@ mod tests {
                 },
             );
         }
-        // ...then fire the wake while the waiter may not have polled yet.
         leader_notify.notify_waiters();
 
         let result = task
@@ -1393,7 +1383,5 @@ mod tests {
         assert_eq!(result.models.len(), 1);
         assert_eq!(result.models[0].model, "gpt-4o");
         assert!(result.error_kind.is_none());
-
-        clear_model_state().await;
     }
 }
