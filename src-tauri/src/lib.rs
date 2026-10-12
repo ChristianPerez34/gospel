@@ -241,14 +241,12 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
         };
         Box::pin(async move {
             broker
-                .request(
-                    ApprovalRequest::external_path(
-                        request.tool_name,
-                        request.path,
-                        reason,
-                    )
-                    .with_run_id(run_id.as_deref()),
-                )
+                .request(ApprovalRequest::external_path(
+                    request.tool_name,
+                    request.path,
+                    reason,
+                    run_id.as_deref(),
+                ))
                 .await
         })
     }
@@ -273,15 +271,13 @@ impl CommandApproval for BrokerCommandApproval {
         Box::pin(async move {
             let destructive = matches!(request.risk, CommandRisk::Destructive);
             broker
-                .request(
-                    ApprovalRequest::command(
-                        request.tool_name,
-                        request.command_label,
-                        request.reason,
-                        destructive,
-                    )
-                    .with_run_id(run_id.as_deref()),
-                )
+                .request(ApprovalRequest::command(
+                    request.tool_name,
+                    request.command_label,
+                    request.reason,
+                    destructive,
+                    run_id.as_deref(),
+                ))
                 .await
         })
     }

@@ -492,6 +492,104 @@ describe("useChatStream", () => {
       );
       expect(backgroundPublishes).toHaveLength(0);
     });
+
+    it("approval-requested with an unknown run_id is dropped as stale", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "session-b",
+        });
+      });
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: "run-stale",
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      expect(
+        onLiveTurnForSession.mock.calls.filter(([, published]) => published != null)
+      ).toHaveLength(0);
+    });
+
+    it("approval-resolved with no matching card creates no turn (no ghost)", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "session-b",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      // Resolved for an unknown approval id on an active background run:
+      // no stashed card exists, so nothing is published and no ghost turn
+      // is created.
+      await act(async () => {
+        triggerEvent("approval-resolved", {
+          id: "approval-unknown",
+          outcome: "approved",
+          run_id: runId,
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      expect(
+        onLiveTurnForSession.mock.calls.filter(([, published]) => published != null)
+      ).toHaveLength(0);
+    });
+
+    it("approval with run_id renders foreground when no session is focused", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({ onLiveTurnForSession });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "session-b",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: runId,
+        });
+      });
+
+      // Matches llm-token behavior with focused == null: foreground.
+      expect(result.current.currentTurn).not.toBeNull();
+      expect(result.current.currentTurn!.blocks.find((b) => b.kind === "approval")).toMatchObject({
+        id: "approval-1",
+        status: "pending",
+      });
+      expect(
+        onLiveTurnForSession.mock.calls.filter(([, published]) => published != null)
+      ).toHaveLength(0);
+    });
   });
 
   describe("listener lifecycle", () => {
