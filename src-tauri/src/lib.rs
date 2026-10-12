@@ -76,7 +76,7 @@ use session_store::{
 use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest, CommandRisk};
 use skills::SkillSummary;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
     time::Duration,
@@ -164,23 +164,41 @@ impl StreamingRunHandles {
         }
     }
 
-    /// True while a streaming turn is registered for the session id.
-    fn contains(&self, session_id: &str) -> bool {
-        self.inner
-            .lock()
-            .expect("streaming handles poisoned")
-            .contains_key(session_id)
+    /// Refuse if any of `session_ids` has an in-flight turn; otherwise run
+    /// `mutate` while holding the handle lock.
+    ///
+    /// `complete_streaming` registers a turn's handle before the turn first
+    /// reads its session, so holding the lock across the check and the
+    /// mutation means a turn either registers first (and we refuse) or starts
+    /// after the mutation (and sees the session already gone).
+    fn mutate_if_idle<'a, T>(
+        &self,
+        session_ids: impl IntoIterator<Item = &'a str>,
+        mutate: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let handles = self.inner.lock().expect("streaming handles poisoned");
+        if session_ids
+            .into_iter()
+            .any(|session_id| handles.contains_key(session_id))
+        {
+            return Err(
+                "session has an in-flight turn; cancel it or wait for it to finish".to_string(),
+            );
+        }
+        let result = mutate();
+        drop(handles);
+        result
     }
 
-    /// Snapshot of session ids with an in-flight streaming turn. Callers use
-    /// this to exclude live sessions from bulk mutations like maintenance.
-    fn in_flight_session_ids(&self) -> std::collections::HashSet<String> {
-        self.inner
-            .lock()
-            .expect("streaming handles poisoned")
-            .keys()
-            .cloned()
-            .collect()
+    /// Run `mutate` with the ids of sessions that have an in-flight turn,
+    /// holding the handle lock so no new turn registers until it returns. See
+    /// `mutate_if_idle` for why holding the lock closes the race.
+    fn mutate_excluding_in_flight<T>(&self, mutate: impl FnOnce(&HashSet<String>) -> T) -> T {
+        let handles = self.inner.lock().expect("streaming handles poisoned");
+        let in_flight: HashSet<String> = handles.keys().cloned().collect();
+        let result = mutate(&in_flight);
+        drop(handles);
+        result
     }
 }
 
@@ -2434,9 +2452,10 @@ fn list_sessions(
         Some(store) => {
             // Clean up stale drafts on list, skipping sessions whose turn is
             // still streaming so the completed turn can persist.
-            let in_flight = streaming_handles.in_flight_session_ids();
-            let _ = store.clean_stale_drafts(&in_flight);
-            let _ = store.run_archive_maintenance(workspace_id.as_deref(), &in_flight);
+            streaming_handles.mutate_excluding_in_flight(|in_flight| {
+                let _ = store.clean_stale_drafts(in_flight);
+                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+            });
             store
                 .list_sessions_for_workspace(workspace_id.as_deref())
                 .map_err(|e| e.to_string())
@@ -2467,8 +2486,9 @@ fn list_archived_sessions(
 
     match &session_store.store {
         Some(store) => {
-            let in_flight = streaming_handles.in_flight_session_ids();
-            let _ = store.run_archive_maintenance(workspace_id.as_deref(), &in_flight);
+            streaming_handles.mutate_excluding_in_flight(|in_flight| {
+                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+            });
             store
                 .list_archived_sessions_for_workspace(workspace_id.as_deref())
                 .map_err(|e| e.to_string())
@@ -2567,11 +2587,10 @@ fn run_archive_maintenance(
 ) -> Result<ArchiveMaintenanceResult, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
-        Some(store) => store
-            .run_archive_maintenance(
-                workspace_id.as_deref(),
-                &streaming_handles.in_flight_session_ids(),
-            )
+        Some(store) => streaming_handles
+            .mutate_excluding_in_flight(|in_flight| {
+                store.run_archive_maintenance(workspace_id.as_deref(), in_flight)
+            })
             .map_err(|e| e.to_string()),
         None => Ok(ArchiveMaintenanceResult {
             archived_count: 0,
@@ -2590,15 +2609,11 @@ fn archive_session(
     match &session_store.store {
         Some(store) => {
             validate_session_access(store, &session_id, app_config.inner())?;
-            if streaming_handles.contains(&session_id) {
-                return Err(
-                    "session has an in-flight turn; cancel it or wait for it to finish"
-                        .to_string(),
-                );
-            }
-            store
-                .archive_session(&session_id)
-                .map_err(|e| e.to_string())
+            streaming_handles.mutate_if_idle([session_id.as_str()], || {
+                store
+                    .archive_session(&session_id)
+                    .map_err(|e| e.to_string())
+            })
         }
         None => Err(session_store
             .init_warning
@@ -2619,18 +2634,11 @@ fn archive_sessions(
             for session_id in &session_ids {
                 validate_session_access(store, session_id, app_config.inner())?;
             }
-            if session_ids
-                .iter()
-                .any(|session_id| streaming_handles.contains(session_id))
-            {
-                return Err(
-                    "session has an in-flight turn; cancel it or wait for it to finish"
-                        .to_string(),
-                );
-            }
-            store
-                .archive_sessions_by_ids(&session_ids)
-                .map_err(|e| e.to_string())
+            streaming_handles.mutate_if_idle(session_ids.iter().map(String::as_str), || {
+                store
+                    .archive_sessions_by_ids(&session_ids)
+                    .map_err(|e| e.to_string())
+            })
         }
         None => Err(session_store
             .init_warning
@@ -2756,13 +2764,9 @@ fn delete_session_cmd(
     match &session_store.store {
         Some(store) => {
             validate_session_access(store, &session_id, app_config.inner())?;
-            if streaming_handles.contains(&session_id) {
-                return Err(
-                    "session has an in-flight turn; cancel it or wait for it to finish"
-                        .to_string(),
-                );
-            }
-            store.delete_session(&session_id).map_err(|e| e.to_string())
+            streaming_handles.mutate_if_idle([session_id.as_str()], || {
+                store.delete_session(&session_id).map_err(|e| e.to_string())
+            })
         }
         None => Err(session_store
             .init_warning
@@ -2777,8 +2781,8 @@ fn cleanup_stale_drafts(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
 ) -> Result<usize, String> {
     match &session_store.store {
-        Some(store) => store
-            .clean_stale_drafts(&streaming_handles.in_flight_session_ids())
+        Some(store) => streaming_handles
+            .mutate_excluding_in_flight(|in_flight| store.clean_stale_drafts(in_flight))
             .map_err(|e| e.to_string()),
         None => Ok(0),
     }
@@ -3611,28 +3615,56 @@ mod streaming_run_handles_tests {
     }
 
     #[test]
-    fn streaming_handles_snapshot_lists_in_flight_sessions() {
+    fn mutate_if_idle_refuses_in_flight_sessions_without_mutating() {
         let handles = StreamingRunHandles::new();
-        assert!(!handles.contains("session-1"));
-        assert!(handles.in_flight_session_ids().is_empty());
+        let (handle, _reg) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-1", handle);
+
+        let mut mutated = false;
+        let err = handles
+            .mutate_if_idle(["session-2", "session-1"], || {
+                mutated = true;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(err.contains("in-flight turn"));
+        assert!(!mutated);
+
+        let result = handles.mutate_if_idle(["session-2"], || Ok("archived"));
+        assert_eq!(result.unwrap(), "archived");
+
+        handles.cancel("session-1");
+        assert!(handles.mutate_if_idle(["session-1"], || Ok(())).is_ok());
+    }
+
+    #[test]
+    fn mutations_hold_the_handle_lock_so_no_turn_can_register() {
+        let handles = StreamingRunHandles::new();
+        handles
+            .mutate_if_idle(["session-1"], || {
+                assert!(handles.inner.try_lock().is_err());
+                Ok(())
+            })
+            .unwrap();
+        handles.mutate_excluding_in_flight(|_| {
+            assert!(handles.inner.try_lock().is_err());
+        });
+        assert!(handles.inner.try_lock().is_ok());
+    }
+
+    #[test]
+    fn mutate_excluding_in_flight_passes_registered_session_ids() {
+        let handles = StreamingRunHandles::new();
+        handles.mutate_excluding_in_flight(|in_flight| assert!(in_flight.is_empty()));
 
         let (handle_1, _reg_1) = futures::future::AbortHandle::new_pair();
         let (handle_2, _reg_2) = futures::future::AbortHandle::new_pair();
         handles.insert("session-1", "run-1", handle_1);
         handles.insert("session-2", "run-2", handle_2);
-
-        let in_flight = handles.in_flight_session_ids();
-        assert_eq!(in_flight.len(), 2);
-        assert!(in_flight.contains("session-1"));
-        assert!(in_flight.contains("session-2"));
-        assert!(handles.contains("session-1"));
-        assert!(!handles.contains("session-3"));
-
         handles.cancel("session-1");
-        assert!(!handles.contains("session-1"));
-        let in_flight = handles.in_flight_session_ids();
-        assert_eq!(in_flight.len(), 1);
-        assert!(in_flight.contains("session-2"));
+
+        let in_flight = handles.mutate_excluding_in_flight(|in_flight| in_flight.clone());
+        assert_eq!(in_flight, HashSet::from(["session-2".to_string()]));
     }
 }
 
