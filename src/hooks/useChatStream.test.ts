@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApprovalRequest, Message } from "../types";
+import type { ApprovalRequest, CurrentTurn, Message } from "../types";
 import { setFrameSchedulerForTest, useChatStream } from "./useChatStream";
 
 type ListenerCallback = (event: { payload: unknown }) => void;
@@ -24,6 +24,7 @@ function triggerEvent<T>(eventName: string, payload: T) {
 
 interface RenderChatStreamOptions {
   onMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
+  onLiveTurnForSession?: (sessionId: string | null, turn: CurrentTurn | null) => void;
   onStatusChange?: (status: string) => void;
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
@@ -43,6 +44,22 @@ function latestCompleteStreamingRunId(): string {
   const runId = (call?.[1] as { runId?: string } | undefined)?.runId;
   if (!runId) throw new Error("complete_streaming was not invoked with a runId");
   return runId;
+}
+
+async function startBgRun(result: { current: { startStream: (o: never) => Promise<unknown> } }) {
+  await act(async () => {
+    await result.current.startStream({
+      provider: "openai",
+      prompt: "hi",
+      model: "gpt-4o",
+      sessionId: "session-b",
+    } as never);
+  });
+  return latestCompleteStreamingRunId();
+}
+
+function livePublishes(mock: { mock: { calls: unknown[][] } }) {
+  return mock.mock.calls.filter((call) => (call as unknown[])[1] != null);
 }
 
 const BASE_APPROVAL_REQUEST: ApprovalRequest = {
@@ -363,6 +380,186 @@ describe("useChatStream", () => {
       );
       expect(approvalBlocks).toHaveLength(1);
       expect(approvalBlocks[0]).toMatchObject({ status: "approved" });
+    });
+
+    it("approval-requested with a background run_id stashes the card under that session, not currentTurn", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      // Start a run owned by a different (background) session.
+      const runId = await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: runId,
+        });
+      });
+
+      // The focused session's live turn stays empty; the card landed on the
+      // owning session's stashed turn instead.
+      expect(result.current.currentTurn).toBeNull();
+      const backgroundCall = onLiveTurnForSession.mock.calls.find(
+        ([sessionId]) => sessionId === "session-b"
+      );
+      expect(backgroundCall).toBeDefined();
+      const stashedTurn = backgroundCall![1] as CurrentTurn;
+      const approvalBlock = stashedTurn.blocks.find((b) => b.kind === "approval");
+      expect(approvalBlock).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "pending",
+        toolName: "shell",
+        approvalKind: "command",
+      });
+    });
+
+    it("approval-resolved for a background run updates the stashed card", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      const runId = await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: runId,
+        });
+      });
+      await act(async () => {
+        triggerEvent("approval-resolved", {
+          id: "approval-1",
+          outcome: "approved",
+          run_id: runId,
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      const sessionCalls = onLiveTurnForSession.mock.calls.filter(
+        ([sessionId]) => sessionId === "session-b"
+      );
+      expect(sessionCalls.length).toBeGreaterThanOrEqual(2);
+      const lastTurn = sessionCalls[sessionCalls.length - 1][1] as CurrentTurn;
+      const block = lastTurn.blocks.find((b) => b.kind === "approval" && b.id === "approval-1");
+      expect(block).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "approved",
+      });
+    });
+
+    it("approval-requested with no run_id falls back to the focused session", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      // A background run exists, but a legacy payload with no run_id still
+      // routes to the focused session (status quo for runId-less emitters).
+      await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", BASE_APPROVAL_REQUEST);
+      });
+
+      const turn = result.current.currentTurn!;
+      const approvalBlock = turn.blocks.find((b) => b.kind === "approval");
+      expect(approvalBlock).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "pending",
+      });
+      // Nothing was stashed for the background session.
+      expect(
+        livePublishes(onLiveTurnForSession).filter(([sessionId]) => sessionId === "session-b")
+      ).toHaveLength(0);
+    });
+
+    it("approval-requested with an unknown run_id is dropped as stale", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: "run-stale",
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
+    });
+
+    it("approval-resolved with no matching card creates no turn (no ghost)", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      const runId = await startBgRun(result);
+
+      // Resolved for an unknown approval id on an active background run:
+      // no stashed card exists, so nothing is published and no ghost turn
+      // is created.
+      await act(async () => {
+        triggerEvent("approval-resolved", {
+          id: "approval-unknown",
+          outcome: "approved",
+          run_id: runId,
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
+    });
+
+    it("approval with run_id renders foreground when no session is focused", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({ onLiveTurnForSession });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "session-b",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: runId,
+        });
+      });
+
+      // Matches llm-token behavior with focused == null: foreground.
+      expect(result.current.currentTurn).not.toBeNull();
+      expect(result.current.currentTurn!.blocks.find((b) => b.kind === "approval")).toMatchObject({
+        id: "approval-1",
+        status: "pending",
+      });
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
     });
   });
 

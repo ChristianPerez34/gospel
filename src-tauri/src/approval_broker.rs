@@ -55,6 +55,10 @@ pub struct ApprovalRequest {
     pub summary: String,
     pub reason: String,
     pub risk: ApprovalRisk,
+    /// Streaming run that owns this request. The frontend uses it to route
+    /// the approval card to the correct session's live turn; `None` falls
+    /// back to the focused session.
+    pub run_id: Option<String>,
 }
 
 impl ApprovalRequest {
@@ -63,6 +67,7 @@ impl ApprovalRequest {
         command_label: impl Into<String>,
         reason: impl Into<String>,
         destructive: bool,
+        run_id: Option<&str>,
     ) -> Self {
         let tool_name = tool_name.into();
         let command_label = command_label.into();
@@ -83,6 +88,7 @@ impl ApprovalRequest {
                 ApprovalRisk::Mutating
             },
             tool_name,
+            run_id: run_id.map(str::to_string),
         }
     }
 
@@ -90,6 +96,7 @@ impl ApprovalRequest {
         tool_name: impl Into<String>,
         path: impl Into<String>,
         reason: impl Into<String>,
+        run_id: Option<&str>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -99,6 +106,7 @@ impl ApprovalRequest {
             reason: reason.into(),
             risk: ApprovalRisk::ExternalAccess,
             tool_name: tool_name.into(),
+            run_id: run_id.map(str::to_string),
         }
     }
 }
@@ -135,6 +143,9 @@ impl ApprovalOutcome {
 pub struct ApprovalResolution {
     pub id: String,
     pub outcome: ApprovalOutcome,
+    /// Echo of the originating request's run id so the frontend routes the
+    /// status transition to the same turn that rendered the request card.
+    pub run_id: Option<String>,
 }
 
 /// What the broker needs from the host to publish events. Keeping this as a
@@ -181,6 +192,7 @@ impl ApprovalBroker {
     /// resolves to `false` so callers default to "do not execute".
     pub async fn request(&self, request: ApprovalRequest) -> bool {
         let id = request.id.clone();
+        let run_id = request.run_id.clone();
 
         let (sender, receiver) = oneshot::channel();
         {
@@ -213,7 +225,7 @@ impl ApprovalBroker {
 
         let outcome = ApprovalOutcome::from_decision(decision, timed_out);
         self.emitter
-            .emit_resolved(&ApprovalResolution { id, outcome });
+            .emit_resolved(&ApprovalResolution { id, outcome, run_id });
 
         matches!(outcome, ApprovalOutcome::Approved)
     }
@@ -276,6 +288,16 @@ mod tests {
         (broker, emitter)
     }
 
+    async fn wait_for_pending(broker: &ApprovalBroker) {
+        // Poll until the spawned task has registered and emitted.
+        for _ in 0..64 {
+            if broker.pending_count() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[tokio::test]
     async fn request_emits_event_and_waits_for_decision() {
         let (broker, emitter) = test_broker();
@@ -284,18 +306,13 @@ mod tests {
             "git push origin main",
             "Pushes to remote.",
             false,
+            None,
         );
         let id = request.id.clone();
         let broker_for_task = broker.clone();
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
 
-        // Poll until the spawned task has registered and emitted.
-        for _ in 0..64 {
-            if broker.pending_count() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        wait_for_pending(&broker).await;
         assert_eq!(broker.pending_count(), 1);
         assert_eq!(emitter.requested.lock().unwrap().len(), 1);
         assert_eq!(emitter.requested.lock().unwrap()[0].id, id);
@@ -312,20 +329,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolution_echoes_request_run_id() {
+        let (broker, emitter) = test_broker();
+        let request = ApprovalRequest::command(
+            "run_shell_command",
+            "cargo publish",
+            "Publishes the crate.",
+            false,
+            Some("r-1"),
+        );
+        let id = request.id.clone();
+        let broker_for_task = broker.clone();
+        let task = tokio::spawn(async move { broker_for_task.request(request).await });
+
+        wait_for_pending(&broker).await;
+        assert_eq!(broker.pending_count(), 1);
+        assert_eq!(
+            emitter.requested.lock().unwrap()[0].run_id.as_deref(),
+            Some("r-1"),
+            "the emitted request must carry the run id"
+        );
+
+        assert!(broker.resolve(&id, ApprovalDecision::Approve));
+        assert!(task.await.unwrap());
+        let resolved = emitter.resolved.lock().unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].id, id);
+        assert_eq!(
+            resolved[0].run_id.as_deref(),
+            Some("r-1"),
+            "the resolution must echo the request's run id"
+        );
+    }
+
+    #[tokio::test]
     async fn deny_decision_returns_false_and_resolves_as_denied() {
         let (broker, emitter) = test_broker();
-        let request =
-            ApprovalRequest::external_path("read_file", "/etc/passwd", "Outside workspace.");
+        let request = ApprovalRequest::external_path(
+            "read_file",
+            "/etc/passwd",
+            "Outside workspace.",
+            None,
+        );
         let id = request.id.clone();
         let broker_for_task = broker.clone();
 
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
-        for _ in 0..64 {
-            if broker.pending_count() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        wait_for_pending(&broker).await;
 
         assert!(broker.resolve(&id, ApprovalDecision::Deny));
         let approved = task.await.unwrap();
@@ -346,8 +396,13 @@ mod tests {
     async fn timeout_auto_denies_request() {
         // 10ms timeout keeps the test fast and avoids the production 60s.
         let (broker, emitter) = test_broker_with_timeout(Duration::from_millis(10));
-        let request =
-            ApprovalRequest::command("run_shell_command", "rm -rf build", "Removes files.", true);
+        let request = ApprovalRequest::command(
+            "run_shell_command",
+            "rm -rf build",
+            "Removes files.",
+            true,
+            None,
+        );
         let id = request.id.clone();
 
         let approved = broker.request(request).await;
@@ -368,17 +423,13 @@ mod tests {
     #[tokio::test]
     async fn second_resolve_after_approval_is_a_noop() {
         let (broker, _emitter) = test_broker();
-        let request = ApprovalRequest::external_path("read_file", "/tmp/x", "Outside workspace.");
+        let request =
+            ApprovalRequest::external_path("read_file", "/tmp/x", "Outside workspace.", None);
         let id = request.id.clone();
         let broker_for_task = broker.clone();
 
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
-        for _ in 0..64 {
-            if broker.pending_count() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        wait_for_pending(&broker).await;
 
         assert!(broker.resolve(&id, ApprovalDecision::Approve));
         let _ = task.await.unwrap();
@@ -391,8 +442,8 @@ mod tests {
     fn request_factories_set_kind_risk_and_ids() {
         let mut ids = std::collections::HashSet::new();
         for _ in 0..32 {
-            let cmd = ApprovalRequest::command("run_shell_command", "ls", "x", true);
-            let ext = ApprovalRequest::external_path("read_file", "/tmp/x", "y");
+            let cmd = ApprovalRequest::command("run_shell_command", "ls", "x", true, None);
+            let ext = ApprovalRequest::external_path("read_file", "/tmp/x", "y", None);
             assert_eq!(cmd.kind, ApprovalKind::Command);
             assert_eq!(cmd.risk, ApprovalRisk::Destructive);
             assert_eq!(ext.kind, ApprovalKind::ExternalPath);

@@ -39,11 +39,18 @@ export interface ApprovalRequest {
   summary: string;
   reason: string;
   risk: ApprovalRisk;
+  /** Streaming run that owns this request; used to route the approval card
+   *  to the correct session's live turn. Absent/null falls back to the
+   *  focused session. */
+  run_id?: string | null;
 }
 
 export interface ApprovalResolution {
   id: string;
   outcome: ApprovalOutcome;
+  /** Echo of the originating request's run id; routes the status transition
+   *  to the same turn that rendered the request card. */
+  run_id?: string | null;
 }
 
 export interface ReviewComment {

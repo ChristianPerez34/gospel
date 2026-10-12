@@ -108,6 +108,44 @@ function dropReasoningBlocks(blocks: TurnBlock[]): TurnBlock[] {
   return blocks.filter((block) => block.kind !== "reasoning");
 }
 
+function hasApproval(turn: CurrentTurn | null, id: string): boolean {
+  return !!turn?.blocks.some((b) => b.kind === "approval" && b.id === id);
+}
+
+function appendApproval(turn: CurrentTurn, req: ApprovalRequest): CurrentTurn {
+  if (turn.blocks.some((b) => b.kind === "approval" && b.id === req.id)) return turn;
+  return {
+    ...turn,
+    blocks: [
+      ...turn.blocks,
+      {
+        kind: "approval",
+        id: req.id,
+        toolName: req.tool_name,
+        approvalKind: req.kind,
+        title: req.title,
+        summary: req.summary,
+        reason: req.reason,
+        risk: req.risk,
+        status: "pending",
+      },
+    ],
+  };
+}
+
+function markApprovalResolved(
+  turn: CurrentTurn,
+  id: string,
+  status: ApprovalResolution["outcome"]
+): CurrentTurn {
+  return {
+    ...turn,
+    blocks: turn.blocks.map((block) =>
+      block.kind === "approval" && block.id === id ? { ...block, status } : block
+    ),
+  };
+}
+
 interface StartStreamOptions {
   provider: string;
   prompt: string;
@@ -460,6 +498,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           activeRunIdRef.current = remaining[remaining.length - 1] ?? null;
         }
       };
+      // NOTE: approval handlers below branch on `isBackground(runId)` (not
+      // `sid === focused`) so the draft case (`focused == null` renders
+      // foreground, matching `llm-token`) stays consistent, and they drop
+      // stale runIds via `isStale` instead of falling back to focused.
       try {
         await Promise.all([
           track(
@@ -927,51 +969,49 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           ),
           track(
             listen<ApprovalRequest>("approval-requested", (event) => {
-              // Flush buffered text before appending an approval block so
-              // the approval card appears after trailing text.
+              // Route the card to the run's owning session; payloads without
+              // run_id fall back to the focused session (legacy emitters).
+              // Unknown run_ids are stale (post-cancel/completion late events)
+              // and are dropped instead of misrouting to focused.
+              const runId = event.payload.run_id ?? null;
+              if (isStale(runId)) return;
+              if (isBackground(runId)) {
+                const sid = sessionForRun(runId);
+                // Flush buffered text before appending an approval block so
+                // the approval card appears after trailing text.
+                flushBackgroundPending(sid);
+                updateBackgroundTurn(sid, (turn) => appendApproval(turn, event.payload));
+                return;
+              }
               flushPendingText();
-              updateCurrentTurn((turn) => {
-                if (
-                  turn.blocks.some(
-                    (b): b is Extract<TurnBlock, { kind: "approval" }> =>
-                      b.kind === "approval" && b.id === event.payload.id
-                  )
-                ) {
-                  return turn;
-                }
-                return {
-                  ...turn,
-                  blocks: [
-                    ...turn.blocks,
-                    {
-                      kind: "approval",
-                      id: event.payload.id,
-                      toolName: event.payload.tool_name,
-                      approvalKind: event.payload.kind,
-                      title: event.payload.title,
-                      summary: event.payload.summary,
-                      reason: event.payload.reason,
-                      risk: event.payload.risk,
-                      status: "pending",
-                    },
-                  ],
-                };
-              });
+              updateCurrentTurn((turn) => appendApproval(turn, event.payload));
             })
           ),
           track(
             listen<ApprovalResolution>("approval-resolved", (event) => {
-              // Flush buffered text before mutating approval block status.
-              flushPendingText();
+              const runId = event.payload.run_id ?? null;
+              if (isStale(runId)) return;
               const status = event.payload.outcome;
-              updateCurrentTurn((turn) => ({
-                ...turn,
-                blocks: turn.blocks.map((block) =>
-                  block.kind === "approval" && block.id === event.payload.id
-                    ? { ...block, status }
-                    : block
-                ),
-              }));
+              const approvalId = event.payload.id;
+              if (isBackground(runId)) {
+                const sid = sessionForRun(runId);
+                // Flush buffered text before mutating approval block status.
+                flushBackgroundPending(sid);
+                // No-op when there is no stashed card: avoids resurrecting a
+                // completed turn with an empty ghost via lazy creation.
+                if (!hasApproval(backgroundTurnsRef.current.get(sid) ?? null, approvalId)) {
+                  return;
+                }
+                updateBackgroundTurn(sid, (turn) => markApprovalResolved(turn, approvalId, status));
+                return;
+              }
+              flushPendingText();
+              // No-op when the focused turn has no such card: avoids creating
+              // an empty turn on a stale/duplicate resolution.
+              if (!hasApproval(currentTurnRef.current, approvalId)) {
+                return;
+              }
+              updateCurrentTurn((turn) => markApprovalResolved(turn, approvalId, status));
             })
           ),
         ]);
