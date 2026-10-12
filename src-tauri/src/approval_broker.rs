@@ -288,6 +288,16 @@ mod tests {
         (broker, emitter)
     }
 
+    async fn wait_for_pending(broker: &ApprovalBroker) {
+        // Poll until the spawned task has registered and emitted.
+        for _ in 0..64 {
+            if broker.pending_count() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[tokio::test]
     async fn request_emits_event_and_waits_for_decision() {
         let (broker, emitter) = test_broker();
@@ -302,13 +312,7 @@ mod tests {
         let broker_for_task = broker.clone();
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
 
-        // Poll until the spawned task has registered and emitted.
-        for _ in 0..64 {
-            if broker.pending_count() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        wait_for_pending(&broker).await;
         assert_eq!(broker.pending_count(), 1);
         assert_eq!(emitter.requested.lock().unwrap().len(), 1);
         assert_eq!(emitter.requested.lock().unwrap()[0].id, id);
@@ -338,13 +342,7 @@ mod tests {
         let broker_for_task = broker.clone();
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
 
-        // Poll until the spawned task has registered and emitted.
-        for _ in 0..64 {
-            if broker.pending_count() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        wait_for_pending(&broker).await;
         assert_eq!(broker.pending_count(), 1);
         assert_eq!(
             emitter.requested.lock().unwrap()[0].run_id.as_deref(),
@@ -377,12 +375,7 @@ mod tests {
         let broker_for_task = broker.clone();
 
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
-        for _ in 0..64 {
-            if broker.pending_count() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        wait_for_pending(&broker).await;
 
         assert!(broker.resolve(&id, ApprovalDecision::Deny));
         let approved = task.await.unwrap();
@@ -436,12 +429,7 @@ mod tests {
         let broker_for_task = broker.clone();
 
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
-        for _ in 0..64 {
-            if broker.pending_count() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        wait_for_pending(&broker).await;
 
         assert!(broker.resolve(&id, ApprovalDecision::Approve));
         let _ = task.await.unwrap();

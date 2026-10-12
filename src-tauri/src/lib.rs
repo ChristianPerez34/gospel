@@ -221,9 +221,7 @@ impl ApprovalEventEmitter for TauriApprovalEventEmitter {
 #[derive(Clone)]
 struct BrokerExternalPathApproval {
     broker: Arc<ApprovalBroker>,
-    /// Streaming run that owns the turn requesting approval; forwarded onto
-    /// every broker request so the frontend routes the card to this run's
-    /// session rather than whichever session is focused.
+    /// Owning streaming run; routes the card to its session.
     run_id: Option<String>,
 }
 
@@ -255,9 +253,7 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
 #[derive(Clone)]
 struct BrokerCommandApproval {
     broker: Arc<ApprovalBroker>,
-    /// Streaming run that owns the turn requesting approval; forwarded onto
-    /// every broker request so the frontend routes the card to this run's
-    /// session rather than whichever session is focused.
+    /// Owning streaming run; routes the card to its session.
     run_id: Option<String>,
 }
 

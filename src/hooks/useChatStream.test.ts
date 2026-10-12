@@ -46,6 +46,22 @@ function latestCompleteStreamingRunId(): string {
   return runId;
 }
 
+async function startBgRun(result: { current: { startStream: (o: never) => Promise<unknown> } }) {
+  await act(async () => {
+    await result.current.startStream({
+      provider: "openai",
+      prompt: "hi",
+      model: "gpt-4o",
+      sessionId: "session-b",
+    } as never);
+  });
+  return latestCompleteStreamingRunId();
+}
+
+function livePublishes(mock: { mock: { calls: unknown[][] } }) {
+  return mock.mock.calls.filter((call) => (call as unknown[])[1] != null);
+}
+
 const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   id: "approval-1",
   kind: "command",
@@ -375,15 +391,7 @@ describe("useChatStream", () => {
       await act(async () => {});
 
       // Start a run owned by a different (background) session.
-      await act(async () => {
-        result.current.startStream({
-          provider: "openai",
-          prompt: "hi",
-          model: "gpt-4o",
-          sessionId: "session-b",
-        });
-      });
-      const runId = latestCompleteStreamingRunId();
+      const runId = await startBgRun(result);
 
       await act(async () => {
         triggerEvent("approval-requested", {
@@ -418,15 +426,7 @@ describe("useChatStream", () => {
       });
       await act(async () => {});
 
-      await act(async () => {
-        result.current.startStream({
-          provider: "openai",
-          prompt: "hi",
-          model: "gpt-4o",
-          sessionId: "session-b",
-        });
-      });
-      const runId = latestCompleteStreamingRunId();
+      const runId = await startBgRun(result);
 
       await act(async () => {
         triggerEvent("approval-requested", {
@@ -466,14 +466,7 @@ describe("useChatStream", () => {
 
       // A background run exists, but a legacy payload with no run_id still
       // routes to the focused session (status quo for runId-less emitters).
-      await act(async () => {
-        result.current.startStream({
-          provider: "openai",
-          prompt: "hi",
-          model: "gpt-4o",
-          sessionId: "session-b",
-        });
-      });
+      await startBgRun(result);
 
       await act(async () => {
         triggerEvent("approval-requested", BASE_APPROVAL_REQUEST);
@@ -487,10 +480,9 @@ describe("useChatStream", () => {
         status: "pending",
       });
       // Nothing was stashed for the background session.
-      const backgroundPublishes = onLiveTurnForSession.mock.calls.filter(
-        ([sessionId, published]) => sessionId === "session-b" && published != null
-      );
-      expect(backgroundPublishes).toHaveLength(0);
+      expect(
+        livePublishes(onLiveTurnForSession).filter(([sessionId]) => sessionId === "session-b")
+      ).toHaveLength(0);
     });
 
     it("approval-requested with an unknown run_id is dropped as stale", async () => {
@@ -501,14 +493,7 @@ describe("useChatStream", () => {
       });
       await act(async () => {});
 
-      await act(async () => {
-        result.current.startStream({
-          provider: "openai",
-          prompt: "hi",
-          model: "gpt-4o",
-          sessionId: "session-b",
-        });
-      });
+      await startBgRun(result);
 
       await act(async () => {
         triggerEvent("approval-requested", {
@@ -518,9 +503,7 @@ describe("useChatStream", () => {
       });
 
       expect(result.current.currentTurn).toBeNull();
-      expect(
-        onLiveTurnForSession.mock.calls.filter(([, published]) => published != null)
-      ).toHaveLength(0);
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
     });
 
     it("approval-resolved with no matching card creates no turn (no ghost)", async () => {
@@ -531,15 +514,7 @@ describe("useChatStream", () => {
       });
       await act(async () => {});
 
-      await act(async () => {
-        result.current.startStream({
-          provider: "openai",
-          prompt: "hi",
-          model: "gpt-4o",
-          sessionId: "session-b",
-        });
-      });
-      const runId = latestCompleteStreamingRunId();
+      const runId = await startBgRun(result);
 
       // Resolved for an unknown approval id on an active background run:
       // no stashed card exists, so nothing is published and no ghost turn
@@ -553,9 +528,7 @@ describe("useChatStream", () => {
       });
 
       expect(result.current.currentTurn).toBeNull();
-      expect(
-        onLiveTurnForSession.mock.calls.filter(([, published]) => published != null)
-      ).toHaveLength(0);
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
     });
 
     it("approval with run_id renders foreground when no session is focused", async () => {
@@ -586,9 +559,7 @@ describe("useChatStream", () => {
         id: "approval-1",
         status: "pending",
       });
-      expect(
-        onLiveTurnForSession.mock.calls.filter(([, published]) => published != null)
-      ).toHaveLength(0);
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
     });
   });
 
