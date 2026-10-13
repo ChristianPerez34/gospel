@@ -569,17 +569,21 @@ async fn build_model_availability(
 
     for (index, &provider) in provider_ids.iter().enumerate() {
         let credentialed = keychain::provider_has_credentials(provider);
-        let visible = visibility_by_provider
-            .get(provider)
-            .copied()
-            .unwrap_or(true);
+        let visible = if credentialed {
+            visibility_by_provider
+                .get(provider)
+                .copied()
+                .unwrap_or(true)
+        } else {
+            false
+        };
         let model_count = 0;
 
         if !credentialed {
             providers[index] = Some(provider_availability(
                 provider,
                 credentialed,
-                visible,
+                false,
                 "not_credentialed".to_string(),
                 model_count,
                 None,
@@ -835,6 +839,7 @@ mod availability_tests {
             .expect("Grok should remain a registered provider");
 
         assert!(!grok.credentialed);
+        assert!(!grok.visible);
         assert_eq!(grok.model_fetch_status, "not_credentialed");
         assert_eq!(grok.model_count, 0);
         assert!(!snapshot
@@ -928,6 +933,7 @@ mod availability_tests {
             .expect("xAI should be a registered provider");
 
         assert!(!xai.credentialed);
+        assert!(!xai.visible);
         assert_eq!(xai.model_fetch_status, "not_credentialed");
         assert_eq!(xai.model_count, 0);
         assert!(!snapshot
