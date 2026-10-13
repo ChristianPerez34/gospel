@@ -17,6 +17,9 @@ export interface SessionManagerStreamOptions {
   model: string;
   variant?: string | null;
   sessionId: string | null;
+  /** Frontend Session.id used for stream event routing; differs from the
+   * backend sessionId for local-only sessions. */
+  runSessionId?: string | null;
   invokedSkill?: { name: string; args?: string } | null;
 }
 
@@ -330,6 +333,9 @@ export function useSessionManager({
           model: selectedModel.model,
           variant: selectedModel.variant ?? null,
           sessionId: streamSessionId,
+          // Route the run's events by the frontend Session.id so local-only
+          // sessions (backend sessionId null) still get their own stream.
+          runSessionId: effectiveSessionId,
           invokedSkill: invokedSkill ?? null,
         });
       } catch (e) {

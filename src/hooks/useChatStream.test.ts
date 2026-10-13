@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApprovalRequest, Message } from "../types";
+import type { ApprovalRequest, CurrentTurn, Message, TurnBlock } from "../types";
 import { setFrameSchedulerForTest, useChatStream } from "./useChatStream";
 
 type ListenerCallback = (event: { payload: unknown }) => void;
@@ -24,6 +24,11 @@ function triggerEvent<T>(eventName: string, payload: T) {
 
 interface RenderChatStreamOptions {
   onMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
+  onMessagesForSession?: (
+    sessionId: string | null,
+    updater: (prev: Message[]) => Message[]
+  ) => void;
+  onLiveTurnForSession?: (sessionId: string | null, turn: CurrentTurn | null) => void;
   onStatusChange?: (status: string) => void;
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
@@ -45,6 +50,22 @@ function latestCompleteStreamingRunId(): string {
   return runId;
 }
 
+async function startBgRun(result: { current: { startStream: (o: never) => Promise<unknown> } }) {
+  await act(async () => {
+    await result.current.startStream({
+      provider: "openai",
+      prompt: "hi",
+      model: "gpt-4o",
+      sessionId: "session-b",
+    } as never);
+  });
+  return latestCompleteStreamingRunId();
+}
+
+function livePublishes(mock: { mock: { calls: unknown[][] } }) {
+  return mock.mock.calls.filter((call) => (call as unknown[])[1] != null);
+}
+
 const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   id: "approval-1",
   kind: "command",
@@ -54,6 +75,28 @@ const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   reason: "Mutating shell command",
   risk: "mutating",
 };
+
+function turnText(turn: { blocks?: TurnBlock[] } | null | undefined): string {
+  return (turn?.blocks ?? [])
+    .filter((b) => b.kind === "text")
+    .map((b) => (b as { text: string }).text)
+    .join("");
+}
+
+function lastLiveTurn(
+  onLiveTurnForSession: ReturnType<typeof vi.fn>,
+  sessionId: string
+): CurrentTurn | null {
+  const calls = onLiveTurnForSession.mock.calls.filter(([sid]) => sid === sessionId);
+  return calls.length > 0 ? (calls[calls.length - 1][1] as CurrentTurn | null) : null;
+}
+
+function streamedRunIds(): string[] {
+  return vi
+    .mocked(invoke)
+    .mock.calls.filter(([cmd]) => cmd === "complete_streaming")
+    .map(([, args]) => (args as { runId: string }).runId);
+}
 
 describe("useChatStream", () => {
   beforeEach(() => {
@@ -364,6 +407,186 @@ describe("useChatStream", () => {
       expect(approvalBlocks).toHaveLength(1);
       expect(approvalBlocks[0]).toMatchObject({ status: "approved" });
     });
+
+    it("approval-requested with a background run_id stashes the card under that session, not currentTurn", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      // Start a run owned by a different (background) session.
+      const runId = await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: runId,
+        });
+      });
+
+      // The focused session's live turn stays empty; the card landed on the
+      // owning session's stashed turn instead.
+      expect(result.current.currentTurn).toBeNull();
+      const backgroundCall = onLiveTurnForSession.mock.calls.find(
+        ([sessionId]) => sessionId === "session-b"
+      );
+      expect(backgroundCall).toBeDefined();
+      const stashedTurn = backgroundCall![1] as CurrentTurn;
+      const approvalBlock = stashedTurn.blocks.find((b) => b.kind === "approval");
+      expect(approvalBlock).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "pending",
+        toolName: "shell",
+        approvalKind: "command",
+      });
+    });
+
+    it("approval-resolved for a background run updates the stashed card", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      const runId = await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: runId,
+        });
+      });
+      await act(async () => {
+        triggerEvent("approval-resolved", {
+          id: "approval-1",
+          outcome: "approved",
+          run_id: runId,
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      const sessionCalls = onLiveTurnForSession.mock.calls.filter(
+        ([sessionId]) => sessionId === "session-b"
+      );
+      expect(sessionCalls.length).toBeGreaterThanOrEqual(2);
+      const lastTurn = sessionCalls[sessionCalls.length - 1][1] as CurrentTurn;
+      const block = lastTurn.blocks.find((b) => b.kind === "approval" && b.id === "approval-1");
+      expect(block).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "approved",
+      });
+    });
+
+    it("approval-requested with no run_id falls back to the focused session", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      // A background run exists, but a legacy payload with no run_id still
+      // routes to the focused session (status quo for runId-less emitters).
+      await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", BASE_APPROVAL_REQUEST);
+      });
+
+      const turn = result.current.currentTurn!;
+      const approvalBlock = turn.blocks.find((b) => b.kind === "approval");
+      expect(approvalBlock).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "pending",
+      });
+      // Nothing was stashed for the background session.
+      expect(
+        livePublishes(onLiveTurnForSession).filter(([sessionId]) => sessionId === "session-b")
+      ).toHaveLength(0);
+    });
+
+    it("approval-requested with an unknown run_id is dropped as stale", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      await startBgRun(result);
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: "run-stale",
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
+    });
+
+    it("approval-resolved with no matching card creates no turn (no ghost)", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      const runId = await startBgRun(result);
+
+      // Resolved for an unknown approval id on an active background run:
+      // no stashed card exists, so nothing is published and no ghost turn
+      // is created.
+      await act(async () => {
+        triggerEvent("approval-resolved", {
+          id: "approval-unknown",
+          outcome: "approved",
+          run_id: runId,
+        });
+      });
+
+      expect(result.current.currentTurn).toBeNull();
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
+    });
+
+    it("approval with run_id renders foreground when no session is focused", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({ onLiveTurnForSession });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "session-b",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          run_id: runId,
+        });
+      });
+
+      // Matches llm-token behavior with focused == null: foreground.
+      expect(result.current.currentTurn).not.toBeNull();
+      expect(result.current.currentTurn!.blocks.find((b) => b.kind === "approval")).toMatchObject({
+        id: "approval-1",
+        status: "pending",
+      });
+      expect(livePublishes(onLiveTurnForSession)).toHaveLength(0);
+    });
   });
 
   describe("listener lifecycle", () => {
@@ -394,7 +617,13 @@ describe("useChatStream", () => {
         return Promise.resolve(undefined as unknown);
       });
 
-      const { result } = renderChatStream({ onMessages, onStatusChange });
+      // The hook's sessionId prop mirrors the focused session; the run's own
+      // session is focused so its tokens stream into the visible turn.
+      const { result } = renderChatStream({
+        onMessages,
+        onStatusChange,
+        sessionId: "s-pending",
+      });
       await act(async () => {});
 
       let streamingPromise: Promise<string> | undefined;
@@ -439,7 +668,9 @@ describe("useChatStream", () => {
     });
 
     it("late llm-token with a non-matching run_id is ignored (per-run isolation)", async () => {
-      const { result } = renderChatStream();
+      // Focused on the run's session so its tokens stream into the visible
+      // turn; an unknown run_id must not leak in.
+      const { result } = renderChatStream({ sessionId: "s-1" });
       await act(async () => {});
 
       // Start a run: the active run id is registered. Simulate tokens from the
@@ -706,7 +937,7 @@ describe("useChatStream", () => {
     });
 
     it("a stale token never enters the pending buffer", async () => {
-      const { result } = renderChatStream();
+      const { result } = renderChatStream({ sessionId: "s-stale" });
       await act(async () => {});
 
       await act(async () => {
@@ -746,7 +977,7 @@ describe("useChatStream", () => {
     });
 
     it("reset cancels pending work and a later run starts with an empty buffer", async () => {
-      const { result } = renderChatStream();
+      const { result } = renderChatStream({ sessionId: "s-next" });
       await act(async () => {});
 
       await act(async () => {
@@ -829,6 +1060,228 @@ describe("useChatStream", () => {
         status: "completed",
         result: "contents",
       });
+    });
+  });
+
+  describe("per-session stream routing", () => {
+    it("local-only run streams tokens into the focused currentTurn", async () => {
+      const { result } = renderChatStream({ sessionId: "s-1" });
+      await act(async () => {});
+
+      // A local-only session has no backend session id; runSessionId carries
+      // the frontend Session.id so the run still routes to the focused view.
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: null,
+          runSessionId: "s-1",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId,
+          token: "local tokens",
+        });
+      });
+
+      expect(result.current.currentTurn).not.toBeNull();
+      expect(result.current.currentTurn!.blocks[0]).toMatchObject({
+        kind: "text",
+        text: "local tokens",
+      });
+    });
+
+    it("local-only run completion lands on its own transcript while another session is focused", async () => {
+      const onMessagesForSession = vi.fn();
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "s-2",
+        onMessagesForSession,
+        onLiveTurnForSession,
+      });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: null,
+          runSessionId: "s-1",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId,
+          token: "bg text",
+        });
+      });
+      // s-1 is not focused; its tokens stash instead of rendering.
+      expect(result.current.currentTurn).toBeNull();
+
+      await act(async () => {
+        triggerEvent("llm-done", { runId, response: "bg reply" });
+      });
+
+      // The completion is attributed to the run's own session — never the
+      // focused session or a null-session fallback.
+      expect(onMessagesForSession).toHaveBeenCalledWith("s-1", expect.any(Function));
+      expect(onMessagesForSession).not.toHaveBeenCalledWith("s-2", expect.any(Function));
+      expect(onMessagesForSession).not.toHaveBeenCalledWith(null, expect.any(Function));
+    });
+
+    it("token arriving between focus change and stash effect lands on the new session", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result, rerender } = renderHook(
+        ({ sessionId }: { sessionId: string | null }) =>
+          useChatStream({ sessionId, onLiveTurnForSession }),
+        { initialProps: { sessionId: "sess-a" as string | null } }
+      );
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "a",
+          model: "gpt-4o",
+          sessionId: "sess-a",
+        });
+        result.current.startStream({
+          provider: "openai",
+          prompt: "b",
+          model: "gpt-4o",
+          sessionId: "sess-b",
+        });
+      });
+      const [runA, runB] = streamedRunIds();
+
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: runA,
+          token: "a-text",
+        });
+      });
+      expect(turnText(result.current.currentTurn)).toBe("a-text");
+
+      // Switch focus A -> B and emit B's token inside the same commit, before
+      // the stash effect runs. The token is keyed to B's session from the
+      // start, so it can never be spliced into A's stash.
+      await act(async () => {
+        rerender({ sessionId: "sess-b" });
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: runB,
+          token: "b-token",
+        });
+      });
+
+      // B's buffered text surfaced on the restored visible turn; A's stash
+      // holds only A's text.
+      expect(turnText(result.current.currentTurn)).toBe("b-token");
+      expect(turnText(lastLiveTurn(onLiveTurnForSession, "sess-a"))).toBe("a-text");
+    });
+
+    it("two concurrent runs while no session is focused keep separate buffers", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result, rerender } = renderHook(
+        ({ sessionId }: { sessionId: string | null }) =>
+          useChatStream({ sessionId, onLiveTurnForSession }),
+        { initialProps: { sessionId: null as string | null } }
+      );
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "a",
+          model: "gpt-4o",
+          sessionId: "sa",
+        });
+        result.current.startStream({
+          provider: "openai",
+          prompt: "b",
+          model: "gpt-4o",
+          sessionId: "sb",
+        });
+      });
+      const [runA, runB] = streamedRunIds();
+
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: runA,
+          token: "a1",
+        });
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: runB,
+          token: "b1",
+        });
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId: runA,
+          token: "-a2",
+        });
+      });
+
+      // No session focused: each run accumulates under its own session's
+      // stash — they do not interleave into one shared foreground buffer.
+      expect(result.current.currentTurn).toBeNull();
+      expect(turnText(lastLiveTurn(onLiveTurnForSession, "sa"))).toBe("a1-a2");
+      expect(turnText(lastLiveTurn(onLiveTurnForSession, "sb"))).toBe("b1");
+
+      // When focus lands on sa, its stash restores; sb stays stashed.
+      await act(async () => {
+        rerender({ sessionId: "sa" });
+      });
+
+      expect(turnText(result.current.currentTurn)).toBe("a1-a2");
+      expect(turnText(lastLiveTurn(onLiveTurnForSession, "sb"))).toBe("b1");
+    });
+
+    it("runId-less llm-done attributes to the single active run's session even when another is focused", async () => {
+      const onMessagesForSession = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "s-2",
+        onMessagesForSession,
+      });
+      await act(async () => {});
+
+      await act(async () => {
+        result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId: "s-1",
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent<{ runId: string; token: string }>("llm-token", {
+          runId,
+          token: "partial ",
+        });
+      });
+
+      // A completion carrying no runId resolves to the sole in-flight session
+      // instead of wiping the focused session's transcript.
+      await act(async () => {
+        triggerEvent("llm-done", { response: "single run reply" });
+      });
+
+      expect(onMessagesForSession).toHaveBeenCalledWith("s-1", expect.any(Function));
+      expect(onMessagesForSession).not.toHaveBeenCalledWith("s-2", expect.any(Function));
+      expect(onMessagesForSession).not.toHaveBeenCalledWith(null, expect.any(Function));
+      // The finalized message includes the run's stashed turn blocks.
+      const updater = onMessagesForSession.mock.calls.find(([sid]) => sid === "s-1")![1] as (
+        prev: Message[]
+      ) => Message[];
+      const message = updater([])[0];
+      expect(message.content).toBe("single run reply");
+      expect(turnText(message)).toBe("partial ");
     });
   });
 });

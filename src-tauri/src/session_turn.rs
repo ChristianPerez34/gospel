@@ -129,6 +129,10 @@ pub struct SessionTurnStreamRequest<'a> {
     /// Conversation id forwarded to providers that accept a session header
     /// (OpenCode Go) for routing and prompt-cache optimization.
     pub session_id: Option<&'a str>,
+    /// Streaming run id for this turn. Approval wrappers tag broker requests
+    /// with it so the frontend can route approval events to the session's
+    /// own live turn instead of whichever session is focused.
+    pub run_id: Option<&'a str>,
 }
 
 pub trait SessionTurnLlm: Send + Sync {
@@ -453,6 +457,7 @@ pub async fn run_streaming_turn(
                 memory_section,
                 skill_script_tool,
                 session_id: request.session_id.as_deref(),
+                run_id: Some(run_id.as_str()),
             },
             Box::new(move |event| {
                 events.emit_stream_event(&trace_sid, trace_role, &run_id_for_closure, &event);

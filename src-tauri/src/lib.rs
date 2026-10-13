@@ -76,7 +76,7 @@ use session_store::{
 use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest, CommandRisk};
 use skills::SkillSummary;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
     time::Duration,
@@ -163,6 +163,43 @@ impl StreamingRunHandles {
             handles.remove(session_id);
         }
     }
+
+    /// Refuse if any of `session_ids` has an in-flight turn; otherwise run
+    /// `mutate` while holding the handle lock.
+    ///
+    /// `complete_streaming` registers a turn's handle before the turn first
+    /// reads its session, so holding the lock across the check and the
+    /// mutation means a turn either registers first (and we refuse) or starts
+    /// after the mutation (and sees the session already gone).
+    fn mutate_if_idle<'a, T>(
+        &self,
+        session_ids: impl IntoIterator<Item = &'a str>,
+        mutate: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let handles = self.inner.lock().expect("streaming handles poisoned");
+        if session_ids
+            .into_iter()
+            .any(|session_id| handles.contains_key(session_id))
+        {
+            return Err(
+                "session has an in-flight turn; cancel it or wait for it to finish".to_string(),
+            );
+        }
+        let result = mutate();
+        drop(handles);
+        result
+    }
+
+    /// Run `mutate` with the ids of sessions that have an in-flight turn,
+    /// holding the handle lock so no new turn registers until it returns. See
+    /// `mutate_if_idle` for why holding the lock closes the race.
+    fn mutate_excluding_in_flight<T>(&self, mutate: impl FnOnce(&HashSet<String>) -> T) -> T {
+        let handles = self.inner.lock().expect("streaming handles poisoned");
+        let in_flight: HashSet<String> = handles.keys().cloned().collect();
+        let result = mutate(&in_flight);
+        drop(handles);
+        result
+    }
 }
 
 impl ApprovalBrokerState {
@@ -221,6 +258,8 @@ impl ApprovalEventEmitter for TauriApprovalEventEmitter {
 #[derive(Clone)]
 struct BrokerExternalPathApproval {
     broker: Arc<ApprovalBroker>,
+    /// Owning streaming run; routes the card to its session.
+    run_id: Option<String>,
 }
 
 impl ExternalPathApproval for BrokerExternalPathApproval {
@@ -229,6 +268,7 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
         request: ExternalPathApprovalRequest,
     ) -> ExternalPathApprovalFuture<'a> {
         let broker = self.broker.clone();
+        let run_id = self.run_id.clone();
         let reason = match request.kind {
             PathKind::File => "This file is outside the active workspace.",
             PathKind::Directory => "This directory is outside the active workspace.",
@@ -240,6 +280,7 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
                     request.tool_name,
                     request.path,
                     reason,
+                    run_id.as_deref(),
                 ))
                 .await
         })
@@ -249,6 +290,8 @@ impl ExternalPathApproval for BrokerExternalPathApproval {
 #[derive(Clone)]
 struct BrokerCommandApproval {
     broker: Arc<ApprovalBroker>,
+    /// Owning streaming run; routes the card to its session.
+    run_id: Option<String>,
 }
 
 impl CommandApproval for BrokerCommandApproval {
@@ -257,6 +300,7 @@ impl CommandApproval for BrokerCommandApproval {
         request: CommandApprovalRequest,
     ) -> CommandApprovalFuture<'a> {
         let broker = self.broker.clone();
+        let run_id = self.run_id.clone();
         Box::pin(async move {
             let destructive = matches!(request.risk, CommandRisk::Destructive);
             broker
@@ -265,6 +309,7 @@ impl CommandApproval for BrokerCommandApproval {
                     request.command_label,
                     request.reason,
                     destructive,
+                    run_id.as_deref(),
                 ))
                 .await
         })
@@ -1181,9 +1226,11 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
             let external_path_approval: Arc<dyn ExternalPathApproval> =
                 Arc::new(BrokerExternalPathApproval {
                     broker: broker.clone(),
+                    run_id: request.run_id.map(str::to_string),
                 });
             let command_approval: Arc<dyn CommandApproval> = Arc::new(BrokerCommandApproval {
                 broker: broker.clone(),
+                run_id: request.run_id.map(str::to_string),
             });
             let mut skill_script_tool = request.skill_script_tool;
             if let Some(tool) = &mut skill_script_tool {
@@ -2398,6 +2445,7 @@ fn get_session(
 fn list_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
@@ -2412,9 +2460,12 @@ fn list_sessions(
 
     match &session_store.store {
         Some(store) => {
-            // Clean up stale drafts on list
-            let _ = store.clean_stale_drafts();
-            let _ = store.run_archive_maintenance(workspace_id.as_deref());
+            // Clean up stale drafts on list, skipping sessions whose turn is
+            // still streaming so the completed turn can persist.
+            streaming_handles.mutate_excluding_in_flight(|in_flight| {
+                let _ = store.clean_stale_drafts(in_flight);
+                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+            });
             store
                 .list_sessions_for_workspace(workspace_id.as_deref())
                 .map_err(|e| e.to_string())
@@ -2430,6 +2481,7 @@ fn list_sessions(
 fn list_archived_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
@@ -2444,7 +2496,9 @@ fn list_archived_sessions(
 
     match &session_store.store {
         Some(store) => {
-            let _ = store.run_archive_maintenance(workspace_id.as_deref());
+            streaming_handles.mutate_excluding_in_flight(|in_flight| {
+                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+            });
             store
                 .list_archived_sessions_for_workspace(workspace_id.as_deref())
                 .map_err(|e| e.to_string())
@@ -2538,12 +2592,15 @@ fn get_archive_stats(
 fn run_archive_maintenance(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<ArchiveMaintenanceResult, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
-        Some(store) => store
-            .run_archive_maintenance(workspace_id.as_deref())
+        Some(store) => streaming_handles
+            .mutate_excluding_in_flight(|in_flight| {
+                store.run_archive_maintenance(workspace_id.as_deref(), in_flight)
+            })
             .map_err(|e| e.to_string()),
         None => Ok(ArchiveMaintenanceResult {
             archived_count: 0,
@@ -2556,14 +2613,17 @@ fn run_archive_maintenance(
 fn archive_session(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     session_id: String,
 ) -> Result<ArchivedSessionRecord, String> {
     match &session_store.store {
         Some(store) => {
             validate_session_access(store, &session_id, app_config.inner())?;
-            store
-                .archive_session(&session_id)
-                .map_err(|e| e.to_string())
+            streaming_handles.mutate_if_idle([session_id.as_str()], || {
+                store
+                    .archive_session(&session_id)
+                    .map_err(|e| e.to_string())
+            })
         }
         None => Err(session_store
             .init_warning
@@ -2576,6 +2636,7 @@ fn archive_session(
 fn archive_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     session_ids: Vec<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
     match &session_store.store {
@@ -2583,9 +2644,11 @@ fn archive_sessions(
             for session_id in &session_ids {
                 validate_session_access(store, session_id, app_config.inner())?;
             }
-            store
-                .archive_sessions_by_ids(&session_ids)
-                .map_err(|e| e.to_string())
+            streaming_handles.mutate_if_idle(session_ids.iter().map(String::as_str), || {
+                store
+                    .archive_sessions_by_ids(&session_ids)
+                    .map_err(|e| e.to_string())
+            })
         }
         None => Err(session_store
             .init_warning
@@ -2705,12 +2768,15 @@ fn delete_expired_archived_sessions(
 fn delete_session_cmd(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
     session_id: String,
 ) -> Result<(), String> {
     match &session_store.store {
         Some(store) => {
             validate_session_access(store, &session_id, app_config.inner())?;
-            store.delete_session(&session_id).map_err(|e| e.to_string())
+            streaming_handles.mutate_if_idle([session_id.as_str()], || {
+                store.delete_session(&session_id).map_err(|e| e.to_string())
+            })
         }
         None => Err(session_store
             .init_warning
@@ -2722,9 +2788,12 @@ fn delete_session_cmd(
 #[tauri::command]
 fn cleanup_stale_drafts(
     session_store: tauri::State<'_, SessionStoreState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
 ) -> Result<usize, String> {
     match &session_store.store {
-        Some(store) => store.clean_stale_drafts().map_err(|e| e.to_string()),
+        Some(store) => streaming_handles
+            .mutate_excluding_in_flight(|in_flight| store.clean_stale_drafts(in_flight))
+            .map_err(|e| e.to_string()),
         None => Ok(0),
     }
 }
@@ -3553,6 +3622,59 @@ mod streaming_run_handles_tests {
 
         handles.remove_if_run_matches("session-1", "run-2");
         assert!(!handles.inner.lock().unwrap().contains_key("session-1"));
+    }
+
+    #[test]
+    fn mutate_if_idle_refuses_in_flight_sessions_without_mutating() {
+        let handles = StreamingRunHandles::new();
+        let (handle, _reg) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-1", handle);
+
+        let mut mutated = false;
+        let err = handles
+            .mutate_if_idle(["session-2", "session-1"], || {
+                mutated = true;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(err.contains("in-flight turn"));
+        assert!(!mutated);
+
+        let result = handles.mutate_if_idle(["session-2"], || Ok("archived"));
+        assert_eq!(result.unwrap(), "archived");
+
+        handles.cancel("session-1");
+        assert!(handles.mutate_if_idle(["session-1"], || Ok(())).is_ok());
+    }
+
+    #[test]
+    fn mutations_hold_the_handle_lock_so_no_turn_can_register() {
+        let handles = StreamingRunHandles::new();
+        handles
+            .mutate_if_idle(["session-1"], || {
+                assert!(handles.inner.try_lock().is_err());
+                Ok(())
+            })
+            .unwrap();
+        handles.mutate_excluding_in_flight(|_| {
+            assert!(handles.inner.try_lock().is_err());
+        });
+        assert!(handles.inner.try_lock().is_ok());
+    }
+
+    #[test]
+    fn mutate_excluding_in_flight_passes_registered_session_ids() {
+        let handles = StreamingRunHandles::new();
+        handles.mutate_excluding_in_flight(|in_flight| assert!(in_flight.is_empty()));
+
+        let (handle_1, _reg_1) = futures::future::AbortHandle::new_pair();
+        let (handle_2, _reg_2) = futures::future::AbortHandle::new_pair();
+        handles.insert("session-1", "run-1", handle_1);
+        handles.insert("session-2", "run-2", handle_2);
+        handles.cancel("session-1");
+
+        let in_flight = handles.mutate_excluding_in_flight(|in_flight| in_flight.clone());
+        assert_eq!(in_flight, HashSet::from(["session-2".to_string()]));
     }
 }
 
