@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { oauthCopy, oauthProviderIds } from "./oauthProviders";
@@ -48,6 +50,16 @@ function providerAvailabilitySummary(provider: ProviderConfig) {
   return `${provider.modelCount} models`;
 }
 
+// Best-effort visibility persist: callers await it to preserve write ordering,
+// failures only log since the credential op itself already succeeded.
+async function persistVisibility(provider: ProviderId, visible: boolean): Promise<void> {
+  try {
+    await invoke("set_provider_visibility", { provider, visible });
+  } catch (e) {
+    console.error("Failed to persist provider visibility:", e);
+  }
+}
+
 export function ProviderSelector({
   providers,
   onProvidersChange,
@@ -70,7 +82,6 @@ export function ProviderSelector({
 
     (async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const oauthIds = oauthProviderIds(providersRef.current);
         const statuses = await Promise.all(
           oauthIds.map(async (provider) => ({
@@ -81,17 +92,20 @@ export function ProviderSelector({
           }))
         );
         if (!cancelled) {
-          const current = providersRef.current;
+          const snapshot = providersRef.current;
           const configured = new Set(
-            statuses.filter(({ status }) => status.configured).map(({ provider }) => provider)
+            statuses.filter(({ status }) => status?.configured).map(({ provider }) => provider)
           );
           if (configured.size > 0) {
-            const updated = current.map((p) =>
+            const updated = snapshot.map((p) =>
               configured.has(p.id)
                 ? {
                     ...p,
                     isAuthenticated: true,
                     credentialed: true,
+                    // Preserve an existing hidden preference; only default
+                    // newly-discovered providers to visible.
+                    ...(p.credentialed ? {} : { visible: true, enabled: true }),
                     status: "success" as const,
                     testMessage: "Authenticated",
                   }
@@ -105,17 +119,24 @@ export function ProviderSelector({
 
     (async () => {
       try {
-        const { listen } = await import("@tauri-apps/api/event");
-        const unlistenFn = await listen("provider-auth-complete", (event) => {
+        const unlistenFn = await listen("provider-auth-complete", async (event) => {
           const { provider, success } = event.payload as OAuthCompletion;
-          const current = providersRef.current;
+          const preAuth = providersRef.current;
           if (success) {
-            const updated = current.map((p) =>
+            // Only default newly-credentialed providers to visible; a re-auth
+            // must not clobber an existing hidden preference.
+            const wasCredentialed = preAuth.find((p) => p.id === provider)?.credentialed ?? false;
+            if (!wasCredentialed) {
+              await persistVisibility(provider, true);
+            }
+            const fresh = providersRef.current;
+            const updated = fresh.map((p) =>
               p.id === provider
                 ? {
                     ...p,
                     isAuthenticated: true,
                     credentialed: true,
+                    ...(wasCredentialed ? {} : { visible: true, enabled: true }),
                     status: "success" as const,
                     testMessage: "Authenticated",
                   }
@@ -125,7 +146,7 @@ export function ProviderSelector({
             setOauthChallenge(null);
             void onRefreshAvailability();
           } else {
-            const updated = current.map((p) =>
+            const updated = preAuth.map((p) =>
               p.id === provider
                 ? { ...p, status: "error" as const, testMessage: "Authentication failed" }
                 : p
@@ -135,12 +156,13 @@ export function ProviderSelector({
           }
         });
 
-        if (cancelled) {
-          unlistenFn();
-          return;
+        if (typeof unlistenFn === "function") {
+          if (cancelled) {
+            unlistenFn();
+            return;
+          }
+          unlisten = unlistenFn;
         }
-
-        unlisten = unlistenFn;
       } catch (error) {
         console.error("Failed to setup auth listener:", error);
       }
@@ -162,8 +184,8 @@ export function ProviderSelector({
 
   const handleToggle = useCallback(
     async (id: ProviderId) => {
-      const provider = providers.find((p) => p.id === id)!;
-      if (!provider.credentialed) return;
+      const provider = providers.find((p) => p.id === id);
+      if (!provider?.credentialed) return;
       const nextVisible = !provider.visible;
       updateProvider(id, {
         visible: nextVisible,
@@ -172,7 +194,6 @@ export function ProviderSelector({
         testMessage: "",
       });
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("set_provider_visibility", { provider: id, visible: nextVisible });
         await onRefreshAvailability();
       } catch (e) {
@@ -192,11 +213,14 @@ export function ProviderSelector({
       if (!provider.apiKey.trim() || isOperationInProgress.current) return;
       isOperationInProgress.current = true;
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("set_api_key", { provider: provider.id, apiKey: provider.apiKey.trim() });
+        // Best-effort: the key is saved even if persisting visibility fails.
+        await persistVisibility(provider.id, true);
         updateProvider(provider.id, {
           apiKey: "",
           credentialed: true,
+          visible: true,
+          enabled: true,
           status: "success",
           testMessage: "Key saved",
         });
@@ -214,11 +238,14 @@ export function ProviderSelector({
   const handleOAuthLogout = useCallback(
     async (provider: ProviderConfig) => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("logout_provider_oauth", { provider: provider.id });
+        // Best-effort: the session is ended even if persisting visibility fails.
+        await persistVisibility(provider.id, false);
         updateProvider(provider.id, {
           isAuthenticated: false,
           credentialed: false,
+          visible: false,
+          enabled: false,
           status: "idle",
           testMessage: "",
         });
@@ -241,11 +268,14 @@ export function ProviderSelector({
       isOperationInProgress.current = true;
       updateProvider(provider.id, { status: "testing", testMessage: "Removing key..." });
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("delete_api_key", { provider: provider.id });
+        // Best-effort: the key is deleted even if persisting visibility fails.
+        await persistVisibility(provider.id, false);
         updateProvider(provider.id, {
           apiKey: "",
           credentialed: false,
+          visible: false,
+          enabled: false,
           status: "idle",
           testMessage: "",
         });
@@ -265,7 +295,6 @@ export function ProviderSelector({
       isOperationInProgress.current = true;
       updateProvider(provider.id, { status: "testing", testMessage: "Starting authentication..." });
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const challenge = await invoke<{ verification_url: string; user_code: string }>(
           "start_provider_oauth",
           { provider: provider.id }
@@ -297,11 +326,20 @@ export function ProviderSelector({
         const copy = provider.isOAuth ? oauthCopy(provider) : null;
         const providerChallenge = oauthChallenge?.provider === provider.id ? oauthChallenge : null;
 
+        const isConfigured = provider.credentialed;
+        const isVisible = isConfigured && provider.visible;
+
         const cardBorder = isError
           ? "border-status-error"
-          : provider.visible
+          : isVisible
             ? "border-accent-action"
             : "border-surface-overlay";
+
+        const toggleLabel = !isConfigured
+          ? `Add credentials to enable ${provider.name}`
+          : isVisible
+            ? `Hide ${provider.name} from model picker`
+            : `Show ${provider.name} in model picker`;
 
         return (
           <div
@@ -313,7 +351,19 @@ export function ProviderSelector({
                 <span className="font-body text-body-sm font-medium text-text-primary">
                   {provider.name}
                 </span>
-                <span className="text-caption">{providerAvailabilitySummary(provider)}</span>
+                <span
+                  className={`text-caption ${
+                    !isConfigured
+                      ? "text-text-muted"
+                      : !isVisible
+                        ? "text-text-muted italic"
+                        : isError
+                          ? "text-status-error"
+                          : "text-text-secondary"
+                  }`}
+                >
+                  {providerAvailabilitySummary(provider)}
+                </span>
                 {!isIdle && (
                   <span
                     className={`inline-flex items-center justify-center w-4 h-4 text-caption font-semibold rounded-full leading-none ${
@@ -334,28 +384,27 @@ export function ProviderSelector({
               </div>
 
               <button
-                className={`hit-target relative w-9 h-5 border-none rounded-full cursor-pointer p-0 transition-colors duration-150 ease-out-quart shrink-0 ${
-                  provider.visible ? "bg-accent-action" : "bg-surface-overlay"
+                className={`hit-target relative w-9 h-5 border-none rounded-full p-0 transition-all duration-150 ease-out-quart shrink-0 ${
+                  isVisible ? "bg-accent-action" : "bg-surface-overlay"
+                } ${
+                  !isConfigured ? "opacity-40 cursor-not-allowed" : "cursor-pointer active:scale-95"
                 }`}
                 onClick={() => handleToggle(provider.id)}
-                aria-pressed={provider.visible}
+                aria-pressed={isVisible}
+                disabled={!isConfigured}
                 type="button"
-                aria-label={
-                  provider.visible
-                    ? `Hide ${provider.name} from model picker`
-                    : `Show ${provider.name} in model picker`
-                }
-                title="Provider visibility"
+                aria-label={toggleLabel}
+                title={toggleLabel}
               >
                 <span
                   className={`absolute top-0.5 left-0.5 w-4 h-4 bg-text-inverse rounded-full transition-transform duration-150 ease-out-quart ${
-                    provider.visible ? "translate-x-4" : ""
+                    isVisible ? "translate-x-4" : ""
                   }`}
                 />
               </button>
             </div>
 
-            {(provider.visible || !provider.credentialed) && (
+            {(isVisible || !isConfigured) && (
               <div className="px-4 pb-3 flex flex-col gap-2">
                 {provider.isOAuth ? (
                   <div className="flex items-center justify-between gap-2 py-1">
