@@ -50,6 +50,16 @@ function providerAvailabilitySummary(provider: ProviderConfig) {
   return `${provider.modelCount} models`;
 }
 
+// Best-effort visibility persist: callers await it to preserve write ordering,
+// failures only log since the credential op itself already succeeded.
+async function persistVisibility(provider: ProviderId, visible: boolean): Promise<void> {
+  try {
+    await invoke("set_provider_visibility", { provider, visible });
+  } catch (e) {
+    console.error("Failed to persist provider visibility:", e);
+  }
+}
+
 export function ProviderSelector({
   providers,
   onProvidersChange,
@@ -82,17 +92,20 @@ export function ProviderSelector({
           }))
         );
         if (!cancelled) {
-          const current = providersRef.current;
+          const snapshot = providersRef.current;
           const configured = new Set(
             statuses.filter(({ status }) => status?.configured).map(({ provider }) => provider)
           );
           if (configured.size > 0) {
-            const updated = current.map((p) =>
+            const updated = snapshot.map((p) =>
               configured.has(p.id)
                 ? {
                     ...p,
                     isAuthenticated: true,
                     credentialed: true,
+                    // Preserve an existing hidden preference; only default
+                    // newly-discovered providers to visible.
+                    ...(p.credentialed ? {} : { visible: true, enabled: true }),
                     status: "success" as const,
                     testMessage: "Authenticated",
                   }
@@ -108,20 +121,22 @@ export function ProviderSelector({
       try {
         const unlistenFn = await listen("provider-auth-complete", async (event) => {
           const { provider, success } = event.payload as OAuthCompletion;
-          const current = providersRef.current;
+          const preAuth = providersRef.current;
           if (success) {
-            try {
-              await invoke("set_provider_visibility", { provider, visible: true });
-            } catch {}
-            const current = providersRef.current;
-            const updated = current.map((p) =>
+            // Only default newly-credentialed providers to visible; a re-auth
+            // must not clobber an existing hidden preference.
+            const wasCredentialed = preAuth.find((p) => p.id === provider)?.credentialed ?? false;
+            if (!wasCredentialed) {
+              await persistVisibility(provider, true);
+            }
+            const fresh = providersRef.current;
+            const updated = fresh.map((p) =>
               p.id === provider
                 ? {
                     ...p,
                     isAuthenticated: true,
                     credentialed: true,
-                    visible: true,
-                    enabled: true,
+                    ...(wasCredentialed ? {} : { visible: true, enabled: true }),
                     status: "success" as const,
                     testMessage: "Authenticated",
                   }
@@ -131,7 +146,7 @@ export function ProviderSelector({
             setOauthChallenge(null);
             void onRefreshAvailability();
           } else {
-            const updated = current.map((p) =>
+            const updated = preAuth.map((p) =>
               p.id === provider
                 ? { ...p, status: "error" as const, testMessage: "Authentication failed" }
                 : p
@@ -199,7 +214,8 @@ export function ProviderSelector({
       isOperationInProgress.current = true;
       try {
         await invoke("set_api_key", { provider: provider.id, apiKey: provider.apiKey.trim() });
-        await invoke("set_provider_visibility", { provider: provider.id, visible: true });
+        // Best-effort: the key is saved even if persisting visibility fails.
+        await persistVisibility(provider.id, true);
         updateProvider(provider.id, {
           apiKey: "",
           credentialed: true,
@@ -223,7 +239,8 @@ export function ProviderSelector({
     async (provider: ProviderConfig) => {
       try {
         await invoke("logout_provider_oauth", { provider: provider.id });
-        await invoke("set_provider_visibility", { provider: provider.id, visible: false });
+        // Best-effort: the session is ended even if persisting visibility fails.
+        await persistVisibility(provider.id, false);
         updateProvider(provider.id, {
           isAuthenticated: false,
           credentialed: false,
@@ -252,7 +269,8 @@ export function ProviderSelector({
       updateProvider(provider.id, { status: "testing", testMessage: "Removing key..." });
       try {
         await invoke("delete_api_key", { provider: provider.id });
-        await invoke("set_provider_visibility", { provider: provider.id, visible: false });
+        // Best-effort: the key is deleted even if persisting visibility fails.
+        await persistVisibility(provider.id, false);
         updateProvider(provider.id, {
           apiKey: "",
           credentialed: false,

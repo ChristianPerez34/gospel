@@ -583,7 +583,7 @@ async fn build_model_availability(
             providers[index] = Some(provider_availability(
                 provider,
                 credentialed,
-                false,
+                visible,
                 "not_credentialed".to_string(),
                 model_count,
                 None,

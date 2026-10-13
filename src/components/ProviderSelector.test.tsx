@@ -11,7 +11,7 @@ const sampleProviders: ProviderConfig[] = [
     name: "OpenAI",
     authType: "api_key",
     credentialed: false,
-    visible: true,
+    visible: false,
     modelFetchStatus: "not_credentialed",
     modelCount: 0,
     apiKey: "",
@@ -78,6 +78,26 @@ describe("ProviderSelector", () => {
     fireEvent.click(openaiToggle);
     expect(onProvidersChange).not.toHaveBeenCalled();
     expect(mockInvoke).not.toHaveBeenCalledWith("set_provider_visibility", expect.anything());
+  });
+
+  it("coerces stale visible:true on uncredentialed providers to OFF and disabled", () => {
+    const onProvidersChange = vi.fn();
+    const onRefreshAvailability = vi.fn();
+
+    render(
+      <ProviderSelector
+        providers={sampleProviders.map((p) => (p.id === "openai" ? { ...p, visible: true } : p))}
+        onProvidersChange={onProvidersChange}
+        onRefreshAvailability={onRefreshAvailability}
+      />
+    );
+
+    const openaiToggle = screen.getByRole("button", {
+      name: "Add credentials to enable OpenAI",
+    }) as HTMLButtonElement;
+
+    expect(openaiToggle.disabled).toBe(true);
+    expect(openaiToggle.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("defaults credentialed provider toggle to whatever has been set", () => {
