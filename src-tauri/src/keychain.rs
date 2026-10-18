@@ -88,11 +88,11 @@ pub(crate) fn github_copilot_token_dir() -> PathBuf {
     gospel_config_dir().join("github_copilot")
 }
 
-fn github_copilot_access_token_path() -> PathBuf {
+pub(crate) fn github_copilot_access_token_path() -> PathBuf {
     github_copilot_token_dir().join("access-token")
 }
 
-fn github_copilot_api_key_path() -> PathBuf {
+pub(crate) fn github_copilot_api_key_path() -> PathBuf {
     github_copilot_token_dir().join("api-key.json")
 }
 

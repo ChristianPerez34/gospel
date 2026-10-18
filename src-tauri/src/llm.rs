@@ -1,15 +1,16 @@
 use futures::StreamExt;
-use rig::agent::MultiTurnStreamItem;
-use rig::agent::{HookAction, PromptHook, ToolCallHookAction};
-use rig::client::CompletionClient;
-use rig::completion::message::{Message, ReasoningContent};
-use rig::completion::{CompletionModel, Prompt, ToolDefinition};
-use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingChat};
-use rig::tool::Tool;
+use rig::agent::{
+    AgentHook, DispatchAction, DispatchEvent, HookContext, MultiTurnStreamItem, OutcomeAction,
+    OutcomeEvent,
+};
+use rig::completion::message::{AssistantContent, Message, ToolResultContent};
+use rig::streaming::{Item, PartKind, StreamEvent as RigStreamEvent};
+use rig::tool::{PortableTool, RegisteredTool, ToolExecutionError};
+use rig::AgentBuilder;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::future::Future;
+use std::future::IntoFuture;
 #[cfg(test)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -19,12 +20,12 @@ use tokio::time::timeout;
 #[cfg(test)]
 use crate::harness_profile::guards_for_role;
 use crate::harness_profile::{
-    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
-    LoopDetector, LoopStatus, MainToolContribution, MainToolInputs,
+    resolve_harness_profile, tool_server_handle, ActiveWorkspaceContext, AgentRole,
+    HarnessProfileRequest, LoopDetector, LoopStatus, MainToolContribution, MainToolInputs,
 };
 
 use crate::models::ModelRegistry;
-use crate::provider_client::provider_client;
+use crate::provider_client::{completion_model, ProviderClientError};
 use crate::shell_tools::CommandApproval;
 use crate::text_utils::truncate_text_bytes;
 use crate::trace;
@@ -64,6 +65,14 @@ pub enum LlmError {
     ControlledStop(String),
 }
 
+impl From<ProviderClientError> for LlmError {
+    fn from(error: ProviderClientError) -> Self {
+        match error {
+            ProviderClientError::Client(message) => Self::ProviderError(message),
+            ProviderClientError::Unsupported(provider) => Self::UnsupportedProvider(provider),
+        }
+    }
+}
 #[derive(Serialize, Clone)]
 pub struct LlmErrorDto {
     pub code: String,
@@ -302,36 +311,40 @@ impl Serialize for DelegateExplorationTool {
     }
 }
 
-impl Tool for DelegateExplorationTool {
+impl PortableTool for DelegateExplorationTool {
     const NAME: &'static str = "delegate_exploration";
 
     type Error = LlmError;
     type Args = DelegateExplorationArgs;
     type Output = DelegateExplorationOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Delegate a broad workspace investigation to the Exploration Agent. Use this for multi-file or architectural investigations that need a focused report before answering the user.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "Required investigation task for the Exploration Agent."
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional extra context or constraints for the investigation."
-                    },
-                    "expected_output": {
-                        "type": "string",
-                        "description": "Optional guidance for what the report should emphasize."
-                    }
+    fn description(&self) -> String {
+        "Delegate a broad workspace investigation to the Exploration Agent. Use this for multi-file or architectural investigations that need a focused report before answering the user.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Required investigation task for the Exploration Agent."
                 },
-                "required": ["task"]
-            }),
-        }
+                "context": {
+                    "type": "string",
+                    "description": "Optional extra context or constraints for the investigation."
+                },
+                "expected_output": {
+                    "type": "string",
+                    "description": "Optional guidance for what the report should emphasize."
+                }
+            },
+            "required": ["task"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -357,60 +370,58 @@ struct ExplorationHook {
     loop_detector: Arc<Mutex<LoopDetector>>,
 }
 
-impl<M> PromptHook<M> for ExplorationHook
-where
-    M: CompletionModel,
-{
-    fn on_tool_call(
-        &self,
-        tool_name: &str,
-        _tool_call_id: Option<String>,
-        _internal_call_id: &str,
-        args: &str,
-    ) -> impl Future<Output = ToolCallHookAction> + Send {
-        let tool_name = tool_name.to_string();
-        let tools = self.tools.clone();
-        let loop_detector = self.loop_detector.clone();
-        let args = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
-        async move {
-            let mut guard = tools.lock().unwrap();
-            if !guard.iter().any(|name| name == &tool_name) {
-                guard.push(tool_name.clone());
+impl AgentHook for ExplorationHook {
+    async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
+        let Some(tool_name) = event.tool_name() else {
+            return DispatchAction::proceed();
+        };
+        let args = event
+            .tool_args()
+            .and_then(|args| serde_json::from_str(args).ok())
+            .unwrap_or(serde_json::Value::Null);
+        {
+            let mut guard = self.tools.lock().unwrap();
+            if !guard.iter().any(|name| name == tool_name) {
+                guard.push(tool_name.to_string());
             }
-            drop(guard);
-            match loop_detector.lock().unwrap().record_call(&tool_name, &args) {
-                LoopStatus::Stop => ToolCallHookAction::terminate(format!(
-                    "Exploration Agent stopped after a repeated '{}' tool-call loop.",
-                    tool_name
-                )),
-                LoopStatus::Warning(count) => {
-                    tracing::warn!(
-                        role = "exploration",
-                        count,
-                        tool_name,
-                        "repeated tool-call warning"
-                    );
-                    ToolCallHookAction::cont()
-                }
-                LoopStatus::Ok => ToolCallHookAction::cont(),
+        }
+        let status = self
+            .loop_detector
+            .lock()
+            .unwrap()
+            .record_call(tool_name, &args);
+        match status {
+            LoopStatus::Stop => DispatchAction::stop(format!(
+                "Exploration Agent stopped after a repeated '{}' tool-call loop.",
+                tool_name
+            )),
+            LoopStatus::Warning(count) => {
+                tracing::warn!(
+                    role = "exploration",
+                    count,
+                    tool_name,
+                    "repeated tool-call warning"
+                );
+                DispatchAction::proceed()
             }
+            LoopStatus::Ok => DispatchAction::proceed(),
         }
     }
 
-    async fn on_tool_result(
-        &self,
-        _tool_name: &str,
-        _tool_call_id: Option<String>,
-        _internal_call_id: &str,
-        _args: &str,
-        result: &str,
-    ) -> HookAction {
-        let mut detector = self.loop_detector.lock().unwrap();
-        let Some((reason, status)) = record_tool_result_failure(&mut detector, result) else {
-            return HookAction::cont();
+    async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
+        let Some(result) = event.tool_result() else {
+            return OutcomeAction::proceed();
+        };
+        let rendered = result.output().render();
+        let failure = {
+            let mut detector = self.loop_detector.lock().unwrap();
+            record_tool_result_failure(&mut detector, &rendered)
+        };
+        let Some((reason, status)) = failure else {
+            return OutcomeAction::proceed();
         };
         match status {
-            LoopStatus::Stop => HookAction::terminate(format!(
+            LoopStatus::Stop => OutcomeAction::stop(format!(
                 "Exploration Agent stopped after repeated deterministic '{}' failures.",
                 reason
             )),
@@ -421,9 +432,9 @@ where
                     reason,
                     "repeated deterministic tool failure warning"
                 );
-                HookAction::cont()
+                OutcomeAction::proceed()
             }
-            LoopStatus::Ok => HookAction::cont(),
+            LoopStatus::Ok => OutcomeAction::proceed(),
         }
     }
 }
@@ -607,62 +618,43 @@ async fn run_exploration_agent(
     let tool_names = hook.tools.clone();
     let prompt = build_exploration_prompt(args, &workspace_snapshot);
 
-    macro_rules! exploration_from_client {
-        ($client:expr, $model:expr) => {{
-            let builder = $client
-                .agent($model)
-                .preamble(&agent_preamble)
-                .default_max_turns(agent_guards.max_turns)
-                .tools(agent_tools);
+    let agent = AgentBuilder::new(completion_model(provider, model, api_key, session_id).await?)
+        .preamble(agent_preamble)
+        .default_max_turns(agent_guards.max_turns)
+        .tool_server_handle(tool_server_handle(agent_tools))
+        .build();
+    let future = agent.prompt(prompt).add_hook(hook).into_future();
+    let response = timeout(agent_deadline, future)
+        .await
+        .map_err(|_| {
+            LlmError::ControlledStop(format!(
+                "Exploration Agent timed out after {} seconds",
+                agent_deadline.as_secs()
+            ))
+        })?
+        .map_err(|e| LlmError::ProviderError(e.to_string()))?;
 
-            let agent = builder.build();
-            let future = agent
-                .prompt(prompt)
-                .with_hook(hook.clone())
-                .extended_details();
-            let response = timeout(agent_deadline, future)
-                .await
-                .map_err(|_| {
-                    LlmError::ControlledStop(format!(
-                        "Exploration Agent timed out after {} seconds",
-                        agent_deadline.as_secs()
-                    ))
-                })?
-                .map_err(|e| LlmError::ProviderError(e.to_string()))?;
-
-            let tools_used = tool_names.lock().unwrap().clone();
-            let sections = parse_delegation_sections(&response.output);
-            let (report, truncated) =
-                truncate_text_bytes(&response.output, EXPLORATION_REPORT_BYTES_CAP);
-            DelegateExplorationOutput {
-                success: true,
-                truncated,
-                report,
-                summary: sections.summary,
-                key_files: sections.key_files,
-                findings: sections.findings,
-                constraints: sections.constraints,
-                suggested_next_reads: sections.suggested_next_reads,
-                tools_used: if sections.tools_used.is_empty() {
-                    tools_used
-                } else {
-                    sections.tools_used
-                },
-                message: "Exploration completed.".to_string(),
-                reason: None,
-            }
-        }};
-    }
-
-    provider_client!(
-        provider,
-        model,
-        api_key,
-        session_id,
-        LlmError::ProviderError,
-        LlmError::UnsupportedProvider,
-        |client| { Ok(exploration_from_client!(client, model)) }
-    )
+    let output = response.output();
+    let tools_used = tool_names.lock().unwrap().clone();
+    let sections = parse_delegation_sections(&output);
+    let (report, truncated) = truncate_text_bytes(&output, EXPLORATION_REPORT_BYTES_CAP);
+    Ok(DelegateExplorationOutput {
+        success: true,
+        truncated,
+        report,
+        summary: sections.summary,
+        key_files: sections.key_files,
+        findings: sections.findings,
+        constraints: sections.constraints,
+        suggested_next_reads: sections.suggested_next_reads,
+        tools_used: if sections.tools_used.is_empty() {
+            tools_used
+        } else {
+            sections.tools_used
+        },
+        message: "Exploration completed.".to_string(),
+        reason: None,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -712,18 +704,20 @@ where
             .sum::<usize>();
     let mut contributions = Vec::new();
     if let Some(workspace_context) = workspace.as_ref() {
-        contributions.push(MainToolContribution::DelegateExploration(Box::new(
-            DelegateExplorationTool {
+        contributions.push(MainToolContribution::DelegateExploration(
+            RegisteredTool::from_tool(DelegateExplorationTool {
                 workspace: workspace_context.clone(),
                 provider: delegate_provider.to_string(),
                 model: delegate_model.to_string(),
                 api_key: delegate_api_key.to_string(),
                 session_id: session_id.map(str::to_string),
-            },
-        )));
+            }),
+        ));
     }
     if let Some(tool) = skill_script_tool {
-        contributions.push(MainToolContribution::RunSkillScript(Box::new(tool)));
+        contributions.push(MainToolContribution::RunSkillScript(
+            RegisteredTool::from_tool(tool),
+        ));
     }
     let profile = resolve_harness_profile(HarnessProfileRequest {
         role: AgentRole::Main,
@@ -747,228 +741,167 @@ where
     let profile_tools = profile.tools;
     let profile_guards = profile.guards;
 
-    macro_rules! stream_from_client {
-        ($client:expr, $model:expr) => {{
-            let mut builder = $client
-                .agent($model)
-                .default_max_turns(profile_guards.max_turns);
-            if let Some(additional_params) = variant_resolution.additional_params.clone() {
-                builder = builder.additional_params(additional_params);
-            }
-            let builder = if let Some(preamble) = profile_preamble.as_ref() {
-                builder.preamble(preamble)
-            } else {
-                builder
-            };
-            let agent = builder.tools(profile_tools).build();
-            let request = agent
-                .stream_chat(prompt, chat_history)
-                .multi_turn(profile_guards.max_turns);
-            let mut stream = request.await;
+    let mut builder =
+        AgentBuilder::new(completion_model(provider, model, api_key, session_id).await?)
+            .default_max_turns(profile_guards.max_turns);
+    if let Some(additional_params) = variant_resolution.additional_params.clone() {
+        builder = builder.additional_params(additional_params);
+    }
+    if let Some(preamble) = profile_preamble {
+        builder = builder.preamble(preamble);
+    }
+    let agent = builder
+        .tool_server_handle(tool_server_handle(profile_tools))
+        .build();
+    let input_history = chat_history.clone();
+    let mut stream = agent
+        .prompt(prompt)
+        .history(chat_history)
+        .max_turns(profile_guards.max_turns)
+        .stream();
 
-            let mut tool_name_by_id: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-            let mut loop_detector = LoopDetector::new(profile_guards.loop_guard);
-            // Backend fallback id used when a reasoning delta lacks one. We
-            // mint a new id at the start of each reasoning burst so deltas
-            // and the matching complete event collapse onto a single
-            // frontend block. Reset whenever the provider reports a new id.
-            let mut active_reasoning_id: Option<String> = None;
-            let mut reasoning_seq: usize = 0;
+    let mut tool_name_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut loop_detector = LoopDetector::new(profile_guards.loop_guard);
+    // Stream events carry no reasoning ids, so each reasoning burst gets a
+    // minted id that its deltas and the matching complete event share. This
+    // lets the frontend collapse them onto a single block.
+    let mut active_reasoning_id: Option<String> = None;
+    let mut reasoning_seq: usize = 0;
 
-            while let Some(item) = stream.next().await {
-                match item {
-                    Ok(item) => match item {
-                        MultiTurnStreamItem::StreamAssistantItem(
-                            StreamedAssistantContent::Text(text),
-                        ) => {
-                            full_response.push_str(&text.text);
-                            on_event(StreamEvent::Text(text.text.clone()));
-                        }
-                        MultiTurnStreamItem::StreamAssistantItem(
-                            StreamedAssistantContent::Reasoning(reasoning),
-                        ) => {
-                            // Skip encrypted/redacted payloads entirely; the
-                            // UI should never see those bytes.
-                            let text = reasoning_text_from_content(&reasoning.content);
-                            // Collapse the complete onto the same id the
-                            // deltas used. If deltas minted a fallback id
-                            // (provider omitted ids on deltas), reuse it so
-                            // the frontend replaces accumulated deltas
-                            // rather than emitting an orphaned block under
-                            // a different provider-supplied id. If no
-                            // active burst exists, prefer the provider's id
-                            // and only mint a fallback when it is absent.
-                            let id = if let Some(active) = active_reasoning_id.clone() {
-                                active
-                            } else {
-                                reasoning.id.clone().unwrap_or_else(|| {
-                                    ensure_active_reasoning_id(
-                                        &mut active_reasoning_id,
-                                        &mut reasoning_seq,
-                                    )
-                                })
-                            };
-                            if text.is_empty() {
-                                // Encrypted or redacted complete reasoning
-                                // closes the current burst so the next
-                                // id-less delta does not reuse a stale id.
-                                active_reasoning_id = None;
-                                continue;
-                            }
-                            on_event(StreamEvent::Reasoning(ReasoningPayload {
-                                id,
-                                text,
-                                phase: ReasoningPhase::Complete,
-                            }));
-                            active_reasoning_id = None;
-                        }
-                        MultiTurnStreamItem::StreamAssistantItem(
-                            StreamedAssistantContent::ReasoningDelta { id, reasoning },
-                        ) => {
-                            if reasoning.is_empty() {
-                                continue;
-                            }
-                            let resolved_id = id.clone().unwrap_or_else(|| {
-                                ensure_active_reasoning_id(
-                                    &mut active_reasoning_id,
-                                    &mut reasoning_seq,
-                                )
-                            });
-                            active_reasoning_id = Some(resolved_id.clone());
-                            on_event(StreamEvent::Reasoning(ReasoningPayload {
-                                id: resolved_id,
-                                text: reasoning.clone(),
-                                phase: ReasoningPhase::Delta,
-                            }));
-                        }
-                        MultiTurnStreamItem::StreamAssistantItem(
-                            StreamedAssistantContent::ToolCall {
-                                tool_call,
-                                internal_call_id,
-                            },
-                        ) => {
-                            // Check for identical tool call loops
-                            match loop_detector.record_call(
-                                &tool_call.function.name,
-                                &tool_call.function.arguments,
-                            ) {
-                                LoopStatus::Ok => {}
-                                LoopStatus::Warning(count) => {
-                                    on_event(StreamEvent::LoopWarning {
-                                        count,
-                                        tool_name: tool_call.function.name.clone(),
-                                    });
-                                }
-                                LoopStatus::Stop => {
-                                    let msg = format!(
-                                        "Agent stopped: repeated identical tool call '{}' detected {} times. This usually indicates the agent is stuck in a loop.",
-                                        tool_call.function.name, loop_detector.consecutive_count()
-                                    );
-                                    on_event(StreamEvent::LoopStopped {
-                                        count: loop_detector.consecutive_count(),
-                                        tool_name: tool_call.function.name.clone(),
-                                        message: msg.clone(),
-                                    });
-                                    return Err(LlmError::ControlledStop(msg));
-                                }
-                            }
-
-                            tool_name_by_id
-                                .insert(internal_call_id.clone(), tool_call.function.name.clone());
-                            on_event(StreamEvent::ToolCall {
-                                id: internal_call_id,
-                                name: tool_call.function.name.clone(),
-                                arguments: tool_call.function.arguments.clone(),
-                            });
-                            tool_calls += 1;
-                        }
-                        MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
-                            tool_result,
-                            internal_call_id,
-                        }) => {
-                            let result_summary = tool_result
-                                .content
-                                .iter()
-                                .filter_map(|content| match content {
-                                    rig::completion::message::ToolResultContent::Text(text) => {
-                                        Some(text.text.clone())
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            let tool_name = tool_name_by_id
-                                .get(&internal_call_id)
-                                .cloned()
-                                .unwrap_or_else(|| tool_result.id.clone());
-
-                            if tool_name == "source_edit"
-                                && source_edit_result_changed(&result_summary)
-                            {
-                                source_edit_succeeded = true;
-                            }
-
-                            // Check for repeated deterministic failures
-                            if let Some((reason, status)) =
-                                record_tool_result_failure(&mut loop_detector, &result_summary)
-                            {
-                                match status {
-                                    LoopStatus::Ok => {}
-                                    LoopStatus::Warning(count) => {
-                                        on_event(StreamEvent::LoopWarning {
-                                            count,
-                                            tool_name: tool_name.clone(),
-                                        });
-                                    }
-                                    LoopStatus::Stop => {
-                                        let msg = format!(
-                                            "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
-                                            reason, loop_detector.failure_streak()
-                                        );
-                                        on_event(StreamEvent::LoopStopped {
-                                            count: loop_detector.failure_streak(),
-                                            tool_name: tool_name.clone(),
-                                            message: msg.clone(),
-                                        });
-                                        return Err(LlmError::ControlledStop(msg));
-                                    }
-                                }
-                            }
-
-                            on_event(StreamEvent::ToolResult {
-                                id: internal_call_id,
-                                name: tool_name,
-                                result: result_summary,
-                            });
-                        }
-                        MultiTurnStreamItem::FinalResponse(final_response) => {
-                            full_response = final_response.response().to_owned();
-                            captured_history =
-                                final_response.history().map(|history| history.to_vec());
-                            break;
-                        }
-                        _ => {}
-                    },
-                    Err(error) => {
-                        return Err(LlmError::ProviderError(error.to_string()));
+    while let Some(item) = stream.next().await {
+        let item = item.map_err(|error| LlmError::ProviderError(error.to_string()))?;
+        match item {
+            MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => match event {
+                RigStreamEvent::Start {
+                    kind: PartKind::Reasoning,
+                    ..
+                } => {
+                    active_reasoning_id = None;
+                }
+                RigStreamEvent::Text { text, .. } => {
+                    full_response.push_str(&text);
+                    on_event(StreamEvent::Text(text));
+                }
+                RigStreamEvent::Reasoning { text, .. } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let id =
+                        ensure_active_reasoning_id(&mut active_reasoning_id, &mut reasoning_seq);
+                    on_event(StreamEvent::Reasoning(ReasoningPayload {
+                        id,
+                        text,
+                        phase: ReasoningPhase::Delta,
+                    }));
+                }
+                RigStreamEvent::End {
+                    content: AssistantContent::Reasoning(reasoning),
+                    ..
+                } => {
+                    let id =
+                        ensure_active_reasoning_id(&mut active_reasoning_id, &mut reasoning_seq);
+                    active_reasoning_id = None;
+                    // Redacted payloads must never reach the UI.
+                    if reasoning.redacted || reasoning.text.is_empty() {
+                        continue;
+                    }
+                    on_event(StreamEvent::Reasoning(ReasoningPayload {
+                        id,
+                        text: reasoning.text,
+                        phase: ReasoningPhase::Complete,
+                    }));
+                }
+                _ => {}
+            },
+            MultiTurnStreamItem::ToolCall { tool_call } => {
+                let tool_name = tool_call.function.name.as_str().to_string();
+                let arguments = serde_json::Value::Object(tool_call.function.arguments.clone());
+                match loop_detector.record_call(&tool_name, &arguments) {
+                    LoopStatus::Ok => {}
+                    LoopStatus::Warning(count) => {
+                        on_event(StreamEvent::LoopWarning {
+                            count,
+                            tool_name: tool_name.clone(),
+                        });
+                    }
+                    LoopStatus::Stop => {
+                        let msg = format!(
+                            "Agent stopped: repeated identical tool call '{}' detected {} times. This usually indicates the agent is stuck in a loop.",
+                            tool_name, loop_detector.consecutive_count()
+                        );
+                        on_event(StreamEvent::LoopStopped {
+                            count: loop_detector.consecutive_count(),
+                            tool_name: tool_name.clone(),
+                            message: msg.clone(),
+                        });
+                        return Err(LlmError::ControlledStop(msg));
                     }
                 }
-            }
-        }};
-    }
 
-    provider_client!(
-        provider,
-        model,
-        api_key,
-        session_id,
-        LlmError::ProviderError,
-        LlmError::UnsupportedProvider,
-        |client| {
-            stream_from_client!(client, model);
+                let call_id = tool_call.id.to_string();
+                tool_name_by_id.insert(call_id.clone(), tool_name.clone());
+                on_event(StreamEvent::ToolCall {
+                    id: call_id,
+                    name: tool_name,
+                    arguments,
+                });
+                tool_calls += 1;
+            }
+            MultiTurnStreamItem::ToolResult { tool_result } => {
+                let result_summary = tool_result_summary(&tool_result.content);
+                let call_id = tool_result.call.to_string();
+                let tool_name = tool_name_by_id
+                    .get(&call_id)
+                    .cloned()
+                    .unwrap_or_else(|| tool_result.name.as_str().to_string());
+
+                if tool_name == "source_edit" && source_edit_result_changed(&result_summary) {
+                    source_edit_succeeded = true;
+                }
+
+                if let Some((reason, status)) =
+                    record_tool_result_failure(&mut loop_detector, &result_summary)
+                {
+                    match status {
+                        LoopStatus::Ok => {}
+                        LoopStatus::Warning(count) => {
+                            on_event(StreamEvent::LoopWarning {
+                                count,
+                                tool_name: tool_name.clone(),
+                            });
+                        }
+                        LoopStatus::Stop => {
+                            let msg = format!(
+                                "Agent stopped: repeated deterministic failure '{}' detected {} times. The agent appears stuck trying the same failing approach.",
+                                reason, loop_detector.failure_streak()
+                            );
+                            on_event(StreamEvent::LoopStopped {
+                                count: loop_detector.failure_streak(),
+                                tool_name: tool_name.clone(),
+                                message: msg.clone(),
+                            });
+                            return Err(LlmError::ControlledStop(msg));
+                        }
+                    }
+                }
+
+                on_event(StreamEvent::ToolResult {
+                    id: call_id,
+                    name: tool_name,
+                    result: result_summary,
+                });
+            }
+            MultiTurnStreamItem::FinalResponse(final_response) => {
+                full_response = final_response.output();
+                let mut history = input_history;
+                history.extend(final_response.messages);
+                captured_history = Some(history);
+                break;
+            }
+            _ => {}
         }
-    );
+    }
     let response_tokens = estimate_tokens(&full_response);
 
     Ok(StreamCompletionResult {
@@ -997,8 +930,9 @@ fn estimate_message_tokens(message: &Message) -> usize {
                 .collect::<Vec<_>>()
                 .join(" "),
         ),
-        Message::Assistant { content, .. } => estimate_tokens(
-            &content
+        Message::Assistant(message) => estimate_tokens(
+            &message
+                .content
                 .iter()
                 .filter_map(|item| match item {
                     rig::completion::message::AssistantContent::Text(text) => {
@@ -1056,19 +990,19 @@ fn record_tool_result_failure(
     }
 }
 
-fn reasoning_text_from_content(content: &[ReasoningContent]) -> String {
-    let mut parts = Vec::with_capacity(content.len());
-    for item in content {
-        match item {
-            ReasoningContent::Text { text, .. } | ReasoningContent::Summary(text) => {
-                parts.push(text.clone());
-            }
-            // Encrypted, redacted, and future opaque variants intentionally
-            // contribute nothing.
-            _ => {}
-        }
-    }
-    parts.join("")
+/// Joins text and structured blocks of a tool result into the summary string
+/// the UI and loop detector read. Structured blocks render as compact JSON,
+/// matching how tool outputs were serialized before rig emitted JSON blocks.
+pub(crate) fn tool_result_summary(content: &[ToolResultContent]) -> String {
+    content
+        .iter()
+        .filter_map(|item| match item {
+            ToolResultContent::Text(text) => Some(text.text.clone()),
+            ToolResultContent::Json { value } => Some(value.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn ensure_active_reasoning_id(active: &mut Option<String>, seq: &mut usize) -> String {
@@ -1295,26 +1229,19 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_text_from_content_joins_text_blocks_and_skips_encrypted() {
-        use rig::completion::message::ReasoningContent;
-
+    fn tool_result_summary_joins_text_and_renders_json_blocks() {
         let content = vec![
-            ReasoningContent::Text {
-                text: "hello ".to_string(),
-                signature: None,
-            },
-            ReasoningContent::Text {
-                text: "world".to_string(),
-                signature: Some("sig".to_string()),
-            },
-            ReasoningContent::Summary(" summary".to_string()),
-            ReasoningContent::Encrypted("cipher".to_string()),
-            ReasoningContent::Redacted {
-                data: "redacted".to_string(),
+            ToolResultContent::text("plain"),
+            ToolResultContent::Json {
+                value: json!({"success": true, "changed": true}),
             },
         ];
 
-        assert_eq!(reasoning_text_from_content(&content), "hello world summary");
+        let summary = tool_result_summary(&content);
+
+        let (text, structured) = summary.split_once('\n').unwrap();
+        assert_eq!(text, "plain");
+        assert!(source_edit_result_changed(structured));
     }
 
     #[test]

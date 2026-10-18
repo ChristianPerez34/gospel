@@ -1,15 +1,14 @@
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
-use rig::client::CompletionClient;
-use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
+use rig::streaming::{Item, StreamEvent};
+use rig::AgentBuilder;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
 use crate::harness_profile::{
-    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfile,
+    resolve_harness_profile, tool_server_handle, ActiveWorkspaceContext, AgentRole, HarnessProfile,
     HarnessProfileRequest, LoopDetector, LoopStatus,
 };
-use crate::provider_client::provider_client;
 use crate::text_utils::wrap_untrusted;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,78 +130,60 @@ async fn run_verification_agent(
         .deadline
         .expect("Verification Harness Profiles always have a deadline");
 
-    macro_rules! verify_from_client {
-        ($client:expr, $model:expr) => {{
-            let builder = $client
-                .agent($model)
-                .preamble(&preamble)
-                .default_max_turns(guards.max_turns)
-                .tools(tools);
-
-            let agent = builder.build();
-            // Use stream_prompt instead of prompt: the ChatGPT Codex
-            // backend's non-streaming path drops tool calls when
-            // response.completed has an empty output array.
-            // See https://github.com/0xPlaygrounds/rig/issues/2000.
-            let mut stream = agent
-                .stream_prompt(prompt)
-                .multi_turn(guards.max_turns)
-                .await;
-            let mut final_output = String::new();
-            let mut loop_detector = LoopDetector::new(guards.loop_guard);
-            loop {
-                match timeout(deadline, stream.next()).await {
-                    Err(_) => break Err("verification agent timed out".to_string()),
-                    Ok(None) => break Ok(final_output),
-                    Ok(Some(item)) => match item {
-                        Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
-                            final_output = final_response.response().to_owned();
-                            break Ok(final_output);
-                        }
-                        Ok(MultiTurnStreamItem::StreamAssistantItem(
-                            StreamedAssistantContent::Text(text),
-                        )) => {
-                            final_output.push_str(&text.text);
-                        }
-                        Ok(MultiTurnStreamItem::StreamAssistantItem(
-                            StreamedAssistantContent::ToolCall { tool_call, .. },
-                        )) => {
-                            match loop_detector.record_call(
-                                &tool_call.function.name,
-                                &tool_call.function.arguments,
-                            ) {
-                                LoopStatus::Stop => break Err(format!(
-                                    "verification agent stopped after a repeated '{}' tool-call loop",
-                                    tool_call.function.name
-                                )),
-                                LoopStatus::Warning(count) => tracing::warn!(
-                                    role = "verification",
-                                    count,
-                                    tool_name = tool_call.function.name,
-                                    "repeated tool-call warning"
-                                ),
-                                LoopStatus::Ok => {}
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => break Err(error.to_string()),
-                    },
+    let model = crate::provider_client::completion_model(provider, model, api_key, session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let agent = AgentBuilder::new(model)
+        .preamble(preamble)
+        .default_max_turns(guards.max_turns)
+        .tool_server_handle(tool_server_handle(tools))
+        .build();
+    // Streaming instead of a unary prompt: the ChatGPT Codex backend's
+    // non-streaming path drops tool calls when response.completed has an
+    // empty output array. See https://github.com/0xPlaygrounds/rig/issues/2000.
+    let mut stream = agent.prompt(prompt).max_turns(guards.max_turns).stream();
+    let mut final_output = String::new();
+    let mut loop_detector = LoopDetector::new(guards.loop_guard);
+    loop {
+        match timeout(deadline, stream.next()).await {
+            Err(_) => break Err("verification agent timed out".to_string()),
+            Ok(None) => break Ok(final_output),
+            Ok(Some(item)) => match item {
+                Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
+                    final_output = final_response.output();
+                    break Ok(final_output);
                 }
-            }
-        }};
+                Ok(MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {
+                    text,
+                    ..
+                }))) => {
+                    final_output.push_str(&text);
+                }
+                Ok(MultiTurnStreamItem::ToolCall { tool_call }) => {
+                    let tool_name = tool_call.function.name.as_str();
+                    let arguments = serde_json::Value::Object(tool_call.function.arguments.clone());
+                    match loop_detector.record_call(tool_name, &arguments) {
+                        LoopStatus::Stop => {
+                            break Err(format!(
+                                "verification agent stopped after a repeated '{}' tool-call loop",
+                                tool_name
+                            ))
+                        }
+                        LoopStatus::Warning(count) => tracing::warn!(
+                            role = "verification",
+                            count,
+                            tool_name,
+                            "repeated tool-call warning"
+                        ),
+                        LoopStatus::Ok => {}
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => break Err(error.to_string()),
+            },
+        }
     }
-
-    provider_client!(
-        provider,
-        model,
-        api_key,
-        session_id,
-        |e: String| e,
-        |s: String| format!("unsupported provider: {}", s),
-        |client| { verify_from_client!(client, model) }
-    )
 }
-
 fn build_verification_prompt(
     workspace: &ActiveWorkspaceContext,
     response_to_verify: &str,
