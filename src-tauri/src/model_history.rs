@@ -2,7 +2,9 @@
 //!
 //! Sessions saved before the rig 0.44 upgrade store rig 0.39 `Message` JSON,
 //! which the current types cannot read. `parse_model_history` reads the
-//! current shape first and falls back to rewriting the legacy shape.
+//! current shape first and falls back to rewriting the legacy shape. Items
+//! that still cannot be read after rewriting are dropped, so one bad entry
+//! does not cost the session its whole history.
 
 use rig::completion::message::Message;
 use serde_json::{json, Map, Value};
@@ -19,8 +21,43 @@ pub(crate) fn parse_model_history(json: &str) -> Result<Vec<Message>, serde_json
             let Value::Array(messages) = value else {
                 return Err(current_error);
             };
-            serde_json::from_value(Value::Array(migrate_legacy_messages(messages)))
+            salvage_migrated(migrate_legacy_messages(messages), current_error)
         }
+    }
+}
+
+/// Deserializes rewritten messages one at a time, keeping every message that
+/// reads and dropping the rest. Returns the current-format error when nothing
+/// survives, so the caller still sees why hydration failed.
+fn salvage_migrated(
+    migrated: Vec<Value>,
+    current_error: serde_json::Error,
+) -> Result<Vec<Message>, serde_json::Error> {
+    let total = migrated.len();
+    let mut messages = Vec::with_capacity(total);
+    let mut first_error = None;
+    for message in migrated {
+        match serde_json::from_value::<Message>(message) {
+            Ok(message) => messages.push(message),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) if messages.is_empty() => {
+            tracing::warn!(error = %error, "no model history message survived migration");
+            Err(current_error)
+        }
+        Some(error) => {
+            tracing::warn!(
+                error = %error,
+                dropped = total - messages.len(),
+                "dropped unparseable model history message(s) during migration"
+            );
+            Ok(messages)
+        }
+        None => Ok(messages),
     }
 }
 
@@ -281,5 +318,32 @@ mod tests {
     fn malformed_history_is_an_error() {
         assert!(parse_model_history("not json").is_err());
         assert!(parse_model_history(r#"{"role":"user"}"#).is_err());
+    }
+
+    #[test]
+    fn unmigratable_items_are_dropped_not_the_whole_history() {
+        // A legacy tool result with no id or call_id cannot be rewritten;
+        // the messages around it must still load.
+        let legacy = r#"[
+            {"role":"user","content":[{"type":"text","text":"hi"}]},
+            {"role":"user","content":[{"type":"toolresult","content":[{"type":"text","text":"x"}]}]},
+            {"role":"assistant","id":null,"content":[{"text":"hello back"}]}
+        ]"#;
+
+        let messages = parse_model_history(legacy).unwrap();
+
+        assert_eq!(
+            messages,
+            vec![Message::user("hi"), Message::assistant("hello back")]
+        );
+    }
+
+    #[test]
+    fn history_with_nothing_migratable_is_an_error() {
+        let legacy = r#"[
+            {"role":"user","content":[{"type":"toolresult","content":[{"type":"text","text":"x"}]}]}
+        ]"#;
+
+        assert!(parse_model_history(legacy).is_err());
     }
 }

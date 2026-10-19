@@ -130,8 +130,21 @@ fn truncate_message_text_payloads(message: &mut Message, reduce_by: usize) -> bo
                     }
                     UserContent::ToolResult(tool_result) => {
                         for result_content in tool_result.content.iter_mut() {
-                            if let ToolResultContent::Text(text) = result_content {
-                                truncated |= truncate_text_payload(&mut text.text, reduce_by);
+                            match result_content {
+                                ToolResultContent::Text(text) => {
+                                    truncated |= truncate_text_payload(&mut text.text, reduce_by);
+                                }
+                                // Structured output is demoted to text when
+                                // it must shrink; a Json block cannot be
+                                // truncated in place without corrupting it.
+                                ToolResultContent::Json { value } => {
+                                    let mut rendered = value.to_string();
+                                    if truncate_text_payload(&mut rendered, reduce_by) {
+                                        *result_content = ToolResultContent::text(rendered);
+                                        truncated = true;
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -311,6 +324,38 @@ mod tests {
         };
         assert!(text.text.contains("[truncated]"));
         assert!(text.text.len() < large.len());
+    }
+
+    #[test]
+    fn byte_cap_truncates_single_oversized_json_tool_result() {
+        use rig::completion::message::ToolResult;
+
+        let mut store = ConversationStore::new();
+        let large = serde_json::json!({"output": "x".repeat(MAX_HISTORY_BYTES * 2)});
+        let message = Message::User {
+            content: vec![UserContent::ToolResult(ToolResult {
+                call: CallId::from_wire("call_1"),
+                name: ToolName::new("read_file").unwrap(),
+                content: vec![ToolResultContent::Json { value: large }],
+                is_error: false,
+            })],
+        };
+
+        store.store_history("s1", vec![message]);
+        let retrieved = store.get_history("s1");
+
+        assert_eq!(retrieved.len(), 1);
+        assert!(serialized_history_bytes(&retrieved) <= MAX_HISTORY_BYTES);
+        let Message::User { content } = &retrieved[0] else {
+            panic!("expected user message");
+        };
+        let Some(UserContent::ToolResult(result)) = content.first() else {
+            panic!("expected tool result");
+        };
+        let Some(ToolResultContent::Text(text)) = result.content.first() else {
+            panic!("expected the trimmed result demoted to text");
+        };
+        assert!(text.text.contains("[truncated]"));
     }
 
     #[test]

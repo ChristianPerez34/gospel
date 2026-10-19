@@ -163,11 +163,11 @@ pub enum ReasoningPhase {
 }
 
 /// Reasoning surfaces a transient, plain-text reasoning block for the
-/// UI. The `id` is the provider's reasoning block id when supplied;
-/// otherwise the backend synthesizes a stable id for the active
-/// reasoning block so deltas and the matching complete event collapse
-/// onto a single turn block. Encrypted and redacted payloads are
-/// dropped here — the `text` is the only field exposed to callers.
+/// UI. rig 0.44 stream events carry no provider reasoning ids, so the
+/// backend mints a stable `reasoning-N` id for each reasoning block so
+/// its deltas and the matching complete event collapse onto a single
+/// turn block. Encrypted and redacted payloads are dropped here — the
+/// `text` is the only field exposed to callers.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ReasoningPayload {
     pub id: String,
@@ -412,7 +412,8 @@ impl AgentHook for ExplorationHook {
         let Some(result) = event.tool_result() else {
             return OutcomeAction::proceed();
         };
-        let rendered = result.output().render();
+        // Same summary the main stream loop feeds the loop detector and UI.
+        let rendered = tool_result_summary(&result.output().clone().into_content());
         let failure = {
             let mut detector = self.loop_detector.lock().unwrap();
             record_tool_result_failure(&mut detector, &rendered)
@@ -1263,56 +1264,51 @@ mod tests {
     }
 
     // Models the stream loop's reasoning-id state machine for the
-    // scenario: an id-less ReasoningDelta opens a burst, then an
+    // scenario: a Reasoning delta opens a burst, then an
     // empty complete Reasoning (encrypted/redacted) closes it, so
-    // the next id-less ReasoningDelta mints a fresh id instead of
-    // reusing the stale fallback from the closed burst.
+    // the next Reasoning delta mints a fresh id instead of
+    // reusing the stale one from the closed burst.
     #[test]
-    fn empty_complete_reasoning_closes_burst_before_next_idless_delta() {
+    fn empty_complete_reasoning_closes_burst_before_next_delta() {
         let mut active: Option<String> = None;
         let mut seq = 0usize;
 
-        // id-less ReasoningDelta "thinking..." opens burst -> reasoning-1.
+        // A Reasoning delta opens a burst -> reasoning-1.
         let first_delta = ensure_active_reasoning_id(&mut active, &mut seq);
         assert_eq!(first_delta, "reasoning-1");
         assert_eq!(active.as_deref(), Some("reasoning-1"));
 
-        // Empty complete Reasoning (no provider id): the loop calls
+        // Empty complete Reasoning: the loop calls
         // ensure_active_reasoning_id (a no-op reuse here) then, on
         // text.is_empty(), resets active_reasoning_id to None.
         let _ = ensure_active_reasoning_id(&mut active, &mut seq);
         active = None;
 
-        // Next id-less ReasoningDelta must NOT reuse reasoning-1.
+        // Next Reasoning delta must NOT reuse reasoning-1.
         let next_delta = ensure_active_reasoning_id(&mut active, &mut seq);
         assert_eq!(next_delta, "reasoning-2");
         assert_ne!(next_delta, first_delta);
     }
 
-    // Models the stream loop's reasoning-id state machine for the
-    // scenario: id-less ReasoningDeltas open a burst under a fallback
-    // id, then the provider supplies a *different* id on the matching
-    // complete Reasoning. The loop must reuse the active fallback id
-    // for the complete event so the frontend replaces the accumulated
-    // deltas instead of emitting an orphaned block under the
-    // provider's id.
+    // Models the stream loop's reasoning-id state machine: a Reasoning
+    // delta opens a burst under a minted id, and the matching complete
+    // Reasoning reuses the active id so the frontend replaces the
+    // accumulated deltas instead of emitting a second block.
     #[test]
-    fn complete_reasoning_reuses_active_fallback_id_over_provider_id() {
+    fn complete_reasoning_reuses_active_burst_id() {
         let mut active: Option<String> = None;
         let mut seq = 0usize;
 
-        // id-less ReasoningDelta opens burst -> reasoning-1.
+        // Reasoning delta opens burst -> reasoning-1.
         let delta_id = ensure_active_reasoning_id(&mut active, &mut seq);
         assert_eq!(delta_id, "reasoning-1");
 
-        // Complete Reasoning arrives with a provider-supplied id, but
-        // the loop prefers the active fallback id so the frontend can
-        // collapse the complete onto the accumulated deltas.
-        let complete_id = active
-            .clone()
-            .unwrap_or_else(|| "provider-rs-9".to_string());
+        // The complete Reasoning reuses the active burst id so the
+        // frontend collapses it onto the accumulated deltas.
+        let complete_id = active.clone().unwrap_or_else(|| {
+            ensure_active_reasoning_id(&mut active, &mut seq)
+        });
         assert_eq!(complete_id, "reasoning-1");
-        assert_ne!(complete_id, "provider-rs-9");
     }
 
     #[test]
