@@ -2,8 +2,7 @@
 
 use crate::corpus::dto::{NeighborDto, NodeDto};
 use crate::corpus::persistence::CorpusPersistence;
-use rig::completion::ToolDefinition;
-use rig::tool::Tool;
+use rig::tool::{PortableTool, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -44,23 +43,27 @@ pub struct CorpusSummaryTool {
     pub workspace_path: PathBuf,
 }
 
-impl Tool for CorpusSummaryTool {
+impl PortableTool for CorpusSummaryTool {
     const NAME: &'static str = "corpus_summary";
 
     type Error = CorpusToolError;
     type Args = CorpusSummaryArgs;
     type Output = CorpusSummaryOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: "corpus_summary".to_string(),
-            description: "Get a summary of the codebase structure including files, symbols, and their relationships. Use this FIRST when asked about the codebase, its structure, or what it contains.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        }
+    fn description(&self) -> String {
+        "Get a summary of the codebase structure including files, symbols, and their relationships. Use this FIRST when asked about the codebase, its structure, or what it contains.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -138,28 +141,32 @@ pub struct CorpusQueryTool {
     pub workspace_path: PathBuf,
 }
 
-impl Tool for CorpusQueryTool {
+impl PortableTool for CorpusQueryTool {
     const NAME: &'static str = "corpus_query";
 
     type Error = CorpusToolError;
     type Args = CorpusQueryArgs;
     type Output = CorpusQueryOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: "corpus_query".to_string(),
-            description: "Query details about a specific file, function, class, or code element by name or ID. Returns metadata and connection count.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "identifier": {
-                        "type": "string",
-                        "description": "Node ID, symbol name, or file path to query (e.g., 'main', 'DataProcessor', 'src/main.rs')"
-                    }
-                },
-                "required": ["identifier"]
-            }),
-        }
+    fn description(&self) -> String {
+        "Query details about a specific file, function, class, or code element by name or ID. Returns metadata and connection count.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Node ID, symbol name, or file path to query (e.g., 'main', 'DataProcessor', 'src/main.rs')"
+                }
+            },
+            "required": ["identifier"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -229,33 +236,37 @@ pub struct CorpusNeighborsTool {
     pub workspace_path: PathBuf,
 }
 
-impl Tool for CorpusNeighborsTool {
+impl PortableTool for CorpusNeighborsTool {
     const NAME: &'static str = "corpus_neighbors";
 
     type Error = CorpusToolError;
     type Args = CorpusNeighborsArgs;
     type Output = Vec<NeighborDto>;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: "corpus_neighbors".to_string(),
-            description: "Get all relationships for a code element. Shows what it uses, imports, defines, or connects to. Use to understand dependencies.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "identifier": {
-                        "type": "string",
-                        "description": "Node ID, symbol name, or file path"
-                    },
-                    "min_confidence": {
-                        "type": "string",
-                        "enum": ["high", "medium", "low"],
-                        "description": "Minimum confidence (default: low)"
-                    }
+    fn description(&self) -> String {
+        "Get all relationships for a code element. Shows what it uses, imports, defines, or connects to. Use to understand dependencies.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Node ID, symbol name, or file path"
                 },
-                "required": ["identifier"]
-            }),
-        }
+                "min_confidence": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"],
+                    "description": "Minimum confidence (default: low)"
+                }
+            },
+            "required": ["identifier"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {

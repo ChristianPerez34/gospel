@@ -7,7 +7,7 @@ use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
 use crate::trace;
 use crate::verification::{VerificationResult, VerificationStatus};
-use rig::completion::message::{AssistantContent, Message, UserContent};
+use rig::completion::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -743,14 +743,13 @@ pub fn build_display_transcript(messages: &[Message]) -> Vec<serde_json::Value> 
                                 .content
                                 .iter()
                                 .map(|part| match part {
-                                    rig::completion::message::ToolResultContent::Text(t) => {
-                                        t.text.clone()
-                                    }
+                                    ToolResultContent::Text(t) => t.text.clone(),
+                                    ToolResultContent::Json { value } => value.to_string(),
                                     _ => String::new(),
                                 })
                                 .collect::<Vec<_>>()
                                 .join("");
-                            pending_tool_results.insert(tool_result.id.clone(), result_text);
+                            pending_tool_results.insert(tool_result.call.to_string(), result_text);
                         }
                         _ => {}
                     }
@@ -762,10 +761,10 @@ pub fn build_display_transcript(messages: &[Message]) -> Vec<serde_json::Value> 
                     }));
                 }
             }
-            Message::Assistant { content, .. } => {
+            Message::Assistant(message) => {
                 let mut blocks: Vec<serde_json::Value> = Vec::new();
                 let mut text_parts: Vec<String> = Vec::new();
-                for item in content.iter() {
+                for item in message.content.iter() {
                     match item {
                         AssistantContent::Text(text) => {
                             text_parts.push(text.text.clone());
@@ -778,11 +777,11 @@ pub fn build_display_transcript(messages: &[Message]) -> Vec<serde_json::Value> 
                         AssistantContent::ToolCall(tool_call) => {
                             blocks.push(json!({
                                 "kind": "tool",
-                                "id": tool_call.id.clone(),
-                                "name": tool_call.function.name.clone(),
+                                "id": tool_call.id.to_string(),
+                                "name": tool_call.function.name.as_str(),
                                 "arguments": observable_tool_arguments(
-                                    &tool_call.function.name,
-                                    &tool_call.function.arguments,
+                                    tool_call.function.name.as_str(),
+                                    &tool_call.function.arguments_value(),
                                 ),
                                 "result": null,
                                 "status": "completed",
@@ -1280,10 +1279,7 @@ pub fn resolve_active_workspace_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::completion::message::{
-        AssistantContent, Text, ToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent,
-    };
-    use rig::one_or_many::OneOrMany;
+    use rig::completion::message::{CallId, ToolName};
     use std::{future, sync::Mutex};
 
     fn skill(name: &str, description: &str, body: &str) -> Skill {
@@ -1315,22 +1311,11 @@ mod tests {
     }
 
     fn user_message(text: &str) -> Message {
-        Message::User {
-            content: OneOrMany::one(UserContent::Text(Text {
-                text: text.to_string(),
-                additional_params: Some(serde_json::json!({})),
-            })),
-        }
+        Message::user(text)
     }
 
     fn assistant_message(text: &str) -> Message {
-        Message::Assistant {
-            id: None,
-            content: OneOrMany::one(AssistantContent::Text(Text {
-                text: text.to_string(),
-                additional_params: Some(serde_json::json!({})),
-            })),
-        }
+        Message::assistant(text)
     }
 
     /// Build an assistant message with interleaved text + tool-call content parts
@@ -1340,47 +1325,32 @@ mod tests {
         for part in parts {
             match part {
                 AssistantPart::Text(t) => {
-                    content.push(AssistantContent::Text(Text {
-                        text: t.to_string(),
-                        additional_params: Some(serde_json::json!({})),
-                    }));
+                    content.push(AssistantContent::text(*t));
                 }
                 AssistantPart::ToolCall {
                     id,
                     name,
                     arguments,
                 } => {
-                    content.push(AssistantContent::ToolCall(ToolCall {
-                        id: id.to_string(),
-                        call_id: None,
-                        function: ToolFunction {
-                            name: name.to_string(),
-                            arguments: arguments.clone(),
-                        },
-                        signature: None,
-                        additional_params: None,
-                    }));
+                    content.push(AssistantContent::tool_call(
+                        *id,
+                        ToolName::new(*name).unwrap(),
+                        arguments.clone(),
+                    ));
                 }
             }
         }
-        Message::Assistant {
-            id: None,
-            content: OneOrMany::many(content).expect("at least one content part"),
-        }
+        assert!(!content.is_empty(), "at least one content part");
+        Message::from(content)
     }
 
     /// Build a user message carrying a tool result for the given tool-call id.
     fn tool_result_message(id: &str, text: &str) -> Message {
-        Message::User {
-            content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                id: id.to_string(),
-                call_id: None,
-                content: OneOrMany::one(ToolResultContent::Text(Text {
-                    text: text.to_string(),
-                    additional_params: Some(serde_json::json!({})),
-                })),
-            })),
-        }
+        Message::tool_result(
+            CallId::from_wire(id),
+            ToolName::new("read_file").unwrap(),
+            text,
+        )
     }
 
     enum AssistantPart<'a> {

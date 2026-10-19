@@ -15,6 +15,7 @@ mod json_utils;
 pub mod keychain;
 mod llm;
 pub mod mcp;
+mod model_history;
 mod models;
 mod oauth;
 mod provider_client;
@@ -2428,7 +2429,7 @@ fn get_session(
     // so a subsequent `complete_streaming` call can continue the conversation
     // with prior turns visible to the LLM, not just the UI transcript.
     if let Some(model_history_json) = detail.model_history.as_deref() {
-        match serde_json::from_str::<Vec<rig::completion::message::Message>>(model_history_json) {
+        match model_history::parse_model_history(model_history_json) {
             Ok(messages) if !messages.is_empty() => {
                 let mut store = conversation_state.store.lock().unwrap();
                 store.store_history(&session_id, messages);

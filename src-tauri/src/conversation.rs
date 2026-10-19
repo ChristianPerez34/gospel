@@ -1,7 +1,5 @@
 use crate::text_utils::truncate_text_bytes;
-use rig::completion::message::{
-    AssistantContent, Message, ReasoningContent, ToolResultContent, UserContent,
-};
+use rig::completion::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -132,8 +130,21 @@ fn truncate_message_text_payloads(message: &mut Message, reduce_by: usize) -> bo
                     }
                     UserContent::ToolResult(tool_result) => {
                         for result_content in tool_result.content.iter_mut() {
-                            if let ToolResultContent::Text(text) = result_content {
-                                truncated |= truncate_text_payload(&mut text.text, reduce_by);
+                            match result_content {
+                                ToolResultContent::Text(text) => {
+                                    truncated |= truncate_text_payload(&mut text.text, reduce_by);
+                                }
+                                // Structured output is demoted to text when
+                                // it must shrink; a Json block cannot be
+                                // truncated in place without corrupting it.
+                                ToolResultContent::Json { value } => {
+                                    let mut rendered = value.to_string();
+                                    if truncate_text_payload(&mut rendered, reduce_by) {
+                                        *result_content = ToolResultContent::text(rendered);
+                                        truncated = true;
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -142,9 +153,9 @@ fn truncate_message_text_payloads(message: &mut Message, reduce_by: usize) -> bo
             }
             truncated
         }
-        Message::Assistant { content, .. } => {
+        Message::Assistant(message) => {
             let mut truncated = false;
-            for item in content.iter_mut() {
+            for item in message.content.iter_mut() {
                 match item {
                     AssistantContent::Text(text) => {
                         truncated |= truncate_text_payload(&mut text.text, reduce_by);
@@ -153,11 +164,7 @@ fn truncate_message_text_payloads(message: &mut Message, reduce_by: usize) -> bo
                     // cap so a single over-long reasoning block cannot
                     // stall history pruning.
                     AssistantContent::Reasoning(reasoning) => {
-                        for part in reasoning.content.iter_mut() {
-                            if let ReasoningContent::Text { text, .. } = part {
-                                truncated |= truncate_text_payload(text, reduce_by);
-                            }
-                        }
+                        truncated |= truncate_text_payload(&mut reasoning.text, reduce_by);
                     }
                     _ => {}
                 }
@@ -195,38 +202,22 @@ pub struct ConversationState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::completion::message::{AssistantContent, Text, ToolResult, UserContent};
+    use rig::completion::message::{CallId, ToolName};
 
     fn make_user_message(text: &str) -> Message {
-        Message::User {
-            content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
-                text: text.to_string(),
-                additional_params: Some(serde_json::json!({})),
-            })),
-        }
+        Message::user(text)
     }
 
     fn make_tool_result_message(id: &str, text: &str) -> Message {
-        Message::User {
-            content: rig::one_or_many::OneOrMany::one(UserContent::ToolResult(ToolResult {
-                id: id.to_string(),
-                call_id: None,
-                content: rig::one_or_many::OneOrMany::one(ToolResultContent::Text(Text {
-                    text: text.to_string(),
-                    additional_params: Some(serde_json::json!({})),
-                })),
-            })),
-        }
+        Message::tool_result(
+            CallId::from_wire(id),
+            ToolName::new("read_file").unwrap(),
+            text,
+        )
     }
 
     fn make_assistant_message(text: &str) -> Message {
-        Message::Assistant {
-            id: None,
-            content: rig::one_or_many::OneOrMany::one(AssistantContent::Text(Text {
-                text: text.to_string(),
-                additional_params: Some(serde_json::json!({})),
-            })),
-        }
+        Message::assistant(text)
     }
 
     #[test]
@@ -284,7 +275,7 @@ mod tests {
         let Some(UserContent::ToolResult(tool_result)) = content.iter().next() else {
             panic!("expected tool result content");
         };
-        let Some(ToolResultContent::Text(text)) = tool_result.content.iter().next() else {
+        let Some(ToolResultContent::Text(text)) = tool_result.content.first() else {
             panic!("expected tool result text");
         };
 
@@ -336,6 +327,38 @@ mod tests {
     }
 
     #[test]
+    fn byte_cap_truncates_single_oversized_json_tool_result() {
+        use rig::completion::message::ToolResult;
+
+        let mut store = ConversationStore::new();
+        let large = serde_json::json!({"output": "x".repeat(MAX_HISTORY_BYTES * 2)});
+        let message = Message::User {
+            content: vec![UserContent::ToolResult(ToolResult {
+                call: CallId::from_wire("call_1"),
+                name: ToolName::new("read_file").unwrap(),
+                content: vec![ToolResultContent::Json { value: large }],
+                is_error: false,
+            })],
+        };
+
+        store.store_history("s1", vec![message]);
+        let retrieved = store.get_history("s1");
+
+        assert_eq!(retrieved.len(), 1);
+        assert!(serialized_history_bytes(&retrieved) <= MAX_HISTORY_BYTES);
+        let Message::User { content } = &retrieved[0] else {
+            panic!("expected user message");
+        };
+        let Some(UserContent::ToolResult(result)) = content.first() else {
+            panic!("expected tool result");
+        };
+        let Some(ToolResultContent::Text(text)) = result.content.first() else {
+            panic!("expected the trimmed result demoted to text");
+        };
+        assert!(text.text.contains("[truncated]"));
+    }
+
+    #[test]
     fn access_order_updates_on_get() {
         let mut store = ConversationStore::new();
         store.store_history("s1", vec![make_user_message("a")]);
@@ -380,26 +403,18 @@ mod tests {
 
         let mut store = ConversationStore::new();
         let large = "z".repeat(MAX_HISTORY_BYTES * 2);
-        let reasoning =
-            Reasoning::new_with_signature(&large, None).optional_id(Some("rs-1".to_string()));
-        let message = Message::Assistant {
-            id: None,
-            content: rig::one_or_many::OneOrMany::one(AssistantContent::Reasoning(reasoning)),
-        };
+        let message = Message::from(AssistantContent::Reasoning(Reasoning::new(large)));
 
         store.store_history("s1", vec![message]);
 
         let retrieved = store.get_history("s1");
         assert_eq!(retrieved.len(), 1);
-        let Message::Assistant { content, .. } = &retrieved[0] else {
+        let Message::Assistant(message) = &retrieved[0] else {
             panic!("expected assistant message");
         };
-        let Some(AssistantContent::Reasoning(reasoning)) = content.iter().next() else {
+        let Some(AssistantContent::Reasoning(reasoning)) = message.content.first() else {
             panic!("expected reasoning content");
         };
-        let Some(ReasoningContent::Text { text, .. }) = reasoning.content.first() else {
-            panic!("expected reasoning text");
-        };
-        assert!(text.contains("[truncated]"));
+        assert!(reasoning.text.contains("[truncated]"));
     }
 }

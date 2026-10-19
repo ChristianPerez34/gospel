@@ -2026,28 +2026,14 @@ mod tests {
 
     #[test]
     fn model_history_round_trips_into_rig_messages() {
-        use rig::completion::message::{AssistantContent, Message, Text, UserContent};
+        use rig::completion::message::Message;
 
         let store = test_store();
         let s = store
             .create_session("Round Trip", "openai", "gpt-4", Some("ws1"))
             .unwrap();
 
-        let original: Vec<Message> = vec![
-            Message::User {
-                content: rig::one_or_many::OneOrMany::one(UserContent::Text(Text {
-                    text: "hi".to_string(),
-                    additional_params: Some(serde_json::json!({})),
-                })),
-            },
-            Message::Assistant {
-                id: None,
-                content: rig::one_or_many::OneOrMany::one(AssistantContent::Text(Text {
-                    text: "hello back".to_string(),
-                    additional_params: Some(serde_json::json!({})),
-                })),
-            },
-        ];
+        let original: Vec<Message> = vec![Message::user("hi"), Message::assistant("hello back")];
         let history_json = serde_json::to_string(&original).unwrap();
         store
             .persist_turn(&s.id, "[]", Some(&history_json))
