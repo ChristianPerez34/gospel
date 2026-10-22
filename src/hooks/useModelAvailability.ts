@@ -103,6 +103,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const isRefreshingModelsRef = useRef(false);
+  const availabilityRequestIdRef = useRef(0);
   const onErrorRef = useRef(onError);
   const onSuccessRef = useRef(onSuccess);
   onErrorRef.current = onError;
@@ -110,6 +111,8 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
 
   const refreshModelAvailability = useCallback(async (forceRefresh = false) => {
     if (forceRefresh && isRefreshingModelsRef.current) return;
+    const requestId = ++availabilityRequestIdRef.current;
+    const isStaleRequest = () => requestId !== availabilityRequestIdRef.current;
     if (forceRefresh) {
       setIsRefreshingModels(true);
       isRefreshingModelsRef.current = true;
@@ -118,6 +121,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
       const snapshot = await invoke<ModelAvailabilitySnapshot>("get_model_availability", {
         forceRefresh,
       });
+      if (isStaleRequest()) return;
       setAvailabilitySnapshot(snapshot);
       setAvailableModels(snapshot.available_models);
       setProviders((current) =>
@@ -141,6 +145,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
         }
       }
     } catch (e) {
+      if (isStaleRequest()) return;
       if (forceRefresh) {
         onErrorRef.current?.(`Model refresh failed: ${e}`);
       } else {
