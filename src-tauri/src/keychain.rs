@@ -1,12 +1,9 @@
-use keyring::Entry;
 use serde::Deserialize;
 use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum KeychainError {
-    #[error("keyring error: {0}")]
-    Keyring(#[from] keyring::Error),
     #[error("provider {0} is not supported")]
     UnsupportedProvider(String),
     #[error("IO error: {0}")]
@@ -21,18 +18,6 @@ pub enum KeychainError {
     NotOauthProvider(String),
 }
 
-fn service_name() -> &'static str {
-    #[cfg(test)]
-    return "gospel-test";
-
-    #[cfg(not(test))]
-    if cfg!(debug_assertions) && std::env::var_os("GOSPEL_KEYCHAIN_TEST").is_some() {
-        "gospel-test"
-    } else {
-        "gospel"
-    }
-}
-
 fn ensure_known(provider: &str) -> Result<(), KeychainError> {
     if !crate::providers::is_known_provider(provider) {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
@@ -40,30 +25,12 @@ fn ensure_known(provider: &str) -> Result<(), KeychainError> {
     Ok(())
 }
 
-fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
-    ensure_known(provider)?;
-    Ok(Entry::new(service_name(), provider)?)
-}
-
-fn env_key_name(provider: &str) -> String {
-    format!("{}_API_KEY", provider.to_uppercase())
-}
-
 fn env_api_key(provider: &str) -> Option<String> {
-    std::env::var(env_key_name(provider))
+    let key = format!("{}_API_KEY", provider.to_uppercase());
+    std::env::var(key)
         .ok()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
-}
-
-fn warn_env_override(provider: &str) {
-    if env_api_key(provider).is_some() {
-        tracing::warn!(
-            provider,
-            env = env_key_name(provider),
-            "env API key is set; it is used whenever no stored credential is available"
-        );
-    }
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
 }
 
 fn credentials_file_path() -> PathBuf {
@@ -71,24 +38,10 @@ fn credentials_file_path() -> PathBuf {
 }
 
 fn read_credentials() -> Result<std::collections::BTreeMap<String, String>, KeychainError> {
-    let path = credentials_file_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(std::collections::BTreeMap::new());
-        }
-        Err(err) => return Err(KeychainError::Io(err)),
-    };
-    match serde_json::from_str(&content) {
-        Ok(map) => Ok(map),
-        Err(err) => {
-            tracing::error!(
-                path = %path.display(),
-                error = %err,
-                "credentials file exists but contains invalid JSON"
-            );
-            Err(KeychainError::Json(err))
-        }
+    match std::fs::File::open(credentials_file_path()) {
+        Ok(file) => Ok(serde_json::from_reader(file)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(e) => Err(KeychainError::Io(e)),
     }
 }
 
@@ -97,54 +50,13 @@ fn write_credentials(
 ) -> Result<(), KeychainError> {
     let dir = gospel_config_dir();
     std::fs::create_dir_all(&dir)?;
-    let path = credentials_file_path();
-
     let mut temp = tempfile::Builder::new()
         .prefix(".credentials-")
         .suffix(".tmp")
         .tempfile_in(&dir)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    use std::io::Write;
-    temp.write_all(serde_json::to_string_pretty(credentials)?.as_bytes())?;
-    temp.flush()?;
-
-    temp.persist(&path).map_err(|e| e.error)?;
+    serde_json::to_writer_pretty(&mut temp, credentials)?;
+    temp.persist(credentials_file_path()).map_err(|e| e.error)?;
     Ok(())
-}
-
-/// One-time migration: a readable legacy Keychain entry is moved into the file
-/// store. Denied or missing entries fall through to the env fallback.
-fn migrate_keychain_entry(provider: &str) -> Option<String> {
-    let entry = entry_for_provider(provider).ok()?;
-    let key = match entry.get_password() {
-        Ok(k) => k,
-        Err(keyring::Error::NoEntry) => return None,
-        Err(err) => {
-            tracing::warn!(
-                provider,
-                error = %err,
-                "failed to read legacy keychain entry during migration"
-            );
-            return None;
-        }
-    };
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let mut credentials = read_credentials().ok()?;
-    credentials.insert(provider.to_string(), trimmed.to_string());
-    if write_credentials(&credentials).is_ok() {
-        let _ = entry.delete_credential();
-    }
-    Some(trimmed.to_string())
 }
 
 pub fn store(provider: &str, api_key: &str) -> Result<(), KeychainError> {
@@ -155,34 +67,16 @@ pub fn store(provider: &str, api_key: &str) -> Result<(), KeychainError> {
     }
     let mut credentials = read_credentials()?;
     credentials.insert(provider.to_string(), key.to_string());
-    write_credentials(&credentials)?;
-    warn_env_override(provider);
-    Ok(())
+    write_credentials(&credentials)
 }
 
-/// Resolution order: `~/.config/gospel/credentials.json`, a legacy Keychain
-/// entry (migrated into the file on first successful read), then
-/// `{PROVIDER}_API_KEY`. Secrets live in a `0600` file rather than the Keychain
-/// because macOS binds item access to the binary's code signature — ad-hoc dev
-/// builds get a new identity per rebuild and are silently denied.
+/// Resolution order: `~/.config/gospel/credentials.json`, then `{PROVIDER}_API_KEY`.
 pub fn retrieve(provider: &str) -> Result<String, KeychainError> {
     ensure_known(provider)?;
-    let credentials = match read_credentials() {
-        Ok(creds) => creds,
-        Err(err) => {
-            tracing::warn!(
-                provider,
-                error = %err,
-                "failed to read credentials file; falling back to migration/env"
-            );
-            Default::default()
+    if let Ok(credentials) = read_credentials() {
+        if let Some(key) = credentials.get(provider).filter(|key| !key.is_empty()) {
+            return Ok(key.clone());
         }
-    };
-    if let Some(key) = credentials.get(provider).filter(|key| !key.is_empty()) {
-        return Ok(key.clone());
-    }
-    if let Some(key) = migrate_keychain_entry(provider) {
-        return Ok(key);
     }
     if let Some(key) = env_api_key(provider) {
         return Ok(key);
@@ -196,10 +90,6 @@ pub fn delete(provider: &str) -> Result<(), KeychainError> {
     if credentials.remove(provider).is_some() {
         write_credentials(&credentials)?;
     }
-    if let Ok(entry) = entry_for_provider(provider) {
-        let _ = entry.delete_credential();
-    }
-    warn_env_override(provider);
     Ok(())
 }
 
@@ -413,31 +303,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_keychain_roundtrip() {
-        // Dedicated account: tests/keychain_test.rs mutates "openai" in a
-        // separate process, and parallel runs would race on a shared entry.
-        let provider = "groq";
-        let test_key = "sk-test-roundtrip-12345";
-
-        let entry = Entry::new(service_name(), provider).unwrap();
-        let _ = entry.delete_credential();
-
-        if entry.set_password(test_key).is_err() {
-            return; // headless CI without a usable keychain
-        }
-        assert!(entry.get_password().is_ok());
-        assert_eq!(entry.get_password().unwrap(), test_key);
-        entry.delete_credential().unwrap();
-        assert!(entry.get_password().is_err());
-    }
-
-    #[test]
     fn credentials_file_roundtrip() {
         let _lock = lock_config_home();
         let dir = tempfile::tempdir().unwrap();
         let _home = isolate_config_home(dir.path());
         std::env::remove_var("XAI_API_KEY");
-        let _ = Entry::new(service_name(), "xai").map(|e| e.delete_credential());
 
         store("xai", "sk-file-test").unwrap();
         assert_eq!(retrieve("xai").unwrap(), "sk-file-test");
@@ -497,30 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn keychain_entry_migrates_into_credentials_file() {
+    fn env_api_key_rescues_missing_stored_credential() {
         let _lock = lock_config_home();
         let dir = tempfile::tempdir().unwrap();
         let _home = isolate_config_home(dir.path());
-        std::env::remove_var("GEMINI_API_KEY");
-
-        let entry = Entry::new(service_name(), "gemini").unwrap();
-        let _ = entry.delete_credential();
-        if entry.set_password("sk-legacy").is_err() {
-            return; // headless CI without a usable keychain
-        }
-
-        assert_eq!(retrieve("gemini").unwrap(), "sk-legacy");
-        assert!(entry.get_password().is_err());
-        assert_eq!(retrieve("gemini").unwrap(), "sk-legacy");
-    }
-
-    #[test]
-    fn env_api_key_rescues_missing_keychain_entry() {
-        let _lock = lock_config_home();
-        let dir = tempfile::tempdir().unwrap();
-        let _home = isolate_config_home(dir.path());
-        // Match the reported failure: nothing readable in the keychain.
-        let _ = Entry::new(service_name(), "opencode_go").map(|e| e.delete_credential());
 
         std::env::set_var("OPENCODE_GO_API_KEY", "sk-env-test");
         assert_eq!(retrieve("opencode_go").unwrap(), "sk-env-test");

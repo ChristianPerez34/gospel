@@ -28,7 +28,6 @@ serde_yaml = "0.9"
 rig = "0.44"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
 dirs = "6"
-keyring = "3"
 thiserror = "2"
 futures = "0.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }
@@ -46,14 +45,5 @@ regex = "1"
 sha2 = "0.11.0"
 nix = { version = "0.31.3", features = ["signal", "process"] }
 
-# keyring 3.x ships no default store — without a platform feature Entry uses an
-# in-memory mock, so "keychain" writes were never persisted.
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
-
 [dev-dependencies]
-keyring = "3"
 rig = { version = "0.44", features = ["test-utils"] }

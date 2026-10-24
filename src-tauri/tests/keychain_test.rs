@@ -6,7 +6,6 @@ fn test_keychain_api_surface() {
     // the config home so probes don't write into the real credentials file.
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("XDG_CONFIG_HOME", dir.path());
-    std::env::set_var("GOSPEL_KEYCHAIN_TEST", "1");
     std::env::remove_var("OPENAI_API_KEY");
 
     // Verify the API functions exist and return expected types
