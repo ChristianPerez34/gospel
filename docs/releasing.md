@@ -21,7 +21,7 @@ Test the packaged app rather than the development server:
 - Open the DMG and drag Gospel to Applications.
 - Confirm the documented Gatekeeper override works and the app launches.
 - Add a workspace and confirm it remains available after restarting the app.
-- Configure a provider, restart, and confirm its credential remains available through Keychain.
+- Configure a provider, restart, and confirm its credential remains available in `~/.config/gospel/credentials.json`.
 - Send a prompt in read-only mode and confirm workspace tools cannot edit files.
 - Approve one harmless edit or command and deny another to exercise both approval paths.
 - Confirm the app reports the intended version and does not require a font or UI network request.

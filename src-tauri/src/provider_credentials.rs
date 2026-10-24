@@ -158,6 +158,10 @@ mod tests {
 
     #[test]
     fn xai_api_key_storage_is_supported_while_grok_rejects_api_keys() {
+        // Isolate the credentials file so the probe key never touches the real store.
+        let _lock = crate::keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::keychain::isolate_config_home(dir.path());
         assert!(matches!(
             store_api_key("grok", "should-not-store"),
             Err(CredentialError::ApiKeyStorageUnsupported(_))
