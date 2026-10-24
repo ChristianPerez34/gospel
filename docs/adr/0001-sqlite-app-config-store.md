@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Amended 2026-10-23: provider API keys moved from the OS keychain to `~/.config/gospel/credentials.json` (`0600`). Gospel builds are ad-hoc signed, so every rebuild produces a new code identity that the Keychain silently denies access to items written by earlier builds — the store could never be durable.
 
 ## Context
 

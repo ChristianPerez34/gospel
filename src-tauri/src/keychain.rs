@@ -1,51 +1,100 @@
-use keyring::Entry;
 use serde::Deserialize;
 use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum KeychainError {
-    #[error("keyring error: {0}")]
-    Keyring(#[from] keyring::Error),
     #[error("provider {0} is not supported")]
     UnsupportedProvider(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("credential not found for provider {0}")]
+    NotFound(String),
+    #[error("API key cannot be empty for provider {0}")]
+    EmptyApiKey(String),
     #[error("Provider {0} does not support OAuth")]
     NotOauthProvider(String),
 }
 
-const SERVICE_NAME: &str = "gospel";
-
-fn entry_for_provider(provider: &str) -> Result<Entry, KeychainError> {
+fn ensure_known(provider: &str) -> Result<(), KeychainError> {
     if !crate::providers::is_known_provider(provider) {
         return Err(KeychainError::UnsupportedProvider(provider.to_string()));
     }
-    Ok(Entry::new(SERVICE_NAME, provider)?)
-}
-
-pub fn store(provider: &str, api_key: &str) -> Result<(), KeychainError> {
-    let entry = entry_for_provider(provider)?;
-    entry.set_password(api_key)?;
     Ok(())
 }
 
+fn env_api_key(provider: &str) -> Option<String> {
+    let key = format!("{}_API_KEY", provider.to_uppercase());
+    std::env::var(key)
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
+
+fn credentials_file_path() -> PathBuf {
+    gospel_config_dir().join("credentials.json")
+}
+
+fn read_credentials() -> Result<std::collections::BTreeMap<String, String>, KeychainError> {
+    match std::fs::File::open(credentials_file_path()) {
+        Ok(file) => Ok(serde_json::from_reader(file)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(e) => Err(KeychainError::Io(e)),
+    }
+}
+
+fn write_credentials(
+    credentials: &std::collections::BTreeMap<String, String>,
+) -> Result<(), KeychainError> {
+    let dir = gospel_config_dir();
+    std::fs::create_dir_all(&dir)?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(".credentials-")
+        .suffix(".tmp")
+        .tempfile_in(&dir)?;
+    serde_json::to_writer_pretty(&mut temp, credentials)?;
+    temp.persist(credentials_file_path()).map_err(|e| e.error)?;
+    Ok(())
+}
+
+pub fn store(provider: &str, api_key: &str) -> Result<(), KeychainError> {
+    ensure_known(provider)?;
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err(KeychainError::EmptyApiKey(provider.to_string()));
+    }
+    let mut credentials = read_credentials()?;
+    credentials.insert(provider.to_string(), key.to_string());
+    write_credentials(&credentials)
+}
+
+/// Resolution order: `~/.config/gospel/credentials.json`, then `{PROVIDER}_API_KEY`.
 pub fn retrieve(provider: &str) -> Result<String, KeychainError> {
-    let entry = entry_for_provider(provider)?;
-    let key = entry.get_password()?;
-    Ok(key)
+    ensure_known(provider)?;
+    if let Ok(credentials) = read_credentials() {
+        if let Some(key) = credentials.get(provider).filter(|key| !key.is_empty()) {
+            return Ok(key.clone());
+        }
+    }
+    if let Some(key) = env_api_key(provider) {
+        return Ok(key);
+    }
+    Err(KeychainError::NotFound(provider.to_string()))
 }
 
 pub fn delete(provider: &str) -> Result<(), KeychainError> {
-    let entry = entry_for_provider(provider)?;
-    entry.delete_credential()?;
+    ensure_known(provider)?;
+    let mut credentials = read_credentials()?;
+    if credentials.remove(provider).is_some() {
+        write_credentials(&credentials)?;
+    }
     Ok(())
 }
 
 pub fn has_key(provider: &str) -> bool {
-    entry_for_provider(provider)
-        .map(|e| e.get_password().is_ok())
-        .unwrap_or(false)
+    retrieve(provider).is_ok()
 }
 
 #[derive(Deserialize)]
@@ -254,18 +303,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_keychain_roundtrip() {
-        let provider = "openai";
-        let test_key = "sk-test-roundtrip-12345";
+    fn credentials_file_roundtrip() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        std::env::remove_var("XAI_API_KEY");
 
-        let entry = Entry::new(SERVICE_NAME, provider).unwrap();
-        let _ = entry.delete_credential();
+        store("xai", "sk-file-test").unwrap();
+        assert_eq!(retrieve("xai").unwrap(), "sk-file-test");
+        assert!(has_key("xai"));
 
-        entry.set_password(test_key).unwrap();
-        assert!(entry.get_password().is_ok());
-        assert_eq!(entry.get_password().unwrap(), test_key);
-        entry.delete_credential().unwrap();
-        assert!(entry.get_password().is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(credentials_file_path())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        delete("xai").unwrap();
+        assert!(retrieve("xai").is_err());
+        assert!(!has_key("xai"));
+    }
+
+    #[test]
+    fn store_trims_whitespace_and_rejects_empty_key() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+
+        assert!(matches!(
+            store("openai", ""),
+            Err(KeychainError::EmptyApiKey(_))
+        ));
+        assert!(matches!(
+            store("openai", "   "),
+            Err(KeychainError::EmptyApiKey(_))
+        ));
+
+        store("openai", "  sk-openai-spaces  \n").unwrap();
+        assert_eq!(retrieve("openai").unwrap(), "sk-openai-spaces");
+    }
+
+    #[test]
+    fn corrupted_credentials_file_prevents_overwrite_on_store() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+
+        let path = credentials_file_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ invalid json ").unwrap();
+
+        assert!(matches!(
+            store("openai", "sk-new"),
+            Err(KeychainError::Json(_))
+        ));
+
+        // Confirm the file was not overwritten with an empty default
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ invalid json ");
+    }
+
+    #[test]
+    fn env_api_key_rescues_missing_stored_credential() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+
+        std::env::set_var("OPENCODE_GO_API_KEY", "sk-env-test");
+        assert_eq!(retrieve("opencode_go").unwrap(), "sk-env-test");
+        assert!(has_key("opencode_go"));
+
+        std::env::set_var("OPENCODE_GO_API_KEY", "   ");
+        assert!(env_api_key("opencode_go").is_none());
+        std::env::remove_var("OPENCODE_GO_API_KEY");
     }
 
     #[test]
