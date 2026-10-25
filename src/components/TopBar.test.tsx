@@ -100,4 +100,25 @@ describe("TopBar", () => {
     fireEvent.click(editButton);
     expect(screen.queryByRole("textbox", { name: "Session title" })).not.toBeNull();
   });
+
+  it("counts sessions that need you on the tasks button", () => {
+    renderTopBar({ needsYouCount: 2 });
+    expect(
+      screen.getByRole("button", { name: "Toggle tasks, 2 sessions need you" }).textContent
+    ).toBe("2");
+
+    cleanup();
+    renderTopBar({ needsYouCount: 1 });
+    expect(screen.getByRole("button", { name: "Toggle tasks, 1 session needs you" })).toBeDefined();
+
+    cleanup();
+    renderTopBar({ needsYouCount: 12 });
+    expect(
+      screen.getByRole("button", { name: "Toggle tasks, 12 sessions need you" }).textContent
+    ).toBe("9+");
+
+    cleanup();
+    renderTopBar();
+    expect(screen.getByRole("button", { name: "Toggle tasks" }).textContent).toBe("");
+  });
 });

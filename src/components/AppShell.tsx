@@ -3,9 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
+import { useSessionShortcuts } from "../hooks/useSessionShortcuts";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { noModelCopy } from "../modelAvailabilityCopy";
+import {
+  buildRailLayout,
+  deriveSessionActivity,
+  nextSessionNeedingYou,
+  railOrder,
+} from "../sessionActivity";
 import {
   type ArchivePolicy,
   type ArchiveStats,
@@ -330,6 +337,22 @@ export function AppShell() {
   const allSessions = useMemo(() => {
     return sortSessionsByTimestamp(session.sessions);
   }, [session.sessions]);
+  const activityBySession = deriveSessionActivity(allSessions, {
+    activeSessionId: session.activeSessionId,
+    currentTurn: session.currentTurn,
+    liveTurnsBySession: session.liveTurnsBySession,
+    statusBySession: session.statusBySession,
+    streamingSessionIds: session.streamingSessionIds,
+    unreadSessionIds: session.unreadSessionIds,
+    runStartedAtBySession: session.runStartedAtBySession,
+  });
+  const needsYouCount = allSessions.filter((item) => activityBySession[item.id]?.needsYou).length;
+  const railSessions = railOrder(buildRailLayout(allSessions, activityBySession));
+  const nextNeedsYouSession = nextSessionNeedingYou(
+    railSessions,
+    activityBySession,
+    session.activeSessionId
+  );
 
   const handleSwitchWorkspace = useCallback(
     (ws: Workspace) => {
@@ -598,6 +621,17 @@ export function AppShell() {
   const surfaceTrapOpen = trappedSurface !== null;
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
 
+  useSessionShortcuts({
+    order: railSessions,
+    activity: activityBySession,
+    activeSessionId: session.activeSessionId,
+    paused: modalSurfaceOpen || surfaceTrapOpen || skillOptOpen,
+    onSelect: (target) => {
+      void session.handleSessionSelect(target);
+    },
+    onNewSession: session.handleNewSession,
+  });
+
   useEffect(() => {
     if (!activeSessionId || !activeSessionProvider || !activeSessionModel) return;
     setSelectedModel({
@@ -862,6 +896,7 @@ export function AppShell() {
             : currentModelName
         }
         status={headerStatus}
+        needsYouCount={needsYouCount}
         onWorkspaceSwitch={() => {
           setWorkspaceSwitcherOpen(true);
         }}
@@ -878,8 +913,7 @@ export function AppShell() {
         <TaskRail
           sessions={allSessions}
           activeSessionId={session.activeSessionId}
-          streamingSessionIds={session.streamingSessionIds}
-          statusBySession={session.statusBySession}
+          activityBySession={activityBySession}
           workspaces={workspaces}
           workspaceNames={workspaceNames}
           activeWorkspaceId={activeWorkspace?.id}
@@ -1045,6 +1079,15 @@ export function AppShell() {
         onSelectWorkspace={handleSwitchWorkspace}
         onOpenSkillOpt={() => setSkillOptOpen(true)}
         restoreFocusRef={commandPaletteRestoreRef}
+        activityBySession={activityBySession}
+        needsYouCount={needsYouCount}
+        onJumpToNextNeedsYou={
+          nextNeedsYouSession
+            ? () => {
+                void session.handleSessionSelect(nextNeedsYouSession);
+              }
+            : undefined
+        }
       />
       {skillOptOpen && (
         <SkillOptPanel

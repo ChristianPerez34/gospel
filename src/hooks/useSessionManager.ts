@@ -4,6 +4,7 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -51,16 +52,30 @@ export interface UseSessionManagerResult {
   isThinking: boolean;
   /** Sessions with an in-flight turn (control-plane running indicator). */
   streamingSessionIds: string[];
+  /** Background sessions with a reply the user has not opened yet. */
+  unreadSessionIds: string[];
   /** Live (unfinalized) turn per session, including background tasks. */
   liveTurnsBySession: Record<string, CurrentTurn | null>;
   /** Latest known status per session. */
   statusBySession: Record<string, AgentStatus>;
+  /** Epoch ms when each streaming session's current run started. */
+  runStartedAtBySession: Record<string, number>;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
   handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
   resolveApproval: (id: string, decision: "approve" | "deny") => Promise<void>;
   cancelStream: () => Promise<void>;
   cancelStreamForSession: (sessionId: string | null) => Promise<void>;
+}
+
+function isRunningStatus(status: AgentStatus): boolean {
+  return status === "thinking" || status === "acting";
+}
+
+/** A draft has no run of its own, so it must not inherit the spinner of the
+ * session that was focused before it. */
+function draftStatus(current: AgentStatus): AgentStatus {
+  return isRunningStatus(current) ? "connected" : current;
 }
 
 export function useSessionManager({
@@ -78,6 +93,8 @@ export function useSessionManager({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
+  // ponytail: unread state is session-memory only; persist read timestamps if it must survive restarts.
+  const [unreadSessionIds, setUnreadSessionIds] = useState<string[]>([]);
   const [liveTurnsBySession, setLiveTurnsBySession] = useState<Record<string, CurrentTurn | null>>(
     {}
   );
@@ -114,6 +131,7 @@ export function useSessionManager({
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
+    setStatus(draftStatus);
   }, [activeWorkspaceId]);
 
   const handleModelVariantWarning = useCallback(
@@ -149,6 +167,7 @@ export function useSessionManager({
         setMessages(updater);
         return;
       }
+      setUnreadSessionIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
       onSessionsChange((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -221,6 +240,19 @@ export function useSessionManager({
   ) {
     streamingSessionIds.push(activeSessionId);
   }
+
+  const runStartedAtRef = useRef<Record<string, number>>({});
+  const streamingKey = [...streamingSessionIds].sort().join("\u0000");
+  const runStartedAtBySession = useMemo(() => {
+    const previous = runStartedAtRef.current;
+    const next: Record<string, number> = {};
+    const now = Date.now();
+    for (const id of streamingKey ? streamingKey.split("\u0000") : []) {
+      next[id] = previous[id] ?? now;
+    }
+    runStartedAtRef.current = next;
+    return next;
+  }, [streamingKey]);
 
   const isStreaming = status === "thinking" || status === "acting";
   const isThinking = status === "thinking";
@@ -397,6 +429,7 @@ export function useSessionManager({
 
             if (latestSelectedSessionRef.current !== selectionId) return;
 
+            setUnreadSessionIds((prev) => prev.filter((id) => id !== selectedSession.id));
             const transcript = JSON.parse(detail.display_transcript) as Array<{
               role: string;
               content: string;
@@ -444,6 +477,7 @@ export function useSessionManager({
         }
 
         if (latestSelectedSessionRef.current !== selectionId) return;
+        setUnreadSessionIds((prev) => prev.filter((id) => id !== selectedSession.id));
         setActiveSessionId(selectedSession.id);
         activeSessionIdRef.current = selectedSession.id;
         setMessages(selectedSession.messages);
@@ -467,10 +501,14 @@ export function useSessionManager({
   );
 
   const handleNewSession = useCallback(() => {
+    const leavingRun = isRunningStatus(statusRef.current);
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
-    resetStream();
+    setStatus(draftStatus);
+    // A running session keeps going in the background: the stream hook stashes
+    // its live turn when focus moves to the draft. Resetting here would drop it.
+    if (!leavingRun) resetStream();
   }, [resetStream]);
 
   return {
@@ -482,8 +520,10 @@ export function useSessionManager({
     isStreaming,
     isThinking,
     streamingSessionIds,
+    unreadSessionIds,
     liveTurnsBySession,
     statusBySession,
+    runStartedAtBySession,
     handleSend,
     handleSessionSelect,
     handleNewSession,

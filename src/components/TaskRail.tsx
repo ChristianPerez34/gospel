@@ -1,12 +1,23 @@
 import { History, Plus } from "lucide-react";
-import { useMemo, useState } from "react";
-import type { AgentStatus, Session, Workspace } from "../types";
+import { useEffect, useMemo, useState } from "react";
+import { shortcutLabel } from "../hooks/useSessionShortcuts";
+import {
+  ACTIVITY_LABELS,
+  activityFor,
+  buildRailLayout,
+  formatElapsed,
+  formatRelativeTime,
+  holdRailLayout,
+  type RailLayout,
+  type SessionActivity,
+  type SessionActivityMap,
+} from "../sessionActivity";
+import type { Session, Workspace } from "../types";
 
 interface TaskRailProps {
   sessions: Session[];
   activeSessionId?: string | null;
-  streamingSessionIds: string[];
-  statusBySession: Record<string, AgentStatus>;
+  activityBySession: SessionActivityMap;
   workspaces: Workspace[];
   workspaceNames: Record<string, string>;
   activeWorkspaceId?: string;
@@ -16,24 +27,36 @@ interface TaskRailProps {
   collapsed?: boolean;
 }
 
-function statusForSession(
-  session: Session,
-  streamingSessionIds: string[],
-  statusBySession: Record<string, AgentStatus>
-): AgentStatus {
-  if (streamingSessionIds.includes(session.id)) return statusBySession[session.id] ?? "acting";
-  return statusBySession[session.id] ?? "idle";
+/** Re-render on an interval so run timers and relative times stay current. */
+function useTicker(intervalMs: number | null) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (intervalMs === null) return;
+    const id = window.setInterval(() => setTick((tick) => tick + 1), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
 }
 
-function formatTime(timestamp: Date): string {
-  return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function modelLabel(session: Session): string {
+  return session.variant ? `${session.model} · ${session.variant}` : session.model;
+}
+
+function stateLine(session: Session, activity: SessionActivity, now: number): string {
+  if (activity.state === "idle") return modelLabel(session);
+  if (activity.state === "running" && activity.runStartedAt !== undefined) {
+    return `Running · ${formatElapsed(now - activity.runStartedAt)}`;
+  }
+  return ACTIVITY_LABELS[activity.state];
+}
+
+function countLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export function TaskRail({
   sessions,
   activeSessionId,
-  streamingSessionIds,
-  statusBySession,
+  activityBySession,
   workspaces,
   workspaceNames,
   activeWorkspaceId,
@@ -43,6 +66,9 @@ export function TaskRail({
   collapsed = false,
 }: TaskRailProps) {
   const [search, setSearch] = useState("");
+  // Rows keep their place while the pointer is over the list, so a session
+  // that changes state can't move out from under a click.
+  const [heldLayout, setHeldLayout] = useState<RailLayout | null>(null);
 
   const workspaceById = useMemo(() => {
     const map = new Map<string, Workspace>();
@@ -54,29 +80,39 @@ export function TaskRail({
     const q = search.trim().toLowerCase();
     if (!q) return sessions;
     return sessions.filter((s) => {
-      const modelLabel = s.variant ? `${s.model} ${s.variant}` : s.model;
       const project = workspaceNames[s.workspaceId ?? ""] ?? s.workspaceId ?? "";
       return (
         s.title.toLowerCase().includes(q) ||
-        modelLabel.toLowerCase().includes(q) ||
+        modelLabel(s).toLowerCase().includes(q) ||
         project.toLowerCase().includes(q)
       );
     });
   }, [sessions, search, workspaceNames]);
 
-  const groups = useMemo(() => {
-    const order: string[] = [];
-    const byKey = new Map<string, Session[]>();
-    for (const s of filtered) {
-      const key = s.workspaceId ?? "";
-      if (!byKey.has(key)) {
-        byKey.set(key, []);
-        order.push(key);
-      }
-      byKey.get(key)!.push(s);
-    }
-    return order.map((key) => ({ key, items: byKey.get(key)! }));
-  }, [filtered]);
+  const liveLayout = useMemo(
+    () => buildRailLayout(filtered, activityBySession),
+    [filtered, activityBySession]
+  );
+  const layout = heldLayout ? holdRailLayout(heldLayout, liveLayout) : liveLayout;
+
+  let needsYouCount = 0;
+  let runningCount = 0;
+  for (const session of sessions) {
+    const activity = activityFor(activityBySession, session.id);
+    if (activity.needsYou) needsYouCount += 1;
+    else if (activity.state === "running") runningCount += 1;
+  }
+  const showProjectInSections = new Set(sessions.map((s) => s.workspaceId ?? "")).size > 1;
+
+  useTicker(collapsed ? null : runningCount > 0 ? 1000 : 30_000);
+
+  useEffect(() => {
+    if (collapsed) setHeldLayout(null);
+  }, [collapsed]);
+
+  if (collapsed) return null;
+
+  const now = Date.now();
 
   const projectLabel = (key: string): string => {
     if (!key) return "Unscoped";
@@ -88,7 +124,66 @@ export function TaskRail({
     return workspaceById.get(key)?.path;
   };
 
-  if (collapsed) return null;
+  const summary = [
+    needsYouCount > 0 ? `${countLabel(needsYouCount, "session needs", "sessions need")} you` : "",
+    runningCount > 0 ? `${runningCount} running` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const renderRow = (session: Session, inStatusSection: boolean) => {
+    const activity = activityFor(activityBySession, session.id);
+    const isActive = session.id === activeSessionId;
+    const title = session.title || "Untitled";
+    const project = projectLabel(session.workspaceId ?? "");
+    const stateTitle = activity.state === "idle" ? "" : ` — ${ACTIVITY_LABELS[activity.state]}`;
+    return (
+      <li key={session.id}>
+        <button
+          type="button"
+          className={`task-rail-row is-${activity.state}${isActive ? " is-active" : ""}${activity.needsYou ? " is-needs-you" : ""}`}
+          onClick={() => onSelect(session)}
+          aria-current={isActive ? "true" : undefined}
+          title={`${title} — ${project}${stateTitle}`}
+        >
+          <span className="task-rail-dot" aria-hidden="true" />
+          <span className="task-rail-main">
+            <span className="task-rail-heading">
+              <span className="task-rail-title">{title}</span>
+              {activity.state !== "running" && (
+                <span className="task-rail-time">{formatRelativeTime(session.timestamp, now)}</span>
+              )}
+            </span>
+            <span className="task-rail-meta">
+              <span className="task-rail-state">{stateLine(session, activity, now)}</span>
+              {inStatusSection && showProjectInSections && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="task-rail-meta-project">{project}</span>
+                </>
+              )}
+            </span>
+          </span>
+        </button>
+      </li>
+    );
+  };
+
+  const renderStatusSection = (kind: "needs-you" | "running", label: string, items: Session[]) => {
+    if (items.length === 0) return null;
+    return (
+      <section className="task-rail-group">
+        <header className={`task-rail-group-head is-${kind}`}>
+          <span className="task-rail-group-dot" aria-hidden="true" />
+          <span className="task-rail-group-name">{label}</span>
+          <span className="task-rail-group-count">{items.length}</span>
+        </header>
+        <ul className="task-rail-rows" aria-label={label}>
+          {items.map((session) => renderRow(session, true))}
+        </ul>
+      </section>
+    );
+  };
 
   return (
     <aside className="task-rail" aria-label="Tasks" data-testid="task-rail">
@@ -119,79 +214,51 @@ export function TaskRail({
             aria-label="Search tasks"
           />
         </div>
-        <button type="button" className="task-rail-new" onClick={onNewTask}>
+        <button
+          type="button"
+          className="task-rail-new"
+          onClick={onNewTask}
+          title={`New task (${shortcutLabel("N")})`}
+        >
           <Plus aria-hidden="true" />
           New task
         </button>
+        <output className="sr-only" aria-live="polite">
+          {summary}
+        </output>
       </div>
 
-      <div className="task-rail-list">
-        {groups.length === 0 && (
+      <div
+        className="task-rail-list"
+        onPointerEnter={() => setHeldLayout(liveLayout)}
+        onPointerLeave={() => setHeldLayout(null)}
+      >
+        {filtered.length === 0 && (
           <div className="task-rail-empty">
             {search ? "No tasks match." : "No tasks yet — start one."}
           </div>
         )}
-        {groups.map((group) => {
-          const runningInGroup = group.items.filter((s) =>
-            streamingSessionIds.includes(s.id)
-          ).length;
-          return (
-            <section key={group.key || "unscoped"} className="task-rail-group">
-              <header
-                className="task-rail-project"
-                title={projectPath(group.key) ?? projectLabel(group.key)}
-              >
-                <span
-                  className={`task-rail-project-dot${runningInGroup > 0 ? " is-live" : ""}`}
-                  aria-hidden="true"
-                />
-                <span className="task-rail-project-name">{projectLabel(group.key)}</span>
-                {group.key === activeWorkspaceId && (
-                  <span className="task-rail-project-active">active</span>
-                )}
-                <span className="task-rail-project-count" title={`${group.items.length} tasks`}>
-                  {group.items.length}
-                </span>
-                {runningInGroup > 0 && (
-                  <span className="task-rail-project-live">{runningInGroup} live</span>
-                )}
-              </header>
-              <ul className="task-rail-rows">
-                {group.items.map((session) => {
-                  const isActive = session.id === activeSessionId;
-                  const live = streamingSessionIds.includes(session.id);
-                  const st = statusForSession(session, streamingSessionIds, statusBySession);
-                  const title = session.title || "Untitled";
-                  return (
-                    <li key={session.id}>
-                      <button
-                        type="button"
-                        className={`task-rail-row${isActive ? " is-active" : ""}${live ? " is-live" : ""}`}
-                        onClick={() => onSelect(session)}
-                        aria-current={isActive ? "true" : undefined}
-                        title={`${title} — ${projectLabel(group.key)}`}
-                      >
-                        <span className={`task-rail-dot is-${st}`} aria-hidden="true" />
-                        <span className="task-rail-main">
-                          <span className="task-rail-title">{title}</span>
-                          <span className="task-rail-meta">
-                            <span className="task-rail-model">
-                              {session.variant
-                                ? `${session.model} · ${session.variant}`
-                                : session.model}
-                            </span>
-                            {live && <span className="task-rail-live">live</span>}
-                            <time>{formatTime(session.timestamp)}</time>
-                          </span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          );
-        })}
+        {renderStatusSection("needs-you", "Needs you", layout.needsYou)}
+        {renderStatusSection("running", "Running", layout.running)}
+        {layout.projects.map((group) => (
+          <section key={group.key || "unscoped"} className="task-rail-group">
+            <header
+              className="task-rail-group-head"
+              title={projectPath(group.key) ?? projectLabel(group.key)}
+            >
+              <span className="task-rail-group-name">{projectLabel(group.key)}</span>
+              {group.key === activeWorkspaceId && (
+                <span className="task-rail-project-active">active</span>
+              )}
+              <span className="task-rail-group-count" title={`${group.items.length} tasks`}>
+                {group.items.length}
+              </span>
+            </header>
+            <ul className="task-rail-rows" aria-label={projectLabel(group.key)}>
+              {group.items.map((session) => renderRow(session, false))}
+            </ul>
+          </section>
+        ))}
       </div>
 
       <button type="button" className="task-rail-history" onClick={onOpenHistory}>

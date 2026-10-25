@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspacesProvider } from "../hooks/useWorkspaces";
 import { AppShell } from "./AppShell";
@@ -128,6 +128,9 @@ describe("AppShell session title editing", () => {
     await act(async () => {
       triggerEvent("llm-done", { response: "Hello back" });
     });
+    // A reply in the open session is already in view, so it does not need you.
+    expect(screen.queryByRole("list", { name: "Needs you" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Toggle tasks" })).toBeDefined();
 
     // Initial session title should be rendered in TopBar
     await waitFor(() => {
@@ -220,16 +223,116 @@ describe("AppShell session title editing", () => {
     expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
       "Other Workspace"
     );
-    expect(screen.getByTestId("task-rail")).toBeDefined();
-    expect(screen.getByTestId("task-rail").textContent).toContain("streaming prompt");
+    const rail = screen.getByTestId("task-rail");
+    expect(within(rail).getByRole("list", { name: "Running" }).textContent).toContain(
+      "streaming prompt"
+    );
+    // The new workspace's draft is free to send while the task runs elsewhere.
+    expect(textarea.disabled).toBe(false);
 
     await act(async () => {
       triggerEvent("llm-done", { response: "live token" });
     });
-    // The completed turn landed in the background task record.
-    expect(screen.getByTestId("task-rail").textContent).toContain("streaming prompt");
+    // The completed turn landed in the background task record and waits for you.
+    expect(within(rail).queryByRole("list", { name: "Running" })).toBeNull();
+    expect(within(rail).getByRole("list", { name: "Needs you" }).textContent).toContain(
+      "streaming prompt"
+    );
+    expect(screen.getByRole("button", { name: "Toggle tasks, 1 session needs you" })).toBeDefined();
+
+    fireEvent.click(screen.getByTitle("streaming prompt — Test Workspace — New reply"));
+    await waitFor(() => {
+      expect(within(rail).queryByRole("list", { name: "Needs you" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Toggle tasks" })).toBeDefined();
+    });
   });
 
+  it("starts and switches sessions from the keyboard while another session runs", async () => {
+    const platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    try {
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+        if (cmd === "create_session") return { id: "stream-session" };
+        if (cmd === "complete_streaming") return undefined;
+        return handleCommonInvoke(cmd, args);
+      });
+
+      render(
+        <WorkspacesProvider>
+          <AppShell />
+        </WorkspacesProvider>
+      );
+
+      const textarea = (await screen.findByRole("textbox", {
+        name: "Message input",
+      })) as HTMLTextAreaElement;
+      await waitFor(() => {
+        expect(textarea.disabled).toBe(false);
+      });
+
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: "streaming prompt" } });
+        fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      });
+      act(() => {
+        triggerEvent<string>("llm-token", "live token");
+      });
+      expect(await screen.findByText("live token")).toBeDefined();
+
+      // Cmd+N opens a draft that can send while the first session keeps running.
+      act(() => {
+        fireEvent.keyDown(document, { key: "n", metaKey: true });
+      });
+      const rail = screen.getByTestId("task-rail");
+      const runningRow = within(within(rail).getByRole("list", { name: "Running" })).getByTitle(
+        "streaming prompt — Test Workspace — Running"
+      );
+      expect(runningRow.getAttribute("aria-current")).toBeNull();
+      expect(screen.queryByText("live token")).toBeNull();
+      expect(textarea.disabled).toBe(false);
+
+      await act(async () => {
+        triggerEvent("llm-done", { response: "live token" });
+      });
+      expect(within(rail).getByRole("list", { name: "Needs you" }).textContent).toContain(
+        "streaming prompt"
+      );
+      expect(
+        screen.getByRole("button", { name: "Toggle tasks, 1 session needs you" })
+      ).toBeDefined();
+
+      // Session shortcuts stand down while the command palette owns the keyboard.
+      await act(async () => {
+        fireEvent.keyDown(document, { key: "k", metaKey: true });
+      });
+      const palette = await screen.findByRole("dialog", { name: "Command palette" });
+      act(() => {
+        fireEvent.keyDown(document, { key: "j", metaKey: true });
+      });
+      expect(
+        screen.getByRole("button", { name: "Toggle tasks, 1 session needs you" })
+      ).toBeDefined();
+      act(() => {
+        fireEvent.keyDown(palette, { key: "Escape" });
+      });
+      await waitFor(() => {
+        expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+      });
+
+      // Cmd+J opens the session that needs you.
+      await act(async () => {
+        fireEvent.keyDown(document, { key: "j", metaKey: true });
+      });
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Toggle tasks" })).toBeDefined();
+      });
+      expect(
+        screen.getByTitle("streaming prompt — Test Workspace").getAttribute("aria-current")
+      ).toBe("true");
+      expect(screen.getByText("live token")).toBeDefined();
+    } finally {
+      platform.mockRestore();
+    }
+  });
   it("switches Active Workspace Context from the command palette", async () => {
     let activeWorkspace = sampleWorkspace;
     const workspaces = [sampleWorkspace, otherWorkspace];

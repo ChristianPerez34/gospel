@@ -1,5 +1,12 @@
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { shortcutLabel } from "../hooks/useSessionShortcuts";
+import {
+  ACTIVITY_LABELS,
+  activityFor,
+  rankSessionsByActivity,
+  type SessionActivityMap,
+} from "../sessionActivity";
 import type { ModelOption, Session, Workspace } from "../types";
 
 type CommandGroup =
@@ -42,6 +49,11 @@ interface CommandPaletteProps {
   recentWorkspaces?: Workspace[];
   onSelectWorkspace?: (workspace: Workspace) => boolean | undefined;
   onOpenSkillOpt?: () => void;
+  /** Ranks sessions that need you and running sessions first, with their state. */
+  activityBySession?: SessionActivityMap;
+  needsYouCount?: number;
+  /** Present only when another session needs you. */
+  onJumpToNextNeedsYou?: () => void;
 }
 
 function includesQuery(result: PaletteResult, query: string) {
@@ -91,6 +103,9 @@ export function CommandPalette({
   recentWorkspaces = [],
   onSelectWorkspace,
   onOpenSkillOpt,
+  activityBySession,
+  needsYouCount = 0,
+  onJumpToNextNeedsYou,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -103,35 +118,43 @@ export function CommandPalette({
       onClose();
     };
 
-    const sessionResults = sessions.slice(0, query ? sessions.length : 5).map((session) => {
-      const modelLabel = sessionModelLabel(session);
-      const workspaceName = session.workspaceId
-        ? workspaceNames?.[session.workspaceId] || workspace?.name
-        : workspace?.name;
-      const detail = workspaceName
-        ? `${modelLabel} · ${workspaceName} · ${session.timestamp.toLocaleString([], {
+    const rankedSessions = activityBySession
+      ? rankSessionsByActivity(sessions, activityBySession)
+      : sessions;
+    const sessionResults = rankedSessions
+      .slice(0, query ? rankedSessions.length : 5)
+      .map((session) => {
+        const modelLabel = sessionModelLabel(session);
+        const workspaceName = session.workspaceId
+          ? workspaceNames?.[session.workspaceId] || workspace?.name
+          : workspace?.name;
+        const activity = activityBySession ? activityFor(activityBySession, session.id) : null;
+        const stateLabel =
+          activity && activity.state !== "idle" ? ACTIVITY_LABELS[activity.state] : "";
+        const detail = [
+          stateLabel,
+          modelLabel,
+          workspaceName,
+          session.timestamp.toLocaleString([], {
             month: "short",
             day: "numeric",
             hour: "2-digit",
             minute: "2-digit",
-          })}`
-        : `${modelLabel} · ${session.timestamp.toLocaleString([], {
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          })}`;
+          }),
+        ]
+          .filter(Boolean)
+          .join(" · ");
 
-      return {
-        id: `session-${session.id}`,
-        group: "Sessions" as const,
-        icon: session.id === activeSessionId ? "A" : "S",
-        label: session.title || "Untitled session",
-        detail,
-        keywords: `session conversation ${session.model} ${session.variant ?? ""} ${workspaceName ? workspaceName.toLowerCase() : ""}`,
-        action: closeAfter(() => onSelectSession(session)),
-      };
-    });
+        return {
+          id: `session-${session.id}`,
+          group: "Sessions" as const,
+          icon: session.id === activeSessionId ? "A" : "S",
+          label: session.title || "Untitled session",
+          detail,
+          keywords: `session conversation ${session.model} ${session.variant ?? ""} ${workspaceName ? workspaceName.toLowerCase() : ""} ${stateLabel.toLowerCase()}${activity?.needsYou ? " needs you" : ""}`,
+          action: closeAfter(() => onSelectSession(session)),
+        };
+      });
 
     const recentWorkspaceResults: PaletteResult[] = recentWorkspaces.map((ws) => {
       const isActive = ws.id === workspace?.id;
@@ -230,10 +253,25 @@ export function CommandPalette({
         icon: "+",
         label: "New session",
         detail: "Start a clean chat thread",
-        shortcut: "Cmd N",
+        shortcut: shortcutLabel("N"),
         keywords: "new session chat",
         action: closeAfter(onNewSession),
       },
+      ...(onJumpToNextNeedsYou
+        ? [
+            {
+              id: "jump-needs-you",
+              group: "Commands" as const,
+              icon: "!",
+              label: "Jump to next session that needs you",
+              detail:
+                needsYouCount === 1 ? "1 session needs you" : `${needsYouCount} sessions need you`,
+              shortcut: shortcutLabel("J"),
+              keywords: "jump next session needs you attention approval reply unread",
+              action: closeAfter(onJumpToNextNeedsYou),
+            },
+          ]
+        : []),
       {
         id: "toggle-sessions",
         group: "Commands",
@@ -278,8 +316,11 @@ export function CommandPalette({
     ];
   }, [
     activeSessionId,
+    activityBySession,
     models,
+    needsYouCount,
     onClose,
+    onJumpToNextNeedsYou,
     onNewSession,
     onOpenSettings,
     onOpenWorkspaceSwitcher,
