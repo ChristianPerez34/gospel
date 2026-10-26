@@ -105,14 +105,6 @@ export function TaskRail({
     onDisplayedOrderChange?.(railOrder(layout));
   });
 
-  useEffect(() => {
-    if (collapsed) {
-      setHeldLayout(null);
-      // A hidden rail keeps no stale filter, so shortcuts keep the full order.
-      setSearch("");
-    }
-  }, [collapsed]);
-
   if (collapsed) return null;
 
   const now = Date.now();

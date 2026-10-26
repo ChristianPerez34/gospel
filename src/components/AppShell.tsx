@@ -912,6 +912,9 @@ export function AppShell() {
         data-task-rail-collapsed={taskRailCollapsed ? "true" : "false"}
       >
         <TaskRail
+          // Remount on collapse so a hidden rail keeps no stale search or
+          // pointer-held layout; shortcuts then follow the full order.
+          key={taskRailCollapsed ? "collapsed" : "open"}
           sessions={allSessions}
           activeSessionId={session.activeSessionId}
           activityBySession={activityBySession}
