@@ -1,7 +1,8 @@
-import { ArrowRight, Folder } from "lucide-react";
+import { ArrowRight, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Workspace } from "../types";
 import { Button } from "./ui/button";
+import { WorkspacePicker } from "./WorkspacePicker";
 
 interface NewTaskFormProps {
   workspaces: Workspace[];
@@ -9,7 +10,7 @@ interface NewTaskFormProps {
   hasModel: boolean;
   onContinue: (workspaceId: string) => void;
   onCancel: () => void;
-  onManageWorkspaces: () => void;
+  onAddWorkspace: () => Promise<Workspace | null>;
   onOpenSettings: () => void;
   creating: boolean;
   error: string | null;
@@ -21,59 +22,65 @@ export function NewTaskForm({
   hasModel,
   onContinue,
   onCancel,
-  onManageWorkspaces,
+  onAddWorkspace,
   onOpenSettings,
   creating,
   error,
 }: NewTaskFormProps) {
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId ?? "");
-  const workspaceRef = useRef<HTMLSelectElement>(null);
+  const workspaceRef = useRef<HTMLButtonElement>(null);
+  const [addingWorkspace, setAddingWorkspace] = useState(false);
   useEffect(() => {
-    workspaceRef.current?.focus();
-  }, []);
+    if (!addingWorkspace) workspaceRef.current?.focus();
+  }, [addingWorkspace]);
   const workspace = workspaces.find((item) => item.id === workspaceId);
+  const addWorkspace = async () => {
+    if (addingWorkspace) return;
+    setAddingWorkspace(true);
+    try {
+      const added = await onAddWorkspace();
+      if (added) setWorkspaceId(added.id);
+    } finally {
+      setAddingWorkspace(false);
+    }
+  };
   return (
     <main className="new-task-page" aria-label="New task setup">
       <form
         className="new-task-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (workspace && hasModel && !creating) onContinue(workspaceId);
+          if (workspace && hasModel && !creating && !addingWorkspace) onContinue(workspaceId);
         }}
       >
         <header className="new-task-heading">
           <h1>Where should we work?</h1>
           <p>Choose a workspace to start a new chat.</p>
         </header>
-        <fieldset disabled={creating} className="new-task-fields">
+        <fieldset disabled={creating || addingWorkspace} className="new-task-fields">
           <div className="new-task-field">
-            <label htmlFor="task-workspace">Workspace</label>
-            <select
-              ref={workspaceRef}
-              id="task-workspace"
+            <WorkspacePicker
+              workspaces={workspaces}
               value={workspaceId}
-              onChange={(event) => setWorkspaceId(event.target.value)}
-              required
-              aria-describedby="task-workspace-path"
+              onChange={setWorkspaceId}
+              onAdd={() => {
+                void addWorkspace();
+              }}
+              disabled={creating || addingWorkspace}
+              triggerRef={workspaceRef}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="new-task-add"
+              onClick={() => {
+                void addWorkspace();
+              }}
+              disabled={addingWorkspace}
             >
-              <option value="">Choose a workspace</option>
-              {workspaces.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-            <div className="new-task-workspace-path" id="task-workspace-path">
-              <Folder size={13} aria-hidden="true" />
-              <span>
-                {workspace?.path ?? "Select the project directory for this conversation."}
-              </span>
-            </div>
-            {workspaces.length === 0 && (
-              <Button variant="outline" onClick={onManageWorkspaces}>
-                Add a workspace
-              </Button>
-            )}
+              <Plus size={14} aria-hidden="true" />
+              {addingWorkspace ? "Choosing folder…" : "Add workspace"}
+            </Button>
           </div>
           {!hasModel && (
             <p className="new-task-recovery">
@@ -92,13 +99,13 @@ export function NewTaskForm({
         <footer className="new-task-footer">
           <p>The title is generated automatically from your conversation.</p>
           <div>
-            <Button variant="ghost" onClick={onCancel} disabled={creating}>
+            <Button variant="ghost" onClick={onCancel} disabled={creating || addingWorkspace}>
               Cancel
             </Button>
             <Button
               className="command-primary"
               type="submit"
-              disabled={!workspace || !hasModel || creating}
+              disabled={!workspace || !hasModel || creating || addingWorkspace}
             >
               {creating ? "Opening chat…" : "Continue to chat"}
               <ArrowRight size={14} aria-hidden="true" />

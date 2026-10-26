@@ -148,7 +148,8 @@ describe("AppShell task flow", () => {
     expect(await screen.findByRole("main", { name: "Command center" })).toBeDefined();
     expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
     await openTaskSetup();
-    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: otherWorkspace.id } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Workspace" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Other Workspace/ }));
     expect(screen.getByText(otherWorkspace.path)).toBeDefined();
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "set_active_workspace")).toBe(
       false
@@ -212,8 +213,51 @@ describe("AppShell task flow", () => {
     expect(await screen.findByRole("alert")).toBeDefined();
     expect(screen.getByRole("alert").textContent).toContain("backend database error");
     expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
-    expect((screen.getByLabelText("Workspace") as HTMLSelectElement).value).toBe(
-      sampleWorkspace.id
+    expect(screen.getByRole("combobox", { name: "Workspace" }).textContent).toContain(
+      sampleWorkspace.name
+    );
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);
+  });
+
+  it("opens the folder chooser directly and starts the new chat in the added workspace", async () => {
+    let currentWorkspace = sampleWorkspace;
+    let knownWorkspaces = [sampleWorkspace];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "pick_workspace_directory") return otherWorkspace.path;
+      if (cmd === "add_workspace") {
+        knownWorkspaces = [sampleWorkspace, otherWorkspace];
+        return otherWorkspace;
+      }
+      if (cmd === "create_session") return { id: "added-workspace-chat" };
+      return handleCommonInvoke(cmd, args, {
+        workspaces: knownWorkspaces,
+        getActiveWorkspace: () => currentWorkspace,
+        setActiveWorkspace: (id) => {
+          currentWorkspace = id === otherWorkspace.id ? otherWorkspace : sampleWorkspace;
+        },
+      });
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+    await openTaskSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Add workspace" }));
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Workspace" }).textContent).toContain(
+        otherWorkspace.path
+      )
+    );
+    expect(invoke).toHaveBeenCalledWith("pick_workspace_directory");
+    expect(invoke).toHaveBeenCalledWith("add_workspace", { path: otherWorkspace.path });
+    expect(screen.queryByRole("dialog", { name: "Switch workspace" })).toBeNull();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }))
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "create_session",
+      expect.objectContaining({ workspaceId: otherWorkspace.id })
     );
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);
   });
@@ -246,7 +290,8 @@ describe("AppShell task flow", () => {
       </WorkspacesProvider>
     );
     await openTaskSetup();
-    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: otherWorkspace.id } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Workspace" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Other Workspace/ }));
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }))
     );
@@ -294,7 +339,7 @@ describe("AppShell task flow", () => {
     expect(await within(screen.getByRole("main")).findByText("live token")).toBeDefined();
 
     fireEvent.click(screen.getByRole("button", { name: "Switch workspace" }));
-    const otherWorkspaceButton = await screen.findByRole("button", { name: /Other Workspace/ });
+    const otherWorkspaceButton = await screen.findByRole("button", { name: /^Other Workspace/ });
 
     // Control plane: switching workspaces never blocks on streams. The view
     // resets to the new workspace draft while the running task stays live in
@@ -478,7 +523,7 @@ describe("AppShell task flow", () => {
     const search = await screen.findByLabelText("Search commands");
     fireEvent.change(search, { target: { value: "Other" } });
 
-    fireEvent.click(await screen.findByRole("button", { name: /Other Workspace/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Other Workspace/ }));
 
     await waitFor(() => {
       expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "set_active_workspace")).toBe(
@@ -529,7 +574,7 @@ describe("AppShell task flow", () => {
 
     const search = await screen.findByLabelText("Search commands");
     fireEvent.change(search, { target: { value: "Other" } });
-    fireEvent.click(await screen.findByRole("button", { name: /Other Workspace/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Other Workspace/ }));
 
     expect(
       vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "set_active_workspace")

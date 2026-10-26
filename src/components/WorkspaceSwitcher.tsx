@@ -1,6 +1,10 @@
+import { Check, Plus, Search, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { Workspace } from "../types";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { WorkspaceDetails } from "./WorkspacePicker";
 
 interface WorkspaceSwitcherProps {
   workspaces: Workspace[];
@@ -12,7 +16,6 @@ interface WorkspaceSwitcherProps {
   loading?: boolean;
   trapPaused?: boolean;
 }
-
 export function WorkspaceSwitcher({
   workspaces,
   activeWorkspaceId,
@@ -26,22 +29,16 @@ export function WorkspaceSwitcher({
   const [search, setSearch] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const open = true;
-
   useFocusTrap({
-    active: open && !trapPaused,
+    active: !trapPaused,
     containerRef: dialogRef,
     initialFocusRef: searchInputRef,
     onEscape: onClose,
     shouldRestoreFocusOnDeactivate: !trapPaused,
   });
-
-  const filtered = workspaces.filter(
-    (w) =>
-      w.name.toLowerCase().includes(search.toLowerCase()) ||
-      w.path.toLowerCase().includes(search.toLowerCase())
+  const filtered = workspaces.filter((w) =>
+    `${w.name} ${w.path}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
   );
-
   return (
     <>
       <div
@@ -56,102 +53,75 @@ export function WorkspaceSwitcher({
         aria-modal="true"
         ref={dialogRef}
       >
-        <div className="flex items-center gap-2 p-3 border-b border-surface-overlay bg-surface-elevated">
-          <svg
-            className="text-text-muted shrink-0"
-            width="14"
-            height="14"
-            viewBox="0 0 14 14"
-            fill="none"
-            aria-hidden="true"
+        <div className="workspace-switcher-heading">
+          <h2>Workspaces</h2>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onClose}
+            aria-label="Close workspace picker"
           >
-            <circle cx="5.5" cy="5.5" r="4" stroke="currentColor" strokeWidth="1.5" />
-            <path
-              d="M9 9L12.5 12.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
-          <input
+            <X size={16} aria-hidden="true" />
+          </Button>
+        </div>
+        <div className="combobox-search">
+          <Search size={15} aria-hidden="true" />
+          <Input
             ref={searchInputRef}
-            className="h-11 flex-1 font-body text-body-sm text-text-primary placeholder:text-text-muted bg-transparent"
-            type="text"
-            placeholder="Search workspaces..."
+            aria-label="Search workspaces"
+            placeholder="Search by name or folder…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <div className="overflow-y-auto flex-1 bg-surface-elevated">
+        <div className="workspace-switcher-list">
           {loading && workspaces.length === 0 && (
-            <div className="p-4 text-center text-text-muted text-body-sm">
-              Loading workspaces...
-            </div>
+            <p className="workspace-switcher-empty">Loading workspaces…</p>
           )}
-          {!loading && workspaces.length === 0 && (
-            <div className="p-4 text-center text-text-muted text-body-sm">
-              No workspaces yet. Add one below.
-            </div>
+          {!loading && filtered.length === 0 && (
+            <p className="workspace-switcher-empty">
+              {workspaces.length === 0
+                ? "Add a project folder to get started."
+                : "No workspaces found."}
+            </p>
           )}
-          {filtered.map((ws) => {
-            const isActive = ws.id === activeWorkspaceId;
-            return (
-              <div key={ws.id} className={`workspace-row group ${isActive ? "is-active" : ""}`}>
-                <span
-                  className={`workspace-row-dot ${isActive ? "" : "opacity-0"}`}
-                  aria-hidden="true"
-                />
-                <button
-                  type="button"
-                  className="flex min-h-11 items-center gap-3 flex-1 py-3 px-4 text-left bg-transparent border-none cursor-pointer text-inherit font-inherit min-w-0"
-                  onClick={() => {
-                    onSelect(ws);
-                    onClose();
-                  }}
-                >
-                  <div className="text-body-sm font-medium text-text-primary min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                    {ws.name}
-                  </div>
-                  <div className="font-mono text-caption text-text-muted min-w-0 overflow-hidden text-ellipsis whitespace-nowrap flex-1">
-                    {ws.path}
-                  </div>
-                  {ws.sessionCount > 0 && (
-                    <span className="font-mono text-caption text-text-muted bg-surface-overlay px-1 rounded-sm shrink-0">
-                      {ws.sessionCount}
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="hit-target flex items-center justify-center w-6 h-6 mr-2 border-none bg-transparent text-text-muted cursor-pointer rounded-sm text-sm leading-none shrink-0 opacity-0 transition-opacity duration-150 ease-out-quart group-hover:opacity-100 hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent-action focus-visible:outline-offset-2"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove(ws.id);
-                  }}
-                  aria-label="Remove workspace"
-                  title="Remove workspace"
-                >
-                  ×
-                </button>
-              </div>
-            );
-          })}
+          {filtered.map((ws) => (
+            <div key={ws.id} className="workspace-row">
+              <Button
+                variant="ghost"
+                className="workspace-switcher-option"
+                aria-current={ws.id === activeWorkspaceId ? "true" : undefined}
+                onClick={() => {
+                  onSelect(ws);
+                  onClose();
+                }}
+              >
+                <WorkspaceDetails workspace={ws} />
+                {ws.sessionCount > 0 && (
+                  <span className="workspace-session-count">{ws.sessionCount}</span>
+                )}
+                {ws.id === activeWorkspaceId && (
+                  <Check size={15} aria-hidden="true" className="workspace-current-check" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => onRemove(ws.id)}
+                aria-label={`Remove workspace ${ws.name}`}
+                title={`Remove workspace ${ws.name}`}
+              >
+                <X size={14} aria-hidden="true" />
+              </Button>
+            </div>
+          ))}
         </div>
-        <button
-          type="button"
-          className="flex min-h-11 items-center justify-center gap-2 w-full p-3 border-t border-surface-overlay text-body-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
-          onClick={onAdd}
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path
-              d="M7 3V11M3 7H11"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
-          Add workspace
-        </button>
+        <div className="workspace-picker-footer">
+          <Button variant="ghost" onClick={onAdd}>
+            <Plus size={15} aria-hidden="true" />
+            Add workspace
+          </Button>
+        </div>
       </div>
     </>
   );

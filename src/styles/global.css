@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "streamdown/styles.css";
 @import "./tokens.css";
+@import "./components.css";
 @import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(:root:not([data-theme="light"]) *));
@@ -927,54 +928,6 @@ summary,
   padding: 0;
 }
 
-.workspace-switcher-dialog {
-  position: absolute;
-  top: calc(var(--titlebar-height) + var(--topbar-height) + 4px);
-  left: var(--space-4);
-  z-index: var(--z-dialog);
-  display: flex;
-  width: 320px;
-  max-height: 400px;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--accent-structure);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
-
-  box-shadow:
-    var(--shadow-floating),
-    0 0 25px -10px color-mix(in srgb, var(--accent-structure) 25%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-}
-
-.workspace-row {
-  display: flex;
-  min-height: 44px;
-  align-items: center;
-  width: 100%;
-  border: 1px solid transparent;
-  transition:
-    background-color var(--duration-fast) var(--ease-out-quart),
-    border-color var(--duration-fast) var(--ease-out-quart);
-}
-
-.workspace-row:hover,
-.workspace-row.is-active {
-  background: color-mix(in srgb, var(--surface-overlay) 78%, var(--surface-elevated) 22%);
-}
-
-.workspace-row.is-active {
-  border-color: color-mix(in srgb, var(--accent-action) 42%, var(--surface-overlay));
-}
-
-.workspace-row-dot {
-  width: 6px;
-  height: 6px;
-  margin-left: var(--space-3);
-  border-radius: var(--radius-full);
-  background: var(--accent-action);
-}
-
 .command-palette-scrim {
   position: fixed;
   inset: 0;
@@ -1268,12 +1221,6 @@ summary,
 @media (max-width: 799px) {
   .session-drawer {
     width: 100vw;
-  }
-
-  .workspace-switcher-dialog {
-    right: var(--space-2);
-    left: var(--space-2);
-    width: auto;
   }
 
   .command-palette {

@@ -261,6 +261,20 @@ export function AppShell() {
     }
   };
 
+  const handleAddWorkspace = async (): Promise<Workspace | null> => {
+    try {
+      const path = await invoke<string | null>("pick_workspace_directory");
+      if (!path) return null;
+      const result = await addWorkspace(path);
+      if (!result)
+        showError("Failed to add workspace. It may already exist or the path is invalid.");
+      return result;
+    } catch (error) {
+      showError(`Failed to pick workspace directory: ${error}`);
+      return null;
+    }
+  };
+
   const workspaceNames = useMemo<Record<string, string>>(() => {
     const names: Record<string, string> = {};
     for (const item of workspaces) {
@@ -1054,7 +1068,7 @@ export function AppShell() {
                 hasModel={models.length > 0 && selectedModel !== null}
                 onContinue={startTask}
                 onCancel={openOverview}
-                onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
+                onAddWorkspace={handleAddWorkspace}
                 onOpenSettings={() => openSettings("models")}
                 creating={creatingTask}
                 error={taskCreationError}
@@ -1153,21 +1167,7 @@ export function AppShell() {
             void switchWorkspace(ws.id);
           }}
           onAdd={() => {
-            void (async () => {
-              try {
-                const path = await invoke<string | null>("pick_workspace_directory");
-                if (path) {
-                  const result = await addWorkspace(path);
-                  if (!result) {
-                    showError(
-                      "Failed to add workspace. It may already exist or the path is invalid."
-                    );
-                  }
-                }
-              } catch (e) {
-                showError(`Failed to pick workspace directory: ${e}`);
-              }
-            })();
+            void handleAddWorkspace();
           }}
           onRemove={(id) => {
             void removeWorkspace(id);
