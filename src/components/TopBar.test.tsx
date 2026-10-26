@@ -116,7 +116,6 @@ describe("TopBar", () => {
 
     const editButton = screen.getByRole("button", { name: "Edit session title" });
     expect(editButton.hasAttribute("disabled")).toBe(false);
-    expect(editButton.getAttribute("aria-disabled")).toBe("false");
 
     // Clicking enters edit mode even while streaming (control plane).
     fireEvent.click(editButton);

@@ -46,25 +46,13 @@ pub(crate) async fn generate_session_title(
             .default_max_turns(1)
             .build();
         let (prompt, _) = truncate_text_bytes(prompt, 8000);
-        let mut stream = agent.prompt(prompt.as_str()).max_turns(1).stream();
-        let mut output = String::new();
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(MultiTurnStreamItem::FinalResponse(response)) => {
-                    let final_output = response.output();
-                    if !final_output.is_empty() {
-                        output = final_output.to_string();
-                    }
-                    break;
-                }
-                Ok(MultiTurnStreamItem::StreamAssistantItem(Item::Event(
-                    RigStreamEvent::Text { text, .. },
-                ))) => output.push_str(&text),
-                Err(error) => return Err(LlmError::ProviderError(error.to_string())),
-                _ => {}
-            }
-        }
-        normalize_session_title(&output)
+        let response = agent
+            .prompt(prompt.as_str())
+            .max_turns(1)
+            .into_future()
+            .await
+            .map_err(|error| LlmError::ProviderError(error.to_string()))?;
+        normalize_session_title(&response.output())
             .ok_or_else(|| LlmError::ProviderError("No conversation title returned".into()))
     };
     timeout(std::time::Duration::from_secs(20), request)
