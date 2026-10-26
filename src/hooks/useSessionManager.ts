@@ -309,6 +309,43 @@ export function useSessionManager({
           : message,
         timestamp: new Date(),
       };
+      const firstMessageSession = activeSessionId
+        ? sessions.find(
+            (session) =>
+              session.id === activeSessionId &&
+              session.backendCreated &&
+              session.messages.length === 0 &&
+              session.title === "New chat"
+          )
+        : undefined;
+      if (firstMessageSession) {
+        const context = userMsg.content.trim().replace(/\s+/g, " ");
+        const characters = Array.from(context);
+        const fallbackTitle =
+          characters.slice(0, 50).join("") + (characters.length > 50 ? "..." : "");
+        onSessionsChange((previous) =>
+          previous.map((session) =>
+            session.id === firstMessageSession.id && session.title === "New chat"
+              ? { ...session, title: fallbackTitle }
+              : session
+          )
+        );
+        void invoke<string | null>("generate_session_title", {
+          sessionId: firstMessageSession.id,
+          prompt: userMsg.content,
+        })
+          .then((title) => {
+            if (!title?.trim()) return;
+            onSessionsChange((previous) =>
+              previous.map((session) =>
+                session.id === firstMessageSession.id && session.title === fallbackTitle
+                  ? { ...session, title }
+                  : session
+              )
+            );
+          })
+          .catch(() => {});
+      }
       setMessages((prev) => [...prev, userMsg]);
       setStatus("thinking");
       markSessionStatus(activeSessionIdRef.current, "thinking");

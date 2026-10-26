@@ -109,7 +109,6 @@ export function AppShell() {
   const [creatingTask, setCreatingTask] = useState(false);
   const [taskCreationError, setTaskCreationError] = useState<string | null>(null);
   const creatingTaskRef = useRef(false);
-  const initialInstructionRef = useRef<{ task: Session; instruction: string } | null>(null);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [taskRailCollapsed, setTaskRailCollapsed] = useState(() => window.innerWidth < 1000);
   const [compactLayout, setCompactLayout] = useState(() => window.innerWidth < 1000);
@@ -173,6 +172,7 @@ export function AppShell() {
   });
 
   const [sessions, setSessions] = useState<Session[]>([]);
+  const sessionLoadGenerationRef = useRef(0);
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
   const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [archivePolicy, setArchivePolicy] = useState<ArchivePolicy | null>(null);
@@ -236,8 +236,8 @@ export function AppShell() {
     ...(session.activeSessionId ? { [session.activeSessionId]: session.currentTurn } : {}),
   };
 
-  const startTask = async (title: string, workspaceId: string, instruction: string) => {
-    if (creatingTaskRef.current || !instruction.trim()) return;
+  const startTask = async (workspaceId: string) => {
+    if (creatingTaskRef.current) return;
     if (!workspaces.some((workspace) => workspace.id === workspaceId)) {
       setTaskCreationError("Choose an available workspace.");
       return;
@@ -246,30 +246,20 @@ export function AppShell() {
     setCreatingTask(true);
     setTaskCreationError(null);
     try {
-      const task = await session.createTask(title, workspaceId);
-      initialInstructionRef.current = { task, instruction };
+      await session.createTask("New chat", workspaceId);
+      sessionLoadGenerationRef.current += 1;
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
+      });
     } catch (error) {
       setTaskCreationError(
-        `Task could not be created: ${error instanceof Error ? error.message : String(error)}`
+        `Chat could not be opened: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
       creatingTaskRef.current = false;
       setCreatingTask(false);
     }
   };
-
-  useEffect(() => {
-    const pending = initialInstructionRef.current;
-    if (
-      creatingTask ||
-      !pending ||
-      session.activeSessionId !== pending.task.id ||
-      !sameModelSelection(selectedModel, pending.task)
-    )
-      return;
-    initialInstructionRef.current = null;
-    void session.handleSend(pending.instruction);
-  }, [creatingTask, session.activeSessionId, session.handleSend, selectedModel]);
 
   const workspaceNames = useMemo<Record<string, string>>(() => {
     const names: Record<string, string> = {};
@@ -330,6 +320,7 @@ export function AppShell() {
     let cancelled = false;
 
     const loadWorkspaceSessions = async () => {
+      const generation = sessionLoadGenerationRef.current;
       const ids = workspaces.map((item) => item.id);
       if (ids.length === 0) {
         if (!cancelled) {
@@ -359,9 +350,12 @@ export function AppShell() {
       const flattenedArchived = workspaceArchivedSessions.flatMap((backendSessions) =>
         mapBackendArchivedSessions(backendSessions)
       );
-      setSessions((prev) => {
-        return mergeLoadedSessions(flattened, prev);
-      });
+      // A refresh started before chat creation must not remove the new draft.
+      setSessions((prev) =>
+        !creatingTaskRef.current && generation === sessionLoadGenerationRef.current
+          ? mergeLoadedSessions(flattened, prev)
+          : prev
+      );
       setArchivedSessions(sortSessionsByTimestamp(flattenedArchived));
       if (activeWorkspace?.id) {
         await loadArchiveMeta(activeWorkspace.id);
@@ -1057,12 +1051,8 @@ export function AppShell() {
               <NewTaskForm
                 workspaces={workspaces}
                 activeWorkspaceId={activeWorkspace?.id}
-                models={models}
-                selectedModelId={selectedModelId}
-                selectedVariant={selectedModel?.variant ?? null}
-                onModelChange={applyModelSelection}
-                onVariantChange={applyVariantSelection}
-                onStart={startTask}
+                hasModel={models.length > 0 && selectedModel !== null}
+                onContinue={startTask}
                 onCancel={openOverview}
                 onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
                 onOpenSettings={() => openSettings("models")}

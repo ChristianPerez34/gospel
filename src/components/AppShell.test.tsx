@@ -78,7 +78,7 @@ function handleCommonInvoke(
   return undefined;
 }
 
-async function openTaskSetup(title: string, instruction = title) {
+async function openTaskSetup() {
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
       sampleWorkspace.name
@@ -87,21 +87,20 @@ async function openTaskSetup(title: string, instruction = title) {
   fireEvent.click(
     within(screen.getByTestId("task-rail")).getByRole("button", { name: "New task" })
   );
-  fireEvent.change(await screen.findByLabelText("Task name"), { target: { value: title } });
-  fireEvent.change(screen.getByLabelText("Instruction"), { target: { value: instruction } });
   await waitFor(() =>
     expect(
-      (screen.getByRole("button", { name: "Create and start task" }) as HTMLButtonElement).disabled
+      (screen.getByRole("button", { name: "Continue to chat" }) as HTMLButtonElement).disabled
     ).toBe(false)
   );
 }
 
-async function startTask(title: string, instruction = title) {
-  await openTaskSetup(title, instruction);
-  await act(async () =>
-    fireEvent.click(screen.getByRole("button", { name: "Create and start task" }))
-  );
-  return screen.findByRole("textbox", { name: "Message input" });
+async function startTask(message: string) {
+  await openTaskSetup();
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Continue to chat" })));
+  const input = await screen.findByRole("textbox", { name: "Message input" });
+  fireEvent.change(input, { target: { value: message } });
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send message" })));
+  return input;
 }
 
 describe("AppShell task flow", () => {
@@ -123,7 +122,7 @@ describe("AppShell task flow", () => {
     vi.clearAllMocks();
   });
 
-  it("requires task setup and saves in the chosen workspace before starting its instruction", async () => {
+  it("opens a workspace-bound chat before sending and automatically names the conversation", async () => {
     let activeWorkspace = sampleWorkspace;
     let saveTask: ((record: { id: string }) => void) | undefined;
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
@@ -132,6 +131,7 @@ describe("AppShell task flow", () => {
           saveTask = resolve;
         });
       if (cmd === "complete_streaming") return new Promise(() => {});
+      if (cmd === "generate_session_title") return "Review billing invoices";
       return handleCommonInvoke(cmd, args, {
         workspaces: [sampleWorkspace, otherWorkspace],
         getActiveWorkspace: () => activeWorkspace,
@@ -147,17 +147,17 @@ describe("AppShell task flow", () => {
     );
     expect(await screen.findByRole("main", { name: "Command center" })).toBeDefined();
     expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
-    await openTaskSetup("Billing review", "Review invoices without changing checkout");
+    await openTaskSetup();
     fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: otherWorkspace.id } });
     expect(screen.getByText(otherWorkspace.path)).toBeDefined();
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "set_active_workspace")).toBe(
       false
     );
     await act(async () =>
-      fireEvent.click(screen.getByRole("button", { name: "Create and start task" }))
+      fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }))
     );
     expect(invoke).toHaveBeenCalledWith("create_session", {
-      title: "Billing review",
+      title: "New chat",
       workspaceId: otherWorkspace.id,
       provider: "openai",
       model: "gpt-4o",
@@ -168,7 +168,15 @@ describe("AppShell task flow", () => {
     await act(async () => {
       saveTask?.({ id: "chosen-workspace-task" });
     });
-    expect(await screen.findByRole("textbox", { name: "Message input" })).toBeDefined();
+    const input = await screen.findByRole("textbox", { name: "Message input" });
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);
+    expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe("New chat");
+    fireEvent.change(input, { target: { value: "Review invoices without changing checkout" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send message" })));
+    expect(invoke).toHaveBeenCalledWith("generate_session_title", {
+      sessionId: "chosen-workspace-task",
+      prompt: "Review invoices without changing checkout",
+    });
     expect(invoke).toHaveBeenCalledWith(
       "complete_streaming",
       expect.objectContaining({
@@ -177,7 +185,7 @@ describe("AppShell task flow", () => {
       })
     );
     expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe(
-      "Billing review"
+      "Review billing invoices"
     );
     expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
       otherWorkspace.name
@@ -197,16 +205,63 @@ describe("AppShell task flow", () => {
         <AppShell />
       </WorkspacesProvider>
     );
-    await openTaskSetup("Fix auth", "Find and fix the redirect loop");
+    await openTaskSetup();
     await act(async () =>
-      fireEvent.click(screen.getByRole("button", { name: "Create and start task" }))
+      fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }))
     );
     expect(await screen.findByRole("alert")).toBeDefined();
     expect(screen.getByRole("alert").textContent).toContain("backend database error");
     expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
-    expect((screen.getByLabelText("Instruction") as HTMLTextAreaElement).value).toBe(
-      "Find and fix the redirect loop"
+    expect((screen.getByLabelText("Workspace") as HTMLSelectElement).value).toBe(
+      sampleWorkspace.id
     );
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);
+  });
+
+  it("keeps a new empty chat when an older workspace refresh finishes afterwards", async () => {
+    let activeWorkspace = sampleWorkspace;
+    const finishRefresh: Array<(sessions: []) => void> = [];
+    let finishCreation: ((record: { id: string }) => void) | undefined;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "create_session")
+        return new Promise<{ id: string }>((resolve) => {
+          finishCreation = resolve;
+        });
+      if (cmd === "list_sessions" && activeWorkspace.id === otherWorkspace.id) {
+        return new Promise<[]>((resolve) => {
+          finishRefresh.push(resolve);
+        });
+      }
+      return handleCommonInvoke(cmd, args, {
+        workspaces: [sampleWorkspace, otherWorkspace],
+        getActiveWorkspace: () => activeWorkspace,
+        setActiveWorkspace: (id) => {
+          activeWorkspace = id === otherWorkspace.id ? otherWorkspace : sampleWorkspace;
+        },
+      });
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+    await openTaskSetup();
+    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: otherWorkspace.id } });
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }))
+    );
+    await waitFor(() => expect(finishRefresh.length).toBeGreaterThan(0));
+    await act(async () => {
+      finishCreation?.({ id: "new-workspace-chat" });
+    });
+    expect(await screen.findByRole("textbox", { name: "Message input" })).toBeDefined();
+    await act(async () => {
+      for (const finish of finishRefresh) finish([]);
+    });
+    expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe("New chat");
+    expect(
+      within(screen.getByTestId("task-rail")).getByRole("button", { name: /New chat/ })
+    ).toBeDefined();
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);
   });
 
@@ -487,9 +542,14 @@ describe("AppShell task flow", () => {
     });
   });
 
-  it("updates local session title and calls update_session_title invoke when backendCreated is true", async () => {
+  it("persists a manual rename and preserves it when automatic naming finishes later", async () => {
+    let finishTitle: ((title: string) => void) | undefined;
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
       if (cmd === "create_session") return { id: "sess-backend-1" };
+      if (cmd === "generate_session_title")
+        return new Promise<string>((resolve) => {
+          finishTitle = resolve;
+        });
       if (cmd === "update_session_title") return undefined;
       return handleCommonInvoke(cmd, args);
     });
@@ -530,6 +590,19 @@ describe("AppShell task flow", () => {
       sessionId: "sess-backend-1",
       title: "Persisted Session Title",
     });
+    await act(async () => {
+      finishTitle?.("Late automatic title");
+    });
+    expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe(
+      "Persisted Session Title"
+    );
+
+    const composer = screen.getByRole("textbox", { name: "Message input" });
+    fireEvent.change(composer, { target: { value: "A follow-up message" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send message" })));
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "generate_session_title")
+    ).toHaveLength(1);
   });
 
   it("rolls back the current rename and shows an error when update_session_title fails", async () => {

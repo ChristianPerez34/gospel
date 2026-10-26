@@ -55,11 +55,13 @@ The command center contains a title, small cross-workspace status summary, statu
 
 Selecting a task opens its conversation. The task rail remains available; at 1280px and wider, a 250px monitor also shows other running tasks and tasks needing attention. Each monitor item identifies its workspace and exposes one action: open the task.
 
-The command center never exposes a chat composer, including when empty. Every New task entry point, including the keyboard shortcut, opens task setup. The [ClickUp task creation reference on Mobbin](https://mobbin.com/screens/acf62c3a-89ae-4cee-a4cf-121ecbb5bea4) informs its explicit project context, task name, instruction, and final creation action.
+The command center never exposes a chat composer, including when empty. Every New task entry point, including the keyboard shortcut, asks which workspace to use, then opens a new chat. Keep this step small and focused: the developer does not need to name a task or write a separate brief.
 
-Task setup requires a workspace, task name, instruction, and available model. The workspace defaults visibly to the current project and shows its full path. Choosing another workspace in the form does not change global execution context until submission. Model and variant are reviewable before starting. Without a workspace or model, the form offers the existing workspace or model setup actions.
+The workspace defaults visibly to the current project and shows its full path. Choosing another workspace does not change global execution context until Continue to chat. Without a workspace or available model, offer the existing workspace or model setup actions. The chat composer retains its model, variant, and skill controls.
 
-Create and start task switches to the chosen workspace, saves a named session there, and then opens its conversation and sends the instruction. The instruction states the outcome, scope, and constraints; follow-up messages belong to that created session. No run begins before creation succeeds. Saving failures retain the complete form and show an inline error; this flow never falls back to an unsaved session. Duplicate submission and navigation during creation are blocked. Other tasks continue running throughout setup and creation.
+Continue to chat switches to the chosen workspace, saves a session titled New chat there, and focuses its composer. No run begins until the developer sends a message. Saving failures retain the workspace selection and show an inline error; this flow never falls back to an unsaved session. Duplicate submission and navigation during creation are blocked. Other tasks continue running throughout setup and creation.
+
+The first message immediately gives the conversation a short excerpt title. A separate, tool-free model request generates a concise title in the background and persists it without changing conversation history. If naming fails or times out, retain the excerpt. Generate the title once; manual renames always take precedence, including when inference completes late.
 
 Returning to the overview clears the focused session. The conversation composer is available only inside an existing task. Model and variant selection, skills in conversation, cancellation, and provider recovery remain available.
 

@@ -544,6 +544,28 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Apply an automatic title only while the previous title is still current.
+    /// A rename or deletion during inference must win over the generated title.
+    pub fn update_session_title_if_current(
+        &self,
+        id: &str,
+        expected: &str,
+        title: &str,
+    ) -> Result<bool, SessionStoreError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(SessionStoreError::InvalidTitle(
+                "session title must not be empty".to_string(),
+            ));
+        }
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE sessions SET title = ?1, updated_at = datetime('now') WHERE id = ?2 AND title = ?3",
+            params![title, id, expected],
+        )?;
+        Ok(rows > 0)
+    }
+
     pub fn update_model_selection(
         &self,
         id: &str,
@@ -1356,6 +1378,41 @@ fn app_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_session_title_preserves_manual_renames() {
+        let store = test_store();
+        let session = store
+            .create_session("New chat", "openai", "test", Some("ws1"))
+            .unwrap();
+        assert!(store
+            .update_session_title_if_current(&session.id, "New chat", "First message")
+            .unwrap());
+        assert!(store
+            .update_session_title_if_current(&session.id, "First message", "Generated title")
+            .unwrap());
+        assert_eq!(
+            store.get_session(&session.id).unwrap().unwrap().title,
+            "Generated title"
+        );
+        store
+            .update_session_title(&session.id, "My own title")
+            .unwrap();
+        assert!(!store
+            .update_session_title_if_current(&session.id, "Generated title", "Late generated title")
+            .unwrap());
+        assert_eq!(
+            store.get_session(&session.id).unwrap().unwrap().title,
+            "My own title"
+        );
+        assert!(store
+            .update_session_title_if_current(&session.id, "My own title", "  ")
+            .is_err());
+        store.delete_session(&session.id).unwrap();
+        assert!(!store
+            .update_session_title_if_current(&session.id, "My own title", "Late title")
+            .unwrap());
+    }
 
     fn test_store() -> SessionStore {
         SessionStore::in_memory_for_test().unwrap()

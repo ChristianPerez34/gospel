@@ -8,12 +8,8 @@ const props = {
     { id: "beta", name: "Beta", path: "/projects/beta", sessionCount: 0 },
   ],
   activeWorkspaceId: "alpha",
-  models: [{ id: "openai::test", name: "Test model", provider: "openai", model: "test" }],
-  selectedModelId: "openai::test",
-  selectedVariant: null,
-  onModelChange: vi.fn(),
-  onVariantChange: vi.fn(),
-  onStart: vi.fn(),
+  hasModel: true,
+  onContinue: vi.fn(),
   onCancel: vi.fn(),
   onManageWorkspaces: vi.fn(),
   onOpenSettings: vi.fn(),
@@ -26,41 +22,31 @@ afterEach(() => {
 });
 
 describe("NewTaskForm", () => {
-  it("makes the execution workspace explicit and requires a name and instruction", () => {
+  it("asks only for the workspace before opening a chat", () => {
     render(<NewTaskForm {...props} />);
-    const start = screen.getByRole("button", {
-      name: "Create and start task",
-    }) as HTMLButtonElement;
     expect(screen.getByText("/projects/alpha")).toBeDefined();
-    expect(start.disabled).toBe(true);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByLabelText("Workspace"));
     fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "beta" } });
     expect(screen.getByText("/projects/beta")).toBeDefined();
-    expect(props.onStart).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText("Task name"), { target: { value: " Billing " } });
-    expect(start.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Instruction"), {
-      target: { value: " Build the billing page without changing checkout. " },
-    });
-    fireEvent.click(start);
-    expect(props.onStart).toHaveBeenCalledWith(
-      "Billing",
-      "beta",
-      "Build the billing page without changing checkout."
-    );
+    expect(props.onContinue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }));
+    expect(props.onContinue).toHaveBeenCalledWith("beta");
   });
 
-  it("keeps the brief after failure and blocks creation without a valid workspace or model", () => {
+  it("retains the selected workspace after failure and offers missing setup actions", () => {
     const { rerender } = render(<NewTaskForm {...props} />);
-    fireEvent.change(screen.getByLabelText("Task name"), { target: { value: "My task" } });
-    fireEvent.change(screen.getByLabelText("Instruction"), { target: { value: "Do the work" } });
+    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "beta" } });
     rerender(<NewTaskForm {...props} error="Storage unavailable" />);
     expect(screen.getByRole("alert").textContent).toBe("Storage unavailable");
-    expect((screen.getByLabelText("Instruction") as HTMLTextAreaElement).value).toBe("Do the work");
-    rerender(<NewTaskForm {...props} workspaces={[]} models={[]} />);
+    expect((screen.getByLabelText("Workspace") as HTMLSelectElement).value).toBe("beta");
+    rerender(<NewTaskForm {...props} workspaces={[]} hasModel={false} />);
     expect(
-      (screen.getByRole("button", { name: "Create and start task" }) as HTMLButtonElement).disabled
+      (screen.getByRole("button", { name: "Continue to chat" }) as HTMLButtonElement).disabled
     ).toBe(true);
-    expect(screen.getByRole("button", { name: "Add a workspace" })).toBeDefined();
-    expect(screen.getByRole("button", { name: "Model settings" })).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Add a workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Model settings" }));
+    expect(props.onManageWorkspaces).toHaveBeenCalledOnce();
+    expect(props.onOpenSettings).toHaveBeenCalledOnce();
   });
 });

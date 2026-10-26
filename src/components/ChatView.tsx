@@ -328,9 +328,9 @@ export function ChatView({
     return (
       <main className="chat-view chat-empty-state flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center">
         <div className="flex flex-col items-center gap-2">
-          <p className="text-heading text-text-primary font-medium">What are we working on?</p>
+          <p className="text-heading text-text-primary font-medium">What can I help you with?</p>
           <p className="text-body-sm text-text-secondary">
-            Give Gospel a task. You can follow its progress while you work elsewhere.
+            Send a message to get started. Your other tasks can keep running.
           </p>
           <p className="font-mono text-mono text-text-muted">{workspacePath}</p>
         </div>
