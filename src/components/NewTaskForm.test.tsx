@@ -78,4 +78,13 @@ describe("NewTaskForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }));
     expect(props.onContinue).toHaveBeenCalledWith(added.id);
   });
+
+  it("syncs activeWorkspaceId when it resolves after initial render", () => {
+    const { rerender } = render(<NewTaskForm {...props} activeWorkspaceId={undefined} />);
+    expect(screen.getByRole("combobox", { name: "Workspace" }).textContent).toContain(
+      "Choose a workspace"
+    );
+    rerender(<NewTaskForm {...props} activeWorkspaceId="beta" />);
+    expect(screen.getByRole("combobox", { name: "Workspace" }).textContent).toContain("Beta");
+  });
 });

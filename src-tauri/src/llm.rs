@@ -73,15 +73,31 @@ pub(crate) async fn generate_session_title(
 }
 
 fn normalize_session_title(output: &str) -> Option<String> {
-    let title: String = output
-        .lines()
-        .find(|line| !line.trim().is_empty())?
+    let line = output.lines().find(|l| !l.trim().is_empty())?.trim();
+    let without_heading = line.trim_start_matches(|c: char| c == '#' || c.is_whitespace());
+    let mut candidate = without_heading
+        .trim_matches(['*', '_', '"', '\'', '`'])
+        .trim();
+
+    if candidate.len() >= 5
+        && candidate.is_char_boundary(5)
+        && candidate[..5].eq_ignore_ascii_case("title")
+    {
+        let after_title = &candidate[5..];
+        let stripped = after_title.trim_start_matches(['*', '_', ' ']);
+        if let Some(rest) = stripped.strip_prefix(':').or_else(|| stripped.strip_prefix('-')) {
+            candidate = rest.trim();
+        }
+    }
+
+    let title: String = candidate
+        .trim_matches(['*', '_', '"', '\'', '`'])
         .trim()
-        .trim_matches(['"', '\'', '`'])
         .chars()
         .take(80)
         .collect();
-    (!title.trim().is_empty()).then(|| title.trim().to_string())
+    let final_title = title.trim();
+    (!final_title.is_empty()).then(|| final_title.to_string())
 }
 
 const EXPLORATION_AGENT_PROMPT: &str = r#"
@@ -1080,6 +1096,23 @@ mod tests {
         );
         assert_eq!(normalize_session_title(" \n\t"), None);
         assert_eq!(normalize_session_title("\"\""), None);
+        assert_eq!(
+            normalize_session_title("### Title: Fix login bug"),
+            Some("Fix login bug".to_string())
+        );
+        assert_eq!(
+            normalize_session_title("**Title:** Update dependencies"),
+            Some("Update dependencies".to_string())
+        );
+        assert_eq!(
+            normalize_session_title("### **Title:** Refactor database migrations"),
+            Some("Refactor database migrations".to_string())
+        );
+        assert_eq!(
+            normalize_session_title("title - Deploy to production"),
+            Some("Deploy to production".to_string())
+        );
+        assert_eq!(normalize_session_title("Title:"), None);
         let long_title = "界".repeat(100);
         assert_eq!(
             normalize_session_title(&long_title).unwrap(),

@@ -10,6 +10,7 @@ import {
   rankSessionsByActivity,
   type SessionActivityInput,
   type SessionActivityMap,
+  sessionActivityPreview,
   stepSession,
 } from "./sessionActivity";
 import type { CurrentTurn, Session } from "./types";
@@ -227,5 +228,29 @@ describe("time formatting", () => {
     expect(formatElapsed(72_000)).toBe("1m 12s");
     expect(formatElapsed(3_900_000)).toBe("1h 5m");
     expect(formatElapsed(-500)).toBe("0s");
+  });
+});
+
+describe("sessionActivityPreview", () => {
+  it("normalizes multiline whitespace in text and message previews", () => {
+    const session: Session = {
+      ...makeSession("s1"),
+      messages: [
+        {
+          id: "m1",
+          role: "user",
+          content: "First line\n  Second line\n\nThird line",
+          timestamp: new Date(),
+        },
+      ],
+    };
+    expect(sessionActivityPreview(session)).toBe("First line Second line Third line");
+
+    const turn: CurrentTurn = {
+      id: "t1",
+      createdAt: new Date(),
+      blocks: [{ kind: "text", id: "b1", text: "Streaming\n\nmultiline\tresponse" }],
+    };
+    expect(sessionActivityPreview(session, turn)).toBe("Streaming multiline response");
   });
 });

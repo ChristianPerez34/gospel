@@ -31,6 +31,11 @@ export function NewTaskForm({
   const workspaceRef = useRef<HTMLButtonElement>(null);
   const [addingWorkspace, setAddingWorkspace] = useState(false);
   useEffect(() => {
+    if (!workspaceId && activeWorkspaceId) {
+      setWorkspaceId(activeWorkspaceId);
+    }
+  }, [activeWorkspaceId, workspaceId]);
+  useEffect(() => {
     if (!addingWorkspace) workspaceRef.current?.focus();
   }, [addingWorkspace]);
   const workspace = workspaces.find((item) => item.id === workspaceId);
