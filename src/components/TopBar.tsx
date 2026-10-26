@@ -155,7 +155,6 @@ export function TopBar({
               className="topbar-session-title"
               onClick={() => setEditing(true)}
               aria-label="Edit session title"
-              aria-disabled={false}
               title="Edit session title"
             >
               {sessionTitle || "Untitled task"}

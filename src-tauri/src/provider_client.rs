@@ -166,10 +166,7 @@ fn grok_subscription_headers() -> HeaderMap {
         "x-grok-client-version",
         HeaderValue::from_static(GROK_CLI_CLIENT_VERSION),
     );
-    headers.insert(
-        reqwest::header::ACCEPT,
-        HeaderValue::from_static("text/event-stream"),
-    );
+    // Rig selects Accept per request; unary prompts must not be forced to SSE.
     headers
 }
 
@@ -293,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn grok_subscription_headers_identify_cli_and_override_accept() {
+    fn grok_subscription_headers_identify_cli() {
         let headers = applied(grok_subscription_headers());
         assert_eq!(header_value(&headers, "x-xai-token-auth"), "xai-grok-cli");
         assert_eq!(
@@ -301,7 +298,74 @@ mod tests {
             "grok-shell"
         );
         assert_eq!(header_value(&headers, "x-grok-client-version"), "0.2.93");
+    }
+
+    #[test]
+    fn grok_subscription_headers_preserve_json_accept_for_one_shot_requests() {
+        let headers = applied(grok_subscription_headers());
+        assert_eq!(header_value(&headers, "accept"), "application/json");
+    }
+
+    #[test]
+    fn grok_subscription_headers_preserve_sse_accept_for_streaming_requests() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::ACCEPT,
+            HeaderValue::from_static("text/event-stream"),
+        );
+        StaticHeaders(grok_subscription_headers()).apply(&mut headers);
         assert_eq!(header_value(&headers, "accept"), "text/event-stream");
+    }
+
+    #[tokio::test]
+    async fn grok_subscription_one_shot_prompt_does_not_request_sse() {
+        use rig::core::test_utils::RecordingHttpClient;
+        use std::future::IntoFuture;
+
+        let http = RecordingHttpClient::new(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "title-response",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "model": "grok-4",
+                "output": [{
+                    "id": "title-message",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "Review billing invoices",
+                        "annotations": []
+                    }]
+                }],
+                "tools": []
+            }))
+            .unwrap(),
+        );
+        let transport = DynHttpClient::new(http.clone())
+            .with_middleware(StaticHeaders(grok_subscription_headers()));
+        let client = grok_subscription_config("grok-oauth-access-token").connect(transport);
+        let agent = rig::AgentBuilder::new(client.completion("grok-4"))
+            .default_max_turns(1)
+            .build();
+
+        let response = agent
+            .prompt("Review the billing invoices")
+            .max_turns(1)
+            .into_future()
+            .await
+            .unwrap();
+
+        assert_eq!(response.output(), "Review billing invoices");
+        let requests = http.requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.uri, "https://cli-chat-proxy.grok.com/v1/responses");
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_ne!(body.get("stream"), Some(&serde_json::json!(true)));
+        assert_ne!(header_value(&request.headers, "accept"), "text/event-stream");
     }
 
     #[test]
