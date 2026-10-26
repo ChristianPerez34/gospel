@@ -77,13 +77,9 @@ export function CommandCenter({
     <main className="command-center" aria-label="Command center">
       <header className="command-center-heading">
         <div>
-          <div className="command-center-eyebrow">
-            <span className="live-dot" /> YOUR WORK, IN VIEW
-          </div>
-          <h1>
-            Command center<span className="heading-period">.</span>
-          </h1>
-          <p>One place for every task. Keep your projects moving.</p>
+          <div className="command-center-eyebrow">All workspaces</div>
+          <h1>Command center</h1>
+          <p>Monitor your tasks across every workspace.</p>
         </div>
         <Button className="command-primary" onClick={onNewTask}>
           <Plus size={15} aria-hidden="true" /> New task
@@ -91,14 +87,20 @@ export function CommandCenter({
       </header>
 
       <section className="command-center-pulse" aria-label="Across all workspaces">
-        <span>
-          <span className={`live-dot${running ? " is-running" : ""}`} />{" "}
-          {running ? `${running} running` : "No tasks running"}
-        </span>
-        <span className={needsYou ? "attention-text" : ""}>
-          <CircleDot size={13} aria-hidden="true" />{" "}
-          {needsYou ? `${needsYou} need${needsYou === 1 ? "s" : ""} you` : "You're all caught up"}
-        </span>
+        {sessions.length > 0 && (
+          <>
+            <span>
+              <span className={`live-dot${running ? " is-running" : ""}`} />{" "}
+              {running ? `${running} running` : "No tasks running"}
+            </span>
+            <span className={needsYou ? "attention-text" : ""}>
+              <CircleDot size={13} aria-hidden="true" />{" "}
+              {needsYou
+                ? `${needsYou} need${needsYou === 1 ? "s" : ""} you`
+                : "You're all caught up"}
+            </span>
+          </>
+        )}
         <button type="button" onClick={onManageWorkspaces}>
           <Folder size={13} aria-hidden="true" /> {workspaces.length}{" "}
           {workspaces.length === 1 ? "workspace" : "workspaces"}
@@ -107,116 +109,118 @@ export function CommandCenter({
       </section>
 
       <section className="command-task-section" aria-label="Task overview">
-        <div className="command-task-toolbar">
-          <fieldset className="command-filters" aria-label="Filter tasks">
-            {(
-              [
-                ["all", "All tasks", sessions.length],
-                ["running", "Running", running],
-                ["needs-you", "Needs you", needsYou],
-              ] as const
-            ).map(([value, label, count]) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={filter === value}
-                onClick={() => setFilter(value)}
-              >
-                {label}
-                <span>{count}</span>
-              </button>
-            ))}
-          </fieldset>
-          <div className="command-task-tools">
-            <label className="command-search">
-              <Search size={14} aria-hidden="true" />
-              <input
-                aria-label="Search all tasks"
-                placeholder="Search tasks…"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </label>
-            <label className="command-workspace-filter">
-              <SlidersHorizontal size={13} aria-hidden="true" />
-              <select
-                aria-label="Filter by workspace"
-                value={workspaceId}
-                onChange={(event) => setWorkspaceId(event.target.value)}
-              >
-                <option value="">All workspaces</option>
-                {workspaces.map((workspace) => (
-                  <option key={workspace.id} value={workspace.id}>
-                    {workspace.name}
-                  </option>
+        {sessions.length > 0 && (
+          <>
+            <div className="command-task-toolbar">
+              <fieldset className="command-filters" aria-label="Filter tasks">
+                {(
+                  [
+                    ["all", "All tasks", sessions.length],
+                    ["running", "Running", running],
+                    ["needs-you", "Needs you", needsYou],
+                  ] as const
+                ).map(([value, label, count]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={filter === value}
+                    onClick={() => setFilter(value)}
+                  >
+                    {label}
+                    <span>{count}</span>
+                  </button>
                 ))}
-              </select>
-            </label>
-          </div>
-        </div>
-        <div className="command-task-columns" aria-hidden="true">
-          <span>Task / latest activity</span>
-          <span>Workspace</span>
-          <span>Status</span>
-          <span>Updated</span>
-        </div>
-        <ul
-          className="command-task-list"
-          aria-label="All workspace tasks"
-          onPointerEnter={() => setHeldLayout(liveLayout)}
-          onPointerLeave={() => setHeldLayout(null)}
-        >
-          {ordered.map((session) => {
-            const activity = activityFor(activityBySession, session.id);
-            const preview = sessionActivityPreview(session, liveTurnsBySession[session.id]);
-            return (
-              <li key={session.id}>
-                <button
-                  type="button"
-                  className={`command-task-row is-${activity.state}`}
-                  onClick={() => onSelect(session)}
-                  aria-label={`Open ${session.title || "Untitled"} in ${projectName(session)}`}
-                >
-                  <span className="command-task-content">
-                    <span className="command-task-icon">
-                      <CircleDot size={16} aria-hidden="true" />
-                    </span>
-                    <span className="command-task-copy">
-                      <strong>{session.title || "Untitled"}</strong>
-                      <span className="command-task-preview">
-                        {preview.replace(/\s+/g, " ").slice(0, 180)}
+              </fieldset>
+              <div className="command-task-tools">
+                <label className="command-search">
+                  <Search size={14} aria-hidden="true" />
+                  <input
+                    aria-label="Search all tasks"
+                    placeholder="Search tasks…"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                </label>
+                <label className="command-workspace-filter">
+                  <SlidersHorizontal size={13} aria-hidden="true" />
+                  <select
+                    aria-label="Filter by workspace"
+                    value={workspaceId}
+                    onChange={(event) => setWorkspaceId(event.target.value)}
+                  >
+                    <option value="">All workspaces</option>
+                    {workspaces.map((workspace) => (
+                      <option key={workspace.id} value={workspace.id}>
+                        {workspace.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="command-task-columns" aria-hidden="true">
+              <span>Task / latest activity</span>
+              <span>Workspace</span>
+              <span>Status</span>
+              <span>Updated</span>
+            </div>
+            <ul
+              className="command-task-list"
+              aria-label="All workspace tasks"
+              onPointerEnter={() => setHeldLayout(liveLayout)}
+              onPointerLeave={() => setHeldLayout(null)}
+            >
+              {ordered.map((session) => {
+                const activity = activityFor(activityBySession, session.id);
+                const preview = sessionActivityPreview(session, liveTurnsBySession[session.id]);
+                return (
+                  <li key={session.id}>
+                    <button
+                      type="button"
+                      className={`command-task-row is-${activity.state}`}
+                      onClick={() => onSelect(session)}
+                      aria-label={`Open ${session.title || "Untitled"} in ${projectName(session)}`}
+                    >
+                      <span className="command-task-content">
+                        <span className="command-task-icon">
+                          <CircleDot size={16} aria-hidden="true" />
+                        </span>
+                        <span className="command-task-copy">
+                          <strong>{session.title || "Untitled"}</strong>
+                          <span className="command-task-preview">
+                            {preview.replace(/\s+/g, " ").slice(0, 180)}
+                          </span>
+                          <span className="command-task-model">{sessionModelLabel(session)}</span>
+                        </span>
                       </span>
-                      <span className="command-task-model">{sessionModelLabel(session)}</span>
-                    </span>
-                  </span>
-                  <span className="command-task-project" title={projectName(session)}>
-                    <Folder size={13} aria-hidden="true" />
-                    <span>{projectName(session)}</span>
-                  </span>
-                  <span className={`task-status is-${activity.state}`}>
-                    <span className="live-dot" />
-                    {ACTIVITY_LABELS[activity.state]}
-                  </span>
-                  <span className="command-task-age">
-                    {activity.state === "running" && activity.runStartedAt !== undefined
-                      ? formatElapsed(now - activity.runStartedAt)
-                      : formatRelativeTime(session.timestamp, now)}
-                    <ArrowUpRight size={13} aria-hidden="true" />
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+                      <span className="command-task-project" title={projectName(session)}>
+                        <Folder size={13} aria-hidden="true" />
+                        <span>{projectName(session)}</span>
+                      </span>
+                      <span className={`task-status is-${activity.state}`}>
+                        <span className="live-dot" />
+                        {ACTIVITY_LABELS[activity.state]}
+                      </span>
+                      <span className="command-task-age">
+                        {activity.state === "running" && activity.runStartedAt !== undefined
+                          ? formatElapsed(now - activity.runStartedAt)
+                          : formatRelativeTime(session.timestamp, now)}
+                        <ArrowUpRight size={13} aria-hidden="true" />
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
         {visible.length === 0 && (
           <div className="command-empty">
             <CircleDot size={28} strokeWidth={1} aria-hidden="true" />
-            <h2>
-              {sessions.length === 0 ? "A clear space. A fresh start." : "No tasks in this view"}
-            </h2>
+            <h2>{sessions.length === 0 ? "Start your first task" : "No tasks in this view"}</h2>
             <p>
               {sessions.length === 0
-                ? "Start a new task to choose a workspace and give Gospel an instruction."
+                ? "Choose a workspace, describe the work, and follow its progress here."
                 : "Try another workspace, status, or search."}
             </p>
             {sessions.length > 0 && (
@@ -233,12 +237,14 @@ export function CommandCenter({
             )}
           </div>
         )}
-        <footer className="command-task-footer">
-          <span>
-            {visible.length} {visible.length === 1 ? "task" : "tasks"} in view
-          </span>
-          <span>Sessions keep running when you switch.</span>
-        </footer>
+        {sessions.length > 0 && (
+          <footer className="command-task-footer">
+            <span>
+              {visible.length} {visible.length === 1 ? "task" : "tasks"} in view
+            </span>
+            <span>Sessions keep running when you switch.</span>
+          </footer>
+        )}
       </section>
     </main>
   );

@@ -80,8 +80,8 @@ function handleCommonInvoke(
 
 async function openTaskSetup(title: string, instruction = title) {
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).not.toContain(
-      "No workspace"
+    expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+      sampleWorkspace.name
     )
   );
   fireEvent.click(

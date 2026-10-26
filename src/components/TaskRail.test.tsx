@@ -208,6 +208,16 @@ describe("TaskRail", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("keeps the default workspace and directory visible in navigation", () => {
+    const onWorkspaceSwitch = vi.fn();
+    render(rail({ onWorkspaceSwitch }));
+    const picker = screen.getByRole("button", { name: "Switch workspace" });
+    expect(picker.textContent).toContain("Alpha");
+    expect(picker.textContent).toContain("/tmp/alpha");
+    fireEvent.click(picker);
+    expect(onWorkspaceSwitch).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes compact navigation as a dialog and closes it with Escape", () => {
     const onClose = vi.fn();
     render(rail({ trapFocus: true, onClose }));

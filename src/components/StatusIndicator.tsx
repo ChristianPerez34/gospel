@@ -24,7 +24,7 @@ export function StatusIndicator({ status }: StatusIndicatorProps) {
   return (
     <div className="flex items-center gap-1.5" title={STATUS_LABELS[status]}>
       <span className={`w-2 h-2 rounded-full shrink-0 ${DOT_CLASSES[status]}`} aria-hidden="true" />
-      <span className="topbar-status-label text-caption text-text-secondary tracking-[0.02em] whitespace-nowrap font-mono">
+      <span className="topbar-status-label text-caption text-text-secondary whitespace-nowrap">
         {STATUS_LABELS[status]}
       </span>
     </div>

@@ -962,13 +962,6 @@ export function AppShell() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const anyTaskRunning = session.streamingSessionIds.length > 0;
-  const headerStatus = anyTaskRunning
-    ? session.status === "error"
-      ? session.status
-      : "acting"
-    : session.status;
-
   return (
     <div
       className="app-shell"
@@ -980,12 +973,10 @@ export function AppShell() {
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
         onSessionTitleChange={handleSessionTitleChange}
-        model={
-          anyTaskRunning && !session.isStreaming
-            ? `${currentModelName} · ${session.streamingSessionIds.length} live`
-            : currentModelName
-        }
-        status={headerStatus}
+        model={currentModelName}
+        status={session.status}
+        runningTaskCount={session.streamingSessionIds.length}
+        showWorkspaceSwitch={taskRailCollapsed}
         needsYouCount={needsYouCount}
         onWorkspaceSwitch={() => {
           if (creatingTaskRef.current) return;
@@ -1016,6 +1007,10 @@ export function AppShell() {
           activeWorkspaceId={activeWorkspace?.id}
           onSelect={selectTask}
           onNewTask={newTask}
+          onWorkspaceSwitch={() => {
+            if (creatingTaskRef.current) return;
+            setWorkspaceSwitcherOpen(true);
+          }}
           onOpenOverview={openOverview}
           overviewOpen={overviewOpen}
           liveTurnsBySession={liveTurns}

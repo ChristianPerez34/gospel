@@ -10,7 +10,7 @@ Solo developers working alone at odd hours, deep in a codebase. They think in te
 
 ## Product Purpose
 
-Gospel is a desktop agent harness that connects developers to LLM-powered coding agents through a chat-first, workspace-native interface. It organizes work into workspaces (project directories) and sessions (conversation threads with context), letting a solo developer type a prompt and get code changes back as inline diffs, terminal output, and file edits. Success means the developer thinks about the code, not the interface. The tool disappears into the task.
+Gospel is a desktop agent command center for a developer working across projects. It organizes work into workspaces (project directories) and tasks backed by sessions (conversation threads with context). A task starts with an explicit workspace, name, instruction, and model. The developer monitors concurrent activity from an overview, then opens a task to review code changes, terminal output, and file edits. Success means the developer thinks about the code, not the interface. The tool disappears into the task.
 
 ## Brand Personality
 

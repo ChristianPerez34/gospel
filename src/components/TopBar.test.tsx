@@ -41,6 +41,28 @@ describe("TopBar", () => {
     expect(switchButton.disabled).toBe(false);
   });
 
+  it("shows global scope and activity on the homepage without session controls", () => {
+    renderTopBar({
+      overviewOpen: true,
+      showWorkspaceSwitch: false,
+      runningTaskCount: 2,
+      status: "acting",
+    });
+    expect(screen.getByText("All workspaces")).toBeDefined();
+    expect(screen.getByText("Overview")).toBeDefined();
+    expect(screen.getByText("2 running")).toBeDefined();
+    expect(screen.queryByText("gpt-5")).toBeNull();
+    expect(screen.queryByText("Acting")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit session title" })).toBeNull();
+  });
+
+  it("keeps conversation status specific to the selected task", () => {
+    renderTopBar({ runningTaskCount: 2, status: "connected" });
+    expect(screen.getByText("gpt-5")).toBeDefined();
+    expect(screen.getByText("Connected")).toBeDefined();
+    expect(screen.queryByText("2 running")).toBeNull();
+  });
+
   it("calls onSessionTitleChange with the trimmed title on Enter", () => {
     const onSessionTitleChange = vi.fn();
     renderTopBar({ sessionTitle: "Old", onSessionTitleChange });

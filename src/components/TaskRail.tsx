@@ -1,4 +1,4 @@
-import { History, LayoutDashboard, Plus } from "lucide-react";
+import { ChevronDown, Folder, History, LayoutDashboard, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { shortcutLabel } from "../hooks/useSessionShortcuts";
@@ -35,6 +35,7 @@ interface TaskRailProps {
   liveTurnsBySession?: Record<string, CurrentTurn | null>;
   trapFocus?: boolean;
   onClose?: () => void;
+  onWorkspaceSwitch?: () => void;
   /** Reports the sessions in the order the rail currently shows them, so
    * session-switching shortcuts match what is on screen. */
   onDisplayedOrderChange?: (order: Session[]) => void;
@@ -75,6 +76,7 @@ export function TaskRail({
   liveTurnsBySession = {},
   trapFocus = false,
   onClose = () => {},
+  onWorkspaceSwitch,
 }: TaskRailProps) {
   const railRef = useRef<HTMLElement>(null);
   useFocusTrap({ active: trapFocus, containerRef: railRef, onEscape: onClose });
@@ -217,45 +219,31 @@ export function TaskRail({
             <LayoutDashboard size={16} aria-hidden="true" />
             Command center<span className="task-rail-home-count">{sessions.length}</span>
           </button>
-          <div className="task-rail-scope">ALL WORKSPACES</div>
         </div>
       )}
       <div className="task-rail-head">
+        <button
+          type="button"
+          className="task-rail-new"
+          aria-label="New task"
+          onClick={onNewTask}
+          title={`New task (${shortcutLabel("N")})`}
+        >
+          <Plus size={15} strokeWidth={1.6} aria-hidden="true" />
+          <span>New task</span>
+          <kbd>{shortcutLabel("N")}</kbd>
+        </button>
         <div className="task-rail-search-row">
-          <svg
-            className="text-text-muted shrink-0"
-            width="14"
-            height="14"
-            viewBox="0 0 14 14"
-            fill="none"
-            aria-hidden="true"
-          >
-            <circle cx="5.5" cy="5.5" r="4" stroke="currentColor" strokeWidth="1.5" />
-            <path
-              d="M9 9L12.5 12.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
+          <Search size={15} strokeWidth={1.6} aria-hidden="true" />
           <input
             className="task-rail-search"
             type="text"
-            placeholder="Search tasks or projects..."
+            placeholder="Search tasks…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Search tasks"
           />
         </div>
-        <button
-          type="button"
-          className="task-rail-new"
-          onClick={onNewTask}
-          title={`New task (${shortcutLabel("N")})`}
-        >
-          <Plus aria-hidden="true" />
-          New task
-        </button>
         <output className="sr-only" aria-live="polite">
           {summary}
         </output>
@@ -268,7 +256,7 @@ export function TaskRail({
       >
         {filtered.length === 0 && (
           <div className="task-rail-empty">
-            {search ? "No tasks match." : "No tasks yet — start one."}
+            {search ? "No tasks match." : "Your tasks will appear here."}
           </div>
         )}
         {renderStatusSection("needs-you", "Needs you", layout.needsYou)}
@@ -294,10 +282,33 @@ export function TaskRail({
         ))}
       </div>
 
-      <button type="button" className="task-rail-history" onClick={onOpenHistory}>
-        <History aria-hidden="true" />
-        History &amp; archive
-      </button>
+      <div className="task-rail-footer">
+        {onWorkspaceSwitch && (
+          <div className="task-rail-workspace">
+            <span className="task-rail-workspace-label">Workspace for new tasks</span>
+            <button
+              type="button"
+              className="task-rail-workspace-control"
+              onClick={onWorkspaceSwitch}
+              aria-label="Switch workspace"
+              title={projectPath(activeWorkspaceId ?? "") ?? "Choose a workspace"}
+            >
+              <Folder size={16} strokeWidth={1.6} aria-hidden="true" />
+              <span>
+                {activeWorkspaceId ? projectLabel(activeWorkspaceId) : "Choose a workspace"}
+                <span className="task-rail-workspace-path">
+                  {projectPath(activeWorkspaceId ?? "") ?? "Open a project directory"}
+                </span>
+              </span>
+              <ChevronDown size={12} aria-hidden="true" />
+            </button>
+          </div>
+        )}
+        <button type="button" className="task-rail-history" onClick={onOpenHistory}>
+          <History aria-hidden="true" />
+          History &amp; archive
+        </button>
+      </div>
     </aside>
   );
 }

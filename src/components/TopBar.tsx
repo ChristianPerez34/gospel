@@ -1,4 +1,13 @@
-import { ChevronRight, Cpu, Layers } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Cpu,
+  Folder,
+  Layers,
+  LayoutDashboard,
+  PanelLeft,
+  Settings2,
+} from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { needsYouLabel } from "../sessionActivity";
 import type { AgentStatus, Workspace } from "../types";
@@ -14,12 +23,13 @@ interface TopBarProps {
   onToggleSessions: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
-  /** Sessions waiting on the user: pending approvals and unopened replies. */
   needsYouCount?: number;
   sessionToggleRef?: RefObject<HTMLButtonElement>;
   overviewOpen?: boolean;
   taskSetupOpen?: boolean;
   onOpenOverview?: () => void;
+  runningTaskCount?: number;
+  showWorkspaceSwitch?: boolean;
 }
 
 export function TopBar({
@@ -37,226 +47,148 @@ export function TopBar({
   overviewOpen = false,
   taskSetupOpen = false,
   onOpenOverview,
+  runningTaskCount = 0,
+  showWorkspaceSwitch = true,
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(sessionTitle);
   const inputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => {
     setTitle(sessionTitle);
   }, [sessionTitle]);
-
   useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
     }
   }, [editing]);
-
   const handleSubmit = () => {
     const next = title.trim();
-    if (next.length > 0 && next !== sessionTitle) {
-      onSessionTitleChange(next);
-    } else {
-      setTitle(sessionTitle);
-    }
+    if (next && next !== sessionTitle) onSessionTitleChange(next);
+    else setTitle(sessionTitle);
     setEditing(false);
   };
-
-  const sessionToggleClass = sessionsOpen
-    ? "bg-surface-overlay text-accent-structure"
-    : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
-  const computeActive = status === "thinking" || status === "acting";
   const needsYouText = needsYouLabel(needsYouCount);
   const taskButtonLabel = needsYouCount > 0 ? `Toggle tasks, ${needsYouText}` : "Toggle tasks";
-  // Control plane: switching projects and renaming tasks never blocks on
-  // streams. In-flight turns keep running against their captured context.
-  const titleEditingDisabled = false;
-  const workspaceSwitchClass =
-    "text-text-secondary hover:bg-surface-overlay hover:text-text-primary";
+  const globalView = overviewOpen || taskSetupOpen;
 
   return (
-    <header className="app-topbar spatial-topbar px-4 bg-surface-base shrink-0">
-      {onOpenOverview && (
-        <button
-          type="button"
-          className="gospel-brand"
-          onClick={onOpenOverview}
-          aria-label="Gospel command center"
-        >
-          <span className="gospel-mark">
-            <Layers size={17} strokeWidth={1.8} aria-hidden="true" />
-          </span>
-          <span>
-            gospel<span className="gospel-brand-caption">Agent workspace</span>
-          </span>
-        </button>
-      )}
-      <div className="topbar-primary flex items-center gap-2 min-w-0">
+    <header className="app-topbar spatial-topbar" data-navigation-open={sessionsOpen}>
+      <div className="topbar-identity">
+        {onOpenOverview && (
+          <button
+            type="button"
+            className="gospel-brand"
+            onClick={onOpenOverview}
+            aria-label="Gospel command center"
+          >
+            <span className="gospel-mark">
+              <Layers size={16} strokeWidth={1.6} aria-hidden="true" />
+            </span>
+            <span>gospel</span>
+          </button>
+        )}
         <button
           type="button"
           ref={sessionToggleRef}
-          className={`hit-target w-8 h-8 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${sessionToggleClass}`}
+          className="shell-icon-button topbar-navigation-toggle"
           onClick={onToggleSessions}
           aria-label={taskButtonLabel}
           aria-pressed={sessionsOpen}
-          title={needsYouCount > 0 ? needsYouText : "Tasks"}
+          title={sessionsOpen ? "Hide task navigation" : "Show task navigation"}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <rect
-              x="2"
-              y="2"
-              width="12"
-              height="12"
-              rx="2"
-              stroke="currentColor"
-              strokeWidth="1.2"
-            />
-            <line
-              x1="5"
-              y1="6"
-              x2="11"
-              y2="6"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-            />
-            <line
-              x1="5"
-              y1="8.5"
-              x2="9"
-              y2="8.5"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-            />
-            <line
-              x1="5"
-              y1="11"
-              x2="7"
-              y2="11"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-            />
-          </svg>
+          <PanelLeft size={17} strokeWidth={1.6} aria-hidden="true" />
           {needsYouCount > 0 && (
             <span className="task-rail-toggle-count" aria-hidden="true">
               {needsYouCount > 9 ? "9+" : needsYouCount}
             </span>
           )}
         </button>
-        <button
-          type="button"
-          className={`hit-target flex min-h-11 min-w-11 items-center gap-1 rounded-sm px-2 transition-colors duration-150 ease-out-quart font-body ${workspaceSwitchClass}`}
-          onClick={onWorkspaceSwitch}
-          aria-label="Switch workspace"
-          title={workspace.path || "Switch workspace"}
-        >
-          <span className="topbar-workspace-text text-body-sm font-medium truncate max-w-[220px]">
-            {workspace.name}
-          </span>
-          <svg
-            className="shrink-0 opacity-50"
-            width="14"
-            height="14"
-            viewBox="0 0 14 14"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M4.5 5.5L7 8L9.5 5.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+      </div>
+      <div className="topbar-main">
+        <div className="topbar-primary">
+          {showWorkspaceSwitch ? (
+            <button
+              type="button"
+              className="topbar-workspace-control"
+              onClick={onWorkspaceSwitch}
+              aria-label="Switch workspace"
+              title={workspace.path || "Choose a workspace"}
+            >
+              <Folder size={15} strokeWidth={1.6} aria-hidden="true" />
+              <span className="topbar-workspace-text">{workspace.name}</span>
+              <ChevronDown size={12} aria-hidden="true" />
+            </button>
+          ) : overviewOpen ? (
+            <span className="topbar-scope">
+              <LayoutDashboard size={15} strokeWidth={1.6} aria-hidden="true" />
+              All workspaces
+            </span>
+          ) : (
+            <span className="topbar-scope" title={workspace.path}>
+              <Folder size={15} strokeWidth={1.6} aria-hidden="true" />
+              {workspace.name}
+            </span>
+          )}
+          <ChevronRight className="topbar-breadcrumb-divider" size={13} aria-hidden="true" />
+          {globalView ? (
+            <span className="topbar-overview-label">{taskSetupOpen ? "New task" : "Overview"}</span>
+          ) : editing ? (
+            <input
+              ref={inputRef}
+              className="topbar-session-title topbar-title-input"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              onBlur={handleSubmit}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") handleSubmit();
+                if (event.key === "Escape") {
+                  setTitle(sessionTitle);
+                  setEditing(false);
+                }
+              }}
+              aria-label="Session title"
             />
-          </svg>
-        </button>
-        <span className="topbar-divider w-px h-4 bg-surface-overlay shrink-0" aria-hidden="true" />
-        {overviewOpen || taskSetupOpen ? (
-          <span className="topbar-overview-label">
-            <ChevronRight size={13} aria-hidden="true" />
-            {taskSetupOpen ? "New task" : "Command center"}
-          </span>
-        ) : editing ? (
-          <input
-            ref={inputRef}
-            className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay disabled:cursor-not-allowed disabled:opacity-60"
-            value={title}
-            disabled={titleEditingDisabled}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={handleSubmit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSubmit();
-              if (e.key === "Escape") {
-                setTitle(sessionTitle);
-                setEditing(false);
-              }
-            }}
-            aria-label="Session title"
-          />
-        ) : (
+          ) : (
+            <button
+              type="button"
+              className="topbar-session-title"
+              onClick={() => setEditing(true)}
+              aria-label="Edit session title"
+              aria-disabled={false}
+              title="Edit session title"
+            >
+              {sessionTitle || "Untitled task"}
+            </button>
+          )}
+        </div>
+        <div className="topbar-actions">
+          {globalView ? (
+            runningTaskCount > 0 && (
+              <span className="topbar-global-status">
+                <span className="live-dot is-running" />
+                {runningTaskCount} running
+              </span>
+            )
+          ) : (
+            <>
+              <span className="topbar-model-badge">
+                <Cpu size={13} strokeWidth={1.6} aria-hidden="true" />
+                <span>{model}</span>
+              </span>
+              <StatusIndicator status={status} />
+            </>
+          )}
           <button
             type="button"
-            className="topbar-session-title hit-target min-h-11 text-body-sm text-text-muted px-2 rounded-sm transition-colors duration-150 ease-out-quart truncate max-w-[300px] font-normal hover:bg-surface-overlay hover:text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent aria-disabled:hover:text-text-muted"
-            onClick={() => {
-              if (!titleEditingDisabled) setEditing(true);
-            }}
-            aria-label="Edit session title"
-            aria-disabled={titleEditingDisabled}
-            title={
-              titleEditingDisabled
-                ? "Session title can't be edited while streaming"
-                : "Edit session title"
-            }
+            className="shell-icon-button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={onOpenSettings}
           >
-            {sessionTitle || "New session"}
+            <Settings2 size={17} strokeWidth={1.6} aria-hidden="true" />
           </button>
-        )}
-      </div>
-      <div className="topbar-actions flex items-center gap-3 shrink-0">
-        <div
-          className={`topbar-compute-graph ${computeActive ? "is-active" : ""}`}
-          title={computeActive ? "Gospel is running" : "Gospel is idle"}
-          aria-hidden="true"
-        >
-          <span />
-          <span />
-          <span />
-          <span />
-          <span />
         </div>
-        <span className="topbar-model-badge inline-flex items-center gap-1.5 font-mono text-caption tracking-[0.02em] py-0.5 px-2 rounded-sm bg-surface-overlay text-text-muted whitespace-nowrap">
-          <Cpu className="size-3 text-text-muted" aria-hidden="true" />
-          {model}
-        </span>
-        <StatusIndicator status={status} />
-        <button
-          type="button"
-          className="hit-target w-8 h-8 flex items-center justify-center rounded-sm text-text-muted transition-colors duration-150 ease-out-quart hover:bg-surface-overlay hover:text-text-secondary"
-          aria-label="Settings"
-          title="Settings"
-          onClick={onOpenSettings}
-        >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.2"
-            strokeLinecap="round"
-            aria-hidden="true"
-          >
-            <line x1="2" y1="4.5" x2="14" y2="4.5" />
-            <line x1="2" y1="8" x2="14" y2="8" />
-            <line x1="2" y1="11.5" x2="14" y2="11.5" />
-            <circle cx="9" cy="4.5" r="1.7" fill="currentColor" stroke="none" />
-            <circle cx="5" cy="8" r="1.7" fill="currentColor" stroke="none" />
-            <circle cx="11" cy="11.5" r="1.7" fill="currentColor" stroke="none" />
-          </svg>
-        </button>
       </div>
     </header>
   );

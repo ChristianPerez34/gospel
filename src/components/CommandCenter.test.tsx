@@ -51,6 +51,16 @@ afterEach(() => {
 });
 
 describe("CommandCenter", () => {
+  it("gives first-time users a clear start without empty table controls", () => {
+    render(
+      <CommandCenter {...props} sessions={[]} activityBySession={{}} liveTurnsBySession={{}} />
+    );
+    expect(screen.getByRole("heading", { name: "Start your first task" })).toBeDefined();
+    expect(screen.queryByRole("group", { name: "Filter tasks" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Search all tasks" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect(props.onNewTask).toHaveBeenCalledTimes(1);
+  });
   it("combines status, workspace, and search filters without changing the workspace", () => {
     render(<CommandCenter {...props} />);
     const list = screen.getByRole("list", { name: "All workspace tasks" });

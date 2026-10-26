@@ -600,67 +600,6 @@ summary,
     filter var(--duration-normal) var(--ease-out-quart);
 }
 
-.app-topbar {
-  height: var(--topbar-height);
-  border-bottom: 1px solid var(--surface-line);
-  background: var(--surface-sunken);
-}
-
-.spatial-topbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-4);
-}
-
-.topbar-primary {
-  justify-self: start;
-}
-
-.topbar-actions {
-  justify-self: end;
-}
-
-.topbar-compute-graph {
-  display: inline-flex;
-  height: 16px;
-  align-items: end;
-  gap: 2px;
-  opacity: 0.5;
-}
-
-.topbar-compute-graph span {
-  width: 3px;
-  border-radius: 1px;
-  background: var(--text-muted);
-  transform-origin: bottom;
-}
-
-.topbar-compute-graph span:nth-child(1) {
-  height: 6px;
-}
-.topbar-compute-graph span:nth-child(2) {
-  height: 12px;
-}
-.topbar-compute-graph span:nth-child(3) {
-  height: 8px;
-}
-.topbar-compute-graph span:nth-child(4) {
-  height: 14px;
-}
-.topbar-compute-graph span:nth-child(5) {
-  height: 10px;
-}
-
-.topbar-compute-graph.is-active {
-  opacity: 1;
-}
-
-.topbar-compute-graph.is-active span {
-  background: var(--status-success);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--status-success) 42%, transparent);
-}
-
 .task-rail-toggle-count {
   position: absolute;
   z-index: 1;
@@ -1103,29 +1042,6 @@ summary,
   font-weight: 600;
 }
 
-.app-topbar button,
-.app-topbar input,
-.topbar-model-badge {
-  border: 1px solid transparent;
-}
-
-.app-topbar button:hover,
-.app-topbar button[aria-pressed="true"],
-.app-topbar input:focus,
-.topbar-model-badge {
-  border-color: color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-}
-
-.app-topbar button[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--surface-overlay) 74%, var(--accent-action) 12%);
-}
-
-.topbar-model-badge {
-  background: color-mix(in srgb, var(--surface-overlay) 72%, var(--surface-base) 28%);
-  color: var(--text-secondary);
-}
-
 .chat-view {
   background: transparent;
 }
@@ -1342,63 +1258,16 @@ summary,
   }
 }
 
-/* Collapse topbar chrome on medium screens */
-@media (max-width: 1199px) {
-  .topbar-compute-graph {
-    display: none;
-  }
-
-  .topbar-workspace-text {
-    max-width: 140px;
-  }
-
-  .topbar-session-title {
-    max-width: 180px;
-  }
-}
-
 /* Single-column workspace: hide surface controls and secondary topbar chrome */
 @media (max-width: 999px) {
   .app-workspace {
     display: flex;
-  }
-
-  .spatial-topbar {
-    gap: var(--space-2);
-  }
-
-  .topbar-model-badge {
-    display: none;
-  }
-
-  .topbar-workspace-text {
-    max-width: 100px;
-  }
-
-  .topbar-session-title {
-    max-width: 140px;
   }
 }
 
 @media (max-width: 799px) {
   .session-drawer {
     width: 100vw;
-  }
-
-  .app-topbar {
-    padding-inline: var(--space-2);
-  }
-
-  .topbar-workspace-text,
-  .topbar-session-title,
-  .topbar-divider,
-  .topbar-status-label {
-    display: none;
-  }
-
-  .topbar-primary,
-  .topbar-actions {
-    gap: var(--space-1);
   }
 
   .workspace-switcher-dialog {
