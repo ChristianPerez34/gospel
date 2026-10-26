@@ -439,7 +439,7 @@ export function ProviderSelector({
                     {providerChallenge && (
                       <div className="flex items-center gap-2 pt-2">
                         <span className="text-caption text-text-muted font-body">Your code:</span>
-                        <code className="font-mono text-body-sm text-accent-action bg-surface-base py-0.5 px-2 rounded-sm tracking-[0.15em]">
+                        <code className="font-mono text-body-sm text-accent-structure bg-surface-base py-0.5 px-2 rounded-sm tracking-[0.15em]">
                           {providerChallenge.user_code}
                         </code>
                       </div>

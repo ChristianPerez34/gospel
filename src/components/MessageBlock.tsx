@@ -47,9 +47,7 @@ export function MessageBlock({ message, showActions = true }: MessageBlockProps)
         {isUser ? (
           message.content
         ) : (
-          <Streamdown animated plugins={{ code: codePlugin }}>
-            {message.content}
-          </Streamdown>
+          <Streamdown plugins={{ code: codePlugin }}>{message.content}</Streamdown>
         )}
       </div>
       {showActions && (

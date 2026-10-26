@@ -146,12 +146,12 @@ function ToolTimeline({
   );
 }
 
-function AgentTextBlock({ block }: { block: TextTurnBlock }) {
+function AgentTextBlock({ block, live }: { block: TextTurnBlock; live: boolean }) {
   if (!block.text) return null;
 
   return (
     <div className="agent-text-block ml-16 w-[calc(100%-3.25rem)] max-w-[680px] rounded-lg border border-surface-overlay bg-surface-base px-3 py-3 text-body leading-relaxed text-text-primary break-words prose">
-      <Streamdown animated plugins={{ code: codePlugin }}>
+      <Streamdown animated={live} plugins={{ code: codePlugin }}>
         {block.text}
       </Streamdown>
     </div>
@@ -243,10 +243,7 @@ function AgentTurnBlock({
   const segments = useMemo(() => coalesceBlocks(visibleBlocks), [visibleBlocks]);
 
   return (
-    <div
-      className="agent-turn group flex flex-col gap-2 animate-fade-slide-in-fast motion-reduce:animate-none"
-      data-testid={`agent-turn-${turnId}`}
-    >
+    <div className="agent-turn group flex flex-col gap-2" data-testid={`agent-turn-${turnId}`}>
       <AgentHeader timestamp={timestamp} />
       {isLive && toolBlocks.some((block) => block.status === "calling") && (
         <div className="running-pill-wrap ml-16 flex w-[calc(100%-3.25rem)] max-w-[960px] flex-col">
@@ -255,7 +252,7 @@ function AgentTurnBlock({
       )}
       {segments.map((segment) =>
         segment.kind === "text" ? (
-          <AgentTextBlock block={segment.block} key={segment.block.id} />
+          <AgentTextBlock block={segment.block} live={isLive} key={segment.block.id} />
         ) : segment.kind === "reasoning" ? (
           <ReasoningBlock block={segment.block} key={segment.block.id} />
         ) : (
@@ -330,8 +327,11 @@ export function ChatView({
   if (isEmpty) {
     return (
       <main className="chat-view chat-empty-state flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center">
-        <div className="flex flex-col items-center gap-2 animate-fade-slide-in motion-reduce:animate-none">
-          <p className="text-heading text-text-primary font-medium">New session ready</p>
+        <div className="flex flex-col items-center gap-2">
+          <p className="text-heading text-text-primary font-medium">What can I help you with?</p>
+          <p className="text-body-sm text-text-secondary">
+            Send a message to get started. Your other tasks can keep running.
+          </p>
           <p className="font-mono text-mono text-text-muted">{workspacePath}</p>
         </div>
       </main>
@@ -383,10 +383,7 @@ export function ChatView({
               onResolveApproval={onResolveApproval}
             />
           ) : (
-            <div
-              key={msg.id}
-              className="flex flex-col gap-1.5 animate-fade-slide-in-fast motion-reduce:animate-none"
-            >
+            <div key={msg.id} className="flex flex-col gap-1.5">
               <MessageBlock message={msg} />
             </div>
           );
