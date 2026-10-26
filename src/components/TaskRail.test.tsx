@@ -207,4 +207,12 @@ describe("TaskRail", () => {
     const { container } = render(rail({ collapsed: true }));
     expect(container.firstChild).toBeNull();
   });
+
+  it("exposes compact navigation as a dialog and closes it with Escape", () => {
+    const onClose = vi.fn();
+    render(rail({ trapFocus: true, onClose }));
+    expect(screen.getByRole("dialog", { name: "Tasks" }).getAttribute("aria-modal")).toBe("true");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

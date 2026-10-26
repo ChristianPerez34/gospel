@@ -1,3 +1,4 @@
+import { formatToolActivityLabel } from "./toolActivityCards";
 import type { AgentStatus, CurrentTurn, Session } from "./types";
 
 /** What a session is doing, as the user sees it in the task rail. */
@@ -46,6 +47,21 @@ const IDLE_ACTIVITY: SessionActivity = { state: "idle", needsYou: false };
 
 export function activityFor(activity: SessionActivityMap, sessionId: string): SessionActivity {
   return activity[sessionId] ?? IDLE_ACTIVITY;
+}
+
+/** Show useful work without exposing ephemeral reasoning or raw tool arguments. */
+export function sessionActivityPreview(session: Session, turn?: CurrentTurn | null): string {
+  const approval = turn?.blocks.find(
+    (block) => block.kind === "approval" && block.status === "pending"
+  );
+  if (approval?.kind === "approval") return approval.title;
+  const latest = turn ? [...turn.blocks].reverse() : [];
+  const tool = latest.find((block) => block.kind === "tool" && block.status === "calling");
+  if (tool?.kind === "tool") return formatToolActivityLabel(tool, true);
+  const text = latest.find((block) => block.kind === "text" && block.text.trim());
+  if (text?.kind === "text") return text.text;
+  if (turn) return "Working on your task…";
+  return session.messages[session.messages.length - 1]?.content || "Open conversation to continue";
 }
 
 function hasPendingApproval(turn: CurrentTurn | null | undefined): boolean {

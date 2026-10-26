@@ -148,7 +148,7 @@ export function SettingsModal({
           <button
             className={`min-h-11 px-3.5 bg-transparent border-b-2 font-body text-body-sm font-medium cursor-pointer transition-colors duration-150 ${
               activeTab === "general"
-                ? "text-accent-action border-b-accent-action"
+                ? "text-accent-structure border-b-accent-action"
                 : "text-text-muted border-b-transparent hover:text-text-secondary"
             }`}
             onClick={() => setActiveTab("general")}
@@ -159,7 +159,7 @@ export function SettingsModal({
           <button
             className={`min-h-11 px-3.5 bg-transparent border-b-2 font-body text-body-sm font-medium cursor-pointer transition-colors duration-150 ${
               activeTab === "models"
-                ? "text-accent-action border-b-accent-action"
+                ? "text-accent-structure border-b-accent-action"
                 : "text-text-muted border-b-transparent hover:text-text-secondary"
             }`}
             onClick={() => setActiveTab("models")}
@@ -170,7 +170,7 @@ export function SettingsModal({
           <button
             className={`min-h-11 px-3.5 bg-transparent border-b-2 font-body text-body-sm font-medium cursor-pointer transition-colors duration-150 ${
               activeTab === "mcp"
-                ? "text-accent-action border-b-accent-action"
+                ? "text-accent-structure border-b-accent-action"
                 : "text-text-muted border-b-transparent hover:text-text-secondary"
             }`}
             onClick={() => setActiveTab("mcp")}
@@ -181,7 +181,7 @@ export function SettingsModal({
           <button
             className={`min-h-11 px-3.5 bg-transparent border-b-2 font-body text-body-sm font-medium cursor-pointer transition-colors duration-150 ${
               activeTab === "data"
-                ? "text-accent-action border-b-accent-action"
+                ? "text-accent-structure border-b-accent-action"
                 : "text-text-muted border-b-transparent hover:text-text-secondary"
             }`}
             onClick={() => setActiveTab("data")}
@@ -246,7 +246,7 @@ export function SettingsModal({
                         }}
                         className={`min-h-11 px-3 py-2 text-left transition-colors duration-150 ease-out-quart ${
                           selected
-                            ? "bg-surface-overlay text-accent-action"
+                            ? "bg-surface-overlay text-accent-structure"
                             : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
                         }`}
                         onClick={() => onThemePreferenceChange(option.value)}
@@ -386,7 +386,7 @@ function PolicyControls({
                 type="button"
                 className={`min-h-9 px-2 text-body-sm transition-colors duration-150 ease-out-quart ${
                   selected
-                    ? "bg-surface-overlay text-accent-action"
+                    ? "bg-surface-overlay text-accent-structure"
                     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
                 }`}
                 disabled={disabled}
@@ -411,7 +411,7 @@ function PolicyControls({
                 type="button"
                 className={`min-h-9 px-2 text-body-sm transition-colors duration-150 ease-out-quart ${
                   selected
-                    ? "bg-surface-overlay text-accent-action"
+                    ? "bg-surface-overlay text-accent-structure"
                     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
                 }`}
                 disabled={disabled}

@@ -99,6 +99,70 @@ describe("useSessionManager", () => {
   });
 
   describe("session lifecycle", () => {
+    it("saves an explicitly named task in its selected workspace before allowing its first turn", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "named-task" };
+        return undefined;
+      });
+      const switchWorkspace = vi.fn(async () => true);
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-current",
+        onSwitchWorkspace: switchWorkspace,
+      });
+      await act(async () => {
+        await result.current.createTask("  Review billing  ", "ws-selected");
+      });
+      expect(switchWorkspace).toHaveBeenCalledWith("ws-selected");
+      expect(invoke).toHaveBeenCalledWith("create_session", {
+        title: "Review billing",
+        workspaceId: "ws-selected",
+        provider: "openai",
+        model: "gpt-4o",
+        variant: null,
+      });
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "named-task",
+        title: "Review billing",
+        workspaceId: "ws-selected",
+        messages: [],
+        backendCreated: true,
+      });
+      expect(result.current.activeSessionId).toBe("named-task");
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(
+        false
+      );
+      await act(async () => {
+        await result.current.handleSend("Check invoices without changing checkout");
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({
+          sessionId: "named-task",
+          prompt: "Check invoices without changing checkout",
+        })
+      );
+      expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "create_session")).toHaveLength(
+        1
+      );
+    });
+
+    it("does not create a task when workspace switching fails or fall back to local storage when saving fails", async () => {
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-current",
+        onSwitchWorkspace: vi.fn(async () => false),
+      });
+      await expect(result.current.createTask("Task", "ws-other")).rejects.toThrow(
+        "Unable to switch"
+      );
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "create_session")).toBe(false);
+      vi.mocked(invoke).mockRejectedValue(new Error("Storage unavailable"));
+      await expect(result.current.createTask("Task", "ws-current")).rejects.toThrow(
+        "Storage unavailable"
+      );
+      expect(result.current.sessions).toHaveLength(0);
+      expect(result.current.activeSessionId).toBeNull();
+    });
+
     it("creates a new session, sets activeSessionId, and adds the user message when sending without an active session", async () => {
       const { result } = renderSessionManager();
 

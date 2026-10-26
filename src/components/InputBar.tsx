@@ -377,7 +377,7 @@ export function InputBar({
                         {unavailableDetail && <span>{unavailableDetail}</span>}
                         {onUnavailableAction && (
                           <button
-                            className="hit-target self-start text-caption text-accent-action"
+                            className="hit-target self-start text-caption text-accent-structure"
                             type="button"
                             onClick={onUnavailableAction}
                           >

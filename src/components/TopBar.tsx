@@ -1,4 +1,4 @@
-import { Cpu } from "lucide-react";
+import { ChevronRight, Cpu, Layers } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { needsYouLabel } from "../sessionActivity";
 import type { AgentStatus, Workspace } from "../types";
@@ -17,6 +17,9 @@ interface TopBarProps {
   /** Sessions waiting on the user: pending approvals and unopened replies. */
   needsYouCount?: number;
   sessionToggleRef?: RefObject<HTMLButtonElement>;
+  overviewOpen?: boolean;
+  taskSetupOpen?: boolean;
+  onOpenOverview?: () => void;
 }
 
 export function TopBar({
@@ -31,6 +34,9 @@ export function TopBar({
   sessionsOpen,
   needsYouCount = 0,
   sessionToggleRef,
+  overviewOpen = false,
+  taskSetupOpen = false,
+  onOpenOverview,
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(sessionTitle);
@@ -71,6 +77,21 @@ export function TopBar({
 
   return (
     <header className="app-topbar spatial-topbar px-4 bg-surface-base shrink-0">
+      {onOpenOverview && (
+        <button
+          type="button"
+          className="gospel-brand"
+          onClick={onOpenOverview}
+          aria-label="Gospel command center"
+        >
+          <span className="gospel-mark">
+            <Layers size={17} strokeWidth={1.8} aria-hidden="true" />
+          </span>
+          <span>
+            gospel<span className="gospel-brand-caption">Agent workspace</span>
+          </span>
+        </button>
+      )}
       <div className="topbar-primary flex items-center gap-2 min-w-0">
         <button
           type="button"
@@ -153,7 +174,12 @@ export function TopBar({
           </svg>
         </button>
         <span className="topbar-divider w-px h-4 bg-surface-overlay shrink-0" aria-hidden="true" />
-        {editing ? (
+        {overviewOpen || taskSetupOpen ? (
+          <span className="topbar-overview-label">
+            <ChevronRight size={13} aria-hidden="true" />
+            {taskSetupOpen ? "New task" : "Command center"}
+          </span>
+        ) : editing ? (
           <input
             ref={inputRef}
             className="topbar-session-title min-h-11 text-body-sm text-text-primary px-2 rounded-sm max-w-[300px] bg-surface-overlay disabled:cursor-not-allowed disabled:opacity-60"

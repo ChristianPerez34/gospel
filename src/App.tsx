@@ -3,6 +3,7 @@ import { AppShell } from "./components/AppShell";
 import { PlanPanel } from "./components/PlanPanel";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import "./styles/global.css";
+import "./styles/command-center.css";
 
 function isPlanPanelRequest(): boolean {
   if (import.meta.env.PROD) return false;

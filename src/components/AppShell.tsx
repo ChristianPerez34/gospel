@@ -16,8 +16,10 @@ import {
   type Workspace,
 } from "../types";
 import { ChatView } from "./ChatView";
+import { CommandCenter, LiveTaskMonitor } from "./CommandCenter";
 import { CommandPalette } from "./CommandPalette";
 import { InputBar } from "./InputBar";
+import { NewTaskForm } from "./NewTaskForm";
 import { SessionDrawer } from "./SessionDrawer";
 import { SettingsModal } from "./SettingsModal";
 import { SkillOptPanel } from "./SkillOptPanel";
@@ -103,8 +105,14 @@ function sameModelSelection(
 }
 
 export function AppShell() {
+  const [overviewOpen, setOverviewOpen] = useState(true);
+  const [creatingTask, setCreatingTask] = useState(false);
+  const [taskCreationError, setTaskCreationError] = useState<string | null>(null);
+  const creatingTaskRef = useRef(false);
+  const initialInstructionRef = useRef<{ task: Session; instruction: string } | null>(null);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
-  const [taskRailCollapsed, setTaskRailCollapsed] = useState(false);
+  const [taskRailCollapsed, setTaskRailCollapsed] = useState(() => window.innerWidth < 1000);
+  const [compactLayout, setCompactLayout] = useState(() => window.innerWidth < 1000);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
@@ -119,9 +127,24 @@ export function AppShell() {
   const chatColumnRef = useRef<HTMLDivElement>(null);
   const { themePreference, resolvedTheme, setThemePreference } = useThemePreference();
 
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 999px)");
+    const update = () => {
+      setCompactLayout(media.matches);
+      setTaskRailCollapsed(media.matches);
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  const closeTaskRail = useCallback(() => {
+    setTaskRailCollapsed(true);
+    sessionToggleRef.current?.focus();
+  }, []);
+
   const trappedSurface: TrappedSurface = sessionDrawerOpen ? "sessions" : null;
 
   const openSettings = useCallback((tab: SettingsTab = "models") => {
+    if (creatingTaskRef.current) return;
     setSettingsInitialTab(tab);
     setSettingsOpen(true);
   }, []);
@@ -188,6 +211,65 @@ export function AppShell() {
     onOpenSettings: openSettings,
     onModelVariantFallback: handleModelVariantFallback,
   });
+
+  const selectTask = (target: Session) => {
+    if (creatingTaskRef.current) return;
+    setOverviewOpen(false);
+    if (window.innerWidth < 1000) setTaskRailCollapsed(true);
+    void session.handleSessionSelect(target);
+  };
+  const newTask = () => {
+    if (creatingTaskRef.current) return;
+    setTaskCreationError(null);
+    setOverviewOpen(false);
+    if (window.innerWidth < 1000) setTaskRailCollapsed(true);
+    session.handleNewSession();
+  };
+  const openOverview = () => {
+    if (creatingTaskRef.current) return;
+    session.handleNewSession();
+    setOverviewOpen(true);
+    if (window.innerWidth < 1000) setTaskRailCollapsed(true);
+  };
+  const liveTurns = {
+    ...session.liveTurnsBySession,
+    ...(session.activeSessionId ? { [session.activeSessionId]: session.currentTurn } : {}),
+  };
+
+  const startTask = async (title: string, workspaceId: string, instruction: string) => {
+    if (creatingTaskRef.current || !instruction.trim()) return;
+    if (!workspaces.some((workspace) => workspace.id === workspaceId)) {
+      setTaskCreationError("Choose an available workspace.");
+      return;
+    }
+    creatingTaskRef.current = true;
+    setCreatingTask(true);
+    setTaskCreationError(null);
+    try {
+      const task = await session.createTask(title, workspaceId);
+      initialInstructionRef.current = { task, instruction };
+    } catch (error) {
+      setTaskCreationError(
+        `Task could not be created: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      creatingTaskRef.current = false;
+      setCreatingTask(false);
+    }
+  };
+
+  useEffect(() => {
+    const pending = initialInstructionRef.current;
+    if (
+      creatingTask ||
+      !pending ||
+      session.activeSessionId !== pending.task.id ||
+      !sameModelSelection(selectedModel, pending.task)
+    )
+      return;
+    initialInstructionRef.current = null;
+    void session.handleSend(pending.instruction);
+  }, [creatingTask, session.activeSessionId, session.handleSend, selectedModel]);
 
   const workspaceNames = useMemo<Record<string, string>>(() => {
     const names: Record<string, string> = {};
@@ -357,6 +439,7 @@ export function AppShell() {
 
   const handleSwitchWorkspace = useCallback(
     (ws: Workspace) => {
+      if (creatingTaskRef.current) return false;
       // Control plane: workspace switches never block on streams. In-flight
       // turns keep running against their captured workspace context.
       void switchWorkspace(ws.id);
@@ -619,18 +702,16 @@ export function AppShell() {
     selectedModel?.model ||
     "No model";
   const noModels = noModelCopy(availabilitySnapshot);
-  const surfaceTrapOpen = trappedSurface !== null;
+  const surfaceTrapOpen = trappedSurface !== null || (compactLayout && !taskRailCollapsed);
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
 
   useSessionShortcuts({
     getOrder: () => railOrderRef.current,
     activity: activityBySession,
-    activeSessionId: session.activeSessionId,
-    paused: modalSurfaceOpen || surfaceTrapOpen || skillOptOpen,
-    onSelect: (target) => {
-      void session.handleSessionSelect(target);
-    },
-    onNewSession: session.handleNewSession,
+    activeSessionId: overviewOpen ? null : session.activeSessionId,
+    paused: modalSurfaceOpen || surfaceTrapOpen || skillOptOpen || creatingTask,
+    onSelect: selectTask,
+    onNewSession: newTask,
   });
 
   useEffect(() => {
@@ -833,6 +914,7 @@ export function AppShell() {
   );
 
   const toggleSessionDrawer = useCallback(() => {
+    if (creatingTaskRef.current) return;
     setSessionDrawerOpen((open) => !open);
   }, []);
 
@@ -841,6 +923,7 @@ export function AppShell() {
   }, []);
 
   const openHistoryDrawer = useCallback(() => {
+    if (creatingTaskRef.current) return;
     setShowArchivedSessions(true);
     setSessionDrawerOpen(true);
   }, []);
@@ -866,6 +949,7 @@ export function AppShell() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
+      if (creatingTaskRef.current) return;
 
       event.preventDefault();
       if (commandPaletteOpenRef.current) return;
@@ -886,7 +970,12 @@ export function AppShell() {
     : session.status;
 
   return (
-    <div className="app-shell" data-theme={resolvedTheme} data-theme-preference={themePreference}>
+    <div
+      className="app-shell"
+      data-theme={resolvedTheme}
+      data-theme-preference={themePreference}
+      data-view={overviewOpen ? "overview" : "conversation"}
+    >
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
         sessionTitle={sessionTitle}
@@ -899,12 +988,16 @@ export function AppShell() {
         status={headerStatus}
         needsYouCount={needsYouCount}
         onWorkspaceSwitch={() => {
+          if (creatingTaskRef.current) return;
           setWorkspaceSwitcherOpen(true);
         }}
         onToggleSessions={toggleTaskRail}
         onOpenSettings={openSettings}
         sessionsOpen={!taskRailCollapsed}
         sessionToggleRef={sessionToggleRef}
+        overviewOpen={overviewOpen}
+        onOpenOverview={openOverview}
+        taskSetupOpen={!overviewOpen && !session.activeSessionId}
       />
       <div
         className="app-layout"
@@ -921,48 +1014,109 @@ export function AppShell() {
           workspaces={workspaces}
           workspaceNames={workspaceNames}
           activeWorkspaceId={activeWorkspace?.id}
-          onSelect={(s) => {
-            void session.handleSessionSelect(s);
-          }}
-          onNewTask={() => {
-            session.handleNewSession();
-          }}
+          onSelect={selectTask}
+          onNewTask={newTask}
+          onOpenOverview={openOverview}
+          overviewOpen={overviewOpen}
+          liveTurnsBySession={liveTurns}
+          trapFocus={
+            compactLayout &&
+            !taskRailCollapsed &&
+            !modalSurfaceOpen &&
+            !sessionDrawerOpen &&
+            !skillOptOpen
+          }
+          onClose={closeTaskRail}
           onOpenHistory={openHistoryDrawer}
           onDisplayedOrderChange={(order) => {
             railOrderRef.current = order;
           }}
           collapsed={taskRailCollapsed}
         />
+        {!taskRailCollapsed && (
+          <button
+            type="button"
+            tabIndex={-1}
+            className="task-rail-scrim"
+            aria-label="Close task navigation"
+            onClick={closeTaskRail}
+          />
+        )}
         <div
           className="app-workspace"
           ref={chatColumnRef}
           aria-hidden={surfaceTrapOpen ? "true" : undefined}
         >
           <div className="task-detail">
-            <ChatView
-              messages={session.messages}
-              workspacePath={activeWorkspace?.path ?? ""}
-              isThinking={session.isThinking}
-              currentTurn={session.currentTurn}
-              onResolveApproval={session.resolveApproval}
-            />
-            <InputBar
-              models={models}
-              selectedModel={selectedModelId}
-              selectedVariant={selectedModel?.variant ?? null}
-              onModelChange={applyModelSelection}
-              onVariantChange={applyVariantSelection}
-              onSend={session.handleSend}
-              onCancelStream={() => void session.cancelStream()}
-              isStreaming={session.isStreaming}
-              disabled={session.isStreaming || models.length === 0}
-              unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
-              unavailableDetail={noModels.detail}
-              unavailableActionLabel={noModels.actionLabel}
-              onUnavailableAction={() => openSettings("models")}
-              workspacePath={activeWorkspace?.path}
-            />
+            {overviewOpen ? (
+              <CommandCenter
+                sessions={allSessions}
+                activityBySession={activityBySession}
+                liveTurnsBySession={liveTurns}
+                workspaces={workspaces}
+                onSelect={selectTask}
+                onNewTask={newTask}
+                onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
+              />
+            ) : !session.activeSessionId ? (
+              <NewTaskForm
+                workspaces={workspaces}
+                activeWorkspaceId={activeWorkspace?.id}
+                models={models}
+                selectedModelId={selectedModelId}
+                selectedVariant={selectedModel?.variant ?? null}
+                onModelChange={applyModelSelection}
+                onVariantChange={applyVariantSelection}
+                onStart={startTask}
+                onCancel={openOverview}
+                onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
+                onOpenSettings={() => openSettings("models")}
+                creating={creatingTask}
+                error={taskCreationError}
+              />
+            ) : (
+              <ChatView
+                messages={session.messages}
+                workspacePath={activeWorkspace?.path ?? ""}
+                isThinking={session.isThinking}
+                currentTurn={session.currentTurn}
+                onResolveApproval={session.resolveApproval}
+              />
+            )}
+            {!overviewOpen && session.activeSessionId && (
+              <InputBar
+                models={models}
+                selectedModel={selectedModelId}
+                selectedVariant={selectedModel?.variant ?? null}
+                onModelChange={applyModelSelection}
+                onVariantChange={applyVariantSelection}
+                onSend={(message, skill) => {
+                  setOverviewOpen(false);
+                  session.handleSend(message, skill);
+                }}
+                onCancelStream={() => void session.cancelStream()}
+                isStreaming={session.isStreaming}
+                disabled={session.isStreaming || models.length === 0}
+                unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
+                unavailableDetail={noModels.detail}
+                unavailableActionLabel={noModels.actionLabel}
+                onUnavailableAction={() => openSettings("models")}
+                workspacePath={activeWorkspace?.path}
+              />
+            )}
           </div>
+          {!overviewOpen && (
+            <LiveTaskMonitor
+              sessions={allSessions}
+              activityBySession={activityBySession}
+              liveTurnsBySession={liveTurns}
+              workspaces={workspaces}
+              activeSessionId={session.activeSessionId}
+              onSelect={selectTask}
+              onNewTask={newTask}
+              onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
+            />
+          )}
         </div>
       </div>
       <SessionDrawer
@@ -975,7 +1129,7 @@ export function AppShell() {
         onShowArchivedChange={setShowArchivedSessions}
         archiveStats={archiveStats}
         onSelect={(s) => {
-          void session.handleSessionSelect(s);
+          selectTask(s);
           closeSessionDrawer();
         }}
         onArchiveSessions={(items) => {
@@ -998,7 +1152,7 @@ export function AppShell() {
         }}
         archiveActionsDisabled={false}
         onNewSession={() => {
-          session.handleNewSession();
+          newTask();
           closeSessionDrawer();
         }}
         onClose={closeSessionDrawer}
@@ -1068,10 +1222,10 @@ export function AppShell() {
         workspaceNames={workspaceNames}
         onClose={() => setCommandPaletteOpen(false)}
         onSelectSession={(s) => {
-          void session.handleSessionSelect(s);
+          selectTask(s);
         }}
         onNewSession={() => {
-          session.handleNewSession();
+          newTask();
         }}
         onOpenSettings={openSettings}
         onOpenWorkspaceSwitcher={() => {
@@ -1091,7 +1245,7 @@ export function AppShell() {
         onJumpToNextNeedsYou={
           nextNeedsYouSession
             ? () => {
-                void session.handleSessionSelect(nextNeedsYouSession);
+                selectTask(nextNeedsYouSession);
               }
             : undefined
         }

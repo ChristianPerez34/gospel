@@ -59,6 +59,7 @@ export interface UseSessionManagerResult {
   statusBySession: Record<string, AgentStatus>;
   /** Epoch ms when each streaming session's current run started. */
   runStartedAtBySession: Record<string, number>;
+  createTask: (title: string, workspaceId: string) => Promise<Session>;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
   handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
@@ -511,6 +512,62 @@ export function useSessionManager({
     if (!leavingRun) resetStream();
   }, [resetStream]);
 
+  const createTask = useCallback(
+    async (title: string, workspaceId: string): Promise<Session> => {
+      if (!title.trim() || !workspaceId) throw new Error("A task name and workspace are required.");
+      if (
+        !selectedModel ||
+        !models.some(
+          (model) =>
+            model.provider.toLowerCase() === selectedModel.provider.toLowerCase() &&
+            model.model === selectedModel.model &&
+            model.configured !== false
+        )
+      ) {
+        throw new Error("Select an available model before creating a task.");
+      }
+      if (workspaceId !== activeWorkspaceId) {
+        if (!onSwitchWorkspace) throw new Error("Unable to switch to the selected workspace.");
+        skipNextWorkspaceResetRef.current = workspaceId;
+        try {
+          if (!(await onSwitchWorkspace(workspaceId)))
+            throw new Error("Unable to switch to the selected workspace.");
+        } catch (error) {
+          skipNextWorkspaceResetRef.current = null;
+          throw error;
+        }
+      }
+      const record = await invoke<{ id: string }>("create_session", {
+        title: title.trim(),
+        workspaceId,
+        provider: selectedModel.provider,
+        model: selectedModel.model,
+        variant: selectedModel.variant ?? null,
+      });
+      if (!record?.id) throw new Error("The task could not be saved. Try again.");
+      const task: Session = {
+        id: record.id,
+        title: title.trim(),
+        workspaceId,
+        provider: selectedModel.provider,
+        model: selectedModel.model,
+        variant: selectedModel.variant ?? null,
+        messages: [],
+        timestamp: new Date(),
+        status: "idle",
+        backendCreated: true,
+      };
+      onSessionsChange((previous) => [task, ...previous]);
+      latestSelectedSessionRef.current = task.id;
+      setActiveSessionId(task.id);
+      activeSessionIdRef.current = task.id;
+      setMessages([]);
+      setStatus("connected");
+      return task;
+    },
+    [activeWorkspaceId, models, onSessionsChange, onSwitchWorkspace, selectedModel]
+  );
+
   return {
     sessions,
     activeSessionId,
@@ -524,6 +581,7 @@ export function useSessionManager({
     liveTurnsBySession,
     statusBySession,
     runStartedAtBySession,
+    createTask,
     handleSend,
     handleSessionSelect,
     handleNewSession,

@@ -1,5 +1,6 @@
-import { History, Plus } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { History, LayoutDashboard, Plus } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import { shortcutLabel } from "../hooks/useSessionShortcuts";
 import {
   ACTIVITY_LABELS,
@@ -13,9 +14,10 @@ import {
   railOrder,
   type SessionActivity,
   type SessionActivityMap,
+  sessionActivityPreview,
   sessionModelLabel,
 } from "../sessionActivity";
-import type { Session, Workspace } from "../types";
+import type { CurrentTurn, Session, Workspace } from "../types";
 
 interface TaskRailProps {
   sessions: Session[];
@@ -28,6 +30,11 @@ interface TaskRailProps {
   onNewTask: () => void;
   onOpenHistory: () => void;
   collapsed?: boolean;
+  overviewOpen?: boolean;
+  onOpenOverview?: () => void;
+  liveTurnsBySession?: Record<string, CurrentTurn | null>;
+  trapFocus?: boolean;
+  onClose?: () => void;
   /** Reports the sessions in the order the rail currently shows them, so
    * session-switching shortcuts match what is on screen. */
   onDisplayedOrderChange?: (order: Session[]) => void;
@@ -63,7 +70,14 @@ export function TaskRail({
   onOpenHistory,
   collapsed = false,
   onDisplayedOrderChange,
+  overviewOpen = false,
+  onOpenOverview,
+  liveTurnsBySession = {},
+  trapFocus = false,
+  onClose = () => {},
 }: TaskRailProps) {
+  const railRef = useRef<HTMLElement>(null);
+  useFocusTrap({ active: trapFocus, containerRef: railRef, onEscape: onClose });
   const [search, setSearch] = useState("");
   // Rows keep their place while the pointer is over the list, so a session
   // that changes state can't move out from under a click.
@@ -128,7 +142,7 @@ export function TaskRail({
 
   const renderRow = (session: Session, inStatusSection: boolean) => {
     const activity = activityFor(activityBySession, session.id);
-    const isActive = session.id === activeSessionId;
+    const isActive = !overviewOpen && session.id === activeSessionId;
     const title = session.title || "Untitled";
     const project = projectLabel(session.workspaceId ?? "");
     const stateTitle = activity.state === "idle" ? "" : ` — ${ACTIVITY_LABELS[activity.state]}`;
@@ -149,6 +163,11 @@ export function TaskRail({
                 <span className="task-rail-time">{formatRelativeTime(session.timestamp, now)}</span>
               )}
             </span>
+            {activity.state === "running" && liveTurnsBySession[session.id] && (
+              <span className="task-rail-preview">
+                {sessionActivityPreview(session, liveTurnsBySession[session.id])}
+              </span>
+            )}
             <span className="task-rail-meta">
               <span className="task-rail-state">{stateLine(session, activity, now)}</span>
               {inStatusSection && showProjectInSections && (
@@ -181,7 +200,26 @@ export function TaskRail({
   };
 
   return (
-    <aside className="task-rail" aria-label="Tasks" data-testid="task-rail">
+    <aside
+      ref={railRef}
+      className="task-rail"
+      aria-label="Tasks"
+      data-testid="task-rail"
+      {...(trapFocus ? { role: "dialog", "aria-modal": true } : {})}
+    >
+      {onOpenOverview && (
+        <div className="task-rail-home">
+          <button
+            type="button"
+            onClick={onOpenOverview}
+            aria-current={overviewOpen ? "page" : undefined}
+          >
+            <LayoutDashboard size={16} aria-hidden="true" />
+            Command center<span className="task-rail-home-count">{sessions.length}</span>
+          </button>
+          <div className="task-rail-scope">ALL WORKSPACES</div>
+        </div>
+      )}
       <div className="task-rail-head">
         <div className="task-rail-search-row">
           <svg

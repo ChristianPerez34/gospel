@@ -78,7 +78,33 @@ function handleCommonInvoke(
   return undefined;
 }
 
-describe("AppShell session title editing", () => {
+async function openTaskSetup(title: string, instruction = title) {
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).not.toContain(
+      "No workspace"
+    )
+  );
+  fireEvent.click(
+    within(screen.getByTestId("task-rail")).getByRole("button", { name: "New task" })
+  );
+  fireEvent.change(await screen.findByLabelText("Task name"), { target: { value: title } });
+  fireEvent.change(screen.getByLabelText("Instruction"), { target: { value: instruction } });
+  await waitFor(() =>
+    expect(
+      (screen.getByRole("button", { name: "Create and start task" }) as HTMLButtonElement).disabled
+    ).toBe(false)
+  );
+}
+
+async function startTask(title: string, instruction = title) {
+  await openTaskSetup(title, instruction);
+  await act(async () =>
+    fireEvent.click(screen.getByRole("button", { name: "Create and start task" }))
+  );
+  return screen.findByRole("textbox", { name: "Message input" });
+}
+
+describe("AppShell task flow", () => {
   beforeEach(() => {
     capturedListeners = {};
     vi.mocked(listen).mockImplementation(async (eventName, callback) => {
@@ -97,69 +123,91 @@ describe("AppShell session title editing", () => {
     vi.clearAllMocks();
   });
 
-  it("updates local session title when creation failed (backendCreated: false) without calling update_session_title invoke", async () => {
+  it("requires task setup and saves in the chosen workspace before starting its instruction", async () => {
+    let activeWorkspace = sampleWorkspace;
+    let saveTask: ((record: { id: string }) => void) | undefined;
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
-      if (cmd === "create_session") {
-        throw new Error("backend database error");
-      }
-      return handleCommonInvoke(cmd, args);
+      if (cmd === "create_session")
+        return new Promise<{ id: string }>((resolve) => {
+          saveTask = resolve;
+        });
+      if (cmd === "complete_streaming") return new Promise(() => {});
+      return handleCommonInvoke(cmd, args, {
+        workspaces: [sampleWorkspace, otherWorkspace],
+        getActiveWorkspace: () => activeWorkspace,
+        setActiveWorkspace: (id) => {
+          activeWorkspace = id === otherWorkspace.id ? otherWorkspace : sampleWorkspace;
+        },
+      });
     });
-
     render(
       <WorkspacesProvider>
         <AppShell />
       </WorkspacesProvider>
     );
-
-    // Wait for input textarea to be enabled
-    const textarea = await screen.findByRole("textbox", { name: "Message input" });
-    await waitFor(() => {
-      expect(textarea.hasAttribute("disabled")).toBe(false);
-    });
-
-    // Send a message to create a local fallback session
-    await act(async () => {
-      fireEvent.change(textarea, { target: { value: "Initial title prompt" } });
-      const sendBtn = screen.getByRole("button", { name: "Send message" });
-      fireEvent.click(sendBtn);
-    });
-
-    // Complete the stream so session.isStreaming becomes false
-    await act(async () => {
-      triggerEvent("llm-done", { response: "Hello back" });
-    });
-    // A reply in the open session is already in view, so it does not need you.
-    expect(screen.queryByRole("list", { name: "Needs you" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Toggle tasks" })).toBeDefined();
-
-    // Initial session title should be rendered in TopBar
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Edit session title" })).toBeDefined();
-    });
-    expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe(
-      "Initial title prompt"
+    expect(await screen.findByRole("main", { name: "Command center" })).toBeDefined();
+    expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
+    await openTaskSetup("Billing review", "Review invoices without changing checkout");
+    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: otherWorkspace.id } });
+    expect(screen.getByText(otherWorkspace.path)).toBeDefined();
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "set_active_workspace")).toBe(
+      false
     );
-
-    // Now edit session title in TopBar
-    fireEvent.click(screen.getByRole("button", { name: "Edit session title" }));
-    const input = (await screen.findByRole("textbox", {
-      name: "Session title",
-    })) as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "Renamed Fallback Session" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    // The title in TopBar should be updated to "Renamed Fallback Session"
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe(
-        "Renamed Fallback Session"
-      );
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Create and start task" }))
+    );
+    expect(invoke).toHaveBeenCalledWith("create_session", {
+      title: "Billing review",
+      workspaceId: otherWorkspace.id,
+      provider: "openai",
+      model: "gpt-4o",
+      variant: null,
     });
+    expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);
+    await act(async () => {
+      saveTask?.({ id: "chosen-workspace-task" });
+    });
+    expect(await screen.findByRole("textbox", { name: "Message input" })).toBeDefined();
+    expect(invoke).toHaveBeenCalledWith(
+      "complete_streaming",
+      expect.objectContaining({
+        sessionId: "chosen-workspace-task",
+        prompt: "Review invoices without changing checkout",
+      })
+    );
+    expect(screen.getByRole("button", { name: "Edit session title" }).textContent).toBe(
+      "Billing review"
+    );
+    expect(screen.getByRole("button", { name: "Switch workspace" }).textContent).toContain(
+      otherWorkspace.name
+    );
+    expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "create_session")).toHaveLength(
+      1
+    );
+  });
 
-    // update_session_title invoke should NOT have been called because backendCreated is false
-    const updateTitleCalls = vi
-      .mocked(invoke)
-      .mock.calls.filter(([cmd]) => cmd === "update_session_title");
-    expect(updateTitleCalls).toHaveLength(0);
+  it("keeps task setup open and does not run when task creation fails", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "create_session") throw new Error("backend database error");
+      return handleCommonInvoke(cmd, args);
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+    await openTaskSetup("Fix auth", "Find and fix the redirect loop");
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Create and start task" }))
+    );
+    expect(await screen.findByRole("alert")).toBeDefined();
+    expect(screen.getByRole("alert").textContent).toContain("backend database error");
+    expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
+    expect((screen.getByLabelText("Instruction") as HTMLTextAreaElement).value).toBe(
+      "Find and fix the redirect loop"
+    );
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);
   });
 
   it("allows WorkspaceSwitcher selection while a turn is streaming", async () => {
@@ -184,30 +232,14 @@ describe("AppShell session title editing", () => {
       </WorkspacesProvider>
     );
 
-    const workspaceSwitchButton = (await screen.findByRole("button", {
-      name: "Switch workspace",
-    })) as HTMLButtonElement;
-    await waitFor(() => {
-      expect(workspaceSwitchButton.disabled).toBe(false);
-    });
-    fireEvent.click(workspaceSwitchButton);
-    const otherWorkspaceButton = await screen.findByRole("button", { name: /Other Workspace/ });
-
-    const textarea = (await screen.findByRole("textbox", {
-      name: "Message input",
-    })) as HTMLTextAreaElement;
-    await waitFor(() => {
-      expect(textarea.disabled).toBe(false);
-    });
-
-    await act(async () => {
-      fireEvent.change(textarea, { target: { value: "streaming prompt" } });
-      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    });
+    await startTask("streaming prompt");
     act(() => {
       triggerEvent<string>("llm-token", "live token");
     });
-    expect(await screen.findByText("live token")).toBeDefined();
+    expect(await within(screen.getByRole("main")).findByText("live token")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch workspace" }));
+    const otherWorkspaceButton = await screen.findByRole("button", { name: /Other Workspace/ });
 
     // Control plane: switching workspaces never blocks on streams. The view
     // resets to the new workspace draft while the running task stays live in
@@ -228,7 +260,7 @@ describe("AppShell session title editing", () => {
       "streaming prompt"
     );
     // The new workspace's draft is free to send while the task runs elsewhere.
-    expect(textarea.disabled).toBe(false);
+    expect(screen.getByRole("main", { name: "New task setup" })).toBeDefined();
 
     await act(async () => {
       triggerEvent("llm-done", { response: "live token" });
@@ -262,21 +294,11 @@ describe("AppShell session title editing", () => {
         </WorkspacesProvider>
       );
 
-      const textarea = (await screen.findByRole("textbox", {
-        name: "Message input",
-      })) as HTMLTextAreaElement;
-      await waitFor(() => {
-        expect(textarea.disabled).toBe(false);
-      });
-
-      await act(async () => {
-        fireEvent.change(textarea, { target: { value: "streaming prompt" } });
-        fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-      });
+      await startTask("streaming prompt");
       act(() => {
         triggerEvent<string>("llm-token", "live token");
       });
-      expect(await screen.findByText("live token")).toBeDefined();
+      expect(await within(screen.getByRole("main")).findByText("live token")).toBeDefined();
 
       // Cmd+N opens a draft that can send while the first session keeps running.
       act(() => {
@@ -287,8 +309,8 @@ describe("AppShell session title editing", () => {
         "streaming prompt — Test Workspace — Running"
       );
       expect(runningRow.getAttribute("aria-current")).toBeNull();
-      expect(screen.queryByText("live token")).toBeNull();
-      expect(textarea.disabled).toBe(false);
+      expect(within(screen.getByRole("main")).queryByText("live token")).toBeNull();
+      expect(screen.getByRole("main", { name: "New task setup" })).toBeDefined();
 
       await act(async () => {
         triggerEvent("llm-done", { response: "live token" });
@@ -332,6 +354,41 @@ describe("AppShell session title editing", () => {
     } finally {
       platform.mockRestore();
     }
+  });
+
+  it("returns to the overview without stopping a task and surfaces its background reply", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "create_session") return { id: "overview-run" };
+      return handleCommonInvoke(cmd, args);
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+    expect(await screen.findByRole("main", { name: "Command center" })).toBeDefined();
+    await startTask("Keep this task running");
+    act(() => triggerEvent<string>("llm-token", "Working in the background"));
+    await within(screen.getByRole("main")).findByText("Working in the background");
+    fireEvent.click(screen.getByRole("button", { name: "Gospel command center" }));
+    const overview = screen.getByRole("main", { name: "Command center" });
+    expect(await within(overview).findByText("Working in the background")).toBeDefined();
+    expect(within(within(overview).getByRole("list")).getByText("Running")).toBeDefined();
+    expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
+    expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "cancel_streaming")).toBe(false);
+    await act(async () => triggerEvent("llm-done", { response: "Working in the background" }));
+    expect(within(overview).getByText("New reply")).toBeDefined();
+    expect(within(overview).getByText("Working in the background")).toBeDefined();
+    await act(async () =>
+      fireEvent.click(
+        within(overview).getByRole("button", {
+          name: "Open Keep this task running in Test Workspace",
+        })
+      )
+    );
+    expect(screen.queryByRole("main", { name: "Command center" })).toBeNull();
+    expect(within(screen.getByRole("main")).getByText("Working in the background")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Toggle tasks, 1 session needs you" })).toBeNull();
   });
   it("switches Active Workspace Context from the command palette", async () => {
     let activeWorkspace = sampleWorkspace;
@@ -405,21 +462,11 @@ describe("AppShell session title editing", () => {
       </WorkspacesProvider>
     );
 
-    const textarea = (await screen.findByRole("textbox", {
-      name: "Message input",
-    })) as HTMLTextAreaElement;
-    await waitFor(() => {
-      expect(textarea.disabled).toBe(false);
-    });
-
-    await act(async () => {
-      fireEvent.change(textarea, { target: { value: "streaming prompt" } });
-      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    });
+    await startTask("streaming prompt");
     act(() => {
       triggerEvent<string>("llm-token", "live token");
     });
-    expect(await screen.findByText("live token")).toBeDefined();
+    expect(await within(screen.getByRole("main")).findByText("live token")).toBeDefined();
 
     await act(async () => {
       fireEvent.keyDown(document, { key: "k", metaKey: true });
@@ -453,17 +500,7 @@ describe("AppShell session title editing", () => {
       </WorkspacesProvider>
     );
 
-    const textarea = await screen.findByRole("textbox", { name: "Message input" });
-    await waitFor(() => {
-      expect(textarea.hasAttribute("disabled")).toBe(false);
-    });
-
-    // Send message to create a backend session
-    await act(async () => {
-      fireEvent.change(textarea, { target: { value: "Backend session prompt" } });
-      const sendBtn = screen.getByRole("button", { name: "Send message" });
-      fireEvent.click(sendBtn);
-    });
+    await startTask("Backend session prompt");
 
     // Complete the stream so session.isStreaming becomes false
     await act(async () => {
@@ -514,15 +551,7 @@ describe("AppShell session title editing", () => {
       </WorkspacesProvider>
     );
 
-    const textarea = await screen.findByRole("textbox", { name: "Message input" });
-    await waitFor(() => {
-      expect(textarea.hasAttribute("disabled")).toBe(false);
-    });
-
-    await act(async () => {
-      fireEvent.change(textarea, { target: { value: "Backend session prompt" } });
-      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    });
+    await startTask("Backend session prompt");
 
     await act(async () => {
       triggerEvent("llm-done", { response: "Hello back" });
@@ -588,15 +617,7 @@ describe("AppShell session title editing", () => {
       </WorkspacesProvider>
     );
 
-    const textarea = await screen.findByRole("textbox", { name: "Message input" });
-    await waitFor(() => {
-      expect(textarea.hasAttribute("disabled")).toBe(false);
-    });
-
-    await act(async () => {
-      fireEvent.change(textarea, { target: { value: "Backend session prompt" } });
-      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    });
+    await startTask("Backend session prompt");
 
     // Complete the stream so session.isStreaming becomes false.
     await act(async () => {
