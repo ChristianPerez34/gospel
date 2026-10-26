@@ -503,6 +503,33 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           activeRunIdRef.current = remaining[remaining.length - 1] ?? null;
         }
       };
+      // Resolve which session a completion (done/error) belongs to: the run's
+      // own session, or — for legacy/test payloads with no runId — the single
+      // in-flight run's session, so it cannot corrupt the focused view. Also
+      // flushes that session's buffered text and picks the authoritative final
+      // turn: its stashed turn when background, the visible turn when focused.
+      const resolveCompletionSession = (
+        runId: string | null
+      ): {
+        session: string | null;
+        fallbackSingle: string | null;
+        finalTurn: CurrentTurn | null;
+      } => {
+        const eventSession = sessionForRun(runId);
+        flushPendingForSession(eventSession);
+        const focusedBefore = getFocusedSession();
+        const fallbackSingle = runId == null ? singleActiveSession() : null;
+        const session = fallbackSingle ?? eventSession;
+        if (session !== eventSession) {
+          flushPendingForSession(session);
+        }
+        const isBackgroundCompletion =
+          session !== focusedBefore && backgroundTurnsRef.current.has(session);
+        const finalTurn = isBackgroundCompletion
+          ? (backgroundTurnsRef.current.get(session) ?? null)
+          : currentTurnRef.current;
+        return { session, fallbackSingle, finalTurn };
+      };
       // NOTE: approval handlers below branch on `isBackground(runId)` (not
       // `sid === focused`) so the draft case (`focused == null` renders
       // foreground, matching `llm-token`) stays consistent, and they drop
@@ -575,29 +602,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 clearRun(typeof runId === "string" ? runId : null);
                 return;
               }
-              // Flush buffered text for the session this completion resolves
-              // to before capturing the authoritative final turn so no final
-              // tokens are lost.
-              const eventSession = sessionForRun(runId);
-              flushPendingForSession(eventSession);
-              // Attribute to the run's own session; a completion carrying no
-              // runId (legacy/test payloads) falls back to the single
-              // in-flight session so it cannot corrupt the focused turn.
-              const focusedBefore = getFocusedSession();
-              const fallbackSingle = runId == null ? singleActiveSession() : null;
-              const completionSession = fallbackSingle ?? eventSession;
-              if (completionSession !== eventSession) {
-                flushPendingForSession(completionSession);
-              }
-              // If the completion belongs to a session that is not focused
-              // (view moved on, or no session focused), finalize from its
-              // stashed turn instead of the empty view.
-              const completionIsBackground =
-                completionSession !== focusedBefore &&
-                backgroundTurnsRef.current.has(completionSession);
-              const finalTurn = completionIsBackground
-                ? (backgroundTurnsRef.current.get(completionSession) ?? null)
-                : currentTurnRef.current;
+              const {
+                session: completionSession,
+                fallbackSingle,
+                finalTurn,
+              } = resolveCompletionSession(runId);
               const payloadContent =
                 typeof payload === "string" ? payload : (payload?.response ?? "");
               const rawBlocks = finalTurn?.blocks ?? [];
@@ -697,23 +706,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 }
                 return;
               }
-              // Attribute to the run's own session; a failure carrying no
-              // runId (legacy/test payloads) falls back to the single
-              // in-flight session so it cannot corrupt the focused turn.
-              const eventSession = sessionForRun(runId);
-              flushPendingForSession(eventSession);
-              const focusedBefore = getFocusedSession();
-              const fallbackSingle = runId == null ? singleActiveSession() : null;
-              const completionSession = fallbackSingle ?? eventSession;
-              if (completionSession !== eventSession) {
-                flushPendingForSession(completionSession);
-              }
-              const completionIsBackground =
-                completionSession !== focusedBefore &&
-                backgroundTurnsRef.current.has(completionSession);
-              const finalTurn = completionIsBackground
-                ? (backgroundTurnsRef.current.get(completionSession) ?? null)
-                : currentTurnRef.current;
+              const {
+                session: completionSession,
+                fallbackSingle,
+                finalTurn,
+              } = resolveCompletionSession(runId);
               const messageId = finalTurn?.id ?? generateTurnId();
               const rawBlocks = finalTurn?.blocks ?? [];
               const blocks = dropReasoningBlocks(rawBlocks);

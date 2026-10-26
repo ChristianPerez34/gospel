@@ -345,11 +345,15 @@ export function AppShell() {
     runStartedAtBySession: session.runStartedAtBySession,
   });
   const needsYouCount = allSessions.filter((item) => activityBySession[item.id]?.needsYou).length;
-  const nextNeedsYouSession = nextSessionNeedingYou(
+  const nextNeedsYouCandidate = nextSessionNeedingYou(
     railOrderRef.current,
     activityBySession,
     session.activeSessionId
   );
+  // The reported order lags a commit behind; drop a session that left the list
+  // and hand the jump the current session object, not the stale copy.
+  const nextNeedsYouSession =
+    allSessions.find((item) => item.id === nextNeedsYouCandidate?.id) ?? null;
 
   const handleSwitchWorkspace = useCallback(
     (ws: Workspace) => {
