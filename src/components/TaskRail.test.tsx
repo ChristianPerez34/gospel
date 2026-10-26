@@ -172,6 +172,21 @@ describe("TaskRail", () => {
     expect(screen.queryByText("Add billing page")).toBeNull();
   });
 
+  it("reports its displayed order so session shortcuts can match it", () => {
+    const onDisplayedOrderChange = vi.fn();
+    render(rail({ onDisplayedOrderChange }));
+    expect(onDisplayedOrderChange).toHaveBeenLastCalledWith([
+      sessions[0],
+      sessions[2],
+      sessions[1],
+    ]);
+
+    fireEvent.change(screen.getByLabelText("Search tasks"), {
+      target: { value: "billing" },
+    });
+    expect(onDisplayedOrderChange).toHaveBeenLastCalledWith([sessions[1]]);
+  });
+
   it("calls onSelect, onNewTask, and onOpenHistory", () => {
     const onSelect = vi.fn();
     const onNewTask = vi.fn();

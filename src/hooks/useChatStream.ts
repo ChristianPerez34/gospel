@@ -697,10 +697,23 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 }
                 return;
               }
-              // Flush buffered text before finalizing so a quick failure
-              // cannot lose trailing tokens.
-              flushPendingForSession(sessionForRun(runId));
-              const finalTurn = currentTurnRef.current;
+              // Attribute to the run's own session; a failure carrying no
+              // runId (legacy/test payloads) falls back to the single
+              // in-flight session so it cannot corrupt the focused turn.
+              const eventSession = sessionForRun(runId);
+              flushPendingForSession(eventSession);
+              const focusedBefore = getFocusedSession();
+              const fallbackSingle = runId == null ? singleActiveSession() : null;
+              const completionSession = fallbackSingle ?? eventSession;
+              if (completionSession !== eventSession) {
+                flushPendingForSession(completionSession);
+              }
+              const completionIsBackground =
+                completionSession !== focusedBefore &&
+                backgroundTurnsRef.current.has(completionSession);
+              const finalTurn = completionIsBackground
+                ? (backgroundTurnsRef.current.get(completionSession) ?? null)
+                : currentTurnRef.current;
               const messageId = finalTurn?.id ?? generateTurnId();
               const rawBlocks = finalTurn?.blocks ?? [];
               const blocks = dropReasoningBlocks(rawBlocks);
@@ -715,20 +728,31 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   error: err?.message || "Completion failed.",
                   blocks: blocks.length > 0 ? blocks : undefined,
                 };
-                const focused = getFocusedSession();
                 if (optionsRef.current.onMessagesForSession) {
-                  optionsRef.current.onMessagesForSession(focused, (prev) => [...prev, message]);
+                  optionsRef.current.onMessagesForSession(completionSession, (prev) => [
+                    ...prev,
+                    message,
+                  ]);
                 } else {
                   optionsRef.current.onMessages?.((prev) => [...prev, message]);
                 }
               }
 
-              clearCurrentTurn();
-              clearRun(typeof runId === "string" ? runId : null);
-              const focusedErr = getFocusedSession();
-              backgroundTurnsRef.current.delete(focusedErr);
-              optionsRef.current.onLiveTurnForSession?.(focusedErr, null);
-              emitStatus(focusedErr, "error");
+              // Clear the visible turn only when the failure belongs to the
+              // focused session; a failure routed elsewhere must not discard
+              // an in-progress visible turn.
+              if (completionSession === getFocusedSession()) {
+                clearCurrentTurn();
+              }
+              if (typeof runId === "string") {
+                clearRun(runId);
+              } else if (fallbackSingle != null) {
+                clearRunsForSession(fallbackSingle);
+              }
+              backgroundTurnsRef.current.delete(completionSession);
+              pendingBySessionRef.current.delete(completionSession);
+              optionsRef.current.onLiveTurnForSession?.(completionSession, null);
+              emitStatus(completionSession, "error");
 
               if (err?.code === "API_KEY_MISSING" || err?.code === "ENTITLEMENT_FAILED") {
                 optionsRef.current.onErrorToast?.(err.message, {

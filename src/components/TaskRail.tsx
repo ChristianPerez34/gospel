@@ -8,9 +8,12 @@ import {
   formatElapsed,
   formatRelativeTime,
   holdRailLayout,
+  needsYouLabel,
   type RailLayout,
+  railOrder,
   type SessionActivity,
   type SessionActivityMap,
+  sessionModelLabel,
 } from "../sessionActivity";
 import type { Session, Workspace } from "../types";
 
@@ -25,6 +28,9 @@ interface TaskRailProps {
   onNewTask: () => void;
   onOpenHistory: () => void;
   collapsed?: boolean;
+  /** Reports the sessions in the order the rail currently shows them, so
+   * session-switching shortcuts match what is on screen. */
+  onDisplayedOrderChange?: (order: Session[]) => void;
 }
 
 /** Re-render on an interval so run timers and relative times stay current. */
@@ -37,20 +43,12 @@ function useTicker(intervalMs: number | null) {
   }, [intervalMs]);
 }
 
-function modelLabel(session: Session): string {
-  return session.variant ? `${session.model} · ${session.variant}` : session.model;
-}
-
 function stateLine(session: Session, activity: SessionActivity, now: number): string {
-  if (activity.state === "idle") return modelLabel(session);
+  if (activity.state === "idle") return sessionModelLabel(session);
   if (activity.state === "running" && activity.runStartedAt !== undefined) {
     return `Running · ${formatElapsed(now - activity.runStartedAt)}`;
   }
   return ACTIVITY_LABELS[activity.state];
-}
-
-function countLabel(count: number, singular: string, plural: string): string {
-  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export function TaskRail({
@@ -64,6 +62,7 @@ export function TaskRail({
   onNewTask,
   onOpenHistory,
   collapsed = false,
+  onDisplayedOrderChange,
 }: TaskRailProps) {
   const [search, setSearch] = useState("");
   // Rows keep their place while the pointer is over the list, so a session
@@ -83,7 +82,7 @@ export function TaskRail({
       const project = workspaceNames[s.workspaceId ?? ""] ?? s.workspaceId ?? "";
       return (
         s.title.toLowerCase().includes(q) ||
-        modelLabel(s).toLowerCase().includes(q) ||
+        sessionModelLabel(s).toLowerCase().includes(q) ||
         project.toLowerCase().includes(q)
       );
     });
@@ -94,20 +93,24 @@ export function TaskRail({
     [filtered, activityBySession]
   );
   const layout = heldLayout ? holdRailLayout(heldLayout, liveLayout) : liveLayout;
-
-  let needsYouCount = 0;
-  let runningCount = 0;
-  for (const session of sessions) {
-    const activity = activityFor(activityBySession, session.id);
-    if (activity.needsYou) needsYouCount += 1;
-    else if (activity.state === "running") runningCount += 1;
-  }
+  // Counts come from the displayed layout so the live-region summary matches
+  // what the rail shows, including while a pointer hold freezes the order.
+  const needsYouCount = layout.needsYou.length;
+  const runningCount = layout.running.length;
   const showProjectInSections = new Set(sessions.map((s) => s.workspaceId ?? "")).size > 1;
 
   useTicker(collapsed ? null : runningCount > 0 ? 1000 : 30_000);
 
   useEffect(() => {
-    if (collapsed) setHeldLayout(null);
+    onDisplayedOrderChange?.(railOrder(layout));
+  });
+
+  useEffect(() => {
+    if (collapsed) {
+      setHeldLayout(null);
+      // A hidden rail keeps no stale filter, so shortcuts keep the full order.
+      setSearch("");
+    }
   }, [collapsed]);
 
   if (collapsed) return null;
@@ -125,7 +128,7 @@ export function TaskRail({
   };
 
   const summary = [
-    needsYouCount > 0 ? `${countLabel(needsYouCount, "session needs", "sessions need")} you` : "",
+    needsYouCount > 0 ? needsYouLabel(needsYouCount) : "",
     runningCount > 0 ? `${runningCount} running` : "",
   ]
     .filter(Boolean)

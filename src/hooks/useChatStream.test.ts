@@ -29,6 +29,7 @@ interface RenderChatStreamOptions {
     updater: (prev: Message[]) => Message[]
   ) => void;
   onLiveTurnForSession?: (sessionId: string | null, turn: CurrentTurn | null) => void;
+  onStatusForSession?: (sessionId: string | null, status: string) => void;
   onStatusChange?: (status: string) => void;
   onErrorToast?: (message: string, action?: { label: string; onClick: () => void }) => void;
   onSuccessToast?: (message: string) => void;
@@ -242,6 +243,51 @@ describe("useChatStream", () => {
       const [toastMessage, toastAction] = onErrorToast.mock.calls[0];
       expect(toastMessage).toBe("boom");
       expect(toastAction).toMatchObject({ label: "Retry" });
+    });
+
+    it("llm-error with no run_id lands on the single in-flight background session", async () => {
+      const onMessagesForSession = vi.fn();
+      const onStatusForSession = vi.fn();
+      const onErrorToast = vi.fn();
+      const { result } = renderChatStream({
+        sessionId: "session-a",
+        onMessagesForSession,
+        onStatusForSession,
+        onErrorToast,
+      });
+      await act(async () => {});
+      const runId = await startBgRun(result);
+
+      // The background session has a live turn, and the focused session has
+      // an unrelated in-progress turn of its own.
+      await act(async () => {
+        triggerEvent("llm-tool-call", {
+          runId,
+          id: "bg-tool",
+          name: "shell",
+          arguments: "ls",
+        });
+      });
+      await act(async () => {
+        triggerEvent("llm-tool-call", { id: "fg-tool", name: "shell", arguments: "pwd" });
+      });
+      expect(result.current.currentTurn).not.toBeNull();
+
+      await act(async () => {
+        triggerEvent<{ code: string; message: string }>("llm-error", {
+          code: "RUNTIME",
+          message: "boom",
+        });
+      });
+
+      const routed = onMessagesForSession.mock.calls.find(([sid]) => sid === "session-b");
+      expect(routed).toBeDefined();
+      const message = (routed![1] as (prev: Message[]) => Message[])([])[0];
+      expect(message.error).toBe("boom");
+      // The in-progress focused turn survives a failure that belongs elsewhere.
+      expect(result.current.currentTurn).not.toBeNull();
+      expect(onStatusForSession).toHaveBeenCalledWith("session-b", "error");
+      expect(onErrorToast).toHaveBeenCalledTimes(1);
     });
 
     it("entitlement failures toast Open Settings instead of Retry", async () => {

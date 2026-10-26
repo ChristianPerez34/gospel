@@ -24,6 +24,16 @@ export interface SessionActivityInput {
   runStartedAtBySession?: Record<string, number>;
 }
 
+/** Display label for a session's model: "gpt-4o" or "gpt-4o · fast". */
+export function sessionModelLabel(session: Session): string {
+  return session.variant ? `${session.model} · ${session.variant}` : session.model;
+}
+
+/** "1 session needs you" / "3 sessions need you". */
+export function needsYouLabel(count: number): string {
+  return `${count} ${count === 1 ? "session needs" : "sessions need"} you`;
+}
+
 export const ACTIVITY_LABELS: Record<SessionActivityState, string> = {
   "needs-approval": "Needs approval",
   failed: "Failed",

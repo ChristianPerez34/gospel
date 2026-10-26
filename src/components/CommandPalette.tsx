@@ -4,8 +4,10 @@ import { shortcutLabel } from "../hooks/useSessionShortcuts";
 import {
   ACTIVITY_LABELS,
   activityFor,
+  needsYouLabel,
   rankSessionsByActivity,
   type SessionActivityMap,
+  sessionModelLabel,
 } from "../sessionActivity";
 import type { ModelOption, Session, Workspace } from "../types";
 
@@ -76,10 +78,6 @@ function groupResults(results: PaletteResult[]) {
     if (group.length > 0) groups.push({ label, results: group });
   }
   return groups;
-}
-
-function sessionModelLabel(session: Session) {
-  return session.variant ? `${session.model} · ${session.variant}` : session.model;
 }
 
 export function CommandPalette({
@@ -264,8 +262,7 @@ export function CommandPalette({
               group: "Commands" as const,
               icon: "!",
               label: "Jump to next session that needs you",
-              detail:
-                needsYouCount === 1 ? "1 session needs you" : `${needsYouCount} sessions need you`,
+              detail: needsYouLabel(needsYouCount),
               shortcut: shortcutLabel("J"),
               keywords: "jump next session needs you attention approval reply unread",
               action: closeAfter(onJumpToNextNeedsYou),

@@ -4,7 +4,6 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -99,6 +98,7 @@ export function useSessionManager({
     {}
   );
   const [statusBySession, setStatusBySession] = useState<Record<string, AgentStatus>>({});
+  const [runStartedAtBySession, setRunStartedAtBySession] = useState<Record<string, number>>({});
   const statusRef = useRef(status);
   statusRef.current = status;
   const latestSelectedSessionRef = useRef<string | null>(null);
@@ -130,6 +130,7 @@ export function useSessionManager({
     skipNextWorkspaceResetRef.current = null;
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
+    activeSessionIdRef.current = null;
     setMessages([]);
     setStatus(draftStatus);
   }, [activeWorkspaceId]);
@@ -191,14 +192,32 @@ export function useSessionManager({
     []
   );
 
-  const handleStatusForSession = useCallback((sessionId: string | null, next: AgentStatus) => {
-    if (sessionId) {
-      setStatusBySession((prev) => ({ ...prev, [sessionId]: next }));
-    }
-    if (sessionId === activeSessionIdRef.current) {
-      setStatus(next);
-    }
+  // One writer for the per-session maps so run start times are recorded at
+  // event time and cleared when a run ends (thinking/acting -> anything else).
+  const markSessionStatus = useCallback((sessionId: string | null, next: AgentStatus) => {
+    if (!sessionId) return;
+    setStatusBySession((prev) => ({ ...prev, [sessionId]: next }));
+    setRunStartedAtBySession((prev) => {
+      if (isRunningStatus(next)) {
+        if (prev[sessionId] !== undefined) return prev;
+        return { ...prev, [sessionId]: Date.now() };
+      }
+      if (!(sessionId in prev)) return prev;
+      const remaining = { ...prev };
+      delete remaining[sessionId];
+      return remaining;
+    });
   }, []);
+
+  const handleStatusForSession = useCallback(
+    (sessionId: string | null, next: AgentStatus) => {
+      markSessionStatus(sessionId, next);
+      if (sessionId === activeSessionIdRef.current) {
+        setStatus(next);
+      }
+    },
+    [markSessionStatus]
+  );
 
   const {
     currentTurn,
@@ -240,19 +259,6 @@ export function useSessionManager({
   ) {
     streamingSessionIds.push(activeSessionId);
   }
-
-  const runStartedAtRef = useRef<Record<string, number>>({});
-  const streamingKey = [...streamingSessionIds].sort().join("\u0000");
-  const runStartedAtBySession = useMemo(() => {
-    const previous = runStartedAtRef.current;
-    const next: Record<string, number> = {};
-    const now = Date.now();
-    for (const id of streamingKey ? streamingKey.split("\u0000") : []) {
-      next[id] = previous[id] ?? now;
-    }
-    runStartedAtRef.current = next;
-    return next;
-  }, [streamingKey]);
 
   const isStreaming = status === "thinking" || status === "acting";
   const isThinking = status === "thinking";
@@ -304,10 +310,7 @@ export function useSessionManager({
       };
       setMessages((prev) => [...prev, userMsg]);
       setStatus("thinking");
-      const sendSessionId = activeSessionIdRef.current;
-      if (sendSessionId) {
-        setStatusBySession((prev) => ({ ...prev, [sendSessionId]: "thinking" }));
-      }
+      markSessionStatus(activeSessionIdRef.current, "thinking");
       resetStream();
 
       let effectiveSessionId = activeSessionId;
@@ -346,16 +349,14 @@ export function useSessionManager({
         onSessionsChange((prev) => [newSession, ...prev]);
         setActiveSessionId(sessionId);
         activeSessionIdRef.current = sessionId;
-        setStatusBySession((prev) => ({ ...prev, [sessionId]: "thinking" }));
+        markSessionStatus(sessionId, "thinking");
         effectiveSessionId = sessionId;
         streamSessionId = isLocalOnly ? null : sessionId;
       } else {
         const existing = sessions.find((session) => session.id === activeSessionId);
         const isLocalOnly = existing?.backendCreated === false;
         streamSessionId = isLocalOnly ? null : effectiveSessionId;
-        if (effectiveSessionId) {
-          setStatusBySession((prev) => ({ ...prev, [effectiveSessionId as string]: "thinking" }));
-        }
+        markSessionStatus(effectiveSessionId, "thinking");
       }
 
       try {
@@ -372,10 +373,7 @@ export function useSessionManager({
         });
       } catch (e) {
         setStatus("error");
-        const failedId = effectiveSessionId ?? activeSessionIdRef.current;
-        if (failedId) {
-          setStatusBySession((prev) => ({ ...prev, [failedId]: "error" }));
-        }
+        markSessionStatus(effectiveSessionId ?? activeSessionIdRef.current, "error");
         resetStream();
         onError?.(`Failed to send: ${e}`, {
           label: "Open Settings",
@@ -386,6 +384,7 @@ export function useSessionManager({
     [
       activeSessionId,
       activeWorkspaceId,
+      markSessionStatus,
       models,
       onError,
       onOpenSettings,
@@ -504,6 +503,7 @@ export function useSessionManager({
     const leavingRun = isRunningStatus(statusRef.current);
     latestSelectedSessionRef.current = null;
     setActiveSessionId(null);
+    activeSessionIdRef.current = null;
     setMessages([]);
     setStatus(draftStatus);
     // A running session keeps going in the background: the stream hook stashes

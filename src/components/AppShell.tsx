@@ -7,12 +7,7 @@ import { useSessionShortcuts } from "../hooks/useSessionShortcuts";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { noModelCopy } from "../modelAvailabilityCopy";
-import {
-  buildRailLayout,
-  deriveSessionActivity,
-  nextSessionNeedingYou,
-  railOrder,
-} from "../sessionActivity";
+import { deriveSessionActivity, nextSessionNeedingYou } from "../sessionActivity";
 import {
   type ArchivePolicy,
   type ArchiveStats,
@@ -116,6 +111,9 @@ export function AppShell() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [skillOptOpen, setSkillOptOpen] = useState(isSkillOptPanelRequest);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
+  // The task rail reports its displayed order here so session shortcuts and
+  // the palette's needs-you jump target exactly what the user sees.
+  const railOrderRef = useRef<Session[]>([]);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
   const commandPaletteOpenRef = useRef(false);
   const chatColumnRef = useRef<HTMLDivElement>(null);
@@ -347,9 +345,8 @@ export function AppShell() {
     runStartedAtBySession: session.runStartedAtBySession,
   });
   const needsYouCount = allSessions.filter((item) => activityBySession[item.id]?.needsYou).length;
-  const railSessions = railOrder(buildRailLayout(allSessions, activityBySession));
   const nextNeedsYouSession = nextSessionNeedingYou(
-    railSessions,
+    railOrderRef.current,
     activityBySession,
     session.activeSessionId
   );
@@ -622,7 +619,7 @@ export function AppShell() {
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
 
   useSessionShortcuts({
-    order: railSessions,
+    getOrder: () => railOrderRef.current,
     activity: activityBySession,
     activeSessionId: session.activeSessionId,
     paused: modalSurfaceOpen || surfaceTrapOpen || skillOptOpen,
@@ -924,6 +921,9 @@ export function AppShell() {
             session.handleNewSession();
           }}
           onOpenHistory={openHistoryDrawer}
+          onDisplayedOrderChange={(order) => {
+            railOrderRef.current = order;
+          }}
           collapsed={taskRailCollapsed}
         />
         <div

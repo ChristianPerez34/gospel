@@ -1,5 +1,6 @@
 import { Cpu } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
+import { needsYouLabel } from "../sessionActivity";
 import type { AgentStatus, Workspace } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
@@ -60,8 +61,8 @@ export function TopBar({
     ? "bg-surface-overlay text-accent-structure"
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
   const computeActive = status === "thinking" || status === "acting";
-  const needsYouLabel = `${needsYouCount} ${needsYouCount === 1 ? "session needs" : "sessions need"} you`;
-  const taskButtonLabel = needsYouCount > 0 ? `Toggle tasks, ${needsYouLabel}` : "Toggle tasks";
+  const needsYouText = needsYouLabel(needsYouCount);
+  const taskButtonLabel = needsYouCount > 0 ? `Toggle tasks, ${needsYouText}` : "Toggle tasks";
   // Control plane: switching projects and renaming tasks never blocks on
   // streams. In-flight turns keep running against their captured context.
   const titleEditingDisabled = false;
@@ -78,7 +79,7 @@ export function TopBar({
           onClick={onToggleSessions}
           aria-label={taskButtonLabel}
           aria-pressed={sessionsOpen}
-          title={needsYouCount > 0 ? needsYouLabel : "Tasks"}
+          title={needsYouCount > 0 ? needsYouText : "Tasks"}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect

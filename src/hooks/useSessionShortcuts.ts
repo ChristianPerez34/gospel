@@ -48,8 +48,9 @@ export function readSessionShortcut(
 }
 
 interface UseSessionShortcutsOptions {
-  /** Sessions in the order the task rail shows them. */
-  order: Session[];
+  /** Sessions in the order the task rail shows them, read at keypress time so
+   * digits and stepping follow the rail's live (filtered) order. */
+  getOrder: () => Session[];
   activity: SessionActivityMap;
   activeSessionId: string | null;
   /** True while a modal surface owns the keyboard. */
@@ -70,7 +71,7 @@ export function useSessionShortcuts(options: UseSessionShortcutsOptions) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      const { order, activity, activeSessionId, paused, onSelect, onNewSession } =
+      const { getOrder, activity, activeSessionId, paused, onSelect, onNewSession } =
         optionsRef.current;
       if (paused) return;
       const shortcut = readSessionShortcut(event);
@@ -81,6 +82,7 @@ export function useSessionShortcuts(options: UseSessionShortcutsOptions) {
         onNewSession();
         return;
       }
+      const order = getOrder();
       let target: Session | null;
       if (shortcut.kind === "index") target = order[shortcut.index] ?? null;
       else if (shortcut.kind === "step")

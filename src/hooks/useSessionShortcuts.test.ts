@@ -127,7 +127,7 @@ describe("useSessionShortcuts", () => {
     const onNewSession = vi.fn();
     renderHook(() =>
       useSessionShortcuts({
-        order,
+        getOrder: () => order,
         activity: options.activity ?? {},
         activeSessionId: "a",
         paused: options.paused ?? false,
