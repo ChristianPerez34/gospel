@@ -1,5 +1,6 @@
 import { Cpu } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
+import { needsYouLabel } from "../sessionActivity";
 import type { AgentStatus, Workspace } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
@@ -13,6 +14,8 @@ interface TopBarProps {
   onToggleSessions: () => void;
   onOpenSettings: () => void;
   sessionsOpen: boolean;
+  /** Sessions waiting on the user: pending approvals and unopened replies. */
+  needsYouCount?: number;
   sessionToggleRef?: RefObject<HTMLButtonElement>;
 }
 
@@ -26,6 +29,7 @@ export function TopBar({
   onToggleSessions,
   onOpenSettings,
   sessionsOpen,
+  needsYouCount = 0,
   sessionToggleRef,
 }: TopBarProps) {
   const [editing, setEditing] = useState(false);
@@ -57,6 +61,8 @@ export function TopBar({
     ? "bg-surface-overlay text-accent-structure"
     : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary";
   const computeActive = status === "thinking" || status === "acting";
+  const needsYouText = needsYouLabel(needsYouCount);
+  const taskButtonLabel = needsYouCount > 0 ? `Toggle tasks, ${needsYouText}` : "Toggle tasks";
   // Control plane: switching projects and renaming tasks never blocks on
   // streams. In-flight turns keep running against their captured context.
   const titleEditingDisabled = false;
@@ -71,9 +77,9 @@ export function TopBar({
           ref={sessionToggleRef}
           className={`hit-target w-8 h-8 flex items-center justify-center rounded-sm transition-colors duration-150 ease-out-quart ${sessionToggleClass}`}
           onClick={onToggleSessions}
-          aria-label="Toggle tasks"
+          aria-label={taskButtonLabel}
           aria-pressed={sessionsOpen}
-          title="Tasks"
+          title={needsYouCount > 0 ? needsYouText : "Tasks"}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect
@@ -113,6 +119,11 @@ export function TopBar({
               strokeLinecap="round"
             />
           </svg>
+          {needsYouCount > 0 && (
+            <span className="task-rail-toggle-count" aria-hidden="true">
+              {needsYouCount > 9 ? "9+" : needsYouCount}
+            </span>
+          )}
         </button>
         <button
           type="button"

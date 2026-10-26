@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useSessionManager } from "../hooks/useSessionManager";
+import { useSessionShortcuts } from "../hooks/useSessionShortcuts";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { noModelCopy } from "../modelAvailabilityCopy";
+import { deriveSessionActivity, nextSessionNeedingYou } from "../sessionActivity";
 import {
   type ArchivePolicy,
   type ArchiveStats,
@@ -109,6 +111,9 @@ export function AppShell() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [skillOptOpen, setSkillOptOpen] = useState(isSkillOptPanelRequest);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
+  // The task rail reports its displayed order here so session shortcuts and
+  // the palette's needs-you jump target exactly what the user sees.
+  const railOrderRef = useRef<Session[]>([]);
   const commandPaletteRestoreRef = useRef<HTMLElement | null>(null);
   const commandPaletteOpenRef = useRef(false);
   const chatColumnRef = useRef<HTMLDivElement>(null);
@@ -330,6 +335,25 @@ export function AppShell() {
   const allSessions = useMemo(() => {
     return sortSessionsByTimestamp(session.sessions);
   }, [session.sessions]);
+  const activityBySession = deriveSessionActivity(allSessions, {
+    activeSessionId: session.activeSessionId,
+    currentTurn: session.currentTurn,
+    liveTurnsBySession: session.liveTurnsBySession,
+    statusBySession: session.statusBySession,
+    streamingSessionIds: session.streamingSessionIds,
+    unreadSessionIds: session.unreadSessionIds,
+    runStartedAtBySession: session.runStartedAtBySession,
+  });
+  const needsYouCount = allSessions.filter((item) => activityBySession[item.id]?.needsYou).length;
+  const nextNeedsYouCandidate = nextSessionNeedingYou(
+    railOrderRef.current,
+    activityBySession,
+    session.activeSessionId
+  );
+  // The reported order lags a commit behind; drop a session that left the list
+  // and hand the jump the current session object, not the stale copy.
+  const nextNeedsYouSession =
+    allSessions.find((item) => item.id === nextNeedsYouCandidate?.id) ?? null;
 
   const handleSwitchWorkspace = useCallback(
     (ws: Workspace) => {
@@ -598,6 +622,17 @@ export function AppShell() {
   const surfaceTrapOpen = trappedSurface !== null;
   const modalSurfaceOpen = commandPaletteOpen || settingsOpen || workspaceSwitcherOpen;
 
+  useSessionShortcuts({
+    getOrder: () => railOrderRef.current,
+    activity: activityBySession,
+    activeSessionId: session.activeSessionId,
+    paused: modalSurfaceOpen || surfaceTrapOpen || skillOptOpen,
+    onSelect: (target) => {
+      void session.handleSessionSelect(target);
+    },
+    onNewSession: session.handleNewSession,
+  });
+
   useEffect(() => {
     if (!activeSessionId || !activeSessionProvider || !activeSessionModel) return;
     setSelectedModel({
@@ -862,6 +897,7 @@ export function AppShell() {
             : currentModelName
         }
         status={headerStatus}
+        needsYouCount={needsYouCount}
         onWorkspaceSwitch={() => {
           setWorkspaceSwitcherOpen(true);
         }}
@@ -876,10 +912,12 @@ export function AppShell() {
         data-task-rail-collapsed={taskRailCollapsed ? "true" : "false"}
       >
         <TaskRail
+          // Remount on collapse so a hidden rail keeps no stale search or
+          // pointer-held layout; shortcuts then follow the full order.
+          key={taskRailCollapsed ? "collapsed" : "open"}
           sessions={allSessions}
           activeSessionId={session.activeSessionId}
-          streamingSessionIds={session.streamingSessionIds}
-          statusBySession={session.statusBySession}
+          activityBySession={activityBySession}
           workspaces={workspaces}
           workspaceNames={workspaceNames}
           activeWorkspaceId={activeWorkspace?.id}
@@ -890,6 +928,9 @@ export function AppShell() {
             session.handleNewSession();
           }}
           onOpenHistory={openHistoryDrawer}
+          onDisplayedOrderChange={(order) => {
+            railOrderRef.current = order;
+          }}
           collapsed={taskRailCollapsed}
         />
         <div
@@ -1045,6 +1086,15 @@ export function AppShell() {
         onSelectWorkspace={handleSwitchWorkspace}
         onOpenSkillOpt={() => setSkillOptOpen(true)}
         restoreFocusRef={commandPaletteRestoreRef}
+        activityBySession={activityBySession}
+        needsYouCount={needsYouCount}
+        onJumpToNextNeedsYou={
+          nextNeedsYouSession
+            ? () => {
+                void session.handleSessionSelect(nextNeedsYouSession);
+              }
+            : undefined
+        }
       />
       {skillOptOpen && (
         <SkillOptPanel

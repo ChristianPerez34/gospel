@@ -1257,6 +1257,7 @@ describe("useSessionManager", () => {
       expect(result.current.activeSessionId).toBeNull();
       expect(result.current.messages).toEqual([]);
       expect(result.current.currentTurn).toBeNull();
+      expect(result.current.isStreaming).toBe(false);
       expect(result.current.liveTurnsBySession[originalSessionId!]?.blocks).toEqual([
         { kind: "text", id: "text-0", text: "live token" },
       ]);
@@ -1274,6 +1275,107 @@ describe("useSessionManager", () => {
       expect(originalSession?.messages[1]?.id).toBe(streamedTurnId);
       expect(result.current.activeSessionId).toBeNull();
       expect(result.current.messages).toEqual([]);
+    });
+  });
+
+  describe("attention tracking", () => {
+    beforeEach(() => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "create_session") return { id: "backend-stream" };
+        return undefined;
+      });
+    });
+
+    it("marks a reply that lands in the background unread until its session is opened", async () => {
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("streaming prompt");
+      });
+      act(() => {
+        result.current.handleNewSession();
+      });
+      act(() => {
+        triggerEvent("llm-done", { response: "background reply" });
+      });
+
+      expect(result.current.unreadSessionIds).toEqual(["backend-stream"]);
+      const finished = result.current.sessions.find((s) => s.id === "backend-stream");
+      expect(finished?.messages.map((m) => m.content)).toEqual([
+        "streaming prompt",
+        "background reply",
+      ]);
+
+      await act(async () => {
+        await result.current.handleSessionSelect(finished!);
+      });
+
+      expect(result.current.activeSessionId).toBe("backend-stream");
+      expect(result.current.unreadSessionIds).toEqual([]);
+    });
+
+    it("does not mark a reply in the focused session unread", async () => {
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("hello");
+      });
+      act(() => {
+        triggerEvent("llm-done", { response: "reply" });
+      });
+
+      expect(result.current.messages.some((m) => m.content === "reply")).toBe(true);
+      expect(result.current.unreadSessionIds).toEqual([]);
+    });
+
+    it("records when each run started and clears it when the run ends", async () => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+      try {
+        const { result } = renderSessionManager();
+
+        await act(async () => {
+          await result.current.handleSend("streaming prompt");
+        });
+        expect(result.current.runStartedAtBySession).toEqual({ "backend-stream": 1_000 });
+
+        now.mockReturnValue(5_000);
+        act(() => {
+          triggerEvent<string>("llm-token", "live token");
+        });
+        expect(result.current.runStartedAtBySession).toEqual({ "backend-stream": 1_000 });
+
+        act(() => {
+          triggerEvent("llm-done", { response: "done" });
+        });
+        expect(result.current.runStartedAtBySession).toEqual({});
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it("keeps a running session's live turn when starting a new session", async () => {
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSend("streaming prompt");
+      });
+      await act(async () => {
+        triggerEvent<string>("llm-token", "live token");
+      });
+
+      act(() => {
+        result.current.handleNewSession();
+      });
+
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.messages).toEqual([]);
+      expect(result.current.currentTurn).toBeNull();
+      // The draft is free to send while the other session keeps running.
+      expect(result.current.isStreaming).toBe(false);
+      expect(result.current.streamingSessionIds).toContain("backend-stream");
+      expect(result.current.liveTurnsBySession["backend-stream"]?.blocks).toEqual([
+        { kind: "text", id: "text-0", text: "live token" },
+      ]);
     });
   });
 });

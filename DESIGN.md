@@ -43,10 +43,10 @@ Each step uses a single-column form, left-aligned labels, `--surface-elevated` c
 
 ### 3. Chat View (primary workspace)
 
-The center of the product. Full-screen chat where the user types a prompt and the agent responds. No permanent sidebar; secondary panels are overlays or togglable drawers.
+The center of the product. The user types a prompt and the agent responds. Several sessions can run at once, so a docked task rail on the left keeps every session one click or keystroke away. Other secondary panels are overlays or togglable drawers.
 
 **Layout:**
-- **Top bar** (48px): Current workspace name (clickable to switch), session title (editable inline), model badge pill, status indicator (idle/thinking/acting/error), overflow menu (`...`)
+- **Top bar** (48px): Tasks toggle (shows or hides the task rail and carries the needs-you badge), current workspace name (clickable to switch), session title (editable inline), model badge pill, status indicator (idle/thinking/acting/error), overflow menu (`...`)
 - **Message stream** (flex): Full-width, scrollable. User messages right-aligned with `--surface-elevated` background. Agent messages left-aligned on `--surface-base`. Each message is a block: header (avatar + name + timestamp), body (markdown rendered), footer (action buttons: copy, retry, fork).
 - **Agent action cards**: When the agent reads files, runs commands, or edits code, show a collapsible card with:
   - Type icon (file, terminal, diff, search)
@@ -62,12 +62,29 @@ The center of the product. Full-screen chat where the user types a prompt and th
 - While the agent is acting: status bar shows the current action ("Reading src/main.rs...", "Running tests...", "Editing Cargo.toml")
 - Action cards appear inline as they happen, each animating in from 0 height
 
-**Session history drawer** (togglable, slides from left, 280px):
+**Task rail** (docked left, 300px, toggled from the top bar):
+- Header: search field (matches title, model, or project) and a New task button (`Cmd+N`).
+- **Needs you** comes first: sessions with a pending approval, then sessions whose reply or failure arrived while another session was open. Opening a session clears it from this section.
+- **Running** comes next: sessions with a turn in flight, each with a live timer ("Running · 1m 12s").
+- The remaining sessions follow, grouped by project, newest first. Each project header shows a session count and marks the active workspace.
+- A session appears in one section only, and empty sections are hidden. Rows in Needs you and Running name their project when sessions span more than one project.
+- Rows keep their order while the pointer is over the list, so a row never moves out from under a click. The new order applies when the pointer leaves.
+- Footer: History & archive opens the session history drawer.
+
+**Session switching shortcuts** (Cmd on macOS, Ctrl on Windows and Linux):
+- `Cmd+1` to `Cmd+9`: open the Nth session in rail order
+- `Cmd+Shift+]` / `Cmd+Shift+[`: next / previous session in rail order, wrapping at the ends
+- `Cmd+J`: next session that needs you
+- `Cmd+N`: new session. A session that is running keeps running in the background.
+- Shortcuts stand down while the command palette, settings, workspace switcher, session history drawer, or skill optimization panel is open. On macOS, Ctrl combinations stay with text fields for emacs-style editing.
+
+**Session history drawer** (togglable, slides from left, 280px; opened from the task rail's History & archive button):
 - List of sessions grouped by date (Today, Yesterday, This Week, Older)
 - Each session: title (auto-generated from first message or edited), time, model badge
 - Click to load. Right-click for rename/delete.
 - Search bar at top for filtering sessions by content
 - New session button at bottom (`+` icon)
+- Archived sessions can be restored, exported, or deleted from here
 
 **Workspace switcher** (dropdown from top bar):
 - List of workspaces with name and path
@@ -174,6 +191,8 @@ Global command palette overlay. Appears at center-top of the window, entering fr
 
 - **Search input** at top
 - **Result groups**: Sessions, Files, Settings, Commands (switch workspace, new session, change model, toggle panel, etc.)
+- **Sessions** list the ones that need you first, then running sessions, then the rest. A session that is not idle leads its detail line with its state ("Needs approval · gpt-4o · Project · date").
+- **Jump to next session that needs you** (`Cmd+J`) appears under Commands only while another session needs you.
 - **Keyboard navigation**: Arrow keys, Enter to select, Esc to dismiss
 - **Recent items** shown when search is empty
 - Background dims with `--scrim` overlay
@@ -223,7 +242,7 @@ OKLCH. Full palette strategy: 4 named roles, each deliberate.
 - Never use pure `#000` or `#fff`. All neutrals are tinted toward the brand hue (260 on the OKLCH hue wheel, a cool blue-violet).
 - `--accent-action` carries most interactive weight. Used for exactly: send button, active tab, thinking pulse, links, focus rings.
 - `--accent-structure` marks navigational and organizational elements. It colors the session drawer active item, the context file tree active dot, and the workspace switcher highlight.
-- `--accent-signal` is for attention without alarm. Agent intervention warnings, cost alerts, non-breaking feedback. Never for primary actions.
+- `--accent-signal` is for attention without alarm. Agent intervention warnings, cost alerts, non-breaking feedback, and sessions that need you (the task rail's Needs you section and the top-bar badge). Never for primary actions.
 - `--accent-data` marks data, deltas, and destructive hints. Diff removed lines, error counts, token consumption bars. Never for primary interactive elements.
 - Status colors (`--status-error`, `--status-warning`, `--status-success`) are reserved for their semantic roles. Never repurpose them as decorative fills.
 - Agent colors are only used in multi-agent view to visually distinguish agents in cards, activity feeds, and the session drawer. Never in single-agent mode.
@@ -297,8 +316,9 @@ Vary spacing for rhythm. Same padding everywhere is monotony. Use `--space-4` as
 - **Title bar**: 36px. Custom, not native. App name left, window controls right (close/minimize/maximize). `--surface-elevated` background.
 - **Top bar**: 48px. Fixed.
 - **Main content area**: Fills remaining vertical space.
+- **Task rail**: Docked left, 300px. Collapsible from the top bar. Below 1000px wide it overlays the chat instead of docking.
 - **Panels**: Overlay-style, slide from right. Not permanent fixtures.
-- **Session drawer**: Overlay from left, 280px.
+- **Session history drawer**: Overlay from left, 280px.
 
 Minimum window size: 800x600. Optimal: 1280x800+.
 
@@ -316,7 +336,7 @@ The chat area uses a simple centered column layout:
 | Base | 0 | Chat messages, background |
 | Sticky input | 10 | Bottom input bar |
 | Side panels | 20 | File context, diff reviewer |
-| Drawers | 30 | Session history |
+| Drawers | 30 | Session history, task rail when it overlays |
 | Dropdowns | 40 | Menus, selects |
 | Command palette | 50 | Cmd+K overlay |
 | Scrim | 45 | Dim overlay behind palette |
@@ -418,6 +438,25 @@ Dropdown from top bar workspace name:
 - Add workspace button at bottom with `+` icon
 - Dismissible by clicking outside or pressing Esc
 
+### Task rail row
+
+One row per session in the task rail, 44px minimum height:
+- **State dot** (6px circle): running is a pulsing `--status-success` dot, the same live signal as the top-bar compute graph. Needs approval and new reply use `--accent-signal`. Failed uses `--status-error`. Idle is a dimmed `--text-muted` dot, or `--accent-action` on the open session.
+- **Title**: `--text-body-sm`, `--text-primary`, truncated. Semibold when the session needs you.
+- **Age**: `--font-mono`, 10px, `--text-muted`, right-aligned ("now", "5m", "3h", "2d", then a short date). Hidden while running, where the timer takes its place.
+- **State line**: `--font-mono`, 10px. The model when idle; otherwise the state in words ("Needs approval", "New reply", "Failed", "Running · 1m 12s"), colored like the dot. Rows in Needs you and Running add the project name.
+- **Open session**: `--surface-overlay` background and a 2px `--accent-action` left border.
+- Color never carries the state alone: the state line spells it out, and the row tooltip ends with it ("Fix auth loop — Gospel — Needs approval").
+
+Section headers (Needs you, Running, project names) use `--text-caption`, uppercase, `--text-muted`, with a count. Needs you has an `--accent-signal` dot; Running has a pulsing `--status-success` dot.
+
+### Tasks toggle badge
+
+Count of sessions that need you, pinned to the top bar's tasks toggle:
+- `--accent-signal` fill, `--text-inverse` text, `--font-mono` 9px bold, `--radius-full`, 15px tall
+- Caps at "9+". Hidden at zero.
+- The toggle's accessible name carries the count ("Toggle tasks, 2 sessions need you").
+
 ### Status indicator
 
 Small element (8px dot) in top bar:
@@ -447,6 +486,7 @@ Small removable tag above the input bar:
 - **1280px+**: Full layout. Panels can be open alongside chat.
 - **800-1279px**: Drawer overlays chat when open. Panels still overlay.
 - **Below 800px**: Everything overlays. Single column only. Top bar simplifies to icon-only buttons.
+- **Task rail**: Docked at 1000px and wider. Below 1000px it overlays the chat when open.
 
 ## Accessibility
 
@@ -456,7 +496,7 @@ Small removable tag above the input bar:
 - Minimum contrast: `--text-primary` on `--surface-base` exceeds 7:1. `--text-secondary` on `--surface-base` exceeds 4.5:1.
 - `--text-muted` is decorative only. Never used for meaningful text alone.
 - Reduced motion: all animations and transitions set to `0ms` when `prefers-reduced-motion: reduce`.
-- Screen reader: messages are in an ARIA live region. Action cards are collapsible sections with proper heading levels.
+- Screen reader: messages are in an ARIA live region. Action cards are collapsible sections with proper heading levels. The task rail announces how many sessions need you and how many are running through a polite live region, and each rail section is a list named after its header.
 
 ## Anti-patterns (banned)
 
