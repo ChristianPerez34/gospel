@@ -168,18 +168,6 @@ mod model_lists {
 
     pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
 
-    pub const GITHUB_COPILOT_TOOL_CAPABLE_MODELS: &[&str] = &[
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.3-codex",
-        "gpt-5.1-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "claude-sonnet-4.6",
-        "claude-opus-4.6",
-        "claude-opus-4.7",
-    ];
-
     pub const GROK_MODELS: &[&str] = &[
         GROK_4,
         GROK_3,
@@ -343,18 +331,6 @@ mod model_lists {
 
     pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
 
-    pub const GITHUB_COPILOT_TOOL_CAPABLE_MODELS: &[&str] = &[
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.3-codex",
-        "gpt-5.1-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "claude-sonnet-4.6",
-        "claude-opus-4.6",
-        "claude-opus-4.7",
-    ];
-
     pub const GROK_MODELS: &[&str] = &[
         "grok-4-0709",
         "grok-3",
@@ -401,8 +377,7 @@ mod model_lists {
 
 use model_lists::{
     ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS,
-    GITHUB_COPILOT_MODELS, GITHUB_COPILOT_TOOL_CAPABLE_MODELS, GROK_MODELS, GROQ_MODELS,
-    MISTRAL_MODELS, OPENAI_MODELS, OPENCODE_GO_MODELS,
+    GITHUB_COPILOT_MODELS, GROK_MODELS, GROQ_MODELS, MISTRAL_MODELS, OPENAI_MODELS, OPENCODE_GO_MODELS,
 };
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -653,10 +628,6 @@ impl ModelRegistry {
 
     pub fn is_chatgpt_subscription_model(model: &str) -> bool {
         CHATGPT_DISCOVERABLE_MODELS.contains(&model)
-    }
-
-    pub fn is_github_copilot_tool_capable_model(model: &str) -> bool {
-        GITHUB_COPILOT_TOOL_CAPABLE_MODELS.contains(&model)
     }
 
     #[allow(dead_code)]
@@ -1239,22 +1210,6 @@ mod tests {
     fn test_github_copilot_has_no_hardcoded_model_fallback() {
         assert!(ModelRegistry::models_for_provider("github_copilot").is_empty());
         assert!(ModelRegistry::hardcoded_models_for("github_copilot").is_empty());
-    }
-
-    #[test]
-    fn test_github_copilot_tool_capable_allowlist() {
-        assert!(ModelRegistry::is_github_copilot_tool_capable_model(
-            "gpt-5.3-codex"
-        ));
-        assert!(ModelRegistry::is_github_copilot_tool_capable_model(
-            "claude-sonnet-4.6"
-        ));
-        assert!(!ModelRegistry::is_github_copilot_tool_capable_model(
-            "text-embedding-3-large"
-        ));
-        assert!(!ModelRegistry::is_github_copilot_tool_capable_model(
-            "gpt-unknown"
-        ));
     }
 
     #[test]
