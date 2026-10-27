@@ -21,10 +21,21 @@ pub(crate) async fn fetch_models(
         .await
         .map_err(|e| format!("failed to list GitHub Copilot models: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "failed to list GitHub Copilot models: HTTP {}",
-            response.status()
-        ));
+        let status = response.status();
+        let body_text = response
+            .into_body()
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+            .unwrap_or_default();
+        return if body_text.is_empty() {
+            Err(format!(
+                "failed to list GitHub Copilot models: HTTP {status}"
+            ))
+        } else {
+            Err(format!(
+                "failed to list GitHub Copilot models: HTTP {status}: {body_text}"
+            ))
+        };
     }
     let body = response
         .into_body()
@@ -35,17 +46,27 @@ pub(crate) async fn fetch_models(
     let entries = body["data"]
         .as_array()
         .ok_or("GitHub Copilot model response is missing the data array")?;
-    let models: Vec<ModelInfo> = entries
-        .iter()
-        .filter(|m| {
-            m.pointer("/capabilities/type").and_then(|v| v.as_str()) == Some("chat")
-                && m.pointer("/capabilities/supports/tool_calls")
-                    .and_then(|v| v.as_bool())
-                    == Some(true)
-        })
-        .filter_map(|m| m["id"].as_str().filter(|id| !id.trim().is_empty()))
-        .map(|id| ModelRegistry::model_info("github_copilot", id))
-        .collect();
+    let mut models: Vec<ModelInfo> = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for m in entries {
+        let is_tool_chat = m.pointer("/capabilities/type").and_then(|v| v.as_str()) == Some("chat")
+            && m.pointer("/capabilities/supports/tool_calls")
+                .and_then(|v| v.as_bool())
+                == Some(true);
+        if !is_tool_chat {
+            continue;
+        }
+
+        if let Some(id) = m["id"]
+            .as_str()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            if seen_ids.insert(id) {
+                models.push(ModelRegistry::model_info("github_copilot", id));
+            }
+        }
+    }
     tracing::info!(
         "Fetched {} models from GitHub Copilot, filtered to {} tool-capable models",
         entries.len(),
@@ -71,6 +92,15 @@ mod tests {
                 {"id": "gemini-future", "capabilities": {
                     "type": "chat", "supports": {"tool_calls": true}
                 }},
+                {"id": "  trimmed-model  ", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"id": "new-tool-capable-model", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"id": "  trimmed-model  ", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
                 {"id": "gpt-4o", "capabilities": {
                     "type": "chat", "supports": {"tool_calls": false}
                 }},
@@ -91,7 +121,7 @@ mod tests {
         let models = fetch_models(&config, &http).await.unwrap();
         assert_eq!(
             models.iter().map(|m| m.model.as_str()).collect::<Vec<_>>(),
-            ["new-tool-capable-model", "gemini-future"]
+            ["new-tool-capable-model", "gemini-future", "trimmed-model"]
         );
         assert!(models.iter().all(|m| m.provider == "github_copilot"));
         let requests = http.requests();
@@ -116,10 +146,17 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             br#"{"data": []}"#.to_vec(),
         );
-        assert!(fetch_models(&config, &http)
-            .await
-            .unwrap_err()
-            .contains("401"));
+        let err = fetch_models(&config, &http).await.unwrap_err();
+        assert!(err.contains("401"));
+
+        let http = RecordingHttpClient::with_error_response(
+            StatusCode::FORBIDDEN,
+            br#"{"message": "organization policy blocks Copilot"}"#.to_vec(),
+        );
+        let err = fetch_models(&config, &http).await.unwrap_err();
+        assert!(err.contains("403"));
+        assert!(err.contains("organization policy blocks Copilot"));
+
         let http = RecordingHttpClient::with_error(StatusCode::FORBIDDEN, "not entitled");
         assert!(fetch_models(&config, &http)
             .await
