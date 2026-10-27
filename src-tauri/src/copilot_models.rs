@@ -22,20 +22,17 @@ pub(crate) async fn fetch_models(
         .map_err(|e| format!("failed to list GitHub Copilot models: {e}"))?;
     if !response.status().is_success() {
         let status = response.status();
-        let body_text = response
+        let detail = response
             .into_body()
             .await
-            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(": {s}"))
             .unwrap_or_default();
-        return if body_text.is_empty() {
-            Err(format!(
-                "failed to list GitHub Copilot models: HTTP {status}"
-            ))
-        } else {
-            Err(format!(
-                "failed to list GitHub Copilot models: HTTP {status}: {body_text}"
-            ))
-        };
+        return Err(format!(
+            "failed to list GitHub Copilot models: HTTP {status}{detail}"
+        ));
     }
     let body = response
         .into_body()
@@ -46,27 +43,19 @@ pub(crate) async fn fetch_models(
     let entries = body["data"]
         .as_array()
         .ok_or("GitHub Copilot model response is missing the data array")?;
-    let mut models: Vec<ModelInfo> = Vec::new();
-    let mut seen_ids = std::collections::HashSet::new();
-    for m in entries {
-        let is_tool_chat = m.pointer("/capabilities/type").and_then(|v| v.as_str()) == Some("chat")
-            && m.pointer("/capabilities/supports/tool_calls")
-                .and_then(|v| v.as_bool())
-                == Some(true);
-        if !is_tool_chat {
-            continue;
-        }
-
-        if let Some(id) = m["id"]
-            .as_str()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            if seen_ids.insert(id) {
-                models.push(ModelRegistry::model_info("github_copilot", id));
-            }
-        }
-    }
+    let mut seen = std::collections::HashSet::new();
+    let models: Vec<ModelInfo> = entries
+        .iter()
+        .filter(|m| {
+            m.pointer("/capabilities/type").and_then(|v| v.as_str()) == Some("chat")
+                && m.pointer("/capabilities/supports/tool_calls")
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+        })
+        .filter_map(|m| m["id"].as_str().map(str::trim).filter(|id| !id.is_empty()))
+        .filter(|id| seen.insert(*id))
+        .map(|id| ModelRegistry::model_info("github_copilot", id))
+        .collect();
     tracing::info!(
         "Fetched {} models from GitHub Copilot, filtered to {} tool-capable models",
         entries.len(),
