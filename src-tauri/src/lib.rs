@@ -6,6 +6,7 @@ mod app_config;
 pub mod approval_broker;
 pub mod context_search;
 mod conversation;
+mod copilot_models;
 pub mod corpus;
 mod credential_failure;
 mod grok_oauth;
