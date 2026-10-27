@@ -1,9 +1,9 @@
 :root {
-  --gospel-surface-base: #151619;
-  --gospel-surface-elevated: #1b1c20;
-  --gospel-surface-overlay: #25262c;
-  --gospel-surface-sunken: #111215;
-  --gospel-surface-line: #303138;
+  --gospel-surface-base: #131418;
+  --gospel-surface-elevated: #1a1b21;
+  --gospel-surface-overlay: #23252d;
+  --gospel-surface-sunken: #0b0c0f;
+  --gospel-surface-line: rgba(255, 255, 255, 0.06);
   --gospel-scrim: rgb(5 6 7 / 0.68);
 
   --gospel-text-primary: #ededf0;
@@ -159,11 +159,11 @@
 }
 
 [data-theme="light"] {
-  --gospel-surface-base: oklch(0.98 0.003 260);
+  --gospel-surface-base: oklch(0.985 0.003 260);
   --gospel-surface-elevated: oklch(1 0.002 260);
-  --gospel-surface-overlay: oklch(0.95 0.004 260);
-  --gospel-surface-sunken: oklch(0.92 0.004 260);
-  --gospel-surface-line: oklch(0.88 0.004 260);
+  --gospel-surface-overlay: oklch(0.945 0.004 260);
+  --gospel-surface-sunken: oklch(0.93 0.004 260);
+  --gospel-surface-line: oklch(0.18 0.01 260 / 0.075);
   --gospel-scrim: oklch(0.1 0 260 / 0.35);
 
   --gospel-text-primary: oklch(0.18 0.01 260);

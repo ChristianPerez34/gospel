@@ -25,11 +25,11 @@ Tokens live in `src/styles/tokens.css`. The existing semantic aliases remain the
 
 | Token | Dark value | Role |
 | --- | --- | --- |
-| `--surface-sunken` | `#111215` | Persistent navigation and secondary monitor |
-| `--surface-base` | `#151619` | Main working surface |
-| `--surface-elevated` | `#1b1c20` | Composer, tools, hover feedback |
-| `--surface-overlay` | `#25262c` | Selected items and inset controls |
-| `--surface-line` | `#303138` | Boundaries and row dividers |
+| `--surface-sunken` | `#0b0c0f` | Full-height recessed navigation frame and secondary monitor |
+| `--surface-base` | `#131418` | Inset rounded working canvas |
+| `--surface-elevated` | `#1a1b21` | Composer, tools, hover feedback |
+| `--surface-overlay` | `#23252d` | Selected items and inset controls |
+| `--surface-line` | `rgba(255, 255, 255, 0.06)` | Whisper-quiet inset sheet edge and subtle dividers |
 | `--text-primary` | `#ededf0` | Titles, conversation, primary information |
 | `--text-secondary` | `#b7b8c2` | Task previews and supporting information |
 | `--text-muted` | `#9697a3` | Timestamps, metadata, secondary labels |
@@ -45,11 +45,11 @@ Geist is the interface and conversation font. Monospace is reserved for code, mo
 
 ## Application structure
 
-The 60px header shares the sidebar's exact 264px identity column. Its brand and navigation toggle align with the rail below; the content portion uses the page's base surface and 36px gutter. This follows [Linear's continuous navigation frame on Mobbin](https://mobbin.com/screens/212fda35-366e-4dc0-a1d1-3b679659d6ab): navigation is persistent while the content header reflects the current view.
+The shell uses an **Inset Canvas** frame (validated via prototype against a full-width command ribbon and a headerless floating HUD): on desktop (`>= 1000px`), the 264px task rail spans 100% full window height on `--surface-sunken` (`#0b0c0f`) with no vertical border wall, while the right-hand workspace (`TopBar` + `CommandCenter` / `ChatView`) floats as an inset rounded sheet (`border-radius: 12px`, `margin: 8px 8px 8px 0`) on `--surface-base` (`#131418`) with a 46px borderless context header inside the top of the sheet. Separating navigation from the working canvas via tonal surface depth and an 8px recessed frame eliminates harsh intersecting 1px wireframe borders while keeping the Command Center as the primary focal point.
 
 Home shows All workspaces / Overview and, when applicable, the global running count. It never shows an idle agent, a selected model, or a compute graph. Conversations show their workspace, editable task title, model, and that task's status. A background run cannot change the selected task's status to Acting. Settings stays in the same place across views. Clicking Gospel returns to the command center and leaves the focused task running in the background.
 
-The task rail is 264px wide and stays visible on desktop. It contains the command center link, new task action with its shortcut, task search, Needs you, Running, and project groups. Its footer keeps the default workspace name and path above archive access. The workspace selector falls back to the app bar when navigation is collapsed. Navigation controls use consistent 36px heights, 6px radii, Lucide icons, and readable 12–13px labels. Section headings use sentence case, with 11px metadata. Status sections take priority over project groups. Rows keep their location while the pointer is over the list. Keyboard shortcuts follow the rail's displayed order. Running rows include a compact activity preview.
+The task rail is 264px wide and stays visible on desktop. Its top bar pairs the Gospel brand mark with a compact New task (`⌘N`) button, followed immediately by the Command center link and a borderless recessed task search input. Below the search bar sit Needs you, Running, and project groups using borderless tonal pill rows (`border-radius: 8px`). Its footer anchors the Active workspace selector (name and path) above History & archive access. The workspace selector falls back to the inset context bar when navigation is collapsed.
 
 The command center contains a title, small cross-workspace status summary, status filters, search, workspace filter, and a task list. Rows show title, latest activity, model, workspace, state, and age or elapsed run time. Tasks needing attention come first, followed by running tasks and project groups. Rows keep their place while the pointer is over the list. Status filters update as work changes state. Filtering never switches the execution workspace. Counts describe all sessions, while the footer describes the current filtered view. With no tasks, hide empty filters, search, column headings, and zero-count summaries; show a clear first-task instruction and keep the New task action visible.
 
