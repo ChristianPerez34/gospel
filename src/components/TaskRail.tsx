@@ -1,4 +1,4 @@
-import { ChevronDown, Folder, History, LayoutDashboard, Plus, Search } from "lucide-react";
+import { ChevronDown, Folder, History, Layers, LayoutDashboard, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { shortcutLabel } from "../hooks/useSessionShortcuts";
@@ -209,32 +209,41 @@ export function TaskRail({
       data-testid="task-rail"
       {...(trapFocus ? { role: "dialog", "aria-modal": true } : {})}
     >
-      {onOpenOverview && (
-        <div className="task-rail-home">
-          <button
-            type="button"
-            onClick={onOpenOverview}
-            aria-current={overviewOpen ? "page" : undefined}
-          >
-            <LayoutDashboard size={16} aria-hidden="true" />
-            Command center<span className="task-rail-home-count">{sessions.length}</span>
-          </button>
+      <div className="rail-a-brand-bar">
+        <div className="rail-a-brand-mark">
+          <span className="gospel-mark">
+            <Layers size={14} strokeWidth={1.7} aria-hidden="true" />
+          </span>
+          <span className="rail-a-brand-title">gospel</span>
         </div>
-      )}
-      <div className="task-rail-head">
         <button
           type="button"
-          className="task-rail-new"
+          className="task-rail-new is-header-cta"
           aria-label="New task"
           onClick={onNewTask}
           title={`New task (${shortcutLabel("N")})`}
         >
-          <Plus size={15} strokeWidth={1.6} aria-hidden="true" />
+          <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
           <span>New task</span>
           <kbd>{shortcutLabel("N")}</kbd>
         </button>
+      </div>
+
+      <div className="task-rail-head">
+        {onOpenOverview && (
+          <div className="task-rail-home">
+            <button
+              type="button"
+              onClick={onOpenOverview}
+              aria-current={overviewOpen ? "page" : undefined}
+            >
+              <LayoutDashboard size={15} aria-hidden="true" />
+              Command center<span className="task-rail-home-count">{sessions.length}</span>
+            </button>
+          </div>
+        )}
         <div className="task-rail-search-row">
-          <Search size={15} strokeWidth={1.6} aria-hidden="true" />
+          <Search size={14} strokeWidth={1.6} aria-hidden="true" />
           <input
             className="task-rail-search"
             type="text"
@@ -285,7 +294,7 @@ export function TaskRail({
       <div className="task-rail-footer">
         {onWorkspaceSwitch && (
           <div className="task-rail-workspace">
-            <span className="task-rail-workspace-label">Workspace for new tasks</span>
+            <span className="task-rail-workspace-label">Active workspace</span>
             <button
               type="button"
               className="task-rail-workspace-control"
@@ -293,7 +302,7 @@ export function TaskRail({
               aria-label="Switch workspace"
               title={projectPath(activeWorkspaceId ?? "") ?? "Choose a workspace"}
             >
-              <Folder size={16} strokeWidth={1.6} aria-hidden="true" />
+              <Folder size={15} strokeWidth={1.6} aria-hidden="true" />
               <span>
                 {activeWorkspaceId ? projectLabel(activeWorkspaceId) : "Choose a workspace"}
                 <span className="task-rail-workspace-path">

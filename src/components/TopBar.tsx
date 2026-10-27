@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   PanelLeft,
   Settings2,
+  Sparkles,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { needsYouLabel } from "../sessionActivity";
@@ -30,6 +31,119 @@ interface TopBarProps {
   onOpenOverview?: () => void;
   runningTaskCount?: number;
   showWorkspaceSwitch?: boolean;
+  onOpenCommandPalette?: () => void;
+}
+
+function SessionTitleControl({
+  globalView,
+  taskSetupOpen,
+  sessionTitle,
+  onSessionTitleChange,
+}: {
+  globalView: boolean;
+  taskSetupOpen: boolean;
+  sessionTitle: string;
+  onSessionTitleChange: (title: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(sessionTitle);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setTitle(sessionTitle);
+  }, [sessionTitle]);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  const handleSubmit = () => {
+    const next = title.trim();
+    if (next && next !== sessionTitle) onSessionTitleChange(next);
+    else setTitle(sessionTitle);
+    setEditing(false);
+  };
+
+  if (globalView) {
+    return <span className="topbar-overview-label">{taskSetupOpen ? "New task" : "Overview"}</span>;
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="topbar-session-title topbar-title-input"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        onBlur={handleSubmit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") handleSubmit();
+          if (event.key === "Escape") {
+            setTitle(sessionTitle);
+            setEditing(false);
+          }
+        }}
+        aria-label="Session title"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="topbar-session-title"
+      onClick={() => setEditing(true)}
+      aria-label="Edit session title"
+      title="Edit session title"
+    >
+      {sessionTitle || "Untitled task"}
+    </button>
+  );
+}
+
+function WorkspaceScopeControl({
+  showWorkspaceSwitch,
+  overviewOpen,
+  workspace,
+  onWorkspaceSwitch,
+}: {
+  showWorkspaceSwitch: boolean;
+  overviewOpen: boolean;
+  workspace: Workspace;
+  onWorkspaceSwitch: () => void;
+}) {
+  if (showWorkspaceSwitch) {
+    return (
+      <button
+        type="button"
+        className="topbar-workspace-control"
+        onClick={onWorkspaceSwitch}
+        aria-label="Switch workspace"
+        title={workspace.path || "Choose a workspace"}
+      >
+        <Folder size={14} strokeWidth={1.6} aria-hidden="true" />
+        <span className="topbar-workspace-text">{workspace.name}</span>
+        <ChevronDown size={12} aria-hidden="true" />
+      </button>
+    );
+  }
+  if (overviewOpen) {
+    return (
+      <span className="topbar-scope">
+        <LayoutDashboard size={14} strokeWidth={1.6} aria-hidden="true" />
+        All workspaces
+      </span>
+    );
+  }
+  return (
+    <span className="topbar-scope" title={workspace.path}>
+      <Folder size={14} strokeWidth={1.6} aria-hidden="true" />
+      {workspace.name}
+    </span>
+  );
 }
 
 export function TopBar({
@@ -49,45 +163,15 @@ export function TopBar({
   onOpenOverview,
   runningTaskCount = 0,
   showWorkspaceSwitch = true,
+  onOpenCommandPalette,
 }: TopBarProps) {
-  const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState(sessionTitle);
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    setTitle(sessionTitle);
-  }, [sessionTitle]);
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }
-  }, [editing]);
-  const handleSubmit = () => {
-    const next = title.trim();
-    if (next && next !== sessionTitle) onSessionTitleChange(next);
-    else setTitle(sessionTitle);
-    setEditing(false);
-  };
   const needsYouText = needsYouLabel(needsYouCount);
   const taskButtonLabel = needsYouCount > 0 ? `Toggle tasks, ${needsYouText}` : "Toggle tasks";
   const globalView = overviewOpen || taskSetupOpen;
 
   return (
-    <header className="app-topbar spatial-topbar" data-navigation-open={sessionsOpen}>
-      <div className="topbar-identity">
-        {onOpenOverview && (
-          <button
-            type="button"
-            className="gospel-brand"
-            onClick={onOpenOverview}
-            aria-label="Gospel command center"
-          >
-            <span className="gospel-mark">
-              <Layers size={16} strokeWidth={1.6} aria-hidden="true" />
-            </span>
-            <span>gospel</span>
-          </button>
-        )}
+    <header className="app-topbar inset-topbar" data-navigation-open={sessionsOpen}>
+      <div className="inset-topbar-left">
         <button
           type="button"
           ref={sessionToggleRef}
@@ -97,97 +181,85 @@ export function TopBar({
           aria-pressed={sessionsOpen}
           title={sessionsOpen ? "Hide task navigation" : "Show task navigation"}
         >
-          <PanelLeft size={17} strokeWidth={1.6} aria-hidden="true" />
+          <PanelLeft size={16} strokeWidth={1.6} aria-hidden="true" />
           {needsYouCount > 0 && (
             <span className="task-rail-toggle-count" aria-hidden="true">
               {needsYouCount > 9 ? "9+" : needsYouCount}
             </span>
           )}
         </button>
-      </div>
-      <div className="topbar-main">
+
+        {onOpenOverview && (
+          <div className={`inset-brand-slot${sessionsOpen ? " is-rail-open" : ""}`}>
+            <button
+              type="button"
+              className="gospel-brand"
+              onClick={onOpenOverview}
+              aria-label="Gospel command center"
+            >
+              <span className="gospel-mark">
+                <Layers size={15} strokeWidth={1.7} aria-hidden="true" />
+              </span>
+              <span className="gospel-brand-text">gospel</span>
+            </button>
+          </div>
+        )}
+
         <div className="topbar-primary">
-          {showWorkspaceSwitch ? (
-            <button
-              type="button"
-              className="topbar-workspace-control"
-              onClick={onWorkspaceSwitch}
-              aria-label="Switch workspace"
-              title={workspace.path || "Choose a workspace"}
-            >
-              <Folder size={15} strokeWidth={1.6} aria-hidden="true" />
-              <span className="topbar-workspace-text">{workspace.name}</span>
-              <ChevronDown size={12} aria-hidden="true" />
-            </button>
-          ) : overviewOpen ? (
-            <span className="topbar-scope">
-              <LayoutDashboard size={15} strokeWidth={1.6} aria-hidden="true" />
-              All workspaces
-            </span>
-          ) : (
-            <span className="topbar-scope" title={workspace.path}>
-              <Folder size={15} strokeWidth={1.6} aria-hidden="true" />
-              {workspace.name}
-            </span>
-          )}
+          <WorkspaceScopeControl
+            showWorkspaceSwitch={showWorkspaceSwitch}
+            overviewOpen={overviewOpen}
+            workspace={workspace}
+            onWorkspaceSwitch={onWorkspaceSwitch}
+          />
           <ChevronRight className="topbar-breadcrumb-divider" size={13} aria-hidden="true" />
-          {globalView ? (
-            <span className="topbar-overview-label">{taskSetupOpen ? "New task" : "Overview"}</span>
-          ) : editing ? (
-            <input
-              ref={inputRef}
-              className="topbar-session-title topbar-title-input"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              onBlur={handleSubmit}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") handleSubmit();
-                if (event.key === "Escape") {
-                  setTitle(sessionTitle);
-                  setEditing(false);
-                }
-              }}
-              aria-label="Session title"
-            />
-          ) : (
-            <button
-              type="button"
-              className="topbar-session-title"
-              onClick={() => setEditing(true)}
-              aria-label="Edit session title"
-              title="Edit session title"
-            >
-              {sessionTitle || "Untitled task"}
-            </button>
-          )}
+          <SessionTitleControl
+            globalView={globalView}
+            taskSetupOpen={taskSetupOpen}
+            sessionTitle={sessionTitle}
+            onSessionTitleChange={onSessionTitleChange}
+          />
         </div>
-        <div className="topbar-actions">
-          {globalView ? (
-            runningTaskCount > 0 && (
-              <span className="topbar-global-status">
-                <span className="live-dot is-running" />
-                {runningTaskCount} running
-              </span>
-            )
-          ) : (
-            <>
-              <span className="topbar-model-badge">
-                <Cpu size={13} strokeWidth={1.6} aria-hidden="true" />
-                <span>{model}</span>
-              </span>
-              <StatusIndicator status={status} />
-            </>
-          )}
+      </div>
+
+      <div className="topbar-actions inset-topbar-right">
+        {globalView ? (
+          runningTaskCount > 0 && (
+            <span className="topbar-global-status">
+              <span className="live-dot is-running" />
+              {runningTaskCount} running
+            </span>
+          )
+        ) : (
+          <>
+            <span className="topbar-model-badge">
+              <Cpu size={13} strokeWidth={1.6} aria-hidden="true" />
+              <span>{model}</span>
+            </span>
+            <StatusIndicator status={status} />
+          </>
+        )}
+        {onOpenCommandPalette && (
           <button
             type="button"
-            className="shell-icon-button"
-            aria-label="Settings"
-            title="Settings"
-            onClick={onOpenSettings}
+            className="inset-cmd-trigger"
+            onClick={onOpenCommandPalette}
+            title="Command palette (⌘K)"
           >
-            <Settings2 size={17} strokeWidth={1.6} aria-hidden="true" />
+            <Sparkles size={12} aria-hidden="true" />
+            <span>Commands</span>
+            <kbd>⌘K</kbd>
           </button>
-        </div>
+        )}
+        <button
+          type="button"
+          className="shell-icon-button"
+          aria-label="Settings"
+          title="Settings"
+          onClick={onOpenSettings}
+        >
+          <Settings2 size={16} strokeWidth={1.6} aria-hidden="true" />
+        </button>
       </div>
     </header>
   );

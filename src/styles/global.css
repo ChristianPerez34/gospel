@@ -588,11 +588,11 @@ summary,
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid color-mix(in srgb, var(--surface-line) 70%, transparent);
+  border-right: 0;
   background:
     radial-gradient(
       ellipse 60% 42% at 50% 0%,
-      color-mix(in srgb, var(--accent-action) 6%, transparent),
+      color-mix(in srgb, var(--accent-action) 5%, transparent),
       transparent
     ),
     var(--surface-base);
@@ -656,24 +656,20 @@ summary,
 
 .session-row {
   display: grid;
-  min-height: 44px;
-  width: 100%;
+  min-height: 42px;
+  width: calc(100% - 16px);
+  margin-inline: 8px;
+  border-radius: 6px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
-  border-left: 2px solid transparent;
   transition:
     background-color var(--duration-fast) var(--ease-out-quart),
-    border-color var(--duration-fast) var(--ease-out-quart),
     color var(--duration-fast) var(--ease-out-quart);
 }
 
 .session-row:hover,
 .session-row.is-active {
   background: color-mix(in srgb, var(--surface-overlay) 78%, var(--surface-elevated) 22%);
-}
-
-.session-row.is-active {
-  border-left-color: var(--accent-action);
 }
 
 .session-row:has(.session-row-select) {

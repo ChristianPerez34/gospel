@@ -976,6 +976,7 @@ export function AppShell() {
       data-theme={resolvedTheme}
       data-theme-preference={themePreference}
       data-view={overviewOpen ? "overview" : "conversation"}
+      data-rail-collapsed={taskRailCollapsed ? "true" : "false"}
     >
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
@@ -997,6 +998,7 @@ export function AppShell() {
         overviewOpen={overviewOpen}
         onOpenOverview={openOverview}
         taskSetupOpen={!overviewOpen && !session.activeSessionId}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
       />
       <div
         className="app-layout"
