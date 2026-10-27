@@ -126,8 +126,8 @@ describe("ChatView block timeline rendering", () => {
 
     const readRow = screen.getByRole("button", { name: /read file.*running/i });
     expect(readRow.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.getByTestId("agent-turn-turn-running").className).toContain(
-      "motion-reduce:animate-none"
+    expect(screen.getByTestId("agent-turn-turn-running").className).not.toContain(
+      "animate-fade-slide-in-fast"
     );
     expect(readRow.className).toContain("motion-reduce:transition-none");
 

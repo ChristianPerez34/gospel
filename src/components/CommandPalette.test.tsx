@@ -232,4 +232,47 @@ describe("CommandPalette", () => {
     fireEvent.click(activeRow);
     expect(onSelectWorkspace).not.toHaveBeenCalled();
   });
+
+  it("lists sessions that need you first with their state", () => {
+    renderPalette({
+      activityBySession: { "session-other": { state: "new-reply", needsYou: true } },
+    });
+
+    const sessionRows = screen.getAllByRole("button", { name: /Session in/ });
+    expect(sessionRows[0]?.textContent).toContain("Session in other workspace");
+    expect(sessionRows[0]?.textContent).toContain("New reply · gpt-4o · Other");
+    expect(sessionRows[1]?.textContent).toContain("Session in active workspace");
+  });
+
+  it("jumps to the next session that needs you", () => {
+    const onJumpToNextNeedsYou = vi.fn();
+    const onClose = vi.fn();
+    renderPalette({
+      activityBySession: { "session-other": { state: "needs-approval", needsYou: true } },
+      needsYouCount: 1,
+      onJumpToNextNeedsYou,
+      onClose,
+    });
+
+    fireEvent.change(screen.getByLabelText("Search commands"), {
+      target: { value: "needs you" },
+    });
+    expect(screen.getByRole("button", { name: /Session in other workspace/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Session in active workspace/ })).toBeNull();
+
+    const jump = screen.getByRole("button", { name: /Jump to next session that needs you/ });
+    expect(jump.textContent).toContain("1 session needs you");
+    fireEvent.click(jump);
+    expect(onJumpToNextNeedsYou).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("hides the jump command when no other session needs you", () => {
+    renderPalette();
+    fireEvent.change(screen.getByLabelText("Search commands"), {
+      target: { value: "jump" },
+    });
+
+    expect(screen.queryByRole("button", { name: /Jump to next session/ })).toBeNull();
+  });
 });

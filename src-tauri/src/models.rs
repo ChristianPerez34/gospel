@@ -16,16 +16,30 @@ mod model_lists {
         GEMINI_2_5_PRO_EXP_03_25, GEMINI_2_5_PRO_PREVIEW_03_25, GEMINI_2_5_PRO_PREVIEW_05_06,
         GEMINI_2_5_PRO_PREVIEW_06_05, GEMINI_3_1_FLASH_LITE_PREVIEW, GEMINI_3_FLASH_PREVIEW,
     };
-    pub use rig::providers::groq::{
-        DEEPSEEK_R1_DISTILL_LLAMA_70B, GEMMA2_9B_IT, LLAMA_3_1_8B_INSTANT,
-        LLAMA_3_2_11B_VISION_PREVIEW, LLAMA_3_2_1B_PREVIEW, LLAMA_3_2_3B_PREVIEW,
-        LLAMA_3_2_70B_SPECDEC, LLAMA_3_2_70B_VERSATILE, LLAMA_3_2_90B_VISION_PREVIEW,
-        LLAMA_3_70B_8192, LLAMA_3_8B_8192, LLAMA_GUARD_3_8B, MIXTRAL_8X7B_32768,
-    };
+    pub use rig::providers::groq::LLAMA_3_1_8B_INSTANT;
     pub use rig::providers::mistral::{
-        CODESTRAL, CODESTRAL_MAMBA, MINISTRAL_3B, MINISTRAL_8B, MISTRAL_LARGE, MISTRAL_NEMO,
-        MISTRAL_SABA, MISTRAL_SMALL, PIXTRAL_LARGE, PIXTRAL_SMALL,
+        CODESTRAL, MINISTRAL_3B, MINISTRAL_8B, MISTRAL_LARGE, MISTRAL_SMALL,
     };
+
+    // Model ids rig dropped from its constant lists; kept so the hardcoded
+    // fallback lists stay stable.
+    pub const DEEPSEEK_R1_DISTILL_LLAMA_70B: &str = "deepseek-r1-distill-llama-70b";
+    pub const GEMMA2_9B_IT: &str = "gemma2-9b-it";
+    pub const LLAMA_3_2_11B_VISION_PREVIEW: &str = "llama-3.2-11b-vision-preview";
+    pub const LLAMA_3_2_1B_PREVIEW: &str = "llama-3.2-1b-preview";
+    pub const LLAMA_3_2_3B_PREVIEW: &str = "llama-3.2-3b-preview";
+    pub const LLAMA_3_2_90B_VISION_PREVIEW: &str = "llama-3.2-90b-vision-preview";
+    pub const LLAMA_3_2_70B_SPECDEC: &str = "llama-3.2-70b-specdec";
+    pub const LLAMA_3_2_70B_VERSATILE: &str = "llama-3.2-70b-versatile";
+    pub const LLAMA_GUARD_3_8B: &str = "llama-guard-3-8b";
+    pub const LLAMA_3_70B_8192: &str = "llama3-70b-8192";
+    pub const LLAMA_3_8B_8192: &str = "llama3-8b-8192";
+    pub const MIXTRAL_8X7B_32768: &str = "mixtral-8x7b-32768";
+    pub const PIXTRAL_LARGE: &str = "pixtral-large-latest";
+    pub const MISTRAL_SABA: &str = "mistral-saba-latest";
+    pub const PIXTRAL_SMALL: &str = "pixtral-12b-2409";
+    pub const MISTRAL_NEMO: &str = "open-mistral-nemo";
+    pub const CODESTRAL_MAMBA: &str = "open-codestral-mamba";
     pub use rig::providers::openai::{
         GPT_4, GPT_4O, GPT_4O_2024_05_13, GPT_4O_2024_11_20, GPT_4O_MINI, GPT_4_0125_PREVIEW,
         GPT_4_0613, GPT_4_1, GPT_4_1106_PREVIEW, GPT_4_1106_VISION_PREVIEW, GPT_4_1_2025_04_14,

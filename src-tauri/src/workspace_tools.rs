@@ -2,8 +2,7 @@ use crate::text_utils::truncate_text_bytes;
 use globset::{Glob, GlobMatcher, GlobSet, GlobSetBuilder};
 use std::sync::LazyLock;
 use regex::Regex;
-use rig::completion::ToolDefinition;
-use rig::tool::Tool;
+use rig::tool::{PortableTool, RegisteredTool, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
@@ -502,36 +501,40 @@ impl From<ExternalResolvedPath> for ReadFileTarget {
     }
 }
 
-impl Tool for ReadFileTool {
+impl PortableTool for ReadFileTool {
     const NAME: &'static str = "read_file";
 
     type Error = WorkspaceToolError;
     type Args = ReadFileArgs;
     type Output = ReadFileOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Read a safe text file from the active workspace. External paths require one-time user approval before reading. Returns line-numbered content with caps and truncation metadata.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Workspace-relative path, absolute path inside the workspace, or an external absolute path that will request user approval."
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "description": "Optional 1-based inclusive start line."
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "description": "Optional 1-based inclusive end line."
-                    }
+    fn description(&self) -> String {
+        "Read a safe text file from the active workspace. External paths require one-time user approval before reading. Returns line-numbered content with caps and truncation metadata.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative path, absolute path inside the workspace, or an external absolute path that will request user approval."
                 },
-                "required": ["path"]
-            }),
-        }
+                "start_line": {
+                    "type": "integer",
+                    "description": "Optional 1-based inclusive start line."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Optional 1-based inclusive end line."
+                }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -747,40 +750,44 @@ pub struct SearchCodeOutput {
     skipped_files: usize,
 }
 
-impl Tool for SearchCodeTool {
+impl PortableTool for SearchCodeTool {
     const NAME: &'static str = "search_code";
 
     type Error = WorkspaceToolError;
     type Args = SearchCodeArgs;
     type Output = SearchCodeOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Search safe text files in the active workspace with a regular expression. Returns matching lines with workspace-relative paths.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Regular expression pattern to search for."
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Optional workspace-relative or absolute file or directory scope."
-                    },
-                    "include_glob": {
-                        "type": "string",
-                        "description": "Optional glob applied relative to the scoped path."
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Optional maximum result count."
-                    }
+    fn description(&self) -> String {
+        "Search safe text files in the active workspace with a regular expression. Returns matching lines with workspace-relative paths.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regular expression pattern to search for."
                 },
-                "required": ["pattern"]
-            }),
-        }
+                "path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative or absolute file or directory scope."
+                },
+                "include_glob": {
+                    "type": "string",
+                    "description": "Optional glob applied relative to the scoped path."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Optional maximum result count."
+                }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -930,36 +937,40 @@ pub struct FindFilesOutput {
     scanned_entries: usize,
 }
 
-impl Tool for FindFilesTool {
+impl PortableTool for FindFilesTool {
     const NAME: &'static str = "find_files";
 
     type Error = WorkspaceToolError;
     type Args = FindFilesArgs;
     type Output = FindFilesOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Find safe files in the active workspace with a glob pattern. Returns workspace-relative file paths only.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "glob": {
-                        "type": "string",
-                        "description": "Glob pattern to match relative to the scoped path."
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Optional workspace-relative or absolute directory or file scope."
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Optional maximum result count."
-                    }
+    fn description(&self) -> String {
+        "Find safe files in the active workspace with a glob pattern. Returns workspace-relative file paths only.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to match relative to the scoped path."
                 },
-                "required": ["glob"]
-            }),
-        }
+                "path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative or absolute directory or file scope."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Optional maximum result count."
+                }
+            },
+            "required": ["glob"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1168,36 +1179,40 @@ pub struct WorkspaceRootInventory {
     pub truncated: bool,
 }
 
-impl Tool for ListDirectoryTool {
+impl PortableTool for ListDirectoryTool {
     const NAME: &'static str = "list_directory";
 
     type Error = WorkspaceToolError;
     type Args = ListDirectoryArgs;
     type Output = ListDirectoryOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "List safe files and directories from the active workspace. External directory paths require one-time user approval before listing. Returns deterministic directory-first ordering and does not recurse into symlinked directories.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Optional workspace-relative path, absolute path inside the workspace, or external absolute directory path that will request user approval."
-                    },
-                    "depth": {
-                        "type": "integer",
-                        "description": "Optional recursion depth."
-                    },
-                    "max_entries": {
-                        "type": "integer",
-                        "description": "Optional maximum entry count."
-                    }
+    fn description(&self) -> String {
+        "List safe files and directories from the active workspace. External directory paths require one-time user approval before listing. Returns deterministic directory-first ordering and does not recurse into symlinked directories.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative path, absolute path inside the workspace, or external absolute directory path that will request user approval."
                 },
-                "required": []
-            }),
-        }
+                "depth": {
+                    "type": "integer",
+                    "description": "Optional recursion depth."
+                },
+                "max_entries": {
+                    "type": "integer",
+                    "description": "Optional maximum entry count."
+                }
+            },
+            "required": []
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1401,33 +1416,32 @@ pub(crate) fn create_list_directory_tool_with_external_approval(
     }
 }
 
-pub fn build_base_workspace_tools(workspace_path: PathBuf) -> Vec<Box<dyn rig::tool::ToolDyn>> {
+pub fn build_base_workspace_tools(workspace_path: PathBuf) -> Vec<RegisteredTool> {
     build_base_workspace_tools_with_external_approval(workspace_path, None)
 }
 
 pub(crate) fn build_base_workspace_tools_with_external_approval(
     workspace_path: PathBuf,
     external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
-) -> Vec<Box<dyn rig::tool::ToolDyn>> {
-    let read_file_tool: Box<dyn rig::tool::ToolDyn> = match external_path_approval.clone() {
-        Some(approval) => Box::new(create_read_file_tool_with_external_approval(
+) -> Vec<RegisteredTool> {
+    let read_file_tool = match external_path_approval.clone() {
+        Some(approval) => RegisteredTool::from_tool(create_read_file_tool_with_external_approval(
             workspace_path.clone(),
             Some(approval),
         )),
-        None => Box::new(create_read_file_tool(workspace_path.clone())),
+        None => RegisteredTool::from_tool(create_read_file_tool(workspace_path.clone())),
     };
-    let list_directory_tool: Box<dyn rig::tool::ToolDyn> = match external_path_approval {
-        Some(approval) => Box::new(create_list_directory_tool_with_external_approval(
-            workspace_path.clone(),
-            Some(approval),
-        )),
-        None => Box::new(create_list_directory_tool(workspace_path.clone())),
+    let list_directory_tool = match external_path_approval {
+        Some(approval) => RegisteredTool::from_tool(
+            create_list_directory_tool_with_external_approval(workspace_path.clone(), Some(approval)),
+        ),
+        None => RegisteredTool::from_tool(create_list_directory_tool(workspace_path.clone())),
     };
 
     vec![
         read_file_tool,
-        Box::new(create_search_code_tool(workspace_path.clone())),
-        Box::new(create_find_files_tool(workspace_path.clone())),
+        RegisteredTool::from_tool(create_search_code_tool(workspace_path.clone())),
+        RegisteredTool::from_tool(create_find_files_tool(workspace_path.clone())),
         list_directory_tool,
     ]
 }
@@ -1459,36 +1473,40 @@ pub struct SourceEditOutput {
     truncated: bool,
 }
 
-impl Tool for SourceEditTool {
+impl PortableTool for SourceEditTool {
     const NAME: &'static str = "source_edit";
 
     type Error = WorkspaceToolError;
     type Args = SourceEditArgs;
     type Output = SourceEditOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Apply exactly one in-place replacement to an existing safe UTF-8 workspace source file. The target must not be hidden control data, generated/noisy output, a lockfile, a secret-like file, a symlink, binary, oversized, or outside the active workspace.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Workspace-relative or absolute file path inside the active workspace."
-                    },
-                    "old_text": {
-                        "type": "string",
-                        "description": "Exact existing text to replace. It must occur exactly once."
-                    },
-                    "new_text": {
-                        "type": "string",
-                        "description": "Replacement text."
-                    }
+    fn description(&self) -> String {
+        "Apply exactly one in-place replacement to an existing safe UTF-8 workspace source file. The target must not be hidden control data, generated/noisy output, a lockfile, a secret-like file, a symlink, binary, oversized, or outside the active workspace.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative or absolute file path inside the active workspace."
                 },
-                "required": ["path", "old_text", "new_text"]
-            }),
-        }
+                "old_text": {
+                    "type": "string",
+                    "description": "Exact existing text to replace. It must occur exactly once."
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Replacement text."
+                }
+            },
+            "required": ["path", "old_text", "new_text"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1689,32 +1707,36 @@ pub struct WriteHarnessFileOutput {
     size_bytes: Option<u64>,
 }
 
-impl Tool for WriteHarnessFileTool {
+impl PortableTool for WriteHarnessFileTool {
     const NAME: &'static str = "write_harness_file";
 
     type Error = WorkspaceToolError;
     type Args = WriteHarnessFileArgs;
     type Output = WriteHarnessFileOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Create or update a file inside the harness control substrate (.gospel/). Use this to maintain PLAN.md and other harness artifacts. The path must be under .gospel/.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Workspace-relative path under .gospel/ (e.g. '.gospel/PLAN.md')."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full content to write to the file."
-                    }
+    fn description(&self) -> String {
+        "Create or update a file inside the harness control substrate (.gospel/). Use this to maintain PLAN.md and other harness artifacts. The path must be under .gospel/.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative path under .gospel/ (e.g. '.gospel/PLAN.md')."
                 },
-                "required": ["path", "content"]
-            }),
-        }
+                "content": {
+                    "type": "string",
+                    "description": "Full content to write to the file."
+                }
+            },
+            "required": ["path", "content"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1921,32 +1943,36 @@ pub struct ContextSearchResultDto {
     score: f64,
 }
 
-impl Tool for ContextSearchTool {
+impl PortableTool for ContextSearchTool {
     const NAME: &'static str = "context_search";
 
     type Error = WorkspaceToolError;
     type Args = ContextSearchArgs;
     type Output = ContextSearchOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Search the pre-built Context Search index for relevant source code, documentation, and project artifacts using natural language queries. Use this for broad retrieval to find likely relevant areas, then verify important hits with live workspace tools (read_file, search_code) before making claims. Returns ranked results with path, line range, content type, snippet, and score.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language search query (e.g. 'authentication middleware', 'error handling pattern', 'database connection setup')."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default: 10, max: 50)."
-                    }
+    fn description(&self) -> String {
+        "Search the pre-built Context Search index for relevant source code, documentation, and project artifacts using natural language queries. Use this for broad retrieval to find likely relevant areas, then verify important hits with live workspace tools (read_file, search_code) before making claims. Returns ranked results with path, line range, content type, snippet, and score.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query (e.g. 'authentication middleware', 'error handling pattern', 'database connection setup')."
                 },
-                "required": ["query"]
-            }),
-        }
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default: 10, max: 50)."
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -3099,7 +3125,7 @@ fn natural_path_cmp(left: &str, right: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::tool::Tool;
+    use rig::tool::PortableTool;
     use std::fs;
     use std::sync::{
         atomic::{AtomicUsize, Ordering as AtomicOrdering},

@@ -15,6 +15,7 @@ mod json_utils;
 pub mod keychain;
 mod llm;
 pub mod mcp;
+mod model_history;
 mod models;
 mod oauth;
 mod provider_client;
@@ -569,10 +570,14 @@ async fn build_model_availability(
 
     for (index, &provider) in provider_ids.iter().enumerate() {
         let credentialed = keychain::provider_has_credentials(provider);
-        let visible = visibility_by_provider
-            .get(provider)
-            .copied()
-            .unwrap_or(true);
+        let visible = if credentialed {
+            visibility_by_provider
+                .get(provider)
+                .copied()
+                .unwrap_or(true)
+        } else {
+            false
+        };
         let model_count = 0;
 
         if !credentialed {
@@ -835,6 +840,7 @@ mod availability_tests {
             .expect("Grok should remain a registered provider");
 
         assert!(!grok.credentialed);
+        assert!(!grok.visible);
         assert_eq!(grok.model_fetch_status, "not_credentialed");
         assert_eq!(grok.model_count, 0);
         assert!(!snapshot
@@ -928,6 +934,7 @@ mod availability_tests {
             .expect("xAI should be a registered provider");
 
         assert!(!xai.credentialed);
+        assert!(!xai.visible);
         assert_eq!(xai.model_fetch_status, "not_credentialed");
         assert_eq!(xai.model_count, 0);
         assert!(!snapshot
@@ -2402,6 +2409,51 @@ fn update_session_title(
 }
 
 #[tauri::command]
+async fn generate_session_title(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+    prompt: String,
+) -> Result<Option<String>, String> {
+    let store = session_store.store.as_ref().ok_or_else(|| {
+        session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())
+    })?;
+    let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
+    let context = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if detail.title != "New chat" || context.is_empty() {
+        return Ok(None);
+    }
+    let mut fallback: String = context.chars().take(50).collect();
+    if context.chars().count() > 50 {
+        fallback.push_str("...");
+    }
+    if !store
+        .update_session_title_if_current(&session_id, "New chat", &fallback)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(None);
+    }
+
+    // The title is metadata: use a separate, tool-free request and retain the
+    // persisted excerpt if credentials, the provider, or the deadline fail.
+    let generated = match provider_credentials::api_key_for_rig(&detail.provider) {
+        Ok(api_key) => {
+            llm::generate_session_title(&detail.provider, &detail.model, &api_key, &prompt)
+                .await
+                .unwrap_or_else(|_| fallback.clone())
+        }
+        Err(_) => fallback.clone(),
+    };
+    store
+        .update_session_title_if_current(&session_id, &fallback, &generated)
+        .map(|updated| updated.then_some(generated))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_session(
     session_store: tauri::State<'_, SessionStoreState>,
     conversation_state: tauri::State<'_, ConversationState>,
@@ -2422,7 +2474,7 @@ fn get_session(
     // so a subsequent `complete_streaming` call can continue the conversation
     // with prior turns visible to the LLM, not just the UI transcript.
     if let Some(model_history_json) = detail.model_history.as_deref() {
-        match serde_json::from_str::<Vec<rig::completion::message::Message>>(model_history_json) {
+        match model_history::parse_model_history(model_history_json) {
             Ok(messages) if !messages.is_empty() => {
                 let mut store = conversation_state.store.lock().unwrap();
                 store.store_history(&session_id, messages);
@@ -3306,6 +3358,7 @@ pub fn run() {
             create_session,
             update_session_model_selection,
             update_session_title,
+            generate_session_title,
             get_session,
             list_sessions,
             list_archived_sessions,

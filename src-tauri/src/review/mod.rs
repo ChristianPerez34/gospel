@@ -18,17 +18,16 @@ pub use progress::{
 };
 
 use crate::harness_profile::{
-    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
-    LoopDetector, LoopStatus,
+    resolve_harness_profile, tool_server_handle, ActiveWorkspaceContext, AgentRole,
+    HarnessProfileRequest, LoopDetector, LoopStatus,
 };
-use crate::provider_client::provider_client;
+use crate::provider_client::ProviderClientError;
 use crate::workspace_tools::is_secret_like;
 use futures::StreamExt;
 use std::sync::LazyLock;
 use regex::Regex;
 use rig::agent::MultiTurnStreamItem;
-use rig::client::CompletionClient;
-use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
+use rig::AgentBuilder;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::ErrorKind;
@@ -2248,50 +2247,44 @@ pub(crate) async fn run_workspace_agent(
         .deadline
         .expect("Review Harness Profiles always have a deadline");
 
-    macro_rules! run_from_client {
-        ($client:expr, $model:expr) => {{
-            let agent_builder = $client
-                .agent($model)
-                .preamble(&profile_preamble)
-                .default_max_turns(profile_guards.max_turns)
-                .tools(profile_tools);
-            let agent = agent_builder.build();
-            let stream = agent
-                .stream_prompt(config.prompt)
-                .multi_turn(profile_guards.max_turns)
-                .await;
-            timeout(
-                deadline,
-                consume_agent_stream(stream, profile_guards.loop_guard, config.on_tool_event),
-            )
-            .await
-            .map_err(|_| ReviewAgentError::Timeout)?
-        }};
-    }
-
-    provider_client!(
+    let model = crate::provider_client::completion_model(
         config.provider,
         config.model,
         config.api_key,
         None,
-        ReviewAgentError::Provider,
-        ReviewAgentError::Provider,
-        |client| { run_from_client!(client, config.model) }
     )
+    .await
+    .map_err(|error| match error {
+        ProviderClientError::Client(message) | ProviderClientError::Unsupported(message) => {
+            ReviewAgentError::Provider(message)
+        }
+    })?;
+    let agent = AgentBuilder::new(model)
+        .preamble(profile_preamble)
+        .default_max_turns(profile_guards.max_turns)
+        .tool_server_handle(tool_server_handle(profile_tools))
+        .build();
+    let stream = agent
+        .prompt(config.prompt)
+        .max_turns(profile_guards.max_turns)
+        .stream();
+    timeout(
+        deadline,
+        consume_agent_stream(stream, profile_guards.loop_guard, config.on_tool_event),
+    )
+    .await
+    .map_err(|_| ReviewAgentError::Timeout)?
 }
 
 /// Consumes a multi-turn agent stream to completion, returning the final
 /// assistant text. Tool calls/results are forwarded to the observer when
 /// present. The whole stream is bounded by `deadline` so a stuck agent
 /// surfaces as a timeout rather than hanging forever.
-async fn consume_agent_stream<R>(
-    mut stream: rig::agent::StreamingResult<R>,
+async fn consume_agent_stream(
+    mut stream: rig::agent::StreamingResult,
     loop_guard: crate::harness_profile::LoopGuardPolicy,
     on_tool_event: Option<&dyn ToolEventObserver>,
-) -> Result<String, ReviewAgentError>
-where
-    R: Clone + Unpin,
-{
+) -> Result<String, ReviewAgentError> {
     let mut tool_name_by_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     let mut final_output = String::new();
@@ -2299,52 +2292,39 @@ where
 
     while let Some(item) = stream.next().await {
         match item {
-            Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
-                StreamedAssistantContent::ToolCall {
-                    tool_call,
-                    internal_call_id,
-                } => {
-                    match loop_detector
-                        .record_call(&tool_call.function.name, &tool_call.function.arguments)
-                    {
-                        LoopStatus::Stop => {
-                            return Err(ReviewAgentError::Provider(format!(
-                                "review agent stopped after a repeated '{}' tool-call loop",
-                                tool_call.function.name
-                            )))
-                        }
-                        LoopStatus::Warning(count) => tracing::warn!(
-                            role = "review",
-                            count,
-                            tool_name = tool_call.function.name,
-                            "repeated tool-call warning"
-                        ),
-                        LoopStatus::Ok => {}
+            Ok(MultiTurnStreamItem::ToolCall { tool_call }) => {
+                let tool_name = tool_call.function.name.as_str().to_string();
+                let arguments = serde_json::Value::Object(tool_call.function.arguments.clone());
+                match loop_detector.record_call(&tool_name, &arguments) {
+                    LoopStatus::Stop => {
+                        return Err(ReviewAgentError::Provider(format!(
+                            "review agent stopped after a repeated '{}' tool-call loop",
+                            tool_name
+                        )))
                     }
-                    tool_name_by_id
-                        .insert(internal_call_id.clone(), tool_call.function.name.clone());
-                    if let Some(observer) = on_tool_event {
-                        observer.on_tool_call(
-                            &internal_call_id,
-                            &tool_call.function.name,
-                            &tool_call.function.arguments,
-                        );
-                    }
+                    LoopStatus::Warning(count) => tracing::warn!(
+                        role = "review",
+                        count,
+                        tool_name,
+                        "repeated tool-call warning"
+                    ),
+                    LoopStatus::Ok => {}
                 }
-                StreamedAssistantContent::Text(_) => {}
-                _ => {}
-            },
-            Ok(MultiTurnStreamItem::StreamUserItem(user_content)) => {
+                let call_id = tool_call.id.to_string();
+                tool_name_by_id.insert(call_id.clone(), tool_name.clone());
                 if let Some(observer) = on_tool_event {
-                    if let Some((id, name, result_text)) =
-                        extract_tool_result(&user_content, &tool_name_by_id)
-                    {
-                        observer.on_tool_result(&id, &name, &result_text);
-                    }
+                    observer.on_tool_call(&call_id, &tool_name, &arguments);
+                }
+            }
+            Ok(MultiTurnStreamItem::ToolResult { tool_result }) => {
+                if let Some(observer) = on_tool_event {
+                    let (id, name, result_text) =
+                        extract_tool_result(&tool_result, &tool_name_by_id);
+                    observer.on_tool_result(&id, &name, &result_text);
                 }
             }
             Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
-                final_output = final_response.response().to_owned();
+                final_output = final_response.output();
                 break;
             }
             Ok(_) => {}
@@ -2357,36 +2337,21 @@ where
     Ok(final_output)
 }
 
-/// Extracts the tool name and a text summary from a streamed user-content
-/// tool result, falling back to the provider's tool result id when the
-/// internal call id has no recorded name.
+/// Extracts the tool name and a text summary from a streamed tool result,
+/// falling back to the result's executed tool name when the call id has no
+/// recorded name.
 fn extract_tool_result(
-    user_content: &rig::streaming::StreamedUserContent,
+    tool_result: &rig::completion::message::ToolResult,
     tool_name_by_id: &std::collections::HashMap<String, String>,
-) -> Option<(String, String, String)> {
-    // `StreamedUserContent` currently has a single `ToolResult` variant;
-    // match explicitly so new variants added upstream surface as a
-    // compile error rather than silently being dropped.
-    let rig::streaming::StreamedUserContent::ToolResult {
-        tool_result,
-        internal_call_id,
-    } = user_content;
+) -> (String, String, String) {
+    let call_id = tool_result.call.to_string();
     let name = tool_name_by_id
-        .get(internal_call_id)
+        .get(&call_id)
         .cloned()
-        .unwrap_or_else(|| tool_result.id.clone());
-    let result_text = tool_result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            rig::completion::message::ToolResultContent::Text(text) => Some(text.text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    Some((internal_call_id.clone(), name, result_text))
+        .unwrap_or_else(|| tool_result.name.as_str().to_string());
+    let result_text = crate::llm::tool_result_summary(&tool_result.content);
+    (call_id, name, result_text)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

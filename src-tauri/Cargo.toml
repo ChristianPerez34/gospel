@@ -4,6 +4,7 @@ version = "0.1.0-alpha.1"
 description = "Desktop harness for LLM-powered coding agents"
 authors = ["Christian Perez Villanueva"]
 edition = "2021"
+rust-version = "1.95"
 default-run = "gospel"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -24,10 +25,9 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-rig = { version = "0.39", package = "rig-core" }
+rig = "0.44"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
 dirs = "6"
-keyring = "3"
 thiserror = "2"
 futures = "0.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }
@@ -46,5 +46,4 @@ sha2 = "0.11.0"
 nix = { version = "0.31.3", features = ["signal", "process"] }
 
 [dev-dependencies]
-keyring = "3"
-rig = { version = "0.39", package = "rig-core", features = ["test-utils"] }
+rig = { version = "0.44", features = ["test-utils"] }

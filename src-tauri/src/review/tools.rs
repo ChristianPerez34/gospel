@@ -5,8 +5,7 @@ use super::{
 };
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
-use rig::completion::ToolDefinition;
-use rig::tool::Tool;
+use rig::tool::{PortableTool, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fmt;
@@ -131,19 +130,23 @@ pub struct RunReviewOutput {
     pub findings: Vec<IndexedReviewComment>,
 }
 
-impl Tool for RunReviewTool {
+impl PortableTool for RunReviewTool {
     const NAME: &'static str = "run_review";
 
     type Error = WorkspaceToolError;
     type Args = RunReviewArgs;
     type Output = RunReviewOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Run Gospel's code review pipeline for a single review focus over local changes, a pull request, or the full workspace and return structured findings.".to_string(),
-            parameters: review_tool_parameters(true),
-        }
+    fn description(&self) -> String {
+        "Run Gospel's code review pipeline for a single review focus over local changes, a pull request, or the full workspace and return structured findings.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        review_tool_parameters(true)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -160,42 +163,46 @@ impl Tool for RunReviewTool {
     }
 }
 
-impl Tool for RunMultiReviewTool {
+impl PortableTool for RunMultiReviewTool {
     const NAME: &'static str = "run_multi_review";
 
     type Error = WorkspaceToolError;
     type Args = RunMultiReviewArgs;
     type Output = multi::MultiReviewResult;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Run Gospel's code review pipeline across multiple focuses in parallel and return unified findings.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "mode": {
-                        "type": "string",
-                        "enum": ["local", "pr", "scan"],
-                        "description": "Review mode: local staged/unstaged changes, a GitHub pull request, or a full workspace scan."
-                    },
-                    "pr_number": {
-                        "type": "integer",
-                        "description": "Required when mode is pr."
-                    },
-                    "focuses": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": ["Security", "BugHunt", "Architecture", "Performance", "Style"]
-                        },
-                        "minItems": 1,
-                        "description": "Optional subset of focuses. Defaults to all focuses."
-                    }
+    fn description(&self) -> String {
+        "Run Gospel's code review pipeline across multiple focuses in parallel and return unified findings.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["local", "pr", "scan"],
+                    "description": "Review mode: local staged/unstaged changes, a GitHub pull request, or a full workspace scan."
                 },
-                "required": ["mode"]
-            }),
-        }
+                "pr_number": {
+                    "type": "integer",
+                    "description": "Required when mode is pr."
+                },
+                "focuses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["Security", "BugHunt", "Architecture", "Performance", "Style"]
+                    },
+                    "minItems": 1,
+                    "description": "Optional subset of focuses. Defaults to all focuses."
+                }
+            },
+            "required": ["mode"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -220,19 +227,23 @@ impl Tool for RunMultiReviewTool {
     }
 }
 
-impl Tool for RunSecurityReviewTool {
+impl PortableTool for RunSecurityReviewTool {
     const NAME: &'static str = "run_security_review";
 
     type Error = WorkspaceToolError;
     type Args = RunSecurityReviewArgs;
     type Output = RunReviewOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Deprecated alias for run_review with focus fixed to Security. Run Gospel's security review pipeline for local changes, a pull request, or the full workspace and return structured findings.".to_string(),
-            parameters: review_tool_parameters(false),
-        }
+    fn description(&self) -> String {
+        "Deprecated alias for run_review with focus fixed to Security. Run Gospel's security review pipeline for local changes, a pull request, or the full workspace and return structured findings.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        review_tool_parameters(false)
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -360,36 +371,40 @@ pub struct RecordReviewOutcomeToolOutput {
     pub outcome: Option<ReviewOutcome>,
 }
 
-impl Tool for RecordReviewOutcomeTool {
+impl PortableTool for RecordReviewOutcomeTool {
     const NAME: &'static str = "record_review_outcome";
 
     type Error = WorkspaceToolError;
     type Args = RecordReviewOutcomeArgs;
     type Output = RecordReviewOutcomeToolOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Record whether a review finding was accepted or rejected. Validates the run_id and comment_id before writing outcome storage.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "run_id": {
-                        "type": "string",
-                        "description": "The run_id returned by run_review."
-                    },
-                    "comment_id": {
-                        "type": "string",
-                        "description": "The stable comment_id for the finding."
-                    },
-                    "outcome": {
-                        "type": "string",
-                        "enum": ["accepted", "rejected"]
-                    }
+    fn description(&self) -> String {
+        "Record whether a review finding was accepted or rejected. Validates the run_id and comment_id before writing outcome storage.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The run_id returned by run_review."
                 },
-                "required": ["run_id", "comment_id", "outcome"]
-            }),
-        }
+                "comment_id": {
+                    "type": "string",
+                    "description": "The stable comment_id for the finding."
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["accepted", "rejected"]
+                }
+            },
+            "required": ["run_id", "comment_id", "outcome"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -531,8 +546,8 @@ mod tests {
             "sk-secret-value".to_string(),
         );
 
-        let canonical_parameters = canonical.definition(String::new()).await.parameters;
-        let alias_parameters = alias.definition(String::new()).await.parameters;
+        let canonical_parameters = PortableTool::parameters(&canonical);
+        let alias_parameters = PortableTool::parameters(&alias);
 
         assert!(canonical_parameters.to_string().contains("focus"));
         assert_eq!(
@@ -557,7 +572,7 @@ mod tests {
             "sk-secret-value".to_string(),
         );
 
-        let parameters = tool.definition(String::new()).await.parameters;
+        let parameters = PortableTool::parameters(&tool);
 
         assert_eq!(
             parameters["properties"]["focuses"]["items"]["enum"],

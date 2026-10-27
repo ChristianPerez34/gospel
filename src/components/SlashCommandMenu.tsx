@@ -42,7 +42,7 @@ export function SlashCommandMenu({
         </div>
         {onReload && (
           <button
-            className="mt-2 min-h-11 text-accent-action text-caption hover:underline"
+            className="mt-2 min-h-11 text-accent-structure text-caption hover:underline"
             onClick={onReload}
             type="button"
           >

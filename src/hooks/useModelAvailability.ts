@@ -53,22 +53,24 @@ function providerConfigFromAvailability(
   provider: ProviderAvailability,
   existing?: ProviderConfig
 ): ProviderConfig {
+  const isCredentialed = provider.credentialed;
+  const isVisible = isCredentialed && provider.visible;
   return {
     id: provider.provider,
     name: provider.display_name,
     authType: provider.auth_type,
-    credentialed: provider.credentialed,
-    visible: provider.visible,
+    credentialed: isCredentialed,
+    visible: isVisible,
     modelFetchStatus: provider.model_fetch_status,
     modelCount: provider.model_count,
     errorKind: provider.error_kind ?? undefined,
     errorDetail: provider.error_detail ?? undefined,
-    apiKey: provider.credentialed ? "" : (existing?.apiKey ?? ""),
-    enabled: provider.visible,
-    status: existing?.status ?? (provider.credentialed ? "success" : "idle"),
+    apiKey: isCredentialed ? "" : (existing?.apiKey ?? ""),
+    enabled: isVisible,
+    status: existing?.status ?? (isCredentialed ? "success" : "idle"),
     testMessage: existing?.testMessage ?? "",
     isOAuth: provider.auth_type === "oauth",
-    isAuthenticated: provider.auth_type === "oauth" ? provider.credentialed : undefined,
+    isAuthenticated: provider.auth_type === "oauth" ? isCredentialed : undefined,
   };
 }
 
@@ -101,6 +103,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
   const isRefreshingModelsRef = useRef(false);
+  const availabilityRequestIdRef = useRef(0);
   const onErrorRef = useRef(onError);
   const onSuccessRef = useRef(onSuccess);
   onErrorRef.current = onError;
@@ -108,6 +111,8 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
 
   const refreshModelAvailability = useCallback(async (forceRefresh = false) => {
     if (forceRefresh && isRefreshingModelsRef.current) return;
+    const requestId = ++availabilityRequestIdRef.current;
+    const isStaleRequest = () => requestId !== availabilityRequestIdRef.current;
     if (forceRefresh) {
       setIsRefreshingModels(true);
       isRefreshingModelsRef.current = true;
@@ -116,6 +121,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
       const snapshot = await invoke<ModelAvailabilitySnapshot>("get_model_availability", {
         forceRefresh,
       });
+      if (isStaleRequest()) return;
       setAvailabilitySnapshot(snapshot);
       setAvailableModels(snapshot.available_models);
       setProviders((current) =>
@@ -139,6 +145,7 @@ export function useModelAvailability({ onError, onSuccess }: UseModelAvailabilit
         }
       }
     } catch (e) {
+      if (isStaleRequest()) return;
       if (forceRefresh) {
         onErrorRef.current?.(`Model refresh failed: ${e}`);
       } else {

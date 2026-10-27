@@ -1,6 +1,5 @@
 use crate::shell_tools::{CommandApproval, CommandApprovalRequest, CommandRisk};
-use rig::completion::ToolDefinition;
-use rig::tool::Tool;
+use rig::tool::{PortableTool, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -122,14 +121,14 @@ impl std::fmt::Display for RunSkillScriptError {
 
 impl std::error::Error for RunSkillScriptError {}
 
-impl Tool for RunSkillScriptTool {
+impl PortableTool for RunSkillScriptTool {
     const NAME: &'static str = "run_skill_script";
 
     type Error = RunSkillScriptError;
     type Args = RunSkillScriptArgs;
     type Output = RunSkillScriptOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
+    fn description(&self) -> String {
         let scriptable: Vec<String> = self
             .available_skills
             .iter()
@@ -149,27 +148,31 @@ impl Tool for RunSkillScriptTool {
             )
         };
 
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: format!(
-                "Run an executable script bundled with a skill (from its scripts/ dir). {}. The script runs in the workspace dir if available, with per-skill timeout and 16KiB output caps. Returns captured stdout, stderr, exit code and truncation flag. Only use when the active/invoked skill's instructions explicitly direct you to execute one of its scripts.",
-                scripts_desc
-            ),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "skill": {
-                        "type": "string",
-                        "description": "Exact name of the skill that owns the script (must be one that lists scripts)."
-                    },
-                    "script": {
-                        "type": "string",
-                        "description": "Exact filename of the script to execute (e.g. 'hello', 'run.sh'). Must be listed for that skill."
-                    }
+        format!(
+            "Run an executable script bundled with a skill (from its scripts/ dir). {}. The script runs in the workspace dir if available, with per-skill timeout and 16KiB output caps. Returns captured stdout, stderr, exit code and truncation flag. Only use when the active/invoked skill's instructions explicitly direct you to execute one of its scripts.",
+            scripts_desc
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill": {
+                    "type": "string",
+                    "description": "Exact name of the skill that owns the script (must be one that lists scripts)."
                 },
-                "required": ["skill", "script"]
-            }),
-        }
+                "script": {
+                    "type": "string",
+                    "description": "Exact filename of the script to execute (e.g. 'hello', 'run.sh'). Must be listed for that skill."
+                }
+            },
+            "required": ["skill", "script"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1847,7 +1850,7 @@ mod tests {
             workspace_path: None,
             command_approval: None,
         };
-        let def = tool.definition("".into()).await;
+        let def = rig::tool::tool_definition(&tool);
         assert_eq!(def.name, "run_skill_script");
         assert!(def.description.contains("with-scr: [do-it]"));
     }

@@ -1,6 +1,5 @@
 use crate::text_utils::truncate_text_bytes;
-use rig::completion::ToolDefinition;
-use rig::tool::Tool;
+use rig::tool::{PortableTool, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::ffi::OsStr;
@@ -1390,37 +1389,41 @@ impl std::fmt::Debug for RunShellCommandTool {
     }
 }
 
-impl Tool for RunShellCommandTool {
+impl PortableTool for RunShellCommandTool {
     const NAME: &'static str = "run_shell_command";
 
     type Error = ShellToolError;
     type Args = RunShellCommandArgs;
     type Output = CommandOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Run a non-shell program with arguments in the active workspace. Read-only commands run directly; mutating or destructive commands require one-time user approval. Shell interpreters and shell metacharacters are blocked.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "program": {
-                        "type": "string",
-                        "description": "Program name or path to execute directly (not a shell interpreter)."
-                    },
-                    "args": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Command arguments."
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Optional timeout in seconds (default 120)."
-                    }
+    fn description(&self) -> String {
+        "Run a non-shell program with arguments in the active workspace. Read-only commands run directly; mutating or destructive commands require one-time user approval. Shell interpreters and shell metacharacters are blocked.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "program": {
+                    "type": "string",
+                    "description": "Program name or path to execute directly (not a shell interpreter)."
                 },
-                "required": ["program"]
-            }),
-        }
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Command arguments."
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Optional timeout in seconds (default 120)."
+                }
+            },
+            "required": ["program"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1464,33 +1467,37 @@ impl std::fmt::Debug for RunGitCommandTool {
     }
 }
 
-impl Tool for RunGitCommandTool {
+impl PortableTool for RunGitCommandTool {
     const NAME: &'static str = "run_git_command";
 
     type Error = ShellToolError;
     type Args = RunGitCommandArgs;
     type Output = CommandOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Run a git command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (push --force, reset --hard, clean) are blocked.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "args": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Git command arguments (without the leading 'git')."
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Optional timeout in seconds (default 120)."
-                    }
+    fn description(&self) -> String {
+        "Run a git command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (push --force, reset --hard, clean) are blocked.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Git command arguments (without the leading 'git')."
                 },
-                "required": ["args"]
-            }),
-        }
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Optional timeout in seconds (default 120)."
+                }
+            },
+            "required": ["args"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1532,33 +1539,37 @@ impl std::fmt::Debug for RunGithubCliCommandTool {
     }
 }
 
-impl Tool for RunGithubCliCommandTool {
+impl PortableTool for RunGithubCliCommandTool {
     const NAME: &'static str = "run_github_cli_command";
 
     type Error = ShellToolError;
     type Args = RunGithubCliCommandArgs;
     type Output = CommandOutput;
 
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: Self::NAME.to_string(),
-            description: "Run a GitHub CLI (gh) command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (repo delete) are blocked.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "args": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "gh command arguments (without the leading 'gh')."
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Optional timeout in seconds (default 120)."
-                    }
+    fn description(&self) -> String {
+        "Run a GitHub CLI (gh) command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (repo delete) are blocked.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "gh command arguments (without the leading 'gh')."
                 },
-                "required": ["args"]
-            }),
-        }
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Optional timeout in seconds (default 120)."
+                }
+            },
+            "required": ["args"]
+        })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        ToolExecutionError::other(error.to_string())
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {

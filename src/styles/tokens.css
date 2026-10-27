@@ -1,24 +1,24 @@
 :root {
-  --gospel-surface-base: #08090a;
-  --gospel-surface-elevated: #111315;
-  --gospel-surface-overlay: #1c1f22;
-  --gospel-surface-sunken: #050607;
-  --gospel-surface-line: #30343a;
+  --gospel-surface-base: #131418;
+  --gospel-surface-elevated: #1a1b21;
+  --gospel-surface-overlay: #23252d;
+  --gospel-surface-sunken: #0b0c0f;
+  --gospel-surface-line: rgba(255, 255, 255, 0.06);
   --gospel-scrim: rgb(5 6 7 / 0.68);
 
-  --gospel-text-primary: #f7f8f8;
-  --gospel-text-secondary: #d0d6e0;
-  --gospel-text-muted: #858b94;
-  --gospel-text-inverse: #07100e;
+  --gospel-text-primary: #ededf0;
+  --gospel-text-secondary: #b7b8c2;
+  --gospel-text-muted: #9697a3;
+  --gospel-text-inverse: #ffffff;
 
-  --gospel-accent-action: oklch(0.75 0.18 175);
-  --gospel-accent-structure: oklch(0.72 0.14 280);
-  --gospel-accent-signal: oklch(0.78 0.16 75);
+  --gospel-accent-action: #6e64cf;
+  --gospel-accent-structure: #aba6ee;
+  --gospel-accent-signal: #dfb56c;
   --gospel-accent-data: oklch(0.7 0.13 30);
 
   --gospel-status-error: oklch(0.65 0.2 25);
   --gospel-status-warning: oklch(0.75 0.15 85);
-  --gospel-status-success: oklch(0.72 0.19 155);
+  --gospel-status-success: #79bd9a;
 
   --gospel-agent-cyan: oklch(0.75 0.12 195);
   --gospel-agent-violet: oklch(0.65 0.18 300);
@@ -57,7 +57,7 @@
   --gospel-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --gospel-duration-fast: 150ms;
   --gospel-duration-normal: 250ms;
-  --gospel-duration-slow: 400ms;
+  --gospel-duration-slow: 250ms;
 
   --gospel-z-base: 0;
   --gospel-z-sticky-input: 10;
@@ -70,9 +70,9 @@
   --gospel-z-toast: 90;
 
   --gospel-titlebar-height: 0px;
-  --gospel-topbar-height: 52px;
+  --gospel-topbar-height: 60px;
   --gospel-input-min-height: 56px;
-  --gospel-sidebar-width: 280px;
+  --gospel-sidebar-width: 264px;
   --gospel-panel-width: 500px;
   --gospel-context-panel-width: 320px;
 
@@ -159,17 +159,23 @@
 }
 
 [data-theme="light"] {
-  --gospel-surface-base: oklch(0.98 0.003 260);
+  --gospel-surface-base: oklch(0.985 0.003 260);
   --gospel-surface-elevated: oklch(1 0.002 260);
-  --gospel-surface-overlay: oklch(0.95 0.004 260);
-  --gospel-surface-sunken: oklch(0.92 0.004 260);
-  --gospel-surface-line: oklch(0.88 0.004 260);
+  --gospel-surface-overlay: oklch(0.945 0.004 260);
+  --gospel-surface-sunken: oklch(0.93 0.004 260);
+  --gospel-surface-line: oklch(0.18 0.01 260 / 0.075);
   --gospel-scrim: oklch(0.1 0 260 / 0.35);
 
   --gospel-text-primary: oklch(0.18 0.01 260);
   --gospel-text-secondary: oklch(0.35 0.01 260);
-  --gospel-text-muted: oklch(0.55 0.008 260);
+  --gospel-text-muted: oklch(0.48 0.008 260);
 
+  --gospel-status-success: #28734c;
+  --gospel-status-error: #b74139;
+  --gospel-status-warning: #8d601f;
+  --gospel-accent-action: #6258b7;
+  --gospel-accent-signal: #8d601f;
+  --gospel-accent-structure: #51479c;
   --code-block-background: oklch(0.97 0.003 260);
   --shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.12);
   --shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.08);

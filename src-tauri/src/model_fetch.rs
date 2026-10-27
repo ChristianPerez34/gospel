@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use crate::models::{ModelInfo, ModelInfoWithFreshness, ModelRegistry};
 use crate::providers::{provider, ModelFetchKind};
-use rig::client::ModelListingClient;
 
 fn should_include_completion_model(model_id: &str) -> bool {
     let id = model_id.to_lowercase();
@@ -74,8 +73,7 @@ pub async fn fetch_models_for_provider(
 }
 
 async fn fetch_openai_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
-    let client = rig::providers::openai::Client::new(api_key.to_string())
-        .map_err(|e| format!("failed to create OpenAI client: {}", e))?;
+    let client = rig::providers::openai::OpenAI::new(api_key);
     let list = client
         .list_models()
         .await
@@ -98,8 +96,7 @@ async fn fetch_openai_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Strin
 }
 
 async fn fetch_anthropic_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
-    let client = rig::providers::anthropic::Client::new(api_key.to_string())
-        .map_err(|e| format!("failed to create Anthropic client: {}", e))?;
+    let client = rig::providers::anthropic::Anthropic::new(api_key);
     let list = client
         .list_models()
         .await
@@ -116,8 +113,7 @@ async fn fetch_anthropic_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, St
 }
 
 async fn fetch_gemini_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
-    let client = rig::providers::gemini::Client::new(api_key.to_string())
-        .map_err(|e| format!("failed to create Gemini client: {}", e))?;
+    let client = rig::providers::gemini::Gemini::new(api_key);
     let list = client
         .list_models()
         .await
@@ -134,8 +130,7 @@ async fn fetch_gemini_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Strin
 }
 
 async fn fetch_mistral_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
-    let client = rig::providers::mistral::Client::new(api_key.to_string())
-        .map_err(|e| format!("failed to create Mistral client: {}", e))?;
+    let client = rig::providers::mistral::new(api_key);
     let list = client
         .list_models()
         .await
@@ -157,12 +152,8 @@ async fn fetch_mistral_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Stri
 async fn fetch_opencode_go_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
     let fallback_models = ModelRegistry::hardcoded_models_for("opencode_go");
 
-    let client = rig::providers::openai::Client::builder()
-        .api_key(api_key)
-        .base_url(crate::provider_client::OPENCODE_GO_OPENAI_BASE_URL)
-        .http_headers(crate::provider_client::opencode_go_headers(None))
-        .build()
-        .map_err(|e| format!("failed to create OpenCode Go client: {}", e))?;
+    let client = crate::provider_client::opencode_go_openai_config(api_key)
+        .connect(crate::provider_client::opencode_go_http(None));
 
     let list = match client.list_models().await {
         Ok(list) => list,
@@ -195,11 +186,11 @@ async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
         return Err("GitHub Copilot OAuth session not found".to_string());
     }
 
-    let client = rig::providers::copilot::Client::builder()
-        .oauth()
-        .token_dir(crate::keychain::github_copilot_token_dir())
-        .build()
-        .map_err(|e| format!("failed to create GitHub Copilot client: {}", e))?;
+    let client = rig::providers::copilot::CopilotConfig::new("")
+        .client()
+        .authenticate(&crate::provider_client::copilot_authenticator(None))
+        .await
+        .map_err(|e| format!("failed to authenticate GitHub Copilot: {}", e))?;
     let list = client
         .list_models()
         .await

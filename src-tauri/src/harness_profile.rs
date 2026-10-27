@@ -17,7 +17,8 @@ use crate::workspace_tools::{
     ExternalPathApproval, CONTEXT_SEARCH_SYSTEM_PROMPT, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
     READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
-use rig::tool::ToolDyn;
+use rig::tool::server::{ToolServer, ToolServerHandle};
+use rig::tool::RegisteredTool;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -179,12 +180,12 @@ where
 }
 
 pub enum MainToolContribution {
-    DelegateExploration(Box<dyn ToolDyn>),
-    RunSkillScript(Box<dyn ToolDyn>),
+    DelegateExploration(RegisteredTool),
+    RunSkillScript(RegisteredTool),
 }
 
 impl MainToolContribution {
-    fn into_tool(self) -> Result<Box<dyn ToolDyn>, HarnessProfileError> {
+    fn into_tool(self) -> Result<RegisteredTool, HarnessProfileError> {
         let (expected_name, tool) = match self {
             Self::DelegateExploration(tool) => ("delegate_exploration", tool),
             Self::RunSkillScript(tool) => ("run_skill_script", tool),
@@ -219,10 +220,18 @@ pub struct HarnessProfileRequest {
     pub main_tool_inputs: Option<MainToolInputs>,
 }
 
+/// Starts a tool registry for an agent built over `tools`.
+pub(crate) fn tool_server_handle(tools: Vec<RegisteredTool>) -> ToolServerHandle {
+    tools
+        .into_iter()
+        .fold(ToolServer::new(), ToolServer::registered_tool)
+        .run()
+}
+
 pub struct HarnessProfile {
     pub role: AgentRole,
     pub preamble: Option<String>,
-    pub tools: Vec<Box<dyn ToolDyn>>,
+    pub tools: Vec<RegisteredTool>,
     pub guards: HarnessRunGuards,
     workspace_available: bool,
     corpus_enabled: bool,
@@ -346,50 +355,51 @@ pub fn resolve_harness_profile(
         workspace_path.clone(),
         external_path_approval,
     );
-    tools.push(Box::new(create_write_harness_file_tool(
+    tools.push(RegisteredTool::from_tool(create_write_harness_file_tool(
         workspace_path.clone(),
     )));
-    tools.push(Box::new(create_run_review_tool(
-        workspace_path.clone(),
-        provider.clone(),
-        model.clone(),
-        api_key.clone(),
-    )));
-    tools.push(Box::new(create_run_multi_review_tool(
+    tools.push(RegisteredTool::from_tool(create_run_review_tool(
         workspace_path.clone(),
         provider.clone(),
         model.clone(),
         api_key.clone(),
     )));
-    tools.push(Box::new(create_run_security_review_tool(
+    tools.push(RegisteredTool::from_tool(create_run_multi_review_tool(
+        workspace_path.clone(),
+        provider.clone(),
+        model.clone(),
+        api_key.clone(),
+    )));
+    tools.push(RegisteredTool::from_tool(create_run_security_review_tool(
         workspace_path.clone(),
         provider,
         model,
         api_key,
     )));
-    tools.push(Box::new(create_record_review_outcome_tool(
-        workspace_path.clone(),
-    )));
+    tools.push(RegisteredTool::from_tool(
+        create_record_review_outcome_tool(workspace_path.clone()),
+    ));
     if workspace.source_edit_allowed {
-        tools.push(Box::new(create_source_edit_tool(workspace_path.clone())));
+        tools.push(RegisteredTool::from_tool(create_source_edit_tool(
+            workspace_path.clone(),
+        )));
     }
     if workspace.corpus_available {
         append_corpus_tools(&mut tools, workspace_path.clone());
     }
     // Shell tools stay registered on read-only turns: with no command
     // approval configured (e.g. skill-opt replays) mutating commands are denied.
-    tools.push(Box::new(create_run_shell_command_tool(
+    tools.push(RegisteredTool::from_tool(create_run_shell_command_tool(
         workspace_path.clone(),
         command_approval.clone(),
     )));
-    tools.push(Box::new(create_run_git_command_tool(
+    tools.push(RegisteredTool::from_tool(create_run_git_command_tool(
         workspace_path.clone(),
         command_approval.clone(),
     )));
-    tools.push(Box::new(create_run_github_cli_command_tool(
-        workspace_path,
-        command_approval,
-    )));
+    tools.push(RegisteredTool::from_tool(
+        create_run_github_cli_command_tool(workspace_path, command_approval),
+    ));
     tools.extend(
         contributions
             .into_iter()
@@ -417,13 +427,19 @@ pub fn resolve_harness_profile(
     })
 }
 
-fn append_corpus_tools(tools: &mut Vec<Box<dyn ToolDyn>>, workspace_path: std::path::PathBuf) {
-    tools.push(Box::new(create_corpus_summary_tool(workspace_path.clone())));
-    tools.push(Box::new(create_corpus_query_tool(workspace_path.clone())));
-    tools.push(Box::new(create_corpus_neighbors_tool(
+fn append_corpus_tools(tools: &mut Vec<RegisteredTool>, workspace_path: std::path::PathBuf) {
+    tools.push(RegisteredTool::from_tool(create_corpus_summary_tool(
         workspace_path.clone(),
     )));
-    tools.push(Box::new(create_context_search_tool(workspace_path)));
+    tools.push(RegisteredTool::from_tool(create_corpus_query_tool(
+        workspace_path.clone(),
+    )));
+    tools.push(RegisteredTool::from_tool(create_corpus_neighbors_tool(
+        workspace_path.clone(),
+    )));
+    tools.push(RegisteredTool::from_tool(create_context_search_tool(
+        workspace_path,
+    )));
 }
 
 fn compose_preamble(
@@ -776,9 +792,9 @@ mod tests {
         let mut inputs = main_tool_inputs();
         inputs
             .contributions
-            .push(MainToolContribution::DelegateExploration(Box::new(
-                create_source_edit_tool(PathBuf::from("/tmp/workspace")),
-            )));
+            .push(MainToolContribution::DelegateExploration(
+                RegisteredTool::from_tool(create_source_edit_tool(PathBuf::from("/tmp/workspace"))),
+            ));
         let error = resolve_harness_profile(HarnessProfileRequest {
             role: AgentRole::Main,
             workspace: Some(ActiveWorkspaceContext {
@@ -849,7 +865,7 @@ mod tests {
         let _agent = AgentBuilder::new(MockCompletionModel::text("ok"))
             .preamble(&preamble)
             .default_max_turns(profile.guards.max_turns)
-            .tools(profile.tools)
+            .tool_server_handle(tool_server_handle(profile.tools))
             .build();
     }
 

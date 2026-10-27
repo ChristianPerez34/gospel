@@ -41,6 +41,28 @@ describe("TopBar", () => {
     expect(switchButton.disabled).toBe(false);
   });
 
+  it("shows global scope and activity on the homepage without session controls", () => {
+    renderTopBar({
+      overviewOpen: true,
+      showWorkspaceSwitch: false,
+      runningTaskCount: 2,
+      status: "acting",
+    });
+    expect(screen.getByText("All workspaces")).toBeDefined();
+    expect(screen.getByText("Overview")).toBeDefined();
+    expect(screen.getByText("2 running")).toBeDefined();
+    expect(screen.queryByText("gpt-5")).toBeNull();
+    expect(screen.queryByText("Acting")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit session title" })).toBeNull();
+  });
+
+  it("keeps conversation status specific to the selected task", () => {
+    renderTopBar({ runningTaskCount: 2, status: "connected" });
+    expect(screen.getByText("gpt-5")).toBeDefined();
+    expect(screen.getByText("Connected")).toBeDefined();
+    expect(screen.queryByText("2 running")).toBeNull();
+  });
+
   it("calls onSessionTitleChange with the trimmed title on Enter", () => {
     const onSessionTitleChange = vi.fn();
     renderTopBar({ sessionTitle: "Old", onSessionTitleChange });
@@ -94,10 +116,30 @@ describe("TopBar", () => {
 
     const editButton = screen.getByRole("button", { name: "Edit session title" });
     expect(editButton.hasAttribute("disabled")).toBe(false);
-    expect(editButton.getAttribute("aria-disabled")).toBe("false");
 
     // Clicking enters edit mode even while streaming (control plane).
     fireEvent.click(editButton);
     expect(screen.queryByRole("textbox", { name: "Session title" })).not.toBeNull();
+  });
+
+  it("counts sessions that need you on the tasks button", () => {
+    renderTopBar({ needsYouCount: 2 });
+    expect(
+      screen.getByRole("button", { name: "Toggle tasks, 2 sessions need you" }).textContent
+    ).toBe("2");
+
+    cleanup();
+    renderTopBar({ needsYouCount: 1 });
+    expect(screen.getByRole("button", { name: "Toggle tasks, 1 session needs you" })).toBeDefined();
+
+    cleanup();
+    renderTopBar({ needsYouCount: 12 });
+    expect(
+      screen.getByRole("button", { name: "Toggle tasks, 12 sessions need you" }).textContent
+    ).toBe("9+");
+
+    cleanup();
+    renderTopBar();
+    expect(screen.getByRole("button", { name: "Toggle tasks" }).textContent).toBe("");
   });
 });

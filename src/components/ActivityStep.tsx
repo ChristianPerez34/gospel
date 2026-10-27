@@ -19,7 +19,7 @@ const TYPE_ICONS: Record<string, string> = {
 };
 
 const TYPE_ACCENT: Record<string, string> = {
-  file: "text-accent-action",
+  file: "text-accent-structure",
   terminal: "text-accent-data",
   diff: "text-accent-structure",
   search: "text-accent-signal",

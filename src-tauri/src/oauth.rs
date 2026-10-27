@@ -42,18 +42,20 @@ fn start_chatgpt(
 ) -> Pin<Box<dyn Future<Output = Result<OauthChallenge, String>> + Send>> {
     Box::pin(async move {
         start_registered_oauth_flow(app, "chatgpt", "ChatGPT", |on_device_code| {
-            let client = Arc::new(
-                rig::providers::chatgpt::Client::builder()
-                    .oauth()
-                    .on_device_code(move |prompt| {
-                        on_device_code(prompt.verification_uri.clone(), prompt.user_code.clone());
-                    })
-                    .build()
-                    .map_err(|e| e.to_string())?,
-            );
+            let handler = rig::providers::chatgpt::auth::DeviceCodeHandler::new(move |prompt| {
+                on_device_code(prompt.verification_uri, prompt.user_code);
+            });
+            let authenticator =
+                Arc::new(crate::provider_client::chatgpt_authenticator(Some(handler)));
             Ok(move || {
-                let client = Arc::clone(&client);
-                async move { client.authorize().await.map_err(|e| e.to_string()) }
+                let authenticator = Arc::clone(&authenticator);
+                async move {
+                    authenticator
+                        .auth_context(&rig::rig_reqwest::shared())
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                }
             })
         })
         .await
@@ -87,19 +89,20 @@ fn start_github_copilot(
 ) -> Pin<Box<dyn Future<Output = Result<OauthChallenge, String>> + Send>> {
     Box::pin(async move {
         start_registered_oauth_flow(app, "github_copilot", "GitHub Copilot", |on_device_code| {
-            let client = Arc::new(
-                rig::providers::copilot::Client::builder()
-                    .oauth()
-                    .token_dir(crate::keychain::github_copilot_token_dir())
-                    .on_device_code(move |prompt| {
-                        on_device_code(prompt.verification_uri.clone(), prompt.user_code.clone());
-                    })
-                    .build()
-                    .map_err(|e| e.to_string())?,
-            );
+            let handler = rig::providers::copilot::auth::DeviceCodeHandler::new(move |prompt| {
+                on_device_code(prompt.verification_uri, prompt.user_code);
+            });
+            let authenticator =
+                Arc::new(crate::provider_client::copilot_authenticator(Some(handler)));
             Ok(move || {
-                let client = Arc::clone(&client);
-                async move { client.authorize().await.map_err(|e| e.to_string()) }
+                let authenticator = Arc::clone(&authenticator);
+                async move {
+                    authenticator
+                        .auth_context(&rig::rig_reqwest::shared())
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                }
             })
         })
         .await
