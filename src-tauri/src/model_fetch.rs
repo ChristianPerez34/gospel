@@ -191,25 +191,7 @@ async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
         .authenticate(&crate::provider_client::copilot_authenticator(None))
         .await
         .map_err(|e| format!("failed to authenticate GitHub Copilot: {}", e))?;
-    let list = client
-        .list_models()
-        .await
-        .map_err(|e| format!("failed to list GitHub Copilot models: {}", e))?;
-
-    let total = list.data.len();
-    let models: Vec<ModelInfo> = list
-        .data
-        .into_iter()
-        .filter(|m| ModelRegistry::is_github_copilot_tool_capable_model(&m.id))
-        .map(|m| ModelRegistry::model_info("github_copilot", &m.id))
-        .collect();
-
-    tracing::info!(
-        "Fetched {} models from GitHub Copilot, filtered to {} tool-capable models",
-        total,
-        models.len()
-    );
-    Ok(models)
+    crate::copilot_models::fetch_models(client.config(), &rig::rig_reqwest::shared()).await
 }
 
 async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {

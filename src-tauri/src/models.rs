@@ -6,8 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 
-pub(crate) const GITHUB_COPILOT_GPT_6_1_TERRA: &str = "gpt-6.1-terra";
-
 #[cfg(not(test))]
 mod model_lists {
     pub use rig::providers::anthropic::completion::{
@@ -169,19 +167,6 @@ mod model_lists {
     ];
 
     pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
-
-    pub const GITHUB_COPILOT_TOOL_CAPABLE_MODELS: &[&str] = &[
-        "gpt-5.5",
-        "gpt-5.4",
-        super::GITHUB_COPILOT_GPT_6_1_TERRA,
-        "gpt-5.3-codex",
-        "gpt-5.1-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "claude-sonnet-4.6",
-        "claude-opus-4.6",
-        "claude-opus-4.7",
-    ];
 
     pub const GROK_MODELS: &[&str] = &[
         GROK_4,
@@ -346,19 +331,6 @@ mod model_lists {
 
     pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
 
-    pub const GITHUB_COPILOT_TOOL_CAPABLE_MODELS: &[&str] = &[
-        "gpt-5.5",
-        "gpt-5.4",
-        super::GITHUB_COPILOT_GPT_6_1_TERRA,
-        "gpt-5.3-codex",
-        "gpt-5.1-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "claude-sonnet-4.6",
-        "claude-opus-4.6",
-        "claude-opus-4.7",
-    ];
-
     pub const GROK_MODELS: &[&str] = &[
         "grok-4-0709",
         "grok-3",
@@ -405,8 +377,8 @@ mod model_lists {
 
 use model_lists::{
     ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS,
-    GITHUB_COPILOT_MODELS, GITHUB_COPILOT_TOOL_CAPABLE_MODELS, GROK_MODELS, GROQ_MODELS,
-    MISTRAL_MODELS, OPENAI_MODELS, OPENCODE_GO_MODELS,
+    GITHUB_COPILOT_MODELS, GROK_MODELS, GROQ_MODELS, MISTRAL_MODELS, OPENAI_MODELS,
+    OPENCODE_GO_MODELS,
 };
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -445,6 +417,8 @@ pub struct ModelInfo {
     pub model: String,
     pub provider: String,
     pub variants: Vec<ModelVariant>,
+    #[serde(skip)]
+    pub(crate) copilot_supported_endpoints: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -495,6 +469,7 @@ impl ModelRegistry {
             model: model.to_string(),
             provider: provider.to_string(),
             variants: Self::variants_for_model(provider, model),
+            copilot_supported_endpoints: None,
         }
     }
 
@@ -659,8 +634,15 @@ impl ModelRegistry {
         CHATGPT_DISCOVERABLE_MODELS.contains(&model)
     }
 
-    pub fn is_github_copilot_tool_capable_model(model: &str) -> bool {
-        GITHUB_COPILOT_TOOL_CAPABLE_MODELS.contains(&model)
+    pub(crate) async fn copilot_supported_endpoints(model: &str) -> Option<Vec<String>> {
+        let cache = MODEL_CACHE.read().await;
+        cache.values().find_map(|entry| {
+            entry
+                .models
+                .iter()
+                .find(|info| info.provider == "github_copilot" && info.model == model)
+                .and_then(|info| info.copilot_supported_endpoints.clone())
+        })
     }
 
     #[allow(dead_code)]
@@ -1243,25 +1225,6 @@ mod tests {
     fn test_github_copilot_has_no_hardcoded_model_fallback() {
         assert!(ModelRegistry::models_for_provider("github_copilot").is_empty());
         assert!(ModelRegistry::hardcoded_models_for("github_copilot").is_empty());
-    }
-
-    #[test]
-    fn test_github_copilot_tool_capable_allowlist() {
-        assert!(ModelRegistry::is_github_copilot_tool_capable_model(
-            "gpt-5.3-codex"
-        ));
-        assert!(ModelRegistry::is_github_copilot_tool_capable_model(
-            "claude-sonnet-4.6"
-        ));
-        assert!(ModelRegistry::is_github_copilot_tool_capable_model(
-            GITHUB_COPILOT_GPT_6_1_TERRA
-        ));
-        assert!(!ModelRegistry::is_github_copilot_tool_capable_model(
-            "text-embedding-3-large"
-        ));
-        assert!(!ModelRegistry::is_github_copilot_tool_capable_model(
-            "gpt-unknown"
-        ));
     }
 
     #[test]

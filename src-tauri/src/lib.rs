@@ -5,6 +5,7 @@ use std::sync::Arc;
 mod app_config;
 pub mod approval_broker;
 pub mod context_search;
+mod copilot_models;
 mod conversation;
 pub mod corpus;
 mod credential_failure;

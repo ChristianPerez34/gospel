@@ -8,7 +8,7 @@ use rig::http_client::{DynHttpClient, HeaderMap, HeaderValue, HttpMiddleware, Me
 use rig::providers::{anthropic, chatgpt, copilot, gemini, groq, mistral, openai, xai};
 use rig::wasm_compat::WasmBoxedFuture;
 
-use crate::models::GITHUB_COPILOT_GPT_6_1_TERRA;
+use crate::models::ModelRegistry;
 
 pub(crate) type CompletionModel = rig::DynModel<rig::operation::Completion>;
 
@@ -56,7 +56,13 @@ pub(crate) async fn completion_model(
                 .authenticate(&copilot_authenticator(None))
                 .await
                 .map_err(|e| client_err(e.to_string()))?;
-            copilot_completion_model(client.config().clone(), rig::rig_reqwest::shared(), model)
+            let endpoints = ModelRegistry::copilot_supported_endpoints(model).await;
+            copilot_completion_model(
+                client.config().clone(),
+                rig::rig_reqwest::shared(),
+                model,
+                endpoints.as_deref(),
+            )
         }
         "grok" => {
             let access_token = grok_access_token(api_key).await.map_err(client_err)?;
@@ -95,18 +101,43 @@ fn copilot_completion_model(
     config: copilot::CopilotConfig,
     http: impl rig::http_client::HttpClientExt + 'static,
     model: &str,
+    supported_endpoints: Option<&[String]>,
 ) -> CompletionModel {
-    if model.eq_ignore_ascii_case(GITHUB_COPILOT_GPT_6_1_TERRA) {
-        // ponytail: one-model route override; remove when the Rig dependency handles GPT-6.1 Terra.
+    let route = supported_endpoints
+        .and_then(copilot_route_from_supported_endpoints)
+        .or_else(|| copilot_response_fallback(model));
+    if let Some(route) = route {
         openai::OpenAIConfig::with_key(&copilot::wire::DIALECT, config.api_key.clone())
             .with_base_url(config.base_url.clone())
-            .with_route(openai::Route::Responses)
+            .with_route(route)
             .connect(http)
             .completion(model)
             .into()
     } else {
+        // ponytail: endpoint-less catalogs fall back to Rig; endpoint metadata removes this ceiling.
         config.connect(http).completion(model).into()
     }
+}
+
+fn copilot_route_from_supported_endpoints(endpoints: &[String]) -> Option<openai::Route> {
+    if endpoints
+        .iter()
+        .any(|endpoint| endpoint.starts_with('/') && endpoint.ends_with("/responses"))
+    {
+        Some(openai::Route::Responses)
+    } else if endpoints
+        .iter()
+        .any(|endpoint| endpoint.starts_with('/') && endpoint.ends_with("/chat/completions"))
+    {
+        Some(openai::Route::Chat)
+    } else {
+        None
+    }
+}
+
+fn copilot_response_fallback(model: &str) -> Option<openai::Route> {
+    let id = model.to_ascii_lowercase();
+    (id.contains("codex") || id.starts_with("gpt-6.1-")).then_some(openai::Route::Responses)
 }
 
 /// The ChatGPT subscription authenticator over Gospel's auth cache. A device
@@ -311,17 +342,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copilot_gpt_6_1_terra_uses_responses_and_keeps_copilot_headers() {
+    async fn copilot_uses_advertised_responses_endpoint_and_keeps_copilot_headers() {
         use rig::core::test_utils::RecordingHttpClient;
         use std::future::IntoFuture;
 
+        let model_id = "future-responses-only-model";
+        let endpoints = vec!["/responses".to_string()];
         let http = RecordingHttpClient::new(
             serde_json::to_vec(&serde_json::json!({
                 "id": "response-1",
                 "object": "response",
                 "created_at": 0,
                 "status": "completed",
-                "model": GITHUB_COPILOT_GPT_6_1_TERRA,
+                "model": model_id,
                 "output": [{
                     "id": "message-1",
                     "type": "message",
@@ -341,7 +374,8 @@ mod tests {
             copilot::CopilotConfig::new("copilot-session-token")
                 .with_base_url("https://api.business.githubcopilot.com"),
             DynHttpClient::new(http.clone()),
-            GITHUB_COPILOT_GPT_6_1_TERRA,
+            model_id,
+            Some(&endpoints),
         );
         let agent = rig::AgentBuilder::new(model).default_max_turns(1).build();
 
@@ -367,6 +401,26 @@ mod tests {
         assert_eq!(
             header_value(&request.headers, "authorization"),
             "Bearer copilot-session-token"
+        );
+    }
+
+    #[test]
+    fn copilot_route_uses_advertised_endpoint_paths() {
+        assert_eq!(
+            copilot_route_from_supported_endpoints(&["/responses".to_string()]),
+            Some(openai::Route::Responses)
+        );
+        assert_eq!(
+            copilot_route_from_supported_endpoints(&["/chat/completions".to_string()]),
+            Some(openai::Route::Chat)
+        );
+        assert_eq!(
+            copilot_route_from_supported_endpoints(&["/v1/messages".to_string()]),
+            None
+        );
+        assert_eq!(
+            copilot_response_fallback("gpt-6.1-sol"),
+            Some(openai::Route::Responses)
         );
     }
 
