@@ -8,6 +8,7 @@ pub(crate) async fn fetch_models(
     config: &CopilotConfig,
     http: &impl HttpClientExt,
 ) -> Result<Vec<ModelInfo>, String> {
+    // Rig's normalized model list discards Copilot's tool-calling capabilities.
     let request = Models {
         provider: config.clone(),
     }
@@ -156,18 +157,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_bad_catalogues_and_preserves_http_errors() {
+    async fn discovers_models_by_capability_instead_of_model_id() {
+        let http = RecordingHttpClient::new(
+            serde_json::to_vec(&json!({"data": [
+                {"id": "new-tool-capable-model", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"id": "gemini-future", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"id": "  trimmed-model  ", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"id": "new-tool-capable-model", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"id": "  trimmed-model  ", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"id": "gpt-4o", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": false}
+                }},
+                {"id": "embedding", "capabilities": {
+                    "type": "embeddings", "supports": {"tool_calls": true}
+                }},
+                {"id": "missing-support", "capabilities": {"type": "chat"}},
+                {"id": "missing-capabilities"},
+                {"id": "", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }},
+                {"capabilities": {"type": "chat", "supports": {"tool_calls": true}}}
+            ]}))
+            .unwrap(),
+        );
+        let config = CopilotConfig::new("test-token")
+            .with_base_url("https://api.business.githubcopilot.com");
+        let models = fetch_models(&config, &http).await.unwrap();
+        assert_eq!(
+            models.iter().map(|m| m.model.as_str()).collect::<Vec<_>>(),
+            ["new-tool-capable-model", "gemini-future", "trimmed-model"]
+        );
+        assert!(models.iter().all(|m| m.provider == "github_copilot"));
+        let requests = http.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].uri,
+            "https://api.business.githubcopilot.com/models"
+        );
+        assert_eq!(requests[0].headers["authorization"], "Bearer test-token");
+        assert_eq!(requests[0].headers["copilot-integration-id"], "vscode-chat");
+        assert!(requests[0].headers.contains_key("editor-version"));
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_responses_and_preserves_http_failures() {
         let config = CopilotConfig::new("test-token");
-        for body in ["not json", "{}", "{\"data\":null}"] {
+        for body in ["not json", "{}", "{\"data\": null}"] {
             let http = RecordingHttpClient::new(body.as_bytes().to_vec());
             assert!(fetch_models(&config, &http).await.is_err());
         }
         let http = RecordingHttpClient::with_error_response(
-            StatusCode::FORBIDDEN,
-            br#"{"message":"policy denied"}"#.to_vec(),
+            StatusCode::UNAUTHORIZED,
+            br#"{"data": []}"#.to_vec(),
         );
-        let error = fetch_models(&config, &http).await.unwrap_err();
-        assert!(error.contains("403"));
-        assert!(error.contains("policy denied"));
+        let err = fetch_models(&config, &http).await.unwrap_err();
+        assert!(err.contains("401"));
+
+        let http = RecordingHttpClient::with_error_response(
+            StatusCode::FORBIDDEN,
+            br#"{"message": "organization policy blocks Copilot"}"#.to_vec(),
+        );
+        let err = fetch_models(&config, &http).await.unwrap_err();
+        assert!(err.contains("403"));
+        assert!(err.contains("organization policy blocks Copilot"));
+
+        let http = RecordingHttpClient::with_error(StatusCode::FORBIDDEN, "not entitled");
+        assert!(fetch_models(&config, &http)
+            .await
+            .unwrap_err()
+            .contains("403"));
+    }
+
+    #[tokio::test]
+    async fn accepts_an_empty_catalog() {
+        let http = RecordingHttpClient::new(br#"{"data": []}"#.to_vec());
+        assert!(fetch_models(&CopilotConfig::new("test-token"), &http)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

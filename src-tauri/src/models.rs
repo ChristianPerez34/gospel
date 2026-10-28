@@ -1,8 +1,8 @@
-use std::sync::LazyLock;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 
@@ -659,7 +659,8 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        static PROVIDERS: LazyLock<Vec<&'static str>> = LazyLock::new(crate::providers::provider_ids);
+        static PROVIDERS: LazyLock<Vec<&'static str>> =
+            LazyLock::new(crate::providers::provider_ids);
         PROVIDERS.as_slice()
     }
 
