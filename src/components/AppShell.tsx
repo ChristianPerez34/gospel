@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
+import { useModelPreferences } from "../hooks/useModelPreferences";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useSessionShortcuts } from "../hooks/useSessionShortcuts";
 import { useThemePreference } from "../hooks/useThemePreference";
@@ -170,6 +171,7 @@ export function AppShell() {
     onError: showError,
     onSuccess: showSuccess,
   });
+  const modelPreferences = useModelPreferences();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const sessionLoadGenerationRef = useRef(0);
@@ -1089,6 +1091,7 @@ export function AppShell() {
                 models={models}
                 selectedModel={selectedModelId}
                 selectedVariant={selectedModel?.variant ?? null}
+                modelPreferences={modelPreferences}
                 onModelChange={applyModelSelection}
                 onVariantChange={applyVariantSelection}
                 onSend={(message, skill) => {
@@ -1204,6 +1207,7 @@ export function AppShell() {
         activeSessionId={session.activeSessionId}
         workspace={activeWorkspace}
         models={models}
+        hiddenModelIds={modelPreferences.hidden}
         selectedModelId={selectedModelId}
         selectedVariant={selectedModel?.variant ?? null}
         workspaceNames={workspaceNames}

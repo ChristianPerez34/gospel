@@ -1,13 +1,15 @@
-import { ChevronDown, Cpu, GitBranch, Send, Square } from "lucide-react";
+import { ChevronDown, Cpu, Eye, EyeOff, GitBranch, Search, Send, Square, Star } from "lucide-react";
 import {
   type CSSProperties,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { Button } from "@/components/ui/button";
+import type { ModelPreferences } from "../hooks/useModelPreferences";
 import { useSkills } from "../hooks/useSkills";
 import type { ModelOption } from "../types";
 import { findClosestSkill } from "../utils/levenshtein";
@@ -17,6 +19,7 @@ interface InputBarProps {
   models: ModelOption[];
   selectedModel: string;
   selectedVariant?: string | null;
+  modelPreferences: ModelPreferences;
   onModelChange: (modelId: string) => void;
   onVariantChange: (variant: string | null) => void;
   onSend: (message: string, invokedSkill?: { name: string; args?: string }) => void;
@@ -113,6 +116,7 @@ export function InputBar({
   models,
   selectedModel,
   selectedVariant = null,
+  modelPreferences,
   onModelChange,
   onVariantChange,
   onSend,
@@ -129,12 +133,18 @@ export function InputBar({
   const [modelOpen, setModelOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
   const [variantMenuLayout, setVariantMenuLayout] = useState<VariantMenuLayout | null>(null);
+  const [modelQuery, setModelQuery] = useState("");
+  const [showHiddenModels, setShowHiddenModels] = useState(false);
+  const [activeOptionIndex, setActiveOptionIndex] = useState(0);
   const [slashFilter, setSlashFilter] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [unknownSkill, setUnknownSkill] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const variantPickerRef = useRef<HTMLDivElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelSearchRef = useRef<HTMLInputElement>(null);
+  const modelOptionRefs = useRef<Array<HTMLDivElement | null>>([]);
   const selectedFromMenu = useRef(false);
 
   const { skills, reloadSkills } = useSkills(workspacePath);
@@ -149,6 +159,77 @@ export function InputBar({
   const sendDisabled = disabled || noModels;
   const variantDisabled = disabled || currentModel?.configured === false;
   const currentModelConfigured = currentModel?.configured !== false;
+
+  const { visibleModels, hiddenModels } = useMemo(() => {
+    const tokens = modelQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const matches = (option: ModelOption) => {
+      if (tokens.length === 0) return true;
+      const haystack = `${option.name} ${option.provider} ${option.model}`.toLowerCase();
+      return tokens.every((token) => haystack.includes(token));
+    };
+    const visible: ModelOption[] = [];
+    const hiddenList: ModelOption[] = [];
+    for (const option of models) {
+      if (!matches(option)) continue;
+      (modelPreferences.hidden.has(option.id) ? hiddenList : visible).push(option);
+    }
+    visible.sort(
+      (a, b) =>
+        Number(modelPreferences.favorites.has(b.id)) - Number(modelPreferences.favorites.has(a.id))
+    );
+    return { visibleModels: visible, hiddenModels: hiddenList };
+  }, [models, modelQuery, modelPreferences]);
+
+  const activeOptionIndexClamped = Math.min(
+    activeOptionIndex,
+    Math.max(visibleModels.length - 1, 0)
+  );
+
+  const selectModelFromMenu = useCallback(
+    (option: ModelOption) => {
+      if (option.configured === false) return;
+      onModelChange(option.id);
+      setModelOpen(false);
+      modelTriggerRef.current?.focus();
+    },
+    [onModelChange]
+  );
+
+  const stepActiveOption = useCallback(
+    (direction: 1 | -1) => {
+      setActiveOptionIndex((index) => {
+        let next = Math.min(index, Math.max(visibleModels.length - 1, 0));
+        for (let steps = 0; steps < visibleModels.length; steps += 1) {
+          next += direction;
+          if (next < 0 || next >= visibleModels.length) break;
+          if (visibleModels[next].configured !== false) return next;
+        }
+        return index;
+      });
+    },
+    [visibleModels]
+  );
+
+  const handleModelSearchKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        stepActiveOption(1);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        stepActiveOption(-1);
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const target = visibleModels[activeOptionIndexClamped];
+        if (target) selectModelFromMenu(target);
+      }
+    },
+    [visibleModels, activeOptionIndexClamped, selectModelFromMenu, stepActiveOption]
+  );
 
   useEffect(() => {
     if (selectedFromMenu.current) {
@@ -184,7 +265,10 @@ export function InputBar({
       closeMenus();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenus();
+      if (event.key === "Escape") {
+        closeMenus();
+        if (modelOpen) modelTriggerRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
@@ -193,6 +277,19 @@ export function InputBar({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [modelOpen, variantOpen]);
+
+  useEffect(() => {
+    if (!modelOpen) return;
+    setModelQuery("");
+    setShowHiddenModels(false);
+    setActiveOptionIndex(0);
+    modelSearchRef.current?.focus();
+  }, [modelOpen]);
+
+  useEffect(() => {
+    if (!modelOpen) return;
+    modelOptionRefs.current[activeOptionIndexClamped]?.scrollIntoView?.({ block: "nearest" });
+  }, [modelOpen, activeOptionIndexClamped]);
 
   useLayoutEffect(() => {
     if (!variantOpen || !variantPickerRef.current) return;
@@ -227,6 +324,7 @@ export function InputBar({
         maxHeight: variantMenuLayout.maxHeight,
         top: variantMenuLayout.placement === "below" ? "calc(100% + 0.5rem)" : "auto",
         bottom: variantMenuLayout.placement === "above" ? "calc(100% + 0.5rem)" : "auto",
+        transformOrigin: variantMenuLayout.placement === "above" ? "bottom left" : "top left",
       }
     : undefined;
 
@@ -342,6 +440,7 @@ export function InputBar({
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2" ref={pickerRef}>
               <div className="relative min-w-0 flex-[1_1_18rem]">
                 <Button
+                  ref={modelTriggerRef}
                   variant="outline"
                   size="default"
                   className="composer-control-button h-10 w-full min-w-0 justify-start gap-2 rounded-md px-2.5"
@@ -365,12 +464,9 @@ export function InputBar({
                   <ChevronDown className="size-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                 </Button>
                 {modelOpen && (
-                  <div
-                    className="model-menu absolute bottom-full left-0 mb-2 max-h-[240px] w-80 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)"
-                    role="listbox"
-                  >
+                  <div className="model-menu absolute bottom-full left-0 mb-2 flex max-h-[320px] w-80 max-w-[calc(100vw-2rem)] origin-bottom-left flex-col overflow-hidden rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)">
                     {models.length === 0 ? (
-                      <div className="flex flex-col gap-1 p-3 text-body-sm text-text-muted">
+                      <div className="flex flex-col gap-1 overflow-y-auto p-3 text-body-sm text-text-muted">
                         <strong className="font-medium text-text-primary">
                           {unavailableMessage}
                         </strong>
@@ -386,44 +482,175 @@ export function InputBar({
                         )}
                       </div>
                     ) : (
-                      models.map((m) => {
-                        const isActive = m.id === selectedModel;
-                        const isDisabled = m.configured === false;
-                        const baseClass =
-                          "flex min-h-11 w-full items-center justify-between gap-3 px-3 text-left transition-colors duration-150 ease-out-quart";
-                        const activeClass = isActive ? " bg-surface-overlay" : "";
-                        const disabledClass = isDisabled
-                          ? " opacity-40 cursor-not-allowed hover:bg-transparent"
-                          : " hover:bg-surface-overlay";
-                        return (
-                          <button
-                            type="button"
-                            key={m.id}
-                            className={`${baseClass}${activeClass}${disabledClass}`}
-                            role="option"
-                            aria-selected={isActive}
-                            disabled={isDisabled}
-                            onClick={() => {
-                              if (m.configured !== false) {
-                                onModelChange(m.id);
+                      <>
+                        <div className="border-b border-surface-overlay p-2">
+                          <div className="relative flex items-center">
+                            <Search
+                              className="pointer-events-none absolute left-2.5 size-3.5 text-text-muted"
+                              aria-hidden="true"
+                            />
+                            <input
+                              ref={modelSearchRef}
+                              role="combobox"
+                              aria-autocomplete="list"
+                              aria-expanded="true"
+                              aria-controls="model-menu-listbox"
+                              aria-activedescendant={
+                                visibleModels.length > 0
+                                  ? `model-option-${activeOptionIndexClamped}`
+                                  : undefined
                               }
-                              setModelOpen(false);
-                            }}
-                          >
-                            <span className="truncate text-body-sm text-text-primary">
-                              {m.name}
-                            </span>
-                            <span className="flex shrink-0 items-center gap-1 font-mono text-caption text-text-muted">
-                              {m.provider}
-                              {m.configured === false && (
-                                <span className="text-caption uppercase tracking-[0.03em] text-status-error">
-                                  Not configured
+                              aria-label="Search models"
+                              className="h-8 w-full rounded-md border border-transparent bg-surface-base pl-8 pr-2.5 font-body text-body-sm text-text-primary outline-none transition-colors duration-150 ease-out-quart placeholder:text-text-muted focus:border-accent-action"
+                              placeholder="Search models"
+                              value={modelQuery}
+                              onChange={(event) => {
+                                // Search changes intentionally reset keyboard selection.
+                                setModelQuery(event.target.value);
+                                setActiveOptionIndex(0);
+                              }}
+                              onKeyDown={handleModelSearchKeyDown}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto">
+                          <div id="model-menu-listbox" role="listbox" aria-label="Models">
+                            {visibleModels.map((m, index) => {
+                              const isActive = m.id === selectedModel;
+                              const isDisabled = m.configured === false;
+                              const isFavorite = modelPreferences.favorites.has(m.id);
+                              const isHighlighted = index === activeOptionIndexClamped;
+                              return (
+                                <div
+                                  key={m.id}
+                                  ref={(el) => {
+                                    modelOptionRefs.current[index] = el;
+                                  }}
+                                  className={`group flex min-h-11 w-full items-center gap-0.5 px-2 transition-colors duration-150 ease-out-quart ${
+                                    isHighlighted ? "bg-surface-overlay" : ""
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    id={`model-option-${index}`}
+                                    onMouseEnter={() => setActiveOptionIndex(index)}
+                                    className={`flex min-w-0 flex-1 items-center justify-between gap-3 px-1 py-2 text-left ${
+                                      isDisabled
+                                        ? "cursor-not-allowed opacity-40"
+                                        : "cursor-pointer"
+                                    }`}
+                                    role="option"
+                                    aria-selected={isActive}
+                                    aria-disabled={isDisabled || undefined}
+                                    tabIndex={-1}
+                                    disabled={isDisabled}
+                                    onClick={() => selectModelFromMenu(m)}
+                                  >
+                                    <span className="truncate text-body-sm text-text-primary">
+                                      {m.name}
+                                    </span>
+                                    <span className="flex shrink-0 items-center gap-1 font-mono text-caption text-text-muted">
+                                      {m.provider}
+                                      {m.configured === false && (
+                                        <span className="text-caption uppercase tracking-[0.03em] text-status-error">
+                                          Not configured
+                                        </span>
+                                      )}
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-[color,transform] duration-150 ease-out-quart hover:text-text-primary active:scale-90"
+                                    aria-label={
+                                      isFavorite
+                                        ? `Remove ${m.name} from favorites`
+                                        : `Add ${m.name} to favorites`
+                                    }
+                                    aria-pressed={isFavorite}
+                                    title={
+                                      isFavorite ? "Remove from favorites" : "Add to favorites"
+                                    }
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      modelPreferences.onToggleFavorite(m.id);
+                                    }}
+                                  >
+                                    <Star
+                                      className={`size-3.5 ${isFavorite ? "fill-current text-accent-structure" : ""}`}
+                                      aria-hidden="true"
+                                    />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-[color,transform] duration-150 ease-out-quart hover:text-text-primary active:scale-90"
+                                    aria-label={`Hide ${m.name} from picker`}
+                                    title="Hide from picker"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      modelPreferences.onToggleHidden(m.id);
+                                    }}
+                                  >
+                                    <Eye className="size-3.5" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                            {visibleModels.length === 0 && (
+                              <div
+                                className="px-3 py-4 text-body-sm text-text-muted"
+                                role="option"
+                                aria-selected={false}
+                                aria-disabled="true"
+                                tabIndex={-1}
+                              >
+                                {modelQuery.trim() ? "No matching models." : "No visible models."}
+                              </div>
+                            )}
+                          </div>
+                          {hiddenModels.length > 0 && (
+                            <div className="border-t border-surface-overlay">
+                              <button
+                                type="button"
+                                className="flex min-h-9 w-full cursor-pointer items-center justify-between px-3 text-caption text-text-muted transition-colors duration-150 ease-out-quart hover:text-text-secondary"
+                                onClick={() => setShowHiddenModels((open) => !open)}
+                                aria-expanded={showHiddenModels}
+                              >
+                                <span>
+                                  {showHiddenModels ? "Hide" : "Show"} {hiddenModels.length} hidden{" "}
+                                  {hiddenModels.length === 1 ? "model" : "models"}
                                 </span>
-                              )}
-                            </span>
-                          </button>
-                        );
-                      })
+                                <ChevronDown
+                                  className={`size-3.5 transition-transform duration-150 ease-out-quart ${showHiddenModels ? "rotate-180" : ""}`}
+                                  aria-hidden="true"
+                                />
+                              </button>
+                              {showHiddenModels &&
+                                hiddenModels.map((m) => (
+                                  <div
+                                    key={m.id}
+                                    className="flex min-h-9 w-full items-center gap-0.5 px-2 opacity-50"
+                                  >
+                                    <span className="min-w-0 flex-1 truncate px-1 text-body-sm text-text-primary">
+                                      {m.name}
+                                    </span>
+                                    <span className="shrink-0 font-mono text-caption text-text-muted">
+                                      {m.provider}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-[color,transform] duration-150 ease-out-quart hover:text-text-primary active:scale-90"
+                                      aria-label={`Show ${m.name} in picker`}
+                                      title="Show in picker"
+                                      onClick={() => modelPreferences.onToggleHidden(m.id)}
+                                    >
+                                      <EyeOff className="size-3.5" aria-hidden="true" />
+                                    </button>
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+                      </>
                     )}
                   </div>
                 )}

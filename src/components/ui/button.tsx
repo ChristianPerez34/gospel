@@ -1,4 +1,5 @@
 import { Button as ButtonPrimitive } from "@base-ui/react/button";
+import { forwardRef } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -50,7 +51,10 @@ export interface ButtonProps extends ButtonPrimitive.Props {
   size?: ButtonSize;
 }
 
-function Button({ className, variant = "default", size = "default", ...props }: ButtonProps) {
+const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { className, variant = "default", size = "default", ...props },
+  ref
+) {
   return (
     <ButtonPrimitive
       data-slot="button"
@@ -60,8 +64,9 @@ function Button({ className, variant = "default", size = "default", ...props }: 
           : buttonVariants({ variant, size, className })
       }
       {...props}
+      ref={ref}
     />
   );
-}
+});
 
 export { Button };

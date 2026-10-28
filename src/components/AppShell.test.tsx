@@ -122,6 +122,52 @@ describe("AppShell task flow", () => {
     vi.clearAllMocks();
   });
 
+  it("keeps variant commands for the active model after hiding it", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "get_model_availability")
+        return {
+          ...sampleAvailability,
+          available_models: [
+            {
+              provider: "openai",
+              model: "gpt-4o",
+              variants: [
+                { id: "reasoning-high", name: "Reasoning High", description: "More reasoning" },
+              ],
+            },
+          ],
+        };
+      if (cmd === "create_session") return { id: "hidden-model-session" };
+      return handleCommonInvoke(cmd, args);
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+    await openTaskSetup();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }))
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide gpt-4o from picker" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "k", metaKey: true });
+
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    expect(within(palette).queryByRole("button", { name: /Use gpt-4o/ })).toBeNull();
+    expect(within(palette).getByRole("button", { name: /Default/ })).toBeTruthy();
+    await act(async () =>
+      fireEvent.click(within(palette).getByRole("button", { name: /Reasoning High/ }))
+    );
+    expect(invoke).toHaveBeenCalledWith("update_session_model_selection", {
+      sessionId: "hidden-model-session",
+      provider: "openai",
+      model: "gpt-4o",
+      variant: "reasoning-high",
+    });
+  });
+
   it("opens a workspace-bound chat before sending and automatically names the conversation", async () => {
     let activeWorkspace = sampleWorkspace;
     let saveTask: ((record: { id: string }) => void) | undefined;
