@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ModelPreferences } from "../hooks/useModelPreferences";
 import { modelOptionId } from "../types";
 import { InputBar } from "./InputBar";
 
@@ -38,6 +39,16 @@ const models = [
   },
 ];
 
+function emptyModelPreferences(overrides: Partial<ModelPreferences> = {}): ModelPreferences {
+  return {
+    favorites: new Set(),
+    hidden: new Set(),
+    onToggleFavorite: vi.fn(),
+    onToggleHidden: vi.fn(),
+    ...overrides,
+  };
+}
+
 function renderInputBar(overrides: Partial<ComponentProps<typeof InputBar>> = {}) {
   return render(
     <div data-testid="input-boundary">
@@ -45,6 +56,7 @@ function renderInputBar(overrides: Partial<ComponentProps<typeof InputBar>> = {}
         models={models}
         selectedModel={modelOptionId("openai", "gpt-5.5")}
         selectedVariant={null}
+        modelPreferences={emptyModelPreferences()}
         onModelChange={vi.fn()}
         onVariantChange={vi.fn()}
         onSend={vi.fn()}
@@ -168,5 +180,138 @@ describe("InputBar", () => {
 
     expect(screen.getByRole("button", { name: "Send message" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Stop streaming" })).toBeNull();
+  });
+
+  it("filters the model list as the user types", () => {
+    renderInputBar();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText("Search models"), { target: { value: "sonnet" } });
+
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0].textContent).toContain("claude-sonnet-4");
+  });
+
+  it("matches the filter against provider names and multiple tokens", () => {
+    renderInputBar();
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+
+    fireEvent.change(screen.getByLabelText("Search models"), {
+      target: { value: "anthropic sonnet" },
+    });
+
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0].textContent).toContain("claude-sonnet-4");
+  });
+
+  it("shows an empty-filter state when nothing matches", () => {
+    renderInputBar();
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+
+    fireEvent.change(screen.getByLabelText("Search models"), {
+      target: { value: "does-not-exist" },
+    });
+
+    const options = screen.queryAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0].getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("No matching models.")).toBeTruthy();
+  });
+
+  it("sorts favorite models to the top of the list", () => {
+    renderInputBar({
+      modelPreferences: emptyModelPreferences({
+        favorites: new Set([modelOptionId("anthropic", "claude-sonnet-4")]),
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+
+    const options = screen.getAllByRole("option");
+    expect(options[0].textContent).toContain("claude-sonnet-4");
+    expect(options[1].textContent).toContain("gpt-5.5");
+  });
+
+  it("calls onToggleFavorite when the star is clicked without closing the menu", () => {
+    const onToggleFavorite = vi.fn();
+    const onModelChange = vi.fn();
+    renderInputBar({
+      modelPreferences: emptyModelPreferences({ onToggleFavorite }),
+      onModelChange,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add claude-sonnet-4 to favorites" }));
+
+    expect(onToggleFavorite).toHaveBeenCalledWith(modelOptionId("anthropic", "claude-sonnet-4"));
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("moves hidden models into a collapsible hidden section", () => {
+    const onToggleHidden = vi.fn();
+    renderInputBar({
+      modelPreferences: emptyModelPreferences({
+        hidden: new Set([modelOptionId("openai", "gpt-5.5")]),
+        onToggleHidden,
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0].textContent).toContain("claude-sonnet-4");
+    expect(screen.queryByText("gpt-5.5")).toBeTruthy(); // still the trigger label
+
+    fireEvent.click(screen.getByRole("button", { name: /Show 1 hidden model/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Show gpt-5.5 in picker" }));
+
+    expect(onToggleHidden).toHaveBeenCalledWith(modelOptionId("openai", "gpt-5.5"));
+  });
+
+  it("calls onToggleHidden when the eye is clicked without selecting", () => {
+    const onToggleHidden = vi.fn();
+    const onModelChange = vi.fn();
+    renderInputBar({
+      modelPreferences: emptyModelPreferences({ onToggleHidden }),
+      onModelChange,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide claude-sonnet-4 from picker" }));
+
+    expect(onToggleHidden).toHaveBeenCalledWith(modelOptionId("anthropic", "claude-sonnet-4"));
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("selects the first filtered model with Enter", () => {
+    const onModelChange = vi.fn();
+    renderInputBar({ onModelChange });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    const search = screen.getByLabelText("Search models");
+    fireEvent.change(search, { target: { value: "sonnet" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(onModelChange).toHaveBeenCalledWith(modelOptionId("anthropic", "claude-sonnet-4"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("moves the highlight with arrow keys before Enter selects", () => {
+    const onModelChange = vi.fn();
+    renderInputBar({ onModelChange });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    const search = screen.getByLabelText("Search models");
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(onModelChange).toHaveBeenCalledWith(modelOptionId("anthropic", "claude-sonnet-4"));
   });
 });

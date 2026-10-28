@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
+import { useModelPreferences } from "../hooks/useModelPreferences";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useSessionShortcuts } from "../hooks/useSessionShortcuts";
 import { useThemePreference } from "../hooks/useThemePreference";
@@ -170,6 +171,14 @@ export function AppShell() {
     onError: showError,
     onSuccess: showSuccess,
   });
+  const modelPreferences = useModelPreferences();
+  // Hidden models are a picker-level preference: they stay in `models` so a
+  // selected-but-hidden model keeps working, but are filtered out of surfaces
+  // that offer model switching.
+  const pickerModels = useMemo(
+    () => models.filter((model) => !modelPreferences.hidden.has(model.id)),
+    [models, modelPreferences.hidden]
+  );
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const sessionLoadGenerationRef = useRef(0);
@@ -1089,6 +1098,7 @@ export function AppShell() {
                 models={models}
                 selectedModel={selectedModelId}
                 selectedVariant={selectedModel?.variant ?? null}
+                modelPreferences={modelPreferences}
                 onModelChange={applyModelSelection}
                 onVariantChange={applyVariantSelection}
                 onSend={(message, skill) => {
@@ -1203,7 +1213,7 @@ export function AppShell() {
         sessions={allSessions}
         activeSessionId={session.activeSessionId}
         workspace={activeWorkspace}
-        models={models}
+        models={pickerModels}
         selectedModelId={selectedModelId}
         selectedVariant={selectedModel?.variant ?? null}
         workspaceNames={workspaceNames}

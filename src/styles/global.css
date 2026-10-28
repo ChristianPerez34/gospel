@@ -1179,6 +1179,18 @@ summary,
 .model-menu {
   border-color: color-mix(in srgb, var(--surface-overlay) 76%, var(--text-muted) 14%);
   box-shadow: var(--shadow-floating);
+  animation: model-menu-in 140ms var(--gospel-ease-out-quart);
+}
+
+@keyframes model-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 .review-summary,
