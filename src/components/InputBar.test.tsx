@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ModelPreferences } from "../hooks/useModelPreferences";
+import { type ModelPreferences, useModelPreferences } from "../hooks/useModelPreferences";
 import { modelOptionId } from "../types";
 import { InputBar } from "./InputBar";
 
@@ -93,6 +93,62 @@ function domRect({
 describe("InputBar", () => {
   afterEach(() => {
     cleanup();
+  });
+
+  it.each(["Enter", "click", "Escape"])(
+    "restores trigger focus after closing with %s",
+    (action) => {
+      renderInputBar();
+      const trigger = screen.getByRole("button", { name: "Select model" });
+      fireEvent.click(trigger);
+      const search = screen.getByLabelText("Search models");
+      expect(document.activeElement).toBe(search);
+
+      if (action === "click") {
+        fireEvent.click(screen.getAllByRole("option")[0]);
+      } else {
+        fireEvent.keyDown(search, { key: action });
+      }
+
+      expect(screen.queryByRole("listbox")).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    }
+  );
+
+  it("navigates from the displayed highlight after earlier rows are hidden", () => {
+    const manyModels = Array.from({ length: 5 }, (_, index) => ({
+      id: modelOptionId("openai", `model-${index}`),
+      name: `model-${index}`,
+      provider: "openai",
+      model: `model-${index}`,
+      configured: true,
+    }));
+    const onModelChange = vi.fn();
+    function ModelPicker() {
+      const preferences = useModelPreferences();
+      return (
+        <InputBar
+          models={manyModels}
+          selectedModel={manyModels[0].id}
+          modelPreferences={preferences}
+          onModelChange={onModelChange}
+          onVariantChange={vi.fn()}
+          onSend={vi.fn()}
+        />
+      );
+    }
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    const search = screen.getByLabelText("Search models");
+    for (let i = 0; i < 4; i += 1) fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.click(screen.getByRole("button", { name: "Hide model-0 from picker" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide model-1 from picker" }));
+
+    search.focus();
+    fireEvent.keyDown(search, { key: "ArrowUp" });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(onModelChange).toHaveBeenCalledWith(manyModels[3].id);
   });
 
   it("hides the variant picker for models without variants", () => {

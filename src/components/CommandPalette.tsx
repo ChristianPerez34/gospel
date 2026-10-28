@@ -36,6 +36,7 @@ interface CommandPaletteProps {
   activeSessionId?: string | null;
   workspace?: Workspace | null;
   models: ModelOption[];
+  hiddenModelIds?: ReadonlySet<string>;
   selectedModelId: string;
   selectedVariant?: string | null;
   onClose: () => void;
@@ -86,6 +87,7 @@ export function CommandPalette({
   activeSessionId,
   workspace,
   models,
+  hiddenModelIds,
   selectedModelId,
   selectedVariant = null,
   onClose,
@@ -230,19 +232,21 @@ export function CommandPalette({
           }))
         : [];
 
-    const modelResults: PaletteResult[] = models.map((model) => {
-      const isActive = model.id === selectedModelId;
-      const activeVariant = isActive && currentVariant ? ` · ${currentVariant.name}` : "";
-      return {
-        id: `model-${model.id}`,
-        group: "Commands" as const,
-        icon: isActive ? "A" : "M",
-        label: `Use ${model.name}`,
-        detail: `${model.provider}${activeVariant}`,
-        keywords: `model provider ${model.name} ${model.model} ${model.provider} ${model.variants?.map((variant) => `${variant.id} ${variant.name} ${variant.description}`).join(" ") ?? ""}`,
-        action: closeAfter(() => onSelectModel(model.id)),
-      };
-    });
+    const modelResults: PaletteResult[] = models
+      .filter((model) => !hiddenModelIds?.has(model.id))
+      .map((model) => {
+        const isActive = model.id === selectedModelId;
+        const activeVariant = isActive && currentVariant ? ` · ${currentVariant.name}` : "";
+        return {
+          id: `model-${model.id}`,
+          group: "Commands" as const,
+          icon: isActive ? "A" : "M",
+          label: `Use ${model.name}`,
+          detail: `${model.provider}${activeVariant}`,
+          keywords: `model provider ${model.name} ${model.model} ${model.provider} ${model.variants?.map((variant) => `${variant.id} ${variant.name} ${variant.description}`).join(" ") ?? ""}`,
+          action: closeAfter(() => onSelectModel(model.id)),
+        };
+      });
 
     const commandResults: PaletteResult[] = [
       {
@@ -314,6 +318,7 @@ export function CommandPalette({
   }, [
     activeSessionId,
     activityBySession,
+    hiddenModelIds,
     models,
     needsYouCount,
     onClose,

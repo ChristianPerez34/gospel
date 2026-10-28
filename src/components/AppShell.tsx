@@ -172,13 +172,6 @@ export function AppShell() {
     onSuccess: showSuccess,
   });
   const modelPreferences = useModelPreferences();
-  // Hidden models are a picker-level preference: they stay in `models` so a
-  // selected-but-hidden model keeps working, but are filtered out of surfaces
-  // that offer model switching.
-  const pickerModels = useMemo(
-    () => models.filter((model) => !modelPreferences.hidden.has(model.id)),
-    [models, modelPreferences.hidden]
-  );
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const sessionLoadGenerationRef = useRef(0);
@@ -1213,7 +1206,8 @@ export function AppShell() {
         sessions={allSessions}
         activeSessionId={session.activeSessionId}
         workspace={activeWorkspace}
-        models={pickerModels}
+        models={models}
+        hiddenModelIds={modelPreferences.hidden}
         selectedModelId={selectedModelId}
         selectedVariant={selectedModel?.variant ?? null}
         workspaceNames={workspaceNames}

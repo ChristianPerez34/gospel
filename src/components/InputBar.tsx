@@ -198,7 +198,7 @@ export function InputBar({
   const stepActiveOption = useCallback(
     (direction: 1 | -1) => {
       setActiveOptionIndex((index) => {
-        let next = index;
+        let next = Math.min(index, Math.max(visibleModels.length - 1, 0));
         for (let steps = 0; steps < visibleModels.length; steps += 1) {
           next += direction;
           if (next < 0 || next >= visibleModels.length) break;
@@ -265,7 +265,10 @@ export function InputBar({
       closeMenus();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenus();
+      if (event.key === "Escape") {
+        closeMenus();
+        if (modelOpen) modelTriggerRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
