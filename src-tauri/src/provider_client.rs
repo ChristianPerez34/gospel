@@ -8,6 +8,8 @@ use rig::http_client::{DynHttpClient, HeaderMap, HeaderValue, HttpMiddleware, Me
 use rig::providers::{anthropic, chatgpt, copilot, gemini, groq, mistral, openai, xai};
 use rig::wasm_compat::WasmBoxedFuture;
 
+use crate::models::GITHUB_COPILOT_GPT_6_1_TERRA;
+
 pub(crate) type CompletionModel = rig::DynModel<rig::operation::Completion>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,13 +50,14 @@ pub(crate) async fn completion_model(
             .map_err(|e| client_err(e.to_string()))?
             .completion(model)
             .into(),
-        "github_copilot" => copilot::CopilotConfig::new("")
-            .client()
-            .authenticate(&copilot_authenticator(None))
-            .await
-            .map_err(|e| client_err(e.to_string()))?
-            .completion(model)
-            .into(),
+        "github_copilot" => {
+            let client = copilot::CopilotConfig::new("")
+                .client()
+                .authenticate(&copilot_authenticator(None))
+                .await
+                .map_err(|e| client_err(e.to_string()))?;
+            copilot_completion_model(client.config().clone(), rig::rig_reqwest::shared(), model)
+        }
         "grok" => {
             let access_token = grok_access_token(api_key).await.map_err(client_err)?;
             grok_subscription_client(&access_token)
@@ -86,6 +89,24 @@ pub(crate) async fn completion_model(
         other => return Err(ProviderClientError::Unsupported(other.to_string())),
     };
     Ok(model)
+}
+
+fn copilot_completion_model(
+    config: copilot::CopilotConfig,
+    http: impl rig::http_client::HttpClientExt + 'static,
+    model: &str,
+) -> CompletionModel {
+    if model.eq_ignore_ascii_case(GITHUB_COPILOT_GPT_6_1_TERRA) {
+        // ponytail: one-model route override; remove when the Rig dependency handles GPT-6.1 Terra.
+        openai::OpenAIConfig::with_key(&copilot::wire::DIALECT, config.api_key.clone())
+            .with_base_url(config.base_url.clone())
+            .with_route(openai::Route::Responses)
+            .connect(http)
+            .completion(model)
+            .into()
+    } else {
+        config.connect(http).completion(model).into()
+    }
 }
 
 /// The ChatGPT subscription authenticator over Gospel's auth cache. A device
@@ -287,6 +308,66 @@ mod tests {
         assert!(!config.base_url.contains("api.x.ai"));
         assert_eq!(config.dialect.name, xai::DIALECT.name);
         assert_eq!(config.api_key.expose(), access_token);
+    }
+
+    #[tokio::test]
+    async fn copilot_gpt_6_1_terra_uses_responses_and_keeps_copilot_headers() {
+        use rig::core::test_utils::RecordingHttpClient;
+        use std::future::IntoFuture;
+
+        let http = RecordingHttpClient::new(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "response-1",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "model": GITHUB_COPILOT_GPT_6_1_TERRA,
+                "output": [{
+                    "id": "message-1",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "Hello from Copilot",
+                        "annotations": []
+                    }]
+                }],
+                "tools": []
+            }))
+            .unwrap(),
+        );
+        let model = copilot_completion_model(
+            copilot::CopilotConfig::new("copilot-session-token")
+                .with_base_url("https://api.business.githubcopilot.com"),
+            DynHttpClient::new(http.clone()),
+            GITHUB_COPILOT_GPT_6_1_TERRA,
+        );
+        let agent = rig::AgentBuilder::new(model).default_max_turns(1).build();
+
+        let response = agent
+            .prompt("Say hello")
+            .max_turns(1)
+            .into_future()
+            .await
+            .unwrap();
+
+        assert_eq!(response.output(), "Hello from Copilot");
+        let requests = http.requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(
+            request.uri,
+            "https://api.business.githubcopilot.com/responses"
+        );
+        assert_eq!(
+            header_value(&request.headers, "copilot-integration-id"),
+            "vscode-chat"
+        );
+        assert_eq!(
+            header_value(&request.headers, "authorization"),
+            "Bearer copilot-session-token"
+        );
     }
 
     #[test]
