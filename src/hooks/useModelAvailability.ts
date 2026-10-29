@@ -81,6 +81,7 @@ function buildModelOptions(models: AvailableModel[], providers: ProviderConfig[]
       id: modelOptionId(m.provider, m.model),
       name: m.model,
       provider: m.provider,
+      providerLabel: provider?.name,
       model: m.model,
       variant: null,
       configured: provider?.credentialed ?? true,

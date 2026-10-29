@@ -1,8 +1,8 @@
-use std::sync::LazyLock;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 
@@ -377,7 +377,8 @@ mod model_lists {
 
 use model_lists::{
     ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS,
-    GITHUB_COPILOT_MODELS, GROK_MODELS, GROQ_MODELS, MISTRAL_MODELS, OPENAI_MODELS, OPENCODE_GO_MODELS,
+    GITHUB_COPILOT_MODELS, GROK_MODELS, GROQ_MODELS, MISTRAL_MODELS, OPENAI_MODELS,
+    OPENCODE_GO_MODELS,
 };
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -416,6 +417,8 @@ pub struct ModelInfo {
     pub model: String,
     pub provider: String,
     pub variants: Vec<ModelVariant>,
+    #[serde(skip)]
+    pub(crate) copilot_supported_endpoints: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -466,6 +469,7 @@ impl ModelRegistry {
             model: model.to_string(),
             provider: provider.to_string(),
             variants: Self::variants_for_model(provider, model),
+            copilot_supported_endpoints: None,
         }
     }
 
@@ -630,6 +634,17 @@ impl ModelRegistry {
         CHATGPT_DISCOVERABLE_MODELS.contains(&model)
     }
 
+    pub(crate) async fn copilot_supported_endpoints(model: &str) -> Option<Vec<String>> {
+        let cache = MODEL_CACHE.read().await;
+        cache.values().find_map(|entry| {
+            entry
+                .models
+                .iter()
+                .find(|info| info.provider == "github_copilot" && info.model == model)
+                .and_then(|info| info.copilot_supported_endpoints.clone())
+        })
+    }
+
     #[allow(dead_code)]
     pub fn is_oauth_provider(provider: &str) -> bool {
         crate::providers::is_oauth_provider(provider)
@@ -644,7 +659,8 @@ impl ModelRegistry {
     }
 
     pub fn all_providers() -> &'static [&'static str] {
-        static PROVIDERS: LazyLock<Vec<&'static str>> = LazyLock::new(crate::providers::provider_ids);
+        static PROVIDERS: LazyLock<Vec<&'static str>> =
+            LazyLock::new(crate::providers::provider_ids);
         PROVIDERS.as_slice()
     }
 

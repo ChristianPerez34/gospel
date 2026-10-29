@@ -455,7 +455,6 @@ pub async fn run_review(
     ensure_provider_session(&config.provider)?;
     let workspace = ActiveWorkspaceContext {
         workspace_path,
-        corpus_available: false,
         source_edit_allowed: true,
     };
     let emitter: &dyn ReviewProgressEmitter = &*emitter;
@@ -2847,7 +2846,6 @@ Binary files a/icon.png and b/icon.png differ
     async fn run_workspace_agent_preserves_unsupported_provider_error() {
         let workspace = ActiveWorkspaceContext {
             workspace_path: std::env::current_dir().unwrap(),
-            corpus_available: false,
             source_edit_allowed: true,
         };
         let error = run_workspace_agent(AgentConfig {
@@ -3329,7 +3327,6 @@ Binary files a/icon.png and b/icon.png differ
             "key",
             &ActiveWorkspaceContext {
                 workspace_path: std::env::current_dir().unwrap(),
-                corpus_available: false,
                 source_edit_allowed: true,
             },
             ReviewFocus::Security,
@@ -3350,7 +3347,6 @@ Binary files a/icon.png and b/icon.png differ
     async fn diff_review_distinguishes_binary_only_from_secret_filtered_diffs() {
         let workspace = ActiveWorkspaceContext {
             workspace_path: std::env::current_dir().unwrap(),
-            corpus_available: false,
             source_edit_allowed: true,
         };
         let binary_diff =

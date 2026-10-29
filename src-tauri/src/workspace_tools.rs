@@ -31,7 +31,6 @@ You can inspect the active Gospel workspace with live tools.
 
 - Live workspace tools are the source of truth for file contents.
 - Prefer `find_files` or `search_code` before making broad claims.
-- If corpus tools are available, use them for fast structural orientation and live reads for verification.
 - Stay within the active workspace.
 - `source_edit` is for narrow in-place changes only. It requires one exact `old_text` match, rejects unsafe targets, and returns a capped diff preview.
 "#;
@@ -52,15 +51,6 @@ You can inspect the active Gospel workspace with live tools.
 
 - This turn does not provide workspace source mutation tools.
 - Do not claim to have edited workspace source files.
-"#;
-
-pub const CONTEXT_SEARCH_SYSTEM_PROMPT: &str = r#"
-## Context Search
-
-- Use `context_search` for broad natural-language retrieval across source, docs, and project artifacts.
-- Context Search returns ranked results with path, line range, content type, snippet, and score.
-- **Always verify important claims with live workspace tools** (`read_file`, `search_code`) after using Context Search.
-- Use Context Search to find likely relevant areas, then use live tools to confirm details.
 "#;
 
 pub const HARNESS_CONTROL_AREA_SYSTEM_PROMPT: &str = r#"
@@ -101,7 +91,6 @@ When working on multi-step or long-horizon tasks, maintain a system plan at `.go
 - Keep the plan concise and current. Update Steps, Evidence, and Next Action as work progresses.
 - The plan is the source of truth for what has been done and what remains. Prefer updating it over relying on conversational memory.
 - **When a skill is active** (e.g. /tdd, /diagnose, or any other invoked or matched skill), still maintain the plan. The skill governs the workflow discipline; the plan is the outer persistent record that tracks goal, progress, and evidence across turns. Initialize the plan when the skill starts, update it after each meaningful step, and mark it complete when the skill's work is done.
-- The `.gospel/corpus/` subdirectory is managed internally and should not be edited directly.
 "#;
 
 const READ_DEFAULT_LINE_CAP: usize = 200;
@@ -1684,7 +1673,6 @@ pub fn create_source_edit_tool(workspace_root: PathBuf) -> SourceEditTool {
 }
 
 const HARNESS_PREFIX: &str = ".gospel/";
-const HARNESS_CORPUS_PREFIX: &str = ".gospel/corpus/";
 const HARNESS_CONTENT_BYTES_CAP: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -1757,16 +1745,6 @@ impl PortableTool for WriteHarnessFileTool {
             ));
         }
 
-        if relative_str.starts_with(HARNESS_CORPUS_PREFIX) || relative_str == ".gospel/corpus" {
-            return Ok(harness_failure(
-                "blocked",
-                &format!(
-                    "Writing to .gospel/corpus/ is prohibited. Got: {}",
-                    trimmed_path
-                ),
-            ));
-        }
-
         if args.content.len() > HARNESS_CONTENT_BYTES_CAP {
             return Ok(harness_failure(
                 "oversized",
@@ -1791,20 +1769,20 @@ impl PortableTool for WriteHarnessFileTool {
             }
         };
 
-        let (canonical_gospel, canonical_corpus) =
-            match validate_harness_write_target(&access, &resolved.absolute_path) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    return Ok(harness_failure(
-                        access_failure_reason(&error),
-                        &match error {
-                            AccessFailure::Blocked(m)
-                            | AccessFailure::NotFound(m)
-                            | AccessFailure::Io(m) => m,
-                        },
-                    ));
-                }
-            };
+        let canonical_gospel = match validate_harness_write_target(&access, &resolved.absolute_path)
+        {
+            Ok(path) => path,
+            Err(error) => {
+                return Ok(harness_failure(
+                    access_failure_reason(&error),
+                    &match error {
+                        AccessFailure::Blocked(m)
+                        | AccessFailure::NotFound(m)
+                        | AccessFailure::Io(m) => m,
+                    },
+                ));
+            }
+        };
 
         if let Some(parent) = resolved.absolute_path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
@@ -1838,13 +1816,6 @@ impl PortableTool for WriteHarnessFileTool {
                 "Resolved path escapes .gospel/ via symlink.",
             ));
         }
-        if canonical_parent.starts_with(&canonical_corpus) {
-            return Ok(harness_failure(
-                "blocked",
-                "Resolved path points into .gospel/corpus/ via symlink.",
-            ));
-        }
-
         let write_result = (|| -> Result<(), String> {
             use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
             static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1913,176 +1884,11 @@ pub fn create_write_harness_file_tool(workspace_root: PathBuf) -> WriteHarnessFi
     WriteHarnessFileTool { workspace_root }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ContextSearchArgs {
-    query: String,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContextSearchTool {
-    workspace_root: PathBuf,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ContextSearchOutput {
-    success: bool,
-    results: Vec<ContextSearchResultDto>,
-    query: String,
-    total_results: usize,
-    index_available: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextSearchResultDto {
-    path: String,
-    start_line: Option<usize>,
-    end_line: Option<usize>,
-    content_type: String,
-    snippet: String,
-    score: f64,
-}
-
-impl PortableTool for ContextSearchTool {
-    const NAME: &'static str = "context_search";
-
-    type Error = WorkspaceToolError;
-    type Args = ContextSearchArgs;
-    type Output = ContextSearchOutput;
-
-    fn description(&self) -> String {
-        "Search the pre-built Context Search index for relevant source code, documentation, and project artifacts using natural language queries. Use this for broad retrieval to find likely relevant areas, then verify important hits with live workspace tools (read_file, search_code) before making claims. Returns ranked results with path, line range, content type, snippet, and score.".to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Natural language search query (e.g. 'authentication middleware', 'error handling pattern', 'database connection setup')."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return (default: 10, max: 50)."
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
-        ToolExecutionError::other(error.to_string())
-    }
-
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let query = args.query.trim().to_string();
-        if query.is_empty() {
-            return Ok(ContextSearchOutput {
-                success: false,
-                results: vec![],
-                query: query.clone(),
-                total_results: 0,
-                index_available: false,
-            });
-        }
-
-        let limit = args.limit.unwrap_or(10).min(50);
-
-        // Try to open the context search index
-        let index =
-            match crate::context_search::ContextSearchIndex::open_if_exists(&self.workspace_root) {
-                Ok(index) => index,
-                Err(_) => {
-                    return Ok(ContextSearchOutput {
-                        success: false,
-                        results: vec![],
-                        query,
-                        total_results: 0,
-                        index_available: false,
-                    });
-                }
-            };
-
-        // Check if index has any data
-        let stats = match index.get_stats() {
-            Ok(stats) => stats,
-            Err(_) => {
-                return Ok(ContextSearchOutput {
-                    success: false,
-                    results: vec![],
-                    query,
-                    total_results: 0,
-                    index_available: false,
-                });
-            }
-        };
-
-        if stats.chunk_count == 0 {
-            return Ok(ContextSearchOutput {
-                success: true,
-                results: vec![],
-                query,
-                total_results: 0,
-                index_available: true,
-            });
-        }
-
-        // Perform search
-        match index.search(&query, limit) {
-            Ok(search_results) => {
-                let results: Vec<ContextSearchResultDto> = search_results
-                    .into_iter()
-                    .map(|r| ContextSearchResultDto {
-                        path: r.chunk.source_path,
-                        start_line: r.chunk.start_line,
-                        end_line: r.chunk.end_line,
-                        content_type: r.chunk.source_type,
-                        snippet: truncate_snippet(&r.chunk.content, 300),
-                        score: r.rank,
-                    })
-                    .collect();
-
-                let total = results.len();
-                Ok(ContextSearchOutput {
-                    success: true,
-                    results,
-                    query,
-                    total_results: total,
-                    index_available: true,
-                })
-            }
-            Err(_) => Ok(ContextSearchOutput {
-                success: false,
-                results: vec![],
-                query,
-                total_results: 0,
-                index_available: true,
-            }),
-        }
-    }
-}
-
-fn truncate_snippet(content: &str, max_chars: usize) -> String {
-    let mut chars = content.chars();
-    let snippet: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{}...", snippet)
-    } else {
-        snippet
-    }
-}
-
-pub fn create_context_search_tool(workspace_root: PathBuf) -> ContextSearchTool {
-    ContextSearchTool { workspace_root }
-}
-
 fn validate_harness_write_target(
     access: &WorkspaceAccess,
     target_path: &Path,
-) -> Result<(PathBuf, PathBuf), AccessFailure> {
+) -> Result<PathBuf, AccessFailure> {
     let canonical_gospel = access.canonical_root.join(".gospel");
-    let canonical_corpus = canonical_gospel.join("corpus");
     let relative_target = target_path
         .strip_prefix(&access.canonical_root)
         .map_err(|_| AccessFailure::Blocked("Path escapes the active workspace.".to_string()))?;
@@ -2106,11 +1912,6 @@ fn validate_harness_write_target(
                         "Resolved path escapes .gospel/ via symlink.".to_string(),
                     ));
                 }
-                if canonical_current.starts_with(&canonical_corpus) {
-                    return Err(AccessFailure::Blocked(
-                        "Resolved path points into .gospel/corpus/ via symlink.".to_string(),
-                    ));
-                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
             Err(error) => {
@@ -2123,7 +1924,7 @@ fn validate_harness_write_target(
         }
     }
 
-    Ok((canonical_gospel, canonical_corpus))
+    Ok(canonical_gospel)
 }
 
 fn harness_failure(reason: &str, message: &str) -> WriteHarnessFileOutput {
@@ -3175,12 +2976,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_snippet_is_utf8_safe() {
-        assert_eq!(truncate_snippet("aé🙂bc", 3), "aé🙂...");
-        assert_eq!(truncate_snippet("short", 10), "short");
-    }
-
-    #[test]
     fn base_workspace_tools_returns_four_tools() {
         let tools = build_base_workspace_tools(PathBuf::from("/tmp/test-workspace"));
         assert_eq!(tools.len(), 4);
@@ -3926,6 +3721,26 @@ mod tests {
         assert_eq!(written, "# Design notes");
     }
 
+    #[tokio::test]
+    async fn write_harness_file_allows_former_corpus_path() {
+        let dir = tempdir().unwrap();
+        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
+
+        let output = tool
+            .call(WriteHarnessFileArgs {
+                path: ".gospel/corpus/notes.md".to_string(),
+                content: "Legacy path is no longer reserved.".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".gospel/corpus/notes.md")).unwrap(),
+            "Legacy path is no longer reserved."
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn write_harness_file_rejects_symlink_escape() {
@@ -3947,27 +3762,5 @@ mod tests {
         assert_eq!(output.reason.as_deref(), Some("blocked"));
         assert!(!dir.path().join("src").exists());
         assert!(!dir.path().join("src/pwned.rs").exists());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn write_harness_file_rejects_corpus_symlink_alias() {
-        let dir = tempdir().unwrap();
-        let corpus_dir = dir.path().join(".gospel/corpus");
-        fs::create_dir_all(&corpus_dir).unwrap();
-        symlink(&corpus_dir, dir.path().join(".gospel/alias")).unwrap();
-        let tool = create_write_harness_file_tool(dir.path().to_path_buf());
-
-        let output = tool
-            .call(WriteHarnessFileArgs {
-                path: ".gospel/alias/manifest.json".to_string(),
-                content: "{}".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert!(!output.success);
-        assert_eq!(output.reason.as_deref(), Some("blocked"));
-        assert!(!corpus_dir.join("manifest.json").exists());
     }
 }

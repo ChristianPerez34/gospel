@@ -13,22 +13,22 @@ pub(crate) async fn fetch_models(
         provider: config.clone(),
     }
     .encode(None, Mode::Unary)
-    .map_err(|e| format!("failed to build GitHub Copilot model request: {e}"))?
+    .map_err(|error| format!("failed to build GitHub Copilot model request: {error}"))?
     .request
     .map(|_| Vec::<u8>::new());
     let response = http
         .send::<_, Vec<u8>>(request)
         .await
-        .map_err(|e| format!("failed to list GitHub Copilot models: {e}"))?;
+        .map_err(|error| format!("failed to list GitHub Copilot models: {error}"))?;
     if !response.status().is_success() {
         let status = response.status();
         let detail = response
             .into_body()
             .await
             .ok()
-            .map(|b| String::from_utf8_lossy(&b).trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(|s| format!(": {s}"))
+            .map(|body| String::from_utf8_lossy(&body).trim().to_string())
+            .filter(|body| !body.is_empty())
+            .map(|body| format!(": {body}"))
             .unwrap_or_default();
         return Err(format!(
             "failed to list GitHub Copilot models: HTTP {status}{detail}"
@@ -37,25 +37,62 @@ pub(crate) async fn fetch_models(
     let body = response
         .into_body()
         .await
-        .map_err(|e| format!("failed to read GitHub Copilot models: {e}"))?;
+        .map_err(|error| format!("failed to read GitHub Copilot models: {error}"))?;
     let body: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| format!("failed to parse GitHub Copilot models: {e}"))?;
+        .map_err(|error| format!("failed to parse GitHub Copilot models: {error}"))?;
     let entries = body["data"]
         .as_array()
         .ok_or("GitHub Copilot model response is missing the data array")?;
     let mut seen = std::collections::HashSet::new();
     let models: Vec<ModelInfo> = entries
         .iter()
-        .filter(|m| {
-            m.pointer("/capabilities/type").and_then(|v| v.as_str()) == Some("chat")
-                && m.pointer("/capabilities/supports/tool_calls")
-                    .and_then(|v| v.as_bool())
+        .filter(|entry| {
+            entry
+                .pointer("/capabilities/type")
+                .and_then(|value| value.as_str())
+                == Some("chat")
+                && entry
+                    .pointer("/capabilities/supports/tool_calls")
+                    .and_then(serde_json::Value::as_bool)
                     == Some(true)
+                && entry
+                    .pointer("/policy/state")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("disabled")
         })
-        .filter_map(|m| m["id"].as_str().map(str::trim).filter(|id| !id.is_empty()))
-        .filter(|id| seen.insert(*id))
-        .map(|id| ModelRegistry::model_info("github_copilot", id))
+        .filter_map(|entry| {
+            let id = entry["id"].as_str()?.trim();
+            if id.is_empty() || !seen.insert(id.to_owned()) {
+                return None;
+            }
+            let endpoints = entry
+                .get("supported_endpoints")
+                .and_then(serde_json::Value::as_array)
+                .map(|endpoints| {
+                    endpoints
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                });
+            if endpoints.as_ref().is_some_and(|endpoints| {
+                !endpoints.iter().any(|endpoint| {
+                    endpoint.starts_with('/')
+                        && (endpoint.ends_with("/responses")
+                            || endpoint.ends_with("/chat/completions"))
+                })
+            }) {
+                return None;
+            }
+            Some((id.to_owned(), endpoints))
+        })
+        .map(|(id, endpoints)| {
+            let mut model = ModelRegistry::model_info("github_copilot", &id);
+            model.copilot_supported_endpoints = endpoints;
+            model
+        })
         .collect();
+
     tracing::info!(
         "Fetched {} models from GitHub Copilot, filtered to {} tool-capable models",
         entries.len(),
@@ -70,6 +107,54 @@ mod tests {
     use rig::core::test_utils::RecordingHttpClient;
     use rig::http_client::StatusCode;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn discovers_tool_models_and_keeps_their_supported_endpoints() {
+        let http = RecordingHttpClient::new(
+            serde_json::to_vec(&json!({"data": [
+                {"id": "future-responses-model", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }, "supported_endpoints": ["/responses"]},
+                {"id": "future-chat-model", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }, "supported_endpoints": ["/chat/completions"]},
+                {"id": "future-responses-model", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }, "supported_endpoints": ["/responses"]},
+                {"id": "messages-only", "capabilities": {
+                    "type": "chat", "supports": {"tool_calls": true}
+                }, "supported_endpoints": ["/v1/messages"]},
+                {"id": "policy-disabled", "policy": {"state": "disabled"},
+                 "capabilities": {"type": "chat", "supports": {"tool_calls": true}}},
+                {"id": "embedding", "capabilities": {
+                    "type": "embeddings", "supports": {"tool_calls": true}
+                }}
+            ]}))
+            .unwrap(),
+        );
+        let config = CopilotConfig::new("test-token")
+            .with_base_url("https://api.business.githubcopilot.com");
+
+        let models = fetch_models(&config, &http).await.unwrap();
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            ["future-responses-model", "future-chat-model"]
+        );
+        assert_eq!(
+            models[0].copilot_supported_endpoints.as_deref(),
+            Some(["/responses".to_owned()].as_slice())
+        );
+        let requests = http.requests();
+        assert_eq!(
+            requests[0].uri,
+            "https://api.business.githubcopilot.com/models"
+        );
+        assert_eq!(requests[0].headers["authorization"], "Bearer test-token");
+    }
 
     #[tokio::test]
     async fn discovers_models_by_capability_instead_of_model_id() {

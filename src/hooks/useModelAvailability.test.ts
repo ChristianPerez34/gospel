@@ -59,6 +59,21 @@ describe("useModelAvailability", () => {
   beforeEach(() => vi.mocked(invoke).mockReset());
   afterEach(() => cleanup());
 
+  it("uses the registered provider display name without changing model identity", async () => {
+    vi.mocked(invoke).mockResolvedValue(modelAvailability(true));
+
+    const { result } = renderHook(() => useModelAvailability());
+
+    await waitFor(() =>
+      expect(result.current.models[0]).toMatchObject({
+        id: "opencode_go::glm-5.3",
+        provider: "opencode_go",
+        providerLabel: "OpenCode Go",
+      })
+    );
+    expect(result.current.selectedModel?.provider).toBe("opencode_go");
+  });
+
   it("does not let an older startup snapshot undo a saved provider", async () => {
     const pending: Array<(snapshot: ModelAvailabilitySnapshot) => void> = [];
     vi.mocked(invoke).mockImplementation((command: string) => {
