@@ -15,9 +15,6 @@ const TOOL_LABELS: Record<string, string> = {
   find_files: "Find files",
   list_directory: "List directory",
   delegate_exploration: "Delegate exploration",
-  corpus_summary: "Corpus summary",
-  corpus_query: "Corpus query",
-  corpus_neighbors: "Corpus neighbors",
   write_harness_file: "Update plan",
   run_review: "Code review",
   run_security_review: "Security review",
@@ -378,89 +375,6 @@ function delegateExplorationCard(activity: ToolCallActivity): Partial<ActionCard
   };
 }
 
-function corpusSummaryCard(activity: ToolCallActivity): Partial<ActionCard> {
-  const result = resultRecord(activity);
-  const topSymbols = asArray(result?.top_symbols).map((symbol) => {
-    const tuple = asArray(symbol);
-    return {
-      primary: displayValue(tuple[0]) ?? "Unknown symbol",
-      meta: tuple[1] ? `${tuple[1]} refs` : undefined,
-    };
-  });
-  const sections = [
-    fieldsSection("Corpus", [
-      field("Exists", result?.exists),
-      field("Files", result?.file_count),
-      field("Symbols", result?.symbol_count),
-      field("Relations", result?.relationship_count),
-    ]),
-    textSection("Message", result?.message),
-    result ? rowsSection("Top symbols", topSymbols, "No top symbols returned.") : undefined,
-    ...waitingSection(activity),
-  ].filter(isRenderableSection);
-
-  return { sections };
-}
-
-function corpusQueryCard(activity: ToolCallActivity): Partial<ActionCard> {
-  const args = parsedArguments(activity);
-  const result = resultRecord(activity);
-  const node = asRecord(result?.node);
-  const sections = [
-    fieldsSection("Query", [
-      field("Identifier", args?.identifier),
-      result ? field("Found", result.found) : undefined,
-      result ? field("Neighbors", result.neighbor_count) : undefined,
-    ]),
-    node
-      ? fieldsSection("Node", [
-          field("Name", node.name),
-          field("Kind", node.kind),
-          field("Type", node.node_type),
-          field("ID", node.id),
-        ])
-      : undefined,
-    textSection("Message", result?.message),
-    ...waitingSection(activity),
-  ].filter(isRenderableSection);
-
-  return {
-    detail: displayValue(args?.identifier),
-    sections,
-  };
-}
-
-function corpusNeighborsCard(activity: ToolCallActivity): Partial<ActionCard> {
-  const args = parsedArguments(activity);
-  const result = parsedResult(activity);
-  const hasResult = activity.result != null;
-  const hasNeighborList = Array.isArray(result);
-  const neighbors = hasNeighborList ? result : [];
-  const rows = neighbors.map((neighbor) => {
-    const item = asRecord(neighbor) ?? {};
-    return {
-      primary: displayValue(item.node_name) ?? displayValue(item.node_id) ?? "Unknown node",
-      secondary: compactList([item.relationship_type, item.direction, item.node_kind]),
-      meta: displayValue(item.confidence),
-    };
-  });
-  const sections = [
-    fieldsSection("Neighbors", [
-      field("Identifier", args?.identifier),
-      field("Confidence", args?.min_confidence ?? "low"),
-      hasNeighborList ? field("Count", neighbors.length) : undefined,
-    ]),
-    hasNeighborList ? rowsSection("Relationships", rows, "No relationships returned.") : undefined,
-    hasResult && !hasNeighborList ? textSection("Result", result, true) : undefined,
-    ...waitingSection(activity),
-  ].filter(isRenderableSection);
-
-  return {
-    detail: displayValue(args?.identifier),
-    sections,
-  };
-}
-
 function writeHarnessFileCard(activity: ToolCallActivity): Partial<ActionCard> {
   const args = parsedArguments(activity);
   const result = resultRecord(activity);
@@ -738,9 +652,6 @@ const TOOL_CARD_FORMATTERS: Record<string, (activity: ToolCallActivity) => Parti
   find_files: findFilesCard,
   list_directory: listDirectoryCard,
   delegate_exploration: delegateExplorationCard,
-  corpus_summary: corpusSummaryCard,
-  corpus_query: corpusQueryCard,
-  corpus_neighbors: corpusNeighborsCard,
   write_harness_file: writeHarnessFileCard,
   source_edit: sourceEditCard,
   run_review: runReviewCard,

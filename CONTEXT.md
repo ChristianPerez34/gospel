@@ -25,8 +25,8 @@
 - **Exact Replacement**: A source-edit safety contract where the agent supplies non-empty `old_text` that must occur exactly once in the target file and distinct `new_text` to replace it. Missing, repeated, or no-op replacement attempts fail without mutating the file.
 - **Exploration Agent**: A backend-only helper Agent that investigates broad multi-file or architectural questions inside the active workspace and returns a structured report to the main Agent.
 - **Turn**: One LLM inference cycle, which may include tool execution. A turn ends when the LLM produces a final text response (not a tool call).
-- **Session Turn**: The backend orchestration of one user-submitted prompt against an optional Session, from preparing Turn context through streaming, persistence, failure handling, and follow-up verification. A Session Turn owns resolution of the Active Workspace Context for that Turn, including corpus availability fallback before constructing Live Workspace Tools. It owns the persistence policy for successful, failed, and controlled-stopped Turns: Display Transcript updates, Model History preservation or replacement, in-memory Conversation continuation, and draft-to-active Session status. It also owns the policy for whether a Verification Agent should run after the Turn, and for Main-agent Memory Recall before streaming and Memory Ingest after a successful persist; storage, event emission, LLM streaming, background verification execution, and Memory sit behind adapters.
-- **Session Turn Event**: An observable event emitted while a Session Turn runs, such as streamed text, Tool activity, loop warnings, corpus fallback, Turn completion, Turn failure, or Verification Agent scheduling. The Session Turn module decides when these events occur; the Tauri adapter maps them to frontend events and Trace Log entries.
+- **Session Turn**: The backend orchestration of one user-submitted prompt against an optional Session, from preparing Turn context through streaming, persistence, failure handling, and follow-up verification. A Session Turn owns resolution of the Active Workspace Context for that Turn before constructing Live Workspace Tools. It owns the persistence policy for successful, failed, and controlled-stopped Turns: Display Transcript updates, Model History preservation or replacement, in-memory Conversation continuation, and draft-to-active Session status. It also owns the policy for whether a Verification Agent should run after the Turn, and for Main-agent Memory Recall before streaming and Memory Ingest after a successful persist; storage, event emission, LLM streaming, background verification execution, and Memory sit behind adapters.
+- **Session Turn Event**: An observable event emitted while a Session Turn runs, such as streamed text, Tool activity, loop warnings, Turn completion, Turn failure, or Verification Agent scheduling. The Session Turn module decides when these events occur; the Tauri adapter maps them to frontend events and Trace Log entries.
 - **Turn Persistence Adapter**: A backend adapter sitting at the persistence seam of Session Turn execution. It encapsulates SQLite storage operations for Display Transcript updates, Model History preservation, Draft Session activation, and failure snapshotting behind a testable storage interface.
 - **Conversation**: A sequence of user/agent message pairs within a session. Conversations are identified by session ID and stored server-side.
 - **Tool**: A registered function the LLM can invoke during a turn. Tools execute and return results that feed back into the next turn.
@@ -42,7 +42,7 @@
 - **Skill Adoption**: The explicit user action that copies a Staged Skill into `<workspace>/.agents/skills/<name>/SKILL.md` and reloads discovery. Gospel never auto-writes discovered skills.
 - **Agent Harness**: The totality of surfaces through which a human steers an AI agent's behaviour over a session or across sessions. Borrowed from the framing that code plays three roles: instruction (telling the agent what to do), verification (checking what the agent did), and context (giving the agent information to work with).
 - **Harness Interface**: The complete set of touch-points where steering signals enter the system — the system preamble, skills, tools, conversation history, and any persistent artifacts. The Harness Interface is the boundary between the human's intent and the agent's execution.
-- **Harness Profile**: The resolved subset of the Harness Interface presented to one Agent role for one Turn, based on the role, Active Workspace Context, and corpus availability.
+- **Harness Profile**: The resolved subset of the Harness Interface presented to one Agent role for one Turn, based on the role and Active Workspace Context.
 - **Harness Mechanism**: A concrete, nameable component within the Harness Interface that fulfils one or more of the three roles (instruction, verification, context). Examples: the skill system, the TDD workflow, the exploration chain, and explicit planning.
 - **PEV Loop**: Plan → Execute → Verify. The minimal outer loop for long-horizon agent work: maintain a plan, execute the next step, verify the result, then update the plan. The PEV Loop is the rhythm that explicit planning makes visible.
 - **Shared Harness Substrate**: A persistent, workspace-scoped location (`.gospel/`) where harness artifacts live across turns and sessions. Shared between the human (who can inspect and edit) and the agent (who can read and write via tools).
@@ -59,7 +59,6 @@
 - **Controlled Stop**: A clean agent termination triggered by run guards (e.g., identical tool call loops or repeated deterministic failures). Emits warning and stopped events, persists a plain-language stopped assistant message, and does not update Model History. Distinct from provider/runtime errors.
 - **Loop Detection**: The mechanism that identifies repeated identical tool calls by tool name plus canonicalized JSON arguments. Thresholds are role-specific: the default general agent warns at three consecutive identical calls and controlled-stops at five, while the Verification role warns at two and controlled-stops at three. Warn events surface the loop risk; controlled-stop events terminate the agent cleanly before Model History is updated.
 - **Verification Agent**: A backend sub-agent that runs asynchronously after high-risk completed responses to verify correctness. Uses read-only tools, lower turn budgets, and produces pass/concerns/fail/unavailable results. Failure or timeout is non-blocking.
-- **Context Search**: An offline broad-retrieval index built on SQLite FTS as part of the corpus subsystem. Covers safe source files, documentation, workspace skills, and harness planning artifacts. Used by agents to find likely relevant areas, then verified with live workspace tools.
 - **Session Context Note**: A session-scoped note injected into future turns as context (not persisted into provider Model History). Version one creates notes from Verification Agent concerns. The note shape is generic for future note kinds.
 - **Memory**: A Session Turn port that recalls reconstructed long-horizon context before a Main-agent stream and schedules ingest after a successful persist. Recalled Memory is a Harness Profile preamble sibling, never appended to the user prompt, never written into Model History, and never used as Skill Match input. Verification and Exploration Harness Profiles do not recall. Production Memory is a no-op until later tickets store traces. Memory is not source mutation, so it also runs on read-only internal turns such as skill-optimization student replays.
 
@@ -76,10 +75,10 @@ Code plays three roles in any agent-assisted workflow:
 
 1. **Instruction** — telling the agent what to do (system preamble, skills, user prompts).
 2. **Verification** — checking what the agent did (tests, type checks, lint, manual review).
-3. **Context** — giving the agent information to work with (file contents, corpus, conversation history).
+3. **Context** — giving the agent information to work with (file contents, live search, conversation history).
 
 Before explicit planning, Gospel's Harness Interface consisted of:
-- **System preamble**: assembled from workspace tools prompt, corpus prompt, delegation prompt, and matched/invoked skills.
+- **System preamble**: assembled from workspace tools prompt, delegation prompt, and matched/invoked skills.
 - **Skills**: user-authored directives (`SKILL.md`) injected into the preamble, steering behaviour per-turn or per-invocation.
 - **Live Workspace Tools**: safe, workspace-scoped tools (read_file, search_code, find_files, list_directory, source_edit) that give the main agent source-of-truth access to the codebase and a narrow exact-replacement mutation path.
 - **Exploration Agent**: a delegated sub-agent for broad architectural investigation.
@@ -91,7 +90,7 @@ These mechanisms handle instruction and context well, but verification and long-
 
 The first deliberate Harness Mechanism addition: a persistent, inspectable plan file that serves as the agent's outer loop for multi-step work.
 
-**Substrate**: `.gospel/` directory (the shared harness substrate). The `.gospel/corpus/` subdirectory is reserved for internal corpus data. The `.gospel/skill-opt/` subdirectory holds Staged Skills until Skill Adoption.
+**Substrate**: `.gospel/` directory (the shared harness substrate). The `.gospel/skill-opt/` subdirectory holds Staged Skills until Skill Adoption.
 
 **Primary artifact**: `.gospel/PLAN.md` — a lightweight plan file with required structure:
 - **Goal**: one-sentence description of what we are trying to accomplish.

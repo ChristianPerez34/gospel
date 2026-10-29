@@ -205,19 +205,7 @@ pub struct McpRefreshUpdate {
 }
 
 pub fn built_in_mcp_servers() -> Vec<BuiltInMcpServerDefinition> {
-    vec![BuiltInMcpServerDefinition {
-        id: BUILT_IN_CODEBASE_KNOWLEDGE_ID,
-        display_name: "Codebase knowledge",
-        description: "Read-only MCP server for corpus and context-search knowledge.",
-        safety_class: MCP_SAFETY_READ_ONLY,
-        scope: "main",
-        tool_names: &[
-            "corpus_summary",
-            "corpus_query",
-            "corpus_neighbors",
-            "context_search",
-        ],
-    }]
+    vec![]
 }
 
 pub fn built_in_definition(id: &str) -> Option<BuiltInMcpServerDefinition> {
@@ -448,40 +436,14 @@ pub fn compose_custom_server(
     }
 }
 
-pub fn refresh_built_in(active_workspace_path: Option<&Path>) -> McpRefreshUpdate {
-    let inventory = built_in_definition(BUILT_IN_CODEBASE_KNOWLEDGE_ID)
-        .map(|definition| {
-            definition
-                .tool_names
-                .iter()
-                .map(|name| McpToolInventoryItem {
-                    name: (*name).to_string(),
-                    description: None,
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    if active_workspace_path.is_none() {
-        return McpRefreshUpdate {
-            readiness: MCP_READINESS_UNAVAILABLE.to_string(),
-            health: MCP_HEALTH_WORKSPACE_REQUIRED.to_string(),
-            last_error_summary: Some(
-                "Select a workspace before testing this built-in server.".to_string(),
-            ),
-            last_success_at: None,
-            last_resolved_executable_path: None,
-            inventory,
-        };
-    }
-
+pub fn refresh_built_in(_active_workspace_path: Option<&Path>) -> McpRefreshUpdate {
     McpRefreshUpdate {
-        readiness: MCP_READINESS_READY.to_string(),
-        health: MCP_HEALTH_CONNECTED.to_string(),
-        last_error_summary: None,
-        last_success_at: Some("CURRENT_TIMESTAMP".to_string()),
+        readiness: MCP_READINESS_UNAVAILABLE.to_string(),
+        health: MCP_HEALTH_NOT_FOUND.to_string(),
+        last_error_summary: Some("No built-in MCP server found.".to_string()),
+        last_success_at: None,
         last_resolved_executable_path: None,
-        inventory,
+        inventory: Vec::new(),
     }
 }
 
