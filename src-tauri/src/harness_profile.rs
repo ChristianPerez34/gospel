@@ -1,7 +1,3 @@
-use crate::corpus::tools::{
-    create_corpus_neighbors_tool, create_corpus_query_tool, create_corpus_summary_tool,
-    CORPUS_SYSTEM_PROMPT,
-};
 use crate::review::tools::{
     create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
     create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
@@ -13,8 +9,8 @@ use crate::shell_tools::{
 };
 use crate::workspace_tools::{
     build_base_workspace_tools, build_base_workspace_tools_with_external_approval,
-    create_context_search_tool, create_source_edit_tool, create_write_harness_file_tool,
-    ExternalPathApproval, CONTEXT_SEARCH_SYSTEM_PROMPT, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
+    create_source_edit_tool, create_write_harness_file_tool,
+    ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
     READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 use rig::tool::server::{ToolServer, ToolServerHandle};
@@ -44,7 +40,6 @@ pub enum AgentRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveWorkspaceContext {
     pub workspace_path: std::path::PathBuf,
-    pub corpus_available: bool,
     /// Whether the Main agent's Harness Profile may register workspace source
     /// mutation tools (`source_edit`). Always `true` for Session turns;
     /// internal consumers such as skill optimization set `false` to replay a
@@ -234,7 +229,6 @@ pub struct HarnessProfile {
     pub tools: Vec<RegisteredTool>,
     pub guards: HarnessRunGuards,
     workspace_available: bool,
-    corpus_enabled: bool,
 }
 
 impl HarnessProfile {
@@ -249,7 +243,6 @@ impl HarnessProfile {
             source_edit_enabled: tool_names.iter().any(|name| name == "source_edit"),
             tool_names,
             workspace_available: self.workspace_available,
-            corpus_enabled: self.corpus_enabled,
             guards: self.guards,
         }
     }
@@ -261,7 +254,6 @@ pub struct HarnessProfileSummary {
     pub tool_names: Vec<String>,
     pub workspace_available: bool,
     pub source_edit_enabled: bool,
-    pub corpus_enabled: bool,
     pub guards: HarnessRunGuards,
 }
 
@@ -310,16 +302,12 @@ pub fn resolve_harness_profile(
                 .unwrap_or_default(),
             guards,
             workspace_available: false,
-            corpus_enabled: false,
         });
     };
 
     if request.role != AgentRole::Main {
         let workspace_path = workspace.workspace_path.clone();
-        let mut tools = build_base_workspace_tools(workspace_path.clone());
-        if workspace.corpus_available {
-            append_corpus_tools(&mut tools, workspace_path);
-        }
+        let tools = build_base_workspace_tools(workspace_path.clone());
         let preamble = compose_preamble(
             request.role,
             Some(&workspace),
@@ -335,7 +323,6 @@ pub fn resolve_harness_profile(
             tools,
             guards,
             workspace_available: true,
-            corpus_enabled: workspace.corpus_available,
         });
     }
 
@@ -384,9 +371,6 @@ pub fn resolve_harness_profile(
             workspace_path.clone(),
         )));
     }
-    if workspace.corpus_available {
-        append_corpus_tools(&mut tools, workspace_path.clone());
-    }
     // Shell tools stay registered on read-only turns: with no command
     // approval configured (e.g. skill-opt replays) mutating commands are denied.
     tools.push(RegisteredTool::from_tool(create_run_shell_command_tool(
@@ -423,23 +407,7 @@ pub fn resolve_harness_profile(
         tools,
         guards,
         workspace_available: true,
-        corpus_enabled: workspace.corpus_available,
     })
-}
-
-fn append_corpus_tools(tools: &mut Vec<RegisteredTool>, workspace_path: std::path::PathBuf) {
-    tools.push(RegisteredTool::from_tool(create_corpus_summary_tool(
-        workspace_path.clone(),
-    )));
-    tools.push(RegisteredTool::from_tool(create_corpus_query_tool(
-        workspace_path.clone(),
-    )));
-    tools.push(RegisteredTool::from_tool(create_corpus_neighbors_tool(
-        workspace_path.clone(),
-    )));
-    tools.push(RegisteredTool::from_tool(create_context_search_tool(
-        workspace_path,
-    )));
 }
 
 fn compose_preamble(
@@ -472,13 +440,6 @@ fn compose_preamble(
             push_section(
                 &mut sections,
                 Some(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.to_string()),
-            );
-        }
-        if workspace.corpus_available {
-            push_section(&mut sections, Some(CORPUS_SYSTEM_PROMPT.to_string()));
-            push_section(
-                &mut sections,
-                Some(CONTEXT_SEARCH_SYSTEM_PROMPT.to_string()),
             );
         }
         if tool_names.iter().any(|name| name == "delegate_exploration") {
@@ -569,13 +530,11 @@ mod tests {
         role: AgentRole,
         workspace_available: bool,
         source_edit_allowed: bool,
-        corpus_available: bool,
     ) -> HarnessProfileRequest {
         HarnessProfileRequest {
             role,
             workspace: workspace_available.then(|| ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available,
                 source_edit_allowed,
             }),
             role_guidance: Some(format!("Guidance for {role:?}")),
@@ -591,7 +550,6 @@ mod tests {
         role: AgentRole,
         workspace_available: bool,
         source_edit_allowed: bool,
-        corpus_available: bool,
     ) -> Vec<String> {
         if !workspace_available {
             return vec![];
@@ -608,16 +566,6 @@ mod tests {
             if source_edit_allowed {
                 names.push("source_edit");
             }
-        }
-        if corpus_available {
-            names.extend([
-                "corpus_summary",
-                "corpus_query",
-                "corpus_neighbors",
-                "context_search",
-            ]);
-        }
-        if role == AgentRole::Main {
             names.extend([
                 "run_shell_command",
                 "run_git_command",
@@ -628,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_matrix_covers_roles_source_edit_and_corpus() {
+    fn contract_matrix_covers_roles_and_source_edit() {
         let roles = [
             AgentRole::Main,
             AgentRole::Exploration,
@@ -639,92 +587,73 @@ mod tests {
         for role in roles {
             for workspace_available in [false, true] {
                 for source_edit_allowed in [true, false] {
-                    for corpus_available in [false, true] {
-                        let result = resolve_harness_profile(request(
+                    let result = resolve_harness_profile(request(
+                        role,
+                        workspace_available,
+                        source_edit_allowed,
+                    ));
+                    if !workspace_available && role != AgentRole::Main {
+                        assert_eq!(
+                            result.err(),
+                            Some(HarnessProfileError::WorkspaceRequired { role })
+                        );
+                        continue;
+                    }
+
+                    let profile = result.expect("valid contract-matrix profile");
+                    let names = profile.tool_names();
+                    let summary = profile.summary();
+                    assert_eq!(
+                        names,
+                        expected_tool_names(
                             role,
                             workspace_available,
                             source_edit_allowed,
-                            corpus_available,
-                        ));
-                        if !workspace_available && role != AgentRole::Main {
-                            assert_eq!(
-                                result.err(),
-                                Some(HarnessProfileError::WorkspaceRequired { role })
-                            );
-                            continue;
-                        }
+                        )
+                    );
+                    assert_eq!(summary.role, role);
+                    assert_eq!(summary.workspace_available, workspace_available);
+                    assert_eq!(summary.tool_names, names);
+                    assert_eq!(summary.guards, profile.guards);
 
-                        let profile = result.expect("valid contract-matrix profile");
-                        let names = profile.tool_names();
-                        let summary = profile.summary();
-                        assert_eq!(
-                            names,
-                            expected_tool_names(
-                                role,
-                                workspace_available,
-                                source_edit_allowed,
-                                corpus_available,
-                            )
-                        );
-                        assert_eq!(summary.role, role);
-                        assert_eq!(summary.workspace_available, workspace_available);
-                        assert_eq!(summary.tool_names, names);
-                        assert_eq!(summary.guards, profile.guards);
-                        assert_eq!(
-                            summary.corpus_enabled,
-                            workspace_available && corpus_available
-                        );
-
-                        let source_edit_expected = workspace_available
-                            && role == AgentRole::Main
-                            && source_edit_allowed;
-                        assert_eq!(
-                            names.contains(&"source_edit".to_string()),
-                            source_edit_expected
-                        );
-                        assert_eq!(summary.source_edit_enabled, source_edit_expected);
-                        assert_eq!(
-                            names.contains(&"write_harness_file".to_string()),
-                            workspace_available && role == AgentRole::Main
-                        );
-                        for mutating_name in ["source_edit", "write_harness_file"] {
-                            if role != AgentRole::Main {
-                                assert!(!names.contains(&mutating_name.to_string()));
-                            }
+                    let source_edit_expected = workspace_available
+                        && role == AgentRole::Main
+                        && source_edit_allowed;
+                    assert_eq!(
+                        names.contains(&"source_edit".to_string()),
+                        source_edit_expected
+                    );
+                    assert_eq!(summary.source_edit_enabled, source_edit_expected);
+                    assert_eq!(
+                        names.contains(&"write_harness_file".to_string()),
+                        workspace_available && role == AgentRole::Main
+                    );
+                    for mutating_name in ["source_edit", "write_harness_file"] {
+                        if role != AgentRole::Main {
+                            assert!(!names.contains(&mutating_name.to_string()));
                         }
-
-                        let corpus_expected = workspace_available && corpus_available;
-                        for corpus_name in [
-                            "corpus_summary",
-                            "corpus_query",
-                            "corpus_neighbors",
-                            "context_search",
-                        ] {
-                            assert_eq!(names.contains(&corpus_name.to_string()), corpus_expected);
-                        }
-                        let preamble = profile.preamble.unwrap_or_default();
-                        assert!(preamble.contains(&format!("Guidance for {role:?}")));
-                        assert_eq!(
-                            preamble.contains("private matched Skill text"),
-                            role == AgentRole::Main
-                        );
-                        assert_eq!(preamble.contains("Codebase Knowledge"), corpus_expected);
-                        assert_eq!(preamble.contains("`context_search`"), corpus_expected);
-                        assert_eq!(preamble.contains("Use `source_edit`"), source_edit_expected);
-                        if workspace_available && role == AgentRole::Main {
-                            assert!(preamble.contains("Harness Control Area"));
-                            assert!(preamble.contains("Shell, Git, and GitHub CLI Tools"));
-                            assert!(preamble.contains("Review Tools"));
-                        } else {
-                            assert!(!preamble.contains("Harness Control Area"));
-                            assert!(!preamble.contains("Shell, Git, and GitHub CLI Tools"));
-                            assert!(!preamble.contains("Review Tools"));
-                        }
-
-                        let serialized = serde_json::to_string(&summary).expect("summary JSON");
-                        assert!(!serialized.contains("sk-never-serialize"));
-                        assert!(!serialized.contains("private matched Skill text"));
                     }
+
+                    let preamble = profile.preamble.unwrap_or_default();
+                    assert!(preamble.contains(&format!("Guidance for {role:?}")));
+                    assert_eq!(
+                        preamble.contains("private matched Skill text"),
+                        role == AgentRole::Main
+                    );
+                    assert_eq!(preamble.contains("Use `source_edit`"), source_edit_expected);
+                    if workspace_available && role == AgentRole::Main {
+                        assert!(preamble.contains("Harness Control Area"));
+                        assert!(preamble.contains("Shell, Git, and GitHub CLI Tools"));
+                        assert!(preamble.contains("Review Tools"));
+                    } else {
+                        assert!(!preamble.contains("Harness Control Area"));
+                        assert!(!preamble.contains("Shell, Git, and GitHub CLI Tools"));
+                        assert!(!preamble.contains("Review Tools"));
+                    }
+
+                    let serialized = serde_json::to_string(&summary).expect("summary JSON");
+                    assert!(!serialized.contains("sk-never-serialize"));
+                    assert!(!serialized.contains("private matched Skill text"));
                 }
             }
         }
@@ -772,7 +701,6 @@ mod tests {
             role: AgentRole::Main,
             workspace: Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
                 source_edit_allowed: true,
             }),
             role_guidance: None,
@@ -799,7 +727,6 @@ mod tests {
             role: AgentRole::Main,
             workspace: Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
                 source_edit_allowed: true,
             }),
             role_guidance: None,
@@ -831,7 +758,7 @@ mod tests {
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
-            let profile = resolve_harness_profile(request(role, true, true, false))
+            let profile = resolve_harness_profile(request(role, true, true))
                 .expect("profile");
             let guards = profile.guards;
             assert_eq!(guards.max_turns, max_turns);
@@ -850,7 +777,6 @@ mod tests {
             role: AgentRole::Verification,
             workspace: Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
                 source_edit_allowed: true,
             }),
             role_guidance: Some("Verify".to_string()),
@@ -871,7 +797,7 @@ mod tests {
 
     #[test]
     fn memory_section_is_a_main_preamble_sibling_and_ignored_for_other_roles() {
-        let mut main_request = request(AgentRole::Main, false, true, false);
+        let mut main_request = request(AgentRole::Main, false, true);
         main_request.memory_section = Some("## Memory\nprefer bun".to_string());
         let main = resolve_harness_profile(main_request).expect("unscoped Main profile");
         let main_preamble = main.preamble.unwrap_or_default();
@@ -888,7 +814,7 @@ mod tests {
             AgentRole::ReviewDetector,
             AgentRole::ReviewValidator,
         ] {
-            let mut other = request(role, true, true, false);
+            let mut other = request(role, true, true);
             other.memory_section = Some("## Memory\nprefer bun".to_string());
             let profile = resolve_harness_profile(other).expect("workspace profile");
             let preamble = profile.preamble.unwrap_or_default();

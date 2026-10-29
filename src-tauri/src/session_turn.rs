@@ -54,13 +54,6 @@ pub trait SessionTurnWorkspace: Send + Sync {
     fn active_workspace_selection(&self) -> Option<ActiveWorkspaceSelection>;
 
     fn validate_workspace_path(&self, workspace_path: &Path) -> Result<(), String>;
-
-    fn ensure_workspace_corpus<'a>(
-        &'a self,
-        workspace_path: &'a Path,
-    ) -> SessionTurnFuture<'a, Result<Option<usize>, String>>;
-
-    fn emit_corpus_auto_build_failure(&self);
 }
 
 pub trait SessionTurnCredentials: Send + Sync {
@@ -359,8 +352,8 @@ pub async fn run_streaming_turn(
     let workspace_path = workspace_resolution.workspace_path.clone();
     let workspace_context = workspace_resolution.tool_context.clone();
 
-    eprintln!(
-        "[CORPUS-AUTO] complete_streaming workspace path: {}",
+    tracing::debug!(
+        "streaming turn workspace path: {}",
         workspace_path
             .as_ref()
             .map(|path| path.display().to_string())
@@ -552,20 +545,10 @@ async fn resolve_streaming_active_workspace(
 ) -> ResolvedActiveWorkspaceContext {
     let probe = match selection {
         Some(selection) => match workspace.validate_workspace_path(&selection.path) {
-            Ok(()) => match workspace.ensure_workspace_corpus(&selection.path).await {
-                Ok(_) => ActiveWorkspaceProbe::CorpusAvailable { selection },
-                Err(reason) => {
-                    tracing::warn!(
-                        "[CORPUS-AUTO] continuing without corpus for {}: {}",
-                        selection.path.display(),
-                        reason
-                    );
-                    ActiveWorkspaceProbe::CorpusUnavailable { selection, reason }
-                }
-            },
+            Ok(()) => ActiveWorkspaceProbe::Valid { selection },
             Err(reason) => {
                 tracing::warn!(
-                    "[CORPUS-AUTO] workspace tools unavailable for {}: {}",
+                    "workspace tools unavailable for {}: {}",
                     selection.path.display(),
                     reason
                 );
@@ -575,11 +558,7 @@ async fn resolve_streaming_active_workspace(
         None => ActiveWorkspaceProbe::NoWorkspace,
     };
 
-    let resolution = resolve_active_workspace_context(probe);
-    if resolution.corpus_failure_reason.is_some() {
-        workspace.emit_corpus_auto_build_failure();
-    }
-    resolution
+    resolve_active_workspace_context(probe)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1218,12 +1197,8 @@ pub enum ActiveWorkspaceProbe {
         selection: ActiveWorkspaceSelection,
         reason: String,
     },
-    CorpusAvailable {
+    Valid {
         selection: ActiveWorkspaceSelection,
-    },
-    CorpusUnavailable {
-        selection: ActiveWorkspaceSelection,
-        reason: String,
     },
 }
 
@@ -1232,7 +1207,6 @@ pub struct ResolvedActiveWorkspaceContext {
     pub workspace_id: Option<String>,
     pub workspace_path: Option<PathBuf>,
     pub tool_context: Option<ActiveWorkspaceContext>,
-    pub corpus_failure_reason: Option<String>,
 }
 
 pub fn resolve_active_workspace_context(
@@ -1243,36 +1217,20 @@ pub fn resolve_active_workspace_context(
             workspace_id: None,
             workspace_path: None,
             tool_context: None,
-            corpus_failure_reason: None,
         },
-        ActiveWorkspaceProbe::Invalid { selection, reason } => ResolvedActiveWorkspaceContext {
+        ActiveWorkspaceProbe::Invalid { selection, .. } => ResolvedActiveWorkspaceContext {
             workspace_id: Some(selection.id),
             workspace_path: Some(selection.path),
             tool_context: None,
-            corpus_failure_reason: Some(reason),
         },
-        ActiveWorkspaceProbe::CorpusAvailable { selection } => ResolvedActiveWorkspaceContext {
+        ActiveWorkspaceProbe::Valid { selection } => ResolvedActiveWorkspaceContext {
             workspace_id: Some(selection.id),
             workspace_path: Some(selection.path.clone()),
             tool_context: Some(ActiveWorkspaceContext {
                 workspace_path: selection.path,
-                corpus_available: true,
                 source_edit_allowed: true,
             }),
-            corpus_failure_reason: None,
         },
-        ActiveWorkspaceProbe::CorpusUnavailable { selection, reason } => {
-            ResolvedActiveWorkspaceContext {
-                workspace_id: Some(selection.id),
-                workspace_path: Some(selection.path.clone()),
-                tool_context: Some(ActiveWorkspaceContext {
-                    workspace_path: selection.path,
-                    corpus_available: false,
-                    source_edit_allowed: true,
-                }),
-                corpus_failure_reason: Some(reason),
-            }
-        }
     }
 }
 
@@ -1390,8 +1348,6 @@ mod tests {
     struct FakeSessionTurnAdapters {
         active_workspace: Option<ActiveWorkspaceSelection>,
         validate_result: Mutex<Result<(), String>>,
-        ensure_result: Mutex<Result<Option<usize>, String>>,
-        corpus_failure_emissions: Mutex<usize>,
         api_key: String,
         validated_bindings: Mutex<Vec<(String, Option<String>)>>,
         unresolved_notes: Vec<SessionNote>,
@@ -1425,8 +1381,6 @@ mod tests {
                     path: PathBuf::from("/tmp/workspace"),
                 }),
                 validate_result: Mutex::new(Ok(())),
-                ensure_result: Mutex::new(Ok(Some(3))),
-                corpus_failure_emissions: Mutex::new(0),
                 api_key: "api-key".to_string(),
                 validated_bindings: Mutex::new(Vec::new()),
                 unresolved_notes: Vec::new(),
@@ -1475,17 +1429,6 @@ mod tests {
 
         fn validate_workspace_path(&self, _workspace_path: &Path) -> Result<(), String> {
             self.validate_result.lock().unwrap().clone()
-        }
-
-        fn ensure_workspace_corpus<'a>(
-            &'a self,
-            _workspace_path: &'a Path,
-        ) -> SessionTurnFuture<'a, Result<Option<usize>, String>> {
-            Box::pin(future::ready(self.ensure_result.lock().unwrap().clone()))
-        }
-
-        fn emit_corpus_auto_build_failure(&self) {
-            *self.corpus_failure_emissions.lock().unwrap() += 1;
         }
     }
 
@@ -2201,7 +2144,6 @@ mod tests {
     fn verification_job_requires_high_risk_response_and_workspace() {
         let workspace = ActiveWorkspaceContext {
             workspace_path: PathBuf::from("/tmp/workspace"),
-            corpus_available: true,
             source_edit_allowed: true,
         };
 
@@ -2307,7 +2249,7 @@ mod tests {
     }
 
     #[test]
-    fn active_workspace_resolution_covers_none_invalid_available_and_unavailable() {
+    fn active_workspace_resolution_covers_none_invalid_and_valid() {
         let none = resolve_active_workspace_context(ActiveWorkspaceProbe::NoWorkspace);
         assert!(none.workspace_id.is_none());
         assert!(none.tool_context.is_none());
@@ -2322,24 +2264,14 @@ mod tests {
         });
         assert_eq!(invalid.workspace_id.as_deref(), Some("ws1"));
         assert!(invalid.tool_context.is_none());
-        assert_eq!(invalid.corpus_failure_reason.as_deref(), Some("missing"));
 
-        let available = resolve_active_workspace_context(ActiveWorkspaceProbe::CorpusAvailable {
-            selection: selection.clone(),
+        let valid = resolve_active_workspace_context(ActiveWorkspaceProbe::Valid {
+            selection,
         });
-        assert!(available.tool_context.unwrap().corpus_available);
-
-        let unavailable =
-            resolve_active_workspace_context(ActiveWorkspaceProbe::CorpusUnavailable {
-                selection,
-                reason: "build failed".to_string(),
-            });
-        let tool_context = unavailable.tool_context.unwrap();
-        assert!(!tool_context.corpus_available);
-        assert_eq!(
-            unavailable.corpus_failure_reason.as_deref(),
-            Some("build failed")
-        );
+        assert_eq!(valid.workspace_id.as_deref(), Some("ws1"));
+        let tool_context = valid.tool_context.unwrap();
+        assert_eq!(tool_context.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert!(tool_context.source_edit_allowed);
     }
 
     #[tokio::test]
@@ -2408,7 +2340,6 @@ mod tests {
             stream_request.workspace,
             Some(ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: true,
                 source_edit_allowed: true,
             })
         );
@@ -2483,7 +2414,7 @@ mod tests {
         assert_eq!(verifications[0].model, "gpt-test");
         assert_eq!(verifications[0].api_key, "api-key");
         assert_eq!(verifications[0].session_id.as_deref(), Some("session-1"));
-        assert!(verifications[0].workspace.corpus_available);
+        assert_eq!(verifications[0].workspace.workspace_path, PathBuf::from("/tmp/workspace"));
     }
 
     #[tokio::test]

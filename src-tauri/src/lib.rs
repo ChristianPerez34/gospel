@@ -4,15 +4,14 @@ use std::sync::Arc;
 
 mod app_config;
 pub mod approval_broker;
-pub mod context_search;
 mod conversation;
 mod copilot_models;
-pub mod corpus;
 mod credential_failure;
 mod grok_oauth;
 mod harness_plan;
 mod harness_profile;
 mod json_utils;
+pub(crate) mod symlink_guard;
 pub mod keychain;
 mod llm;
 pub mod mcp;
@@ -60,11 +59,6 @@ use approval_broker::{
     ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalRequest, ApprovalResolution,
 };
 use conversation::{ConversationState, ConversationStore};
-use corpus::commands::{
-    build_corpus, context_search, get_corpus_neighbors, get_corpus_status, get_corpus_summary,
-    query_corpus, run_corpus_build_inner,
-};
-use corpus::persistence::CorpusPersistence;
 use futures::{stream, StreamExt};
 use llm::LlmError;
 use models::{ModelInfo, ModelRegistry};
@@ -81,7 +75,6 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
-    time::Duration,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -90,11 +83,8 @@ use workspace_tools::{
     ExternalPathApproval, ExternalPathApprovalFuture, ExternalPathApprovalRequest, PathKind,
 };
 
-static CORPUS_BUILD_LOCK: LazyLock<tokio::sync::Mutex<()>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(()));
 static REJECTION_STORE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
-const CORPUS_AUTO_BUILD_COMPLETE_EVENT: &str = "corpus-auto-build-complete";
 
 pub struct SkillCache {
     pub loader: skills::SkillLoader,
@@ -362,33 +352,6 @@ struct ModelAvailabilitySnapshot {
     available_models: Vec<ModelInfo>,
     empty_reason: Option<String>,
     warnings: Vec<String>,
-}
-
-#[derive(Serialize, Clone)]
-struct CorpusAutoBuildComplete {
-    success: bool,
-    symbol_count: usize,
-}
-
-fn corpus_auto_build_complete_payload(
-    success: bool,
-    symbol_count: usize,
-) -> CorpusAutoBuildComplete {
-    CorpusAutoBuildComplete {
-        success,
-        symbol_count,
-    }
-}
-
-pub(crate) fn corpus_auto_build_failure_payload() -> CorpusAutoBuildComplete {
-    corpus_auto_build_complete_payload(false, 0)
-}
-
-pub(crate) fn emit_corpus_auto_build_complete<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    payload: CorpusAutoBuildComplete,
-) {
-    let _ = app.emit(CORPUS_AUTO_BUILD_COMPLETE_EVENT, payload);
 }
 
 pub(crate) fn validate_active_workspace_path(path: &Path) -> Result<(), String> {
@@ -963,27 +926,10 @@ mod availability_tests {
 }
 
 #[cfg(test)]
-mod corpus_auto_build_event_tests {
+mod workspace_validation_tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-
-    #[test]
-    fn failure_event_contract_uses_existing_frontend_payload() {
-        let payload = serde_json::to_value(corpus_auto_build_failure_payload()).unwrap();
-
-        assert_eq!(
-            CORPUS_AUTO_BUILD_COMPLETE_EVENT,
-            "corpus-auto-build-complete"
-        );
-        assert_eq!(
-            payload,
-            serde_json::json!({
-                "success": false,
-                "symbol_count": 0,
-            })
-        );
-    }
 
     #[test]
     fn active_workspace_path_must_exist_and_be_directory() {
@@ -1024,17 +970,6 @@ impl session_turn::SessionTurnWorkspace for TauriSessionTurnAdapters<'_> {
 
     fn validate_workspace_path(&self, workspace_path: &Path) -> Result<(), String> {
         validate_active_workspace_path(workspace_path)
-    }
-
-    fn ensure_workspace_corpus<'b>(
-        &'b self,
-        workspace_path: &'b Path,
-    ) -> session_turn::SessionTurnFuture<'b, Result<Option<usize>, String>> {
-        Box::pin(async move { ensure_workspace_corpus(self.app, workspace_path).await })
-    }
-
-    fn emit_corpus_auto_build_failure(&self) {
-        emit_corpus_auto_build_complete(self.app, corpus_auto_build_failure_payload());
     }
 }
 
@@ -1661,134 +1596,8 @@ fn remove_workspace(
     }
 }
 
-fn spawn_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf, delay: Duration) {
-    tracing::debug!(
-        "[CORPUS-AUTO] scheduling workspace-switch build for {} after {:?}",
-        workspace_path.display(),
-        delay
-    );
-    tauri::async_runtime::spawn(async move {
-        if !delay.is_zero() {
-            tokio::time::sleep(delay).await;
-        }
-
-        run_corpus_auto_build(app, workspace_path).await;
-    });
-}
-
-fn spawn_startup_corpus_auto_build(app: tauri::AppHandle) {
-    tracing::debug!("[CORPUS-AUTO] scheduling startup corpus check after 500ms");
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let workspace_path = {
-            let app_config = app.state::<AppConfigState>();
-            match &app_config.store {
-                Some(store) => match store.get_active_workspace() {
-                    Ok(Some(workspace)) => {
-                        tracing::debug!(
-                            "[CORPUS-AUTO] startup active workspace: {} ({})",
-                            workspace.name,
-                            workspace.path
-                        );
-                        Some(PathBuf::from(workspace.path))
-                    }
-                    Ok(None) => {
-                        tracing::debug!("[CORPUS-AUTO] startup check skipped: no active workspace");
-                        None
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "[CORPUS-AUTO] could not read active workspace for startup check: {}",
-                            e
-                        );
-                        None
-                    }
-                },
-                None => {
-                    tracing::debug!(
-                        "[CORPUS-AUTO] startup check skipped: app config store unavailable"
-                    );
-                    None
-                }
-            }
-        };
-
-        if let Some(workspace_path) = workspace_path {
-            run_corpus_auto_build(app, workspace_path).await;
-        }
-    });
-}
-
-async fn run_corpus_auto_build(app: tauri::AppHandle, workspace_path: PathBuf) {
-    match ensure_workspace_corpus(&app, &workspace_path).await {
-        Ok(Some(symbol_count)) => {
-            emit_corpus_auto_build_complete(
-                &app,
-                corpus_auto_build_complete_payload(true, symbol_count),
-            );
-        }
-        Ok(None) => {}
-        Err(e) => {
-            eprintln!(
-                "[CORPUS-AUTO] corpus auto-build failed for {}: {}",
-                workspace_path.display(),
-                e
-            );
-            emit_corpus_auto_build_complete(&app, corpus_auto_build_failure_payload());
-        }
-    }
-}
-
-pub(crate) async fn ensure_workspace_corpus(
-    app: &tauri::AppHandle,
-    workspace_path: &Path,
-) -> Result<Option<usize>, String> {
-    eprintln!(
-        "[CORPUS-AUTO] ensure requested for {}",
-        workspace_path.display()
-    );
-
-    validate_active_workspace_path(workspace_path)?;
-
-    let _guard = CORPUS_BUILD_LOCK.lock().await;
-    let persistence = CorpusPersistence::new(workspace_path)
-        .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
-
-    if persistence.exists() {
-        eprintln!(
-            "[CORPUS-AUTO] corpus already exists for {}",
-            workspace_path.display()
-        );
-        return Ok(None);
-    }
-
-    eprintln!(
-        "[CORPUS-AUTO] corpus missing; building for {}",
-        workspace_path.display()
-    );
-    // Use the inner (lock already held by us) to avoid re-acquiring the
-    // non-reentrant CORPUS_BUILD_LOCK and deadlocking.
-    run_corpus_build_inner(app, workspace_path, None).await?;
-
-    let persistence = CorpusPersistence::new(workspace_path)
-        .map_err(|e| format!("Failed to create persistence manager: {}", e))?;
-    let symbol_count = persistence
-        .summary_sqlite()
-        .map_err(|e| format!("Failed to query corpus summary: {}", e))?
-        .symbol_count;
-
-    eprintln!(
-        "[CORPUS-AUTO] corpus build complete for {} with {} symbols",
-        workspace_path.display(),
-        symbol_count
-    );
-    Ok(Some(symbol_count))
-}
-
 #[tauri::command]
 fn set_active_workspace(
-    app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
     skill_cache: tauri::State<'_, SkillCache>,
     id: String,
@@ -1805,23 +1614,22 @@ fn set_active_workspace(
             match store.get_active_workspace().map_err(|e| e.to_string()) {
                 Ok(Some(workspace)) => {
                     tracing::debug!(
-                        "[CORPUS-AUTO] active workspace set to {} ({})",
+                        "active workspace set to {} ({})",
                         workspace.name,
                         workspace.path
                     );
                     skill_cache
                         .loader
                         .invalidate(&PathBuf::from(&workspace.path));
-                    spawn_corpus_auto_build(app, PathBuf::from(workspace.path), Duration::ZERO);
                 }
                 Ok(None) => {
                     tracing::debug!(
-                        "[CORPUS-AUTO] set active workspace succeeded but no workspace is active"
+                        "set active workspace succeeded but no workspace is active"
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "[CORPUS-AUTO] set active workspace succeeded but could not read it back: {}",
+                        "set active workspace succeeded but could not read it back: {}",
                         e
                     );
                 }
@@ -1867,11 +1675,10 @@ fn get_active_workspace(
 /// returns a `PlanFile` sentinel with `has_plan_file == false` and all other
 /// fields empty/None — callers render a "No plan yet" state.
 ///
-/// The active workspace is resolved from `AppConfigState` (same pattern as
-/// `get_corpus_status`). The plan file path is bounded by the workspace root
-/// via the corpus `symlink_guard` helpers, so symlink-escape attacks against
-/// `.gospel/PLAN.md` are rejected the same way `write_harness_file` already
-/// guards writes.
+/// The active workspace is resolved from `AppConfigState`. The plan file path
+/// is bounded by the workspace root via the `symlink_guard` helpers, so
+/// symlink-escape attacks against `.gospel/PLAN.md` are rejected the same way
+/// `write_harness_file` already guards writes.
 #[tauri::command]
 fn read_harness_plan(
     app_config: tauri::State<'_, AppConfigState>,
@@ -1886,7 +1693,7 @@ fn read_harness_plan(
 
     let workspace_root = PathBuf::from(&workspace.path);
     let workspace_root =
-        corpus::symlink_guard::canonical(&workspace_root).map_err(|e| e.to_string())?;
+        symlink_guard::canonical(&workspace_root).map_err(|e| e.to_string())?;
     let plan_path = workspace_root.join(".gospel").join("PLAN.md");
 
     if !plan_path.exists() {
@@ -1899,10 +1706,10 @@ fn read_harness_plan(
     // Re-validate the resolved path stays under the workspace root, in case
     // `.gospel/` or `PLAN.md` is a symlink that escapes (matches the write
     // path's `validate_harness_write_target` guard).
-    corpus::symlink_guard::validate_existing_ancestors(&workspace_root, &plan_path)
+    symlink_guard::validate_existing_ancestors(&workspace_root, &plan_path)
         .map_err(|e| e.to_string())?;
-    let canonical_plan = corpus::symlink_guard::canonical(&plan_path).map_err(|e| e.to_string())?;
-    if !corpus::symlink_guard::is_within(&workspace_root, &canonical_plan) {
+    let canonical_plan = symlink_guard::canonical(&plan_path).map_err(|e| e.to_string())?;
+    if !symlink_guard::is_within(&workspace_root, &canonical_plan) {
         return Err(format!(
             "Resolved plan path {} escapes the workspace root",
             canonical_plan.display()
@@ -2051,7 +1858,6 @@ async fn run_skill_selection_replay(
     let api_key = provider_credentials::api_key_for_rig(&provider).map_err(|e| e.to_string())?;
     let workspace = harness_profile::ActiveWorkspaceContext {
         workspace_path: workspace_path.clone(),
-        corpus_available: false,
         source_edit_allowed: false,
     };
     let executor = skill_opt::LlmStudentExecutor {
@@ -2101,7 +1907,6 @@ async fn optimize_skill_from_sessions(
     let api_key = provider_credentials::api_key_for_rig(&provider).map_err(|e| e.to_string())?;
     let workspace = harness_profile::ActiveWorkspaceContext {
         workspace_path: workspace_path.clone(),
-        corpus_available: false,
         source_edit_allowed: false,
     };
     let optimizer = skill_opt::StreamCompletionSkillOptimizer {
@@ -3384,13 +3189,6 @@ pub fn run() {
             create_session_note,
             list_session_notes,
             resolve_session_note,
-            // Corpus commands
-            build_corpus,
-            get_corpus_status,
-            get_corpus_summary,
-            query_corpus,
-            get_corpus_neighbors,
-            context_search,
             gospel_reject_review_comment,
             gospel_record_review_outcome,
             read_harness_plan,
@@ -3401,7 +3199,6 @@ pub fn run() {
             });
             let broker = Arc::new(ApprovalBroker::new(emitter));
             app.state::<ApprovalBrokerState>().install(broker);
-            spawn_startup_corpus_auto_build(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

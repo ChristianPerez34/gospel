@@ -102,7 +102,6 @@ Investigate the active workspace and return a concise markdown report with exact
 
 Use broad workspace retrieval for orientation when it is available.
 Verify important hits with live workspace tools (read_file, search_code) before making claims.
-Use corpus tools for fast structure when available, and live workspace tools for source-of-truth verification.
 Do not answer as the final user-facing assistant. Return findings only.
 "#;
 
@@ -1112,7 +1111,6 @@ mod tests {
         DelegateExplorationTool {
             workspace: ActiveWorkspaceContext {
                 workspace_path: PathBuf::from("/tmp/workspace"),
-                corpus_available: false,
                 source_edit_allowed: true,
             },
             provider: "openai".to_string(),

@@ -641,7 +641,7 @@ describe("useChatStream", () => {
       await act(async () => {});
 
       const registeredCount = registeredUnlisteners.length;
-      expect(registeredCount).toBe(10);
+      expect(registeredCount).toBe(9);
 
       act(() => {
         unmount();

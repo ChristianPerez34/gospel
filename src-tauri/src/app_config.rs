@@ -303,6 +303,7 @@ impl AppConfigStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn clear_active_workspace(&self) -> Result<(), AppConfigError> {
         let conn = self.lock_conn();
         conn.execute(
@@ -312,6 +313,7 @@ impl AppConfigStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_config_value(&self, key: &str) -> Result<Option<String>, AppConfigError> {
         let conn = self.lock_conn();
         let value = conn
@@ -324,6 +326,7 @@ impl AppConfigStore {
         Ok(value)
     }
 
+    #[allow(dead_code)]
     pub fn set_config_value(&self, key: &str, value: &str) -> Result<(), AppConfigError> {
         let conn = self.lock_conn();
         conn.execute(
@@ -1029,20 +1032,11 @@ mod tests {
     }
 
     #[test]
-    fn built_in_mcp_server_is_present_disabled_and_trusted() {
+    fn built_in_mcp_servers_empty_when_corpus_deprecated() {
         let store = AppConfigStore::in_memory_for_test().unwrap();
 
         let servers = store.list_mcp_servers().unwrap();
-        let built_in = servers
-            .iter()
-            .find(|server| server.id == mcp::BUILT_IN_CODEBASE_KNOWLEDGE_ID)
-            .unwrap();
-
-        assert_eq!(built_in.kind, mcp::MCP_KIND_BUILT_IN);
-        assert!(!built_in.enabled);
-        assert!(built_in.trusted);
-        assert_eq!(built_in.safety_class, mcp::MCP_SAFETY_READ_ONLY);
-        assert_eq!(built_in.inventory.len(), 4);
+        assert!(servers.is_empty());
     }
 
     #[test]

@@ -11,11 +11,6 @@ import type {
   TurnBlock,
 } from "../types";
 
-interface CorpusAutoBuildComplete {
-  success: boolean;
-  symbol_count: number;
-}
-
 interface UseChatStreamOptions {
   onMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
   /** Routed completion for a specific session. When provided, llm-done /
@@ -974,19 +969,6 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   blocks: [...turn.blocks, { kind: "reasoning", id, text, phase: "delta" }],
                 };
               });
-            })
-          ),
-          track(
-            listen<CorpusAutoBuildComplete>("corpus-auto-build-complete", (event) => {
-              if (event.payload.success) {
-                optionsRef.current.onSuccessToast?.(
-                  `Corpus ready with ${event.payload.symbol_count} symbols.`
-                );
-              } else {
-                optionsRef.current.onErrorToast?.(
-                  "Corpus auto-build failed. Use Build Corpus to retry."
-                );
-              }
             })
           ),
           track(
