@@ -95,25 +95,74 @@ describe("InputBar", () => {
     cleanup();
   });
 
-  it.each(["Enter", "click", "Escape"])(
-    "restores trigger focus after closing with %s",
-    (action) => {
-      renderInputBar();
-      const trigger = screen.getByRole("button", { name: "Select model" });
-      fireEvent.click(trigger);
-      const search = screen.getByLabelText("Search models");
-      expect(document.activeElement).toBe(search);
+  const labeledModel = {
+    ...models[0],
+    id: modelOptionId("opencode_go", "glm-5.3"),
+    name: "glm-5.3",
+    provider: "opencode_go",
+    providerLabel: "OpenCode Go",
+    model: "glm-5.3",
+  };
 
-      if (action === "click") {
-        fireEvent.click(screen.getAllByRole("option")[0]);
-      } else {
-        fireEvent.keyDown(search, { key: action });
-      }
+  it("shows provider labels in the composer, model picker, and variant picker", () => {
+    const onModelChange = vi.fn();
+    renderInputBar({
+      models: [labeledModel],
+      selectedModel: labeledModel.id,
+      onModelChange,
+    });
 
-      expect(screen.queryByRole("listbox")).toBeNull();
-      expect(document.activeElement).toBe(trigger);
+    expect(screen.getByText("OpenCode Go")).toBeTruthy();
+    expect(screen.queryByText("opencode_go")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    fireEvent.click(screen.getByRole("option", { name: "glm-5.3 OpenCode Go" }));
+    expect(onModelChange).toHaveBeenCalledWith(labeledModel.id);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select variant" }));
+    expect(screen.getByText("Provider default · OpenCode Go")).toBeTruthy();
+  });
+
+  it.each(["OpenCode Go", "opencode_go"])("searches provider labels and IDs with %s", (query) => {
+    renderInputBar({ models: [...models, labeledModel] });
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    fireEvent.change(screen.getByLabelText("Search models"), { target: { value: query } });
+
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(screen.getByRole("option", { name: "glm-5.3 OpenCode Go" })).toBeTruthy();
+  });
+
+  it("shows provider labels for hidden models", () => {
+    renderInputBar({
+      models: [...models, labeledModel],
+      modelPreferences: emptyModelPreferences({ hidden: new Set([labeledModel.id]) }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 hidden model" }));
+
+    expect(screen.getByText("OpenCode Go")).toBeTruthy();
+    expect(screen.queryByText("opencode_go")).toBeNull();
+  });
+
+  it.each([
+    "Enter",
+    "click",
+    "Escape",
+  ])("restores trigger focus after closing with %s", (action) => {
+    renderInputBar();
+    const trigger = screen.getByRole("button", { name: "Select model" });
+    fireEvent.click(trigger);
+    const search = screen.getByLabelText("Search models");
+    expect(document.activeElement).toBe(search);
+
+    if (action === "click") {
+      fireEvent.click(screen.getAllByRole("option")[0]);
+    } else {
+      fireEvent.keyDown(search, { key: action });
     }
-  );
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
 
   it("navigates from the displayed highlight after earlier rows are hidden", () => {
     const manyModels = Array.from({ length: 5 }, (_, index) => ({
