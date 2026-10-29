@@ -164,7 +164,8 @@ export function InputBar({
     const tokens = modelQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const matches = (option: ModelOption) => {
       if (tokens.length === 0) return true;
-      const haystack = `${option.name} ${option.provider} ${option.model}`.toLowerCase();
+      const haystack =
+        `${option.name} ${option.provider} ${option.providerLabel ?? ""} ${option.model}`.toLowerCase();
       return tokens.every((token) => haystack.includes(token));
     };
     const visible: ModelOption[] = [];
@@ -550,7 +551,7 @@ export function InputBar({
                                       {m.name}
                                     </span>
                                     <span className="flex shrink-0 items-center gap-1 font-mono text-caption text-text-muted">
-                                      {m.provider}
+                                      {m.providerLabel ?? m.provider}
                                       {m.configured === false && (
                                         <span className="text-caption uppercase tracking-[0.03em] text-status-error">
                                           Not configured
@@ -634,7 +635,7 @@ export function InputBar({
                                       {m.name}
                                     </span>
                                     <span className="shrink-0 font-mono text-caption text-text-muted">
-                                      {m.provider}
+                                      {m.providerLabel ?? m.provider}
                                     </span>
                                     <button
                                       type="button"
@@ -690,7 +691,7 @@ export function InputBar({
                         {
                           id: null,
                           name: "Default",
-                          description: `Provider default${currentModel?.provider ? ` · ${currentModel.provider}` : ""}`,
+                          description: `Provider default${currentModel?.provider ? ` · ${currentModel.providerLabel ?? currentModel.provider}` : ""}`,
                         },
                         ...variants,
                       ].map((variant) => {
@@ -747,7 +748,9 @@ export function InputBar({
                   aria-hidden="true"
                 />
                 <span className="truncate font-mono">
-                  {currentModelConfigured ? currentModel.provider : "Not configured"}
+                  {currentModelConfigured
+                    ? (currentModel.providerLabel ?? currentModel.provider)
+                    : "Not configured"}
                 </span>
               </div>
             )}

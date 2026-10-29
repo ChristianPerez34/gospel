@@ -346,6 +346,7 @@ export interface ModelOption {
   id: string;
   name: string;
   provider: string;
+  providerLabel?: string;
   model: string;
   variant?: string | null;
   variantName?: string;
