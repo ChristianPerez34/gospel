@@ -1,4 +1,4 @@
-//! Helpers that ensure corpus operations stay within the active workspace,
+//! Helpers that keep workspace operations within the active workspace,
 //! even when the workspace contains attacker-planted symlinks.
 
 use std::io;
