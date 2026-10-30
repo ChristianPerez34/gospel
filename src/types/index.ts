@@ -330,6 +330,13 @@ export interface Workspace {
   sessionCount: number;
 }
 
+export interface WorkspaceGitContext {
+  branch: string | null;
+  revision: string | null;
+  root: string;
+  isWorktree: boolean;
+}
+
 /**
  * Parsed contents of `.gospel/PLAN.md`. Mirrors the Rust `PlanFile` struct in
  * `src-tauri/src/harness_plan.rs`. Returned by the `read_harness_plan` Tauri

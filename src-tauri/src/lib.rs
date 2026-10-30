@@ -7,6 +7,7 @@ pub mod approval_broker;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
+mod git_context;
 mod grok_oauth;
 mod harness_plan;
 mod harness_profile;
@@ -1732,6 +1733,27 @@ fn get_active_workspace(
     get_active_workspace_response(app_config.inner(), session_store.inner())
 }
 
+#[tauri::command]
+fn get_workspace_git_context(
+    app_config: tauri::State<'_, AppConfigState>,
+    workspace_id: String,
+) -> Result<Option<git_context::WorkspaceGitContext>, String> {
+    let store = app_config.store.as_ref().ok_or_else(|| {
+        app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())
+    })?;
+    let workspace = store
+        .list_workspaces()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+
+    git_context::inspect_workspace(Path::new(&workspace.path))
+}
+
 /// Read-only Tauri command that returns the parsed contents of
 /// `.gospel/PLAN.md` for the active workspace. If the file does not exist,
 /// returns a `PlanFile` sentinel with `has_plan_file == false` and all other
@@ -3215,6 +3237,7 @@ pub fn run() {
             remove_workspace,
             set_active_workspace,
             get_active_workspace,
+            get_workspace_git_context,
             list_skills,
             reload_skills,
             harvest_skill_optimization_tasks,
