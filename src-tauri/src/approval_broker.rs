@@ -111,11 +111,21 @@ impl ApprovalRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomyMode {
+    #[default]
+    Ask,
+    Auto,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
     Approve,
     Deny,
+    AlwaysAllow,
+    AlwaysDeny,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +134,8 @@ pub enum ApprovalOutcome {
     Approved,
     Denied,
     TimedOut,
+    AutoApproved,
+    AutoDenied,
 }
 
 impl ApprovalOutcome {
@@ -132,11 +144,132 @@ impl ApprovalOutcome {
             ApprovalOutcome::TimedOut
         } else {
             match decision {
-                Some(ApprovalDecision::Approve) => ApprovalOutcome::Approved,
-                _ => ApprovalOutcome::Denied,
+                Some(ApprovalDecision::Approve) | Some(ApprovalDecision::AlwaysAllow) => {
+                    ApprovalOutcome::Approved
+                }
+                Some(ApprovalDecision::Deny) | Some(ApprovalDecision::AlwaysDeny) => {
+                    ApprovalOutcome::Denied
+                }
+                None => ApprovalOutcome::Denied,
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApprovalPolicyPayload {
+    pub mode: AutonomyMode,
+    pub allowed_patterns: Vec<String>,
+    pub reject_patterns: Vec<String>,
+}
+
+pub const DEFAULT_REJECT_PATTERNS: &[&str] = &[
+    "rm *",
+    "rm",
+    "rmdir *",
+    "rmdir",
+    "git push *--force*",
+    "git push *-f*",
+    "git reset*",
+    "git clean*",
+    "git checkout *-f*",
+    "git checkout *--force*",
+    "git branch *-D*",
+    "git branch *--delete*--force*",
+    "sudo *",
+    "su *",
+    "chmod *",
+    "chown *",
+    "mkfs*",
+    "dd *",
+    "fdisk*",
+];
+
+pub fn canonical_command_pattern(command: &str) -> String {
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return command.trim().to_string();
+    }
+    let multi_token_tools = [
+        "git", "gh", "cargo", "bun", "npm", "pnpm", "yarn", "docker", "kubectl",
+    ];
+    if parts.len() >= 2 && multi_token_tools.contains(&parts[0].to_ascii_lowercase().as_str()) {
+        format!("{} {}", parts[0], parts[1])
+    } else {
+        parts[0].to_string()
+    }
+}
+
+pub fn matches_command_pattern(command: &str, pattern: &str) -> bool {
+    let cmd = command.trim();
+    let pat = pattern.trim();
+    if pat.is_empty() || cmd.is_empty() {
+        return false;
+    }
+    if cmd.eq_ignore_ascii_case(pat) {
+        return true;
+    }
+    if pat.contains('*') {
+        let segments: Vec<&str> = pat.split('*').collect();
+        let mut remaining = cmd;
+        let mut first = true;
+        for segment in segments {
+            if segment.is_empty() {
+                continue;
+            }
+            if first && !pat.starts_with('*') {
+                if !remaining.to_ascii_lowercase().starts_with(&segment.to_ascii_lowercase()) {
+                    return false;
+                }
+                remaining = &remaining[segment.len()..];
+            } else {
+                match remaining.to_ascii_lowercase().find(&segment.to_ascii_lowercase()) {
+                    Some(pos) => {
+                        remaining = &remaining[pos + segment.len()..];
+                    }
+                    None => return false,
+                }
+            }
+            first = false;
+        }
+        if !pat.ends_with('*') && !remaining.is_empty() {
+            let last_segment = pat.rsplit('*').next().unwrap_or("");
+            return cmd.to_ascii_lowercase().ends_with(&last_segment.to_ascii_lowercase());
+        }
+        return true;
+    }
+    if cmd.len() > pat.len() {
+        let (head, tail) = cmd.split_at(pat.len());
+        if head.eq_ignore_ascii_case(pat) && tail.starts_with(char::is_whitespace) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn matches_sensitive_target(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let sensitive = [
+        ".env",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "credentials",
+        ".git/config",
+        ".ssh/",
+    ];
+    for s in sensitive {
+        if lower.contains(s) {
+            return true;
+        }
+    }
+    false
+}
+
+struct PendingEntry {
+    sender: oneshot::Sender<ApprovalDecision>,
+    summary: Option<String>,
+    risk: ApprovalRisk,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,9 +297,12 @@ pub trait ApprovalEventEmitter: Send + Sync {
 ///   outcome derivation) lives behind `request` so adding "always allow"
 ///   persistence later is a single-file change.
 pub struct ApprovalBroker {
-    pending: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
+    pending: Mutex<HashMap<String, PendingEntry>>,
     emitter: Arc<dyn ApprovalEventEmitter>,
     timeout: ApprovalTimeout,
+    autonomy_mode: Mutex<AutonomyMode>,
+    allowed_patterns: Mutex<Vec<String>>,
+    reject_patterns: Mutex<Vec<String>>,
 }
 
 impl ApprovalBroker {
@@ -182,22 +318,184 @@ impl ApprovalBroker {
             pending: Mutex::new(HashMap::new()),
             emitter,
             timeout,
+            autonomy_mode: Mutex::new(AutonomyMode::Ask),
+            allowed_patterns: Mutex::new(Vec::new()),
+            reject_patterns: Mutex::new(
+                DEFAULT_REJECT_PATTERNS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
         }
+    }
+
+    pub fn is_command_rejected(&self, command: &str, risk: ApprovalRisk) -> bool {
+        if matches!(risk, ApprovalRisk::Destructive) {
+            return true;
+        }
+        if matches_sensitive_target(command) {
+            return true;
+        }
+        let reject = self.reject_patterns.lock().expect("approval broker poisoned");
+        for pat in reject.iter() {
+            if matches_command_pattern(command, pat) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn matches_allow(&self, command: &str) -> bool {
+        let allowed = self.allowed_patterns.lock().expect("approval broker poisoned");
+        for pat in allowed.iter() {
+            if matches_command_pattern(command, pat) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn should_auto_approve(&self, request: &ApprovalRequest) -> bool {
+        if matches!(request.risk, ApprovalRisk::Destructive) {
+            return false;
+        }
+        if self.is_command_rejected(&request.summary, request.risk) {
+            return false;
+        }
+        let mode = *self.autonomy_mode.lock().expect("approval broker poisoned");
+        if matches!(mode, AutonomyMode::Auto) && matches!(request.kind, ApprovalKind::Command) {
+            return true;
+        }
+        self.matches_allow(&request.summary)
+    }
+
+    pub fn add_allow_rule_for_command(&self, command: &str) {
+        let canonical = canonical_command_pattern(command);
+        let mut allowed = self.allowed_patterns.lock().expect("approval broker poisoned");
+        if !canonical.is_empty() && !allowed.contains(&canonical) {
+            allowed.push(canonical.clone());
+        }
+        let exact = command.trim().to_string();
+        if !exact.is_empty() && exact != canonical && !allowed.contains(&exact) {
+            allowed.push(exact);
+        }
+    }
+
+    pub fn add_reject_rule_for_command(&self, command: &str) {
+        let canonical = canonical_command_pattern(command);
+        let mut reject = self.reject_patterns.lock().expect("approval broker poisoned");
+        if !canonical.is_empty() && !reject.contains(&canonical) {
+            reject.push(canonical);
+        }
+    }
+
+    pub fn policy(&self) -> ApprovalPolicyPayload {
+        let mode = *self.autonomy_mode.lock().expect("approval broker poisoned");
+        let allowed_patterns = self
+            .allowed_patterns
+            .lock()
+            .expect("approval broker poisoned")
+            .clone();
+        let reject_patterns = self
+            .reject_patterns
+            .lock()
+            .expect("approval broker poisoned")
+            .clone();
+        ApprovalPolicyPayload {
+            mode,
+            allowed_patterns,
+            reject_patterns,
+        }
+    }
+
+    pub fn set_autonomy_mode(&self, mode: AutonomyMode) {
+        let mut guard = self.autonomy_mode.lock().expect("approval broker poisoned");
+        *guard = mode;
+    }
+
+    pub fn autonomy_mode(&self) -> AutonomyMode {
+        *self.autonomy_mode.lock().expect("approval broker poisoned")
+    }
+
+    pub fn add_allow_rule(&self, pattern: impl Into<String>) {
+        let pattern = pattern.into().trim().to_string();
+        if pattern.is_empty() {
+            return;
+        }
+        let mut allowed = self.allowed_patterns.lock().expect("approval broker poisoned");
+        if !allowed.contains(&pattern) {
+            allowed.push(pattern);
+        }
+    }
+
+    pub fn add_reject_rule(&self, pattern: impl Into<String>) {
+        let pattern = pattern.into().trim().to_string();
+        if pattern.is_empty() {
+            return;
+        }
+        let mut reject = self.reject_patterns.lock().expect("approval broker poisoned");
+        if !reject.contains(&pattern) {
+            reject.push(pattern);
+        }
+    }
+
+    pub fn remove_rule(&self, pattern: &str) -> bool {
+        let mut removed = false;
+        {
+            let mut allowed = self.allowed_patterns.lock().expect("approval broker poisoned");
+            if let Some(pos) = allowed.iter().position(|p| p == pattern) {
+                allowed.remove(pos);
+                removed = true;
+            }
+        }
+        {
+            let mut reject = self.reject_patterns.lock().expect("approval broker poisoned");
+            if let Some(pos) = reject.iter().position(|p| p == pattern) {
+                reject.remove(pos);
+                removed = true;
+            }
+        }
+        removed
+    }
+
+    pub fn clear_rules(&self) {
+        let mut allowed = self.allowed_patterns.lock().expect("approval broker poisoned");
+        allowed.clear();
+        let mut reject = self.reject_patterns.lock().expect("approval broker poisoned");
+        reject.clear();
+        reject.extend(DEFAULT_REJECT_PATTERNS.iter().map(|s| s.to_string()));
     }
 
     /// Register a request, emit it to the frontend, and wait for a decision.
     ///
-    /// Returns `true` only when the frontend explicitly approves before the
-    /// timeout elapses. Anything else (deny, timeout, dropped channel)
-    /// resolves to `false` so callers default to "do not execute".
+    /// If the request matches an allow rule or autonomy mode (and does not
+    /// violate reject guardrails), it auto-approves immediately and emits
+    /// an `approval-resolved` event with `AutoApproved`.
+    ///
+    /// Otherwise, waits for the frontend decision or timeout.
     pub async fn request(&self, request: ApprovalRequest) -> bool {
         let id = request.id.clone();
         let run_id = request.run_id.clone();
 
+        if self.should_auto_approve(&request) {
+            let outcome = ApprovalOutcome::AutoApproved;
+            self.emitter.emit_requested(&request);
+            self.emitter
+                .emit_resolved(&ApprovalResolution { id, outcome, run_id });
+            return true;
+        }
+
         let (sender, receiver) = oneshot::channel();
         {
             let mut pending = self.pending.lock().expect("approval broker poisoned");
-            pending.insert(id.clone(), sender);
+            pending.insert(
+                id.clone(),
+                PendingEntry {
+                    sender,
+                    summary: Some(request.summary.clone()),
+                    risk: request.risk,
+                },
+            );
         }
 
         self.emitter.emit_requested(&request);
@@ -227,19 +525,34 @@ impl ApprovalBroker {
         self.emitter
             .emit_resolved(&ApprovalResolution { id, outcome, run_id });
 
-        matches!(outcome, ApprovalOutcome::Approved)
+        matches!(outcome, ApprovalOutcome::Approved | ApprovalOutcome::AutoApproved)
     }
 
     /// Frontend-driven decision. Returns `true` if a pending request was
-    /// found and notified. Idempotent: resolving an already-resolved request
-    /// is a no-op (returns `false`).
+    /// found and notified. If the decision is `AlwaysAllow` or `AlwaysDeny`,
+    /// automatically adds the rule into broker policy.
     pub fn resolve(&self, id: &str, decision: ApprovalDecision) -> bool {
-        let sender = {
+        let entry = {
             let mut pending = self.pending.lock().expect("approval broker poisoned");
             pending.remove(id)
         };
-        match sender {
-            Some(sender) => sender.send(decision).is_ok(),
+        match entry {
+            Some(entry) => {
+                if let Some(cmd) = &entry.summary {
+                    match decision {
+                        ApprovalDecision::AlwaysAllow => {
+                            if !matches!(entry.risk, ApprovalRisk::Destructive) {
+                                self.add_allow_rule_for_command(cmd);
+                            }
+                        }
+                        ApprovalDecision::AlwaysDeny => {
+                            self.add_reject_rule_for_command(cmd);
+                        }
+                        _ => {}
+                    }
+                }
+                entry.sender.send(decision).is_ok()
+            }
             None => false,
         }
     }
@@ -455,5 +768,179 @@ mod tests {
         // Reference the atomic import so the test compiles even if no
         // assertion needs it; signals the intent of "every id is distinct".
         let _ = AtomicUsize::new(0).load(Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn always_allow_decision_adds_rule_and_auto_approves_subsequent_commands() {
+        let (broker, emitter) = test_broker();
+        let request1 = ApprovalRequest::command(
+            "run_shell_command",
+            "cargo test --lib",
+            "Run tests.",
+            false,
+            None,
+        );
+        let id1 = request1.id.clone();
+        let broker_for_task = broker.clone();
+        let task1 = tokio::spawn(async move { broker_for_task.request(request1).await });
+
+        wait_for_pending(&broker).await;
+        assert_eq!(broker.pending_count(), 1);
+
+        assert!(broker.resolve(&id1, ApprovalDecision::AlwaysAllow));
+        assert!(task1.await.unwrap());
+
+        // Policy should now have allowed rules for "cargo test" and "cargo test --lib"
+        let policy = broker.policy();
+        assert!(policy.allowed_patterns.contains(&"cargo test".to_string()));
+
+        // Subsequent matching command should auto-approve without waiting in pending!
+        let request2 = ApprovalRequest::command(
+            "run_shell_command",
+            "cargo test --bin my_bin",
+            "Run bin tests.",
+            false,
+            None,
+        );
+        let approved2 = broker.request(request2).await;
+        assert!(approved2);
+        assert_eq!(broker.pending_count(), 0);
+
+        let resolved = emitter.resolved.lock().unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[1].outcome, ApprovalOutcome::AutoApproved);
+    }
+
+    #[tokio::test]
+    async fn always_allow_does_not_auto_approve_destructive_commands() {
+        let (broker, _emitter) = test_broker();
+        broker.add_allow_rule("git push");
+
+        // Even though "git push" is in allowed_patterns, destructive is NOT auto-approved!
+        let request = ApprovalRequest::command(
+            "run_git_command",
+            "git push origin main",
+            "Destructive push.",
+            true, // destructive!
+            None,
+        );
+        let broker_for_task = broker.clone();
+        let task = tokio::spawn(async move { broker_for_task.request(request).await });
+
+        wait_for_pending(&broker).await;
+        assert_eq!(broker.pending_count(), 1);
+        let id = {
+            let pending = broker.pending.lock().unwrap();
+            pending.keys().next().unwrap().clone()
+        };
+        assert!(broker.resolve(&id, ApprovalDecision::Approve));
+        assert!(task.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reject_patterns_guardrail_blocks_auto_approval() {
+        let (broker, _emitter) = test_broker();
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+
+        // A safe mutating command auto-approves in Auto mode
+        let safe_cmd = ApprovalRequest::command(
+            "run_shell_command",
+            "mkdir -p build",
+            "Create dir.",
+            false,
+            None,
+        );
+        assert!(broker.request(safe_cmd).await);
+        assert_eq!(broker.pending_count(), 0);
+
+        // A command matching a reject pattern (rm *) is blocked from auto-approval
+        let rm_cmd = ApprovalRequest::command(
+            "run_shell_command",
+            "rm -rf build",
+            "Delete dir.",
+            false,
+            None,
+        );
+        let broker_for_task = broker.clone();
+        let task = tokio::spawn(async move { broker_for_task.request(rm_cmd).await });
+
+        wait_for_pending(&broker).await;
+        assert_eq!(broker.pending_count(), 1);
+        let id = {
+            let pending = broker.pending.lock().unwrap();
+            pending.keys().next().unwrap().clone()
+        };
+        assert!(broker.resolve(&id, ApprovalDecision::Deny));
+        assert!(!task.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn sensitive_targets_are_rejected_from_auto_approval() {
+        let (broker, _emitter) = test_broker();
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+
+        let env_cmd = ApprovalRequest::command(
+            "run_shell_command",
+            "cat .env.local",
+            "Read env file.",
+            false,
+            None,
+        );
+        let broker_for_task = broker.clone();
+        let task = tokio::spawn(async move { broker_for_task.request(env_cmd).await });
+
+        wait_for_pending(&broker).await;
+        assert_eq!(broker.pending_count(), 1);
+        let id = {
+            let pending = broker.pending.lock().unwrap();
+            pending.keys().next().unwrap().clone()
+        };
+        assert!(broker.resolve(&id, ApprovalDecision::Deny));
+        assert!(!task.await.unwrap());
+    }
+
+    #[test]
+    fn pattern_matching_and_canonicalization() {
+        assert_eq!(canonical_command_pattern("git add src/foo.rs"), "git add");
+        assert_eq!(canonical_command_pattern("cargo test --lib"), "cargo test");
+        assert_eq!(canonical_command_pattern("bun run test"), "bun run");
+        assert_eq!(canonical_command_pattern("mkdir -p test"), "mkdir");
+
+        assert!(matches_command_pattern("cargo test --lib", "cargo test"));
+        assert!(matches_command_pattern("cargo test", "cargo test"));
+        assert!(!matches_command_pattern("cargo testing", "cargo test"));
+
+        assert!(matches_command_pattern("rm -rf foo", "rm *"));
+        assert!(matches_command_pattern("git reset --hard", "git reset*"));
+        assert!(matches_command_pattern(
+            "git push origin main --force",
+            "git push *--force*"
+        ));
+        assert!(!matches_command_pattern(
+            "git push origin main",
+            "git push *--force*"
+        ));
+    }
+
+    #[test]
+    fn policy_management_rules() {
+        let (broker, _) = test_broker();
+        assert_eq!(broker.autonomy_mode(), AutonomyMode::Ask);
+
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        assert_eq!(broker.autonomy_mode(), AutonomyMode::Auto);
+
+        broker.add_allow_rule("bun test");
+        let policy = broker.policy();
+        assert!(policy.allowed_patterns.contains(&"bun test".to_string()));
+
+        assert!(broker.remove_rule("bun test"));
+        assert!(!broker.policy().allowed_patterns.contains(&"bun test".to_string()));
+
+        broker.add_allow_rule("cargo check");
+        broker.clear_rules();
+        assert!(broker.policy().allowed_patterns.is_empty());
+        // Default rejects are preserved
+        assert!(broker.policy().reject_patterns.contains(&"rm *".to_string()));
     }
 }

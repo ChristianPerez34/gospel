@@ -7,11 +7,13 @@ import {
   LayoutDashboard,
   PanelLeft,
   Settings2,
+  Shield,
   Sparkles,
+  Zap,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { needsYouLabel } from "../sessionActivity";
-import type { AgentStatus, Workspace } from "../types";
+import type { AgentStatus, AutonomyMode, Workspace } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
 interface TopBarProps {
@@ -19,6 +21,9 @@ interface TopBarProps {
   sessionTitle: string;
   model: string;
   status: AgentStatus;
+  autonomyMode?: AutonomyMode;
+  onToggleAutonomy?: () => void;
+  allowedRuleCount?: number;
   onWorkspaceSwitch: () => void;
   onSessionTitleChange: (title: string) => void;
   onToggleSessions: () => void;
@@ -151,6 +156,9 @@ export function TopBar({
   sessionTitle,
   model,
   status,
+  autonomyMode = "ask",
+  onToggleAutonomy,
+  allowedRuleCount = 0,
   onWorkspaceSwitch,
   onSessionTitleChange,
   onToggleSessions,
@@ -236,6 +244,38 @@ export function TopBar({
               <Cpu size={13} strokeWidth={1.6} aria-hidden="true" />
               <span>{model}</span>
             </span>
+            {onToggleAutonomy && (
+              <button
+                type="button"
+                className={`topbar-autonomy-badge transition-transform duration-150 ease-out active:scale-[0.97] ${
+                  autonomyMode === "auto" ? "is-autonomous" : ""
+                }`}
+                onClick={onToggleAutonomy}
+                data-testid="topbar-autonomy-toggle"
+                title={
+                  autonomyMode === "auto"
+                    ? "Autonomous execution active: Safe commands auto-execute; destructive actions always prompt (Click to switch to Ask mode)"
+                    : `Ask mode active: Approvals required for mutating commands${
+                        allowedRuleCount > 0
+                          ? ` (${allowedRuleCount} always-allowed rule${allowedRuleCount > 1 ? "s" : ""})`
+                          : ""
+                      } (Click to switch to Autonomous mode)`
+                }
+                aria-label={`Command autonomy: ${autonomyMode === "auto" ? "Autonomous" : "Ask mode"}`}
+              >
+                {autonomyMode === "auto" ? (
+                  <>
+                    <Zap size={12} strokeWidth={2} className="text-status-warning" aria-hidden="true" />
+                    <span>Auto</span>
+                  </>
+                ) : (
+                  <>
+                    <Shield size={12} strokeWidth={1.8} className="text-text-muted" aria-hidden="true" />
+                    <span>Ask</span>
+                  </>
+                )}
+              </button>
+            )}
             <StatusIndicator status={status} />
           </>
         )}

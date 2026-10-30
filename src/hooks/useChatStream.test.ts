@@ -454,6 +454,33 @@ describe("useChatStream", () => {
       expect(approvalBlocks[0]).toMatchObject({ status: "approved" });
     });
 
+    it("resolves with always_allow decision and handles auto_approved outcome", async () => {
+      const onResolveApproval = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderChatStream({ onResolveApproval });
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent("approval-requested", BASE_APPROVAL_REQUEST);
+      });
+
+      await act(async () => {
+        await result.current.resolveApproval("approval-1", "always_allow");
+      });
+      expect(onResolveApproval).toHaveBeenCalledWith("approval-1", "always_allow");
+
+      await act(async () => {
+        triggerEvent("approval-resolved", { id: "approval-1", outcome: "auto_approved" });
+      });
+
+      const turn = result.current.currentTurn!;
+      const block = turn.blocks.find((b) => b.kind === "approval" && b.id === "approval-1");
+      expect(block).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "auto_approved",
+      });
+    });
+
     it("approval-requested with a background run_id stashes the card under that session, not currentTurn", async () => {
       const onLiveTurnForSession = vi.fn();
       const { result } = renderChatStream({

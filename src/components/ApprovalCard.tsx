@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { ApprovalRisk, TurnBlock } from "../types";
+import type { ApprovalDecision, ApprovalRisk, TurnBlock } from "../types";
 
 type ApprovalBlock = Extract<TurnBlock, { kind: "approval" }>;
 
 interface ApprovalCardProps {
   block: ApprovalBlock;
-  onResolve?: (id: string, decision: "approve" | "deny") => Promise<void>;
+  onResolve?: (id: string, decision: ApprovalDecision) => Promise<void>;
 }
 
 const RISK_LABEL: Record<ApprovalRisk, string> = {
@@ -24,15 +24,19 @@ const RISK_ACCENT: Record<ApprovalRisk, string> = {
 const STATUS_LABEL: Record<ApprovalBlock["status"], string> = {
   pending: "Awaiting your decision",
   approved: "Allowed",
+  auto_approved: "Auto-allowed",
   denied: "Denied",
+  auto_denied: "Auto-rejected",
   timed_out: "Timed out",
 };
 
 function statusClass(status: ApprovalBlock["status"]): string {
   switch (status) {
     case "approved":
+    case "auto_approved":
       return "text-status-success";
     case "denied":
+    case "auto_denied":
       return "text-status-error";
     case "timed_out":
       return "text-text-muted";
@@ -42,11 +46,12 @@ function statusClass(status: ApprovalBlock["status"]): string {
 }
 
 export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
-  const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
+  const [busy, setBusy] = useState<ApprovalDecision | null>(null);
   const isPending = block.status === "pending";
   const canResolve = isPending && Boolean(onResolve) && busy === null;
+  const isDestructive = block.risk === "destructive";
 
-  const resolve = async (decision: "approve" | "deny") => {
+  const resolve = async (decision: ApprovalDecision) => {
     if (!onResolve) return;
     setBusy(decision);
     try {
@@ -62,7 +67,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
 
   return (
     <li
-      className="approval-card grid gap-2 rounded-sm border border-surface-overlay bg-surface-elevated p-3"
+      className="approval-card grid gap-2 rounded-lg border border-surface-overlay bg-surface-elevated p-3 transition-[opacity,transform,border-color] duration-200 ease-out"
       data-approval-id={block.id}
       data-approval-status={block.status}
       aria-label={`${block.title}: ${block.summary}`}
@@ -93,16 +98,31 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
         {block.reason}
       </p>
       {isPending && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 pt-1">
           <Button
             size="sm"
             onClick={() => resolve("approve")}
             disabled={!canResolve}
             aria-busy={busy === "approve"}
             data-testid={`approval-allow-${block.id}`}
+            className="transition-transform duration-150 ease-out active:scale-[0.97]"
           >
             Allow
           </Button>
+          {!isDestructive && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => resolve("always_allow")}
+              disabled={!canResolve}
+              aria-busy={busy === "always_allow"}
+              data-testid={`approval-always-allow-${block.id}`}
+              className="transition-transform duration-150 ease-out active:scale-[0.97]"
+              title="Automatically execute this command in the future without asking"
+            >
+              Always Allow
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -110,10 +130,13 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
             disabled={!canResolve}
             aria-busy={busy === "deny"}
             data-testid={`approval-deny-${block.id}`}
+            className="transition-transform duration-150 ease-out active:scale-[0.97]"
           >
             Deny
           </Button>
-          <span className="font-mono text-caption text-text-muted">Auto-denies in 60s</span>
+          <span className="ml-auto font-mono text-caption text-text-muted">
+            {isDestructive ? "Guarded · Auto-denies in 60s" : "Auto-denies in 60s"}
+          </span>
         </div>
       )}
     </li>

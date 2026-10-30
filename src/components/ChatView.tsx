@@ -3,7 +3,7 @@ import { Streamdown } from "streamdown";
 import { Button } from "@/components/ui/button";
 import { codePlugin } from "@/lib/markdown";
 import { summarizeLiveToolActivity, toolActivitiesToTimelineSteps } from "../toolActivityCards";
-import type { CurrentTurn, Message, ToolCallActivity, TurnBlock } from "../types";
+import type { ApprovalDecision, CurrentTurn, Message, ToolCallActivity, TurnBlock } from "../types";
 import { ActivityStep } from "./ActivityStep";
 import { ApprovalCard } from "./ApprovalCard";
 import { MessageBlock } from "./MessageBlock";
@@ -13,14 +13,14 @@ interface ChatViewProps {
   workspacePath: string;
   isThinking: boolean;
   currentTurn?: CurrentTurn | null;
-  onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
+  onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<void>;
 }
 
 interface AgentTurnBlockProps {
   message?: Message;
   currentTurn?: CurrentTurn;
   isThinking: boolean;
-  onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
+  onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<void>;
 }
 
 type TextTurnBlock = Extract<TurnBlock, { kind: "text" }>;
@@ -112,7 +112,7 @@ function ToolTimeline({
   onResolveApproval,
 }: {
   blocks: ActivityTurnBlock[];
-  onResolveApproval?: (id: string, decision: "approve" | "deny") => Promise<void>;
+  onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<void>;
 }) {
   const toolBlocks = useMemo(
     () => blocks.filter((b): b is ToolTurnBlock => b.kind === "tool"),

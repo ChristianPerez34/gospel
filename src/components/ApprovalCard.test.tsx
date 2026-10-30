@@ -62,6 +62,55 @@ describe("ApprovalCard", () => {
     );
     fireEvent.click(screen.getByTestId("approval-deny-approval-1"));
     expect(onResolve).toHaveBeenCalledWith("approval-1", "deny");
+
+    // Mount fresh card to test Always Allow
+    onResolve.mockClear();
+    cleanup();
+    render(
+      <ol>
+        <ApprovalCard block={pendingApproval()} onResolve={onResolve} />
+      </ol>
+    );
+    fireEvent.click(screen.getByTestId("approval-always-allow-approval-1"));
+    expect(onResolve).toHaveBeenCalledWith("approval-1", "always_allow");
+  });
+
+  it("does not render Always Allow button for destructive commands", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ risk: "destructive", id: "dest-1" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.getByTestId("approval-allow-dest-1")).toBeTruthy();
+    expect(screen.getByTestId("approval-deny-dest-1")).toBeTruthy();
+    expect(screen.queryByTestId("approval-always-allow-dest-1")).toBeNull();
+    expect(screen.getByText(/Guarded/)).toBeTruthy();
+  });
+
+  it("renders auto_approved and auto_denied statuses", () => {
+    const { rerender } = render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ status: "auto_approved" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+    expect(screen.getByText("Auto-allowed")).toBeTruthy();
+
+    rerender(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ status: "auto_denied" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+    expect(screen.getByText("Auto-rejected")).toBeTruthy();
   });
 
   it("hides the actions once the request is resolved and shows the outcome", () => {

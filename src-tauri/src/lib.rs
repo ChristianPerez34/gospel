@@ -56,7 +56,8 @@ mod model_fetch {
 
 use app_config::{AppConfigError, AppConfigState, AppConfigStore, Workspace};
 use approval_broker::{
-    ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalRequest, ApprovalResolution,
+    ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalPolicyPayload, ApprovalRequest,
+    ApprovalResolution, AutonomyMode,
 };
 use conversation::{ConversationState, ConversationStore};
 use futures::{stream, StreamExt};
@@ -1514,6 +1515,63 @@ fn resolve_approval_request(
 ) -> Result<bool, String> {
     let broker = state.broker()?;
     Ok(broker.resolve(&id, decision))
+}
+
+#[tauri::command]
+fn get_approval_policy(
+    state: tauri::State<'_, ApprovalBrokerState>,
+) -> Result<ApprovalPolicyPayload, String> {
+    let broker = state.broker()?;
+    Ok(broker.policy())
+}
+
+#[tauri::command]
+fn set_autonomy_mode(
+    state: tauri::State<'_, ApprovalBrokerState>,
+    mode: AutonomyMode,
+) -> Result<ApprovalPolicyPayload, String> {
+    let broker = state.broker()?;
+    broker.set_autonomy_mode(mode);
+    Ok(broker.policy())
+}
+
+#[tauri::command]
+fn add_approval_allow_rule(
+    state: tauri::State<'_, ApprovalBrokerState>,
+    pattern: String,
+) -> Result<ApprovalPolicyPayload, String> {
+    let broker = state.broker()?;
+    broker.add_allow_rule(pattern);
+    Ok(broker.policy())
+}
+
+#[tauri::command]
+fn add_approval_reject_rule(
+    state: tauri::State<'_, ApprovalBrokerState>,
+    pattern: String,
+) -> Result<ApprovalPolicyPayload, String> {
+    let broker = state.broker()?;
+    broker.add_reject_rule(pattern);
+    Ok(broker.policy())
+}
+
+#[tauri::command]
+fn remove_approval_rule(
+    state: tauri::State<'_, ApprovalBrokerState>,
+    pattern: String,
+) -> Result<ApprovalPolicyPayload, String> {
+    let broker = state.broker()?;
+    broker.remove_rule(&pattern);
+    Ok(broker.policy())
+}
+
+#[tauri::command]
+fn clear_approval_rules(
+    state: tauri::State<'_, ApprovalBrokerState>,
+) -> Result<ApprovalPolicyPayload, String> {
+    let broker = state.broker()?;
+    broker.clear_rules();
+    Ok(broker.policy())
 }
 
 fn hydrate_workspace_session_counts(
@@ -3142,6 +3200,12 @@ pub fn run() {
             logout_provider_oauth,
             pick_workspace_directory,
             resolve_approval_request,
+            get_approval_policy,
+            set_autonomy_mode,
+            add_approval_allow_rule,
+            add_approval_reject_rule,
+            remove_approval_rule,
+            clear_approval_rules,
             list_workspaces,
             add_workspace,
             remove_workspace,
