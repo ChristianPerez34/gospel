@@ -53,37 +53,26 @@ export function useAutonomyPolicy(): UseAutonomyPolicyReturn {
     }
   }, []);
 
-  const addAllowRule = useCallback(async (pattern: string) => {
+  const addRule = useCallback(async (kind: "allow" | "reject", pattern: string) => {
     try {
-      const updated = await invoke<ApprovalPolicy>("add_approval_allow_rule", { pattern });
+      const updated = await invoke<ApprovalPolicy>(`add_approval_${kind}_rule`, { pattern });
       if (updated && typeof updated === "object") {
         setPolicy(updated);
       } else {
+        const field = kind === "allow" ? "allowed_patterns" : "reject_patterns";
         setPolicy((prev) => ({
           ...(prev ?? DEFAULT_POLICY),
-          allowed_patterns: [...(prev?.allowed_patterns ?? []), pattern],
+          [field]: [...(prev?.[field] ?? []), pattern],
         }));
       }
     } catch (e) {
-      console.error("[useAutonomyPolicy] failed to add allow rule:", e);
+      console.error(`[useAutonomyPolicy] failed to add ${kind} rule:`, e);
     }
   }, []);
 
-  const addRejectRule = useCallback(async (pattern: string) => {
-    try {
-      const updated = await invoke<ApprovalPolicy>("add_approval_reject_rule", { pattern });
-      if (updated && typeof updated === "object") {
-        setPolicy(updated);
-      } else {
-        setPolicy((prev) => ({
-          ...(prev ?? DEFAULT_POLICY),
-          reject_patterns: [...(prev?.reject_patterns ?? []), pattern],
-        }));
-      }
-    } catch (e) {
-      console.error("[useAutonomyPolicy] failed to add reject rule:", e);
-    }
-  }, []);
+  const addAllowRule = useCallback((pattern: string) => addRule("allow", pattern), [addRule]);
+
+  const addRejectRule = useCallback((pattern: string) => addRule("reject", pattern), [addRule]);
 
   const removeRule = useCallback(async (pattern: string) => {
     try {

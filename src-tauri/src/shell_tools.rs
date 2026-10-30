@@ -207,6 +207,15 @@ impl CommandPolicy {
             return safety;
         }
 
+        let command_args = git_subcommand_args(args);
+        if command_args.len() != args.len() {
+            // Global options may change Git's execution context or configuration.
+            // Preserve the approval requirement even for read-only subcommands.
+            return match self.classify_git(command_args, workspace_root) {
+                CommandSafety::ReadOnly => CommandSafety::Mutating,
+                safety => safety,
+            };
+        }
         let subcommand = args[0].to_ascii_lowercase();
 
         // Hard-block destructive git options.
@@ -917,6 +926,20 @@ fn has_path_escape_for_values<'a>(
     None
 }
 
+/// Strip Git's global options consistently for risk classification and policy matching.
+pub(crate) fn git_subcommand_args<T: AsRef<str>>(args: &[T]) -> &[T] {
+    let mut subcommand = 0;
+    while subcommand < args.len() {
+        match args[subcommand].as_ref() {
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env"
+            | "--super-prefix" => subcommand += 2,
+            option if option.starts_with('-') => subcommand += 1,
+            _ => break,
+        }
+    }
+    &args[subcommand.min(args.len())..]
+}
+
 fn shell_path_argument_value<'a>(
     program: &str,
     args: &'a [String],
@@ -966,6 +989,7 @@ fn is_shell_file_operand(program: &str, args: &[String], index: usize) -> bool {
     if !matches!(
         program,
         "cat" | "head" | "tail" | "ls" | "find" | "grep" | "rg" | "stat" | "file" | "wc"
+            | "mkdir" | "touch"
     ) {
         return false;
     }
@@ -2780,6 +2804,162 @@ mod tests {
 
         assert!(!workspace_scoped.load(Ordering::SeqCst));
         assert_eq!(output.needs_approval, Some(true));
+    }
+
+    #[tokio::test]
+    async fn autonomy_guardrails_require_approval_for_spaced_external_paths() {
+        use crate::approval_broker::{ApprovalBroker, AutonomyMode};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        for (program, relative) in [
+            ("mkdir", false),
+            ("touch", false),
+            ("mkdir", true),
+            ("touch", true),
+        ] {
+            let emitter = Arc::new(GuardrailEmitter::default());
+            let broker = Arc::new(ApprovalBroker::with_timeout(
+                emitter.clone(),
+                Duration::from_millis(1),
+            ));
+            broker.set_autonomy_mode(AutonomyMode::Auto);
+            let approval = Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            });
+            let executor = CommandExecutor::new(root.clone(), Some(approval));
+            let target = fixture.path().join(format!("outside {program}"));
+            let operand = if relative {
+                format!("../outside {program}")
+            } else {
+                target.display().to_string()
+            };
+            let output = executor
+                .run_shell(program.to_string(), vec![operand], Some(5))
+                .await
+                .unwrap();
+
+            assert_eq!(emitter.requested.load(Ordering::SeqCst), 1, "{program}");
+            assert_eq!(output.reason.as_deref(), Some("approval_denied"));
+            assert!(!target.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn autonomy_guardrails_allow_spaced_workspace_paths() {
+        use crate::approval_broker::{ApprovalBroker, AutonomyMode};
+
+        let root = tempfile::tempdir().unwrap();
+        let broker = Arc::new(ApprovalBroker::with_timeout(
+            Arc::new(GuardrailEmitter::default()),
+            Duration::from_millis(1),
+        ));
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        let executor = CommandExecutor::new(
+            root.path().to_path_buf(),
+            Some(Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            })),
+        );
+        for program in ["mkdir", "touch"] {
+            let target = format!("inside {program}");
+            let output = executor
+                .run_shell(program.to_string(), vec![target.clone()], Some(5))
+                .await
+                .unwrap();
+            assert!(output.success, "{program}: {output:?}");
+            assert!(root.path().join(target).exists());
+        }
+    }
+
+    #[test]
+    fn autonomy_guardrails_classify_git_global_options_consistently() {
+        let policy = CommandPolicy;
+        for prefix in [
+            vec!["-C", "."],
+            vec!["-c", "core.abbrev=7"],
+            vec!["--git-dir=."],
+            vec!["--work-tree", "."],
+            vec!["--no-pager", "-C.", "-ccore.abbrev=7"],
+        ] {
+            for (command, expected) in [
+                (vec!["tag", "-d", "marker"], CommandSafety::Destructive),
+                (vec!["branch", "-D", "topic"], CommandSafety::Destructive),
+                (vec!["checkout", "-f", "main"], CommandSafety::Destructive),
+                (vec!["status"], CommandSafety::Mutating),
+                (vec!["tag", "marker"], CommandSafety::Mutating),
+                (
+                    vec!["reset", "--hard"],
+                    CommandSafety::Blocked("git_reset_hard".to_string()),
+                ),
+                (
+                    vec!["push", "--force"],
+                    CommandSafety::Blocked("git_push_force".to_string()),
+                ),
+                (
+                    vec!["clean", "-fd"],
+                    CommandSafety::Blocked("git_clean".to_string()),
+                ),
+            ] {
+                let args: Vec<String> = prefix
+                    .iter()
+                    .chain(command.iter())
+                    .map(|arg| arg.to_string())
+                    .collect();
+                assert_eq!(policy.classify_git(&args, &workspace()), expected, "{args:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn autonomy_guardrails_require_approval_for_git_global_option_deletion() {
+        use crate::approval_broker::ApprovalBroker;
+
+        let root = tempfile::tempdir().unwrap();
+        for prefix in [
+            vec!["-C", "."],
+            vec!["-c", "core.abbrev=7"],
+            vec!["-C."],
+            vec!["-ccore.abbrev=7"],
+            vec!["--no-pager", "-C", ".", "-c", "core.abbrev=7"],
+        ] {
+            let emitter = Arc::new(GuardrailEmitter::default());
+            let broker = Arc::new(ApprovalBroker::with_timeout(
+                emitter.clone(),
+                Duration::from_millis(1),
+            ));
+            broker.add_allow_rule_for_command("git tag review-marker");
+            let approval = Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            });
+            let executor = CommandExecutor::new(root.path().to_path_buf(), Some(approval));
+            let args = prefix
+                .into_iter()
+                .chain(["tag", "-d", "review-marker"])
+                .map(str::to_string)
+                .collect();
+            let output = executor.run_git(args, Some(5)).await.unwrap();
+
+            assert_eq!(emitter.requested.load(Ordering::SeqCst), 1);
+            assert_eq!(output.reason.as_deref(), Some("approval_denied"));
+        }
+    }
+
+    #[derive(Default)]
+    struct GuardrailEmitter {
+        requested: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::approval_broker::ApprovalEventEmitter for GuardrailEmitter {
+        fn emit_requested(&self, _: &crate::approval_broker::ApprovalRequest) {
+            self.requested.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn emit_resolved(&self, _: &crate::approval_broker::ApprovalResolution) {}
     }
 
     #[tokio::test]
