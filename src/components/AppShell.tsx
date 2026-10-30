@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
+import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useModelPreferences } from "../hooks/useModelPreferences";
 import { useSessionManager } from "../hooks/useSessionManager";
@@ -172,6 +173,11 @@ export function AppShell() {
     onSuccess: showSuccess,
   });
   const modelPreferences = useModelPreferences();
+  const {
+    mode: autonomyMode,
+    setMode: setAutonomyMode,
+    policy: autonomyPolicy,
+  } = useAutonomyPolicy();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const sessionLoadGenerationRef = useRef(0);
@@ -986,6 +992,9 @@ export function AppShell() {
         onSessionTitleChange={handleSessionTitleChange}
         model={currentModelName}
         status={session.status}
+        autonomyMode={autonomyMode}
+        onToggleAutonomy={() => setAutonomyMode(autonomyMode === "auto" ? "ask" : "auto")}
+        allowedRuleCount={autonomyPolicy.allowed_patterns.length}
         runningTaskCount={session.streamingSessionIds.length}
         showWorkspaceSwitch={taskRailCollapsed}
         needsYouCount={needsYouCount}

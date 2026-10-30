@@ -21,15 +21,28 @@ export type ReviewMode =
   | { type: "pull_request"; pr_number: number }
   | { type: "full_scan" };
 
-// ── In-app approval flow (one-time, no persistence) ──
+// ── In-app approval flow & autonomy ──
 
 export type ApprovalKind = "command" | "external_path";
 
 export type ApprovalRisk = "mutating" | "destructive" | "external_access";
 
-export type ApprovalDecision = "approve" | "deny";
+export type ApprovalDecision = "approve" | "deny" | "always_allow" | "always_deny";
 
-export type ApprovalOutcome = "approved" | "denied" | "timed_out";
+export type ApprovalOutcome =
+  | "approved"
+  | "denied"
+  | "timed_out"
+  | "auto_approved"
+  | "auto_denied";
+
+export type AutonomyMode = "ask" | "auto";
+
+export interface ApprovalPolicy {
+  mode: AutonomyMode;
+  allowed_patterns: string[];
+  reject_patterns: string[];
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -39,6 +52,7 @@ export interface ApprovalRequest {
   summary: string;
   reason: string;
   risk: ApprovalRisk;
+  workspace_scoped?: boolean;
   /** Streaming run that owns this request; used to route the approval card
    *  to the correct session's live turn. Absent/null falls back to the
    *  focused session. */
@@ -126,7 +140,8 @@ export type TurnBlock =
       summary: string;
       reason: string;
       risk: ApprovalRisk;
-      status: "pending" | "approved" | "denied" | "timed_out";
+      workspaceScoped?: boolean;
+      status: "pending" | "approved" | "denied" | "timed_out" | "auto_approved" | "auto_denied";
     };
 
 export interface CurrentTurn {

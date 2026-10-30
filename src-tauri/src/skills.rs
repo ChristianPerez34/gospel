@@ -240,6 +240,7 @@ impl PortableTool for RunSkillScriptTool {
                 command_label,
                 reason,
                 risk: CommandRisk::Mutating,
+                workspace_scoped: false,
             })
             .await;
 

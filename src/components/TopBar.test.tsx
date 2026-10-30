@@ -142,4 +142,29 @@ describe("TopBar", () => {
     renderTopBar();
     expect(screen.getByRole("button", { name: "Toggle tasks" }).textContent).toBe("");
   });
+
+  it("renders autonomy mode badge and triggers onToggleAutonomy on click", () => {
+    const onToggleAutonomy = vi.fn();
+    renderTopBar({
+      autonomyMode: "ask",
+      onToggleAutonomy,
+      allowedRuleCount: 2,
+    });
+
+    const badge = screen.getByTestId("topbar-autonomy-toggle");
+    expect(badge.textContent).toContain("Ask");
+    expect(badge.getAttribute("title")).toContain("2 always-allowed rules");
+
+    fireEvent.click(badge);
+    expect(onToggleAutonomy).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    renderTopBar({
+      autonomyMode: "auto",
+      onToggleAutonomy,
+    });
+    const autoBadge = screen.getByTestId("topbar-autonomy-toggle");
+    expect(autoBadge.textContent).toContain("Auto");
+    expect(autoBadge.classList.contains("is-autonomous")).toBe(true);
+  });
 });

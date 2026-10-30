@@ -7,7 +7,15 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AgentStatus, CurrentTurn, Message, ModelOption, Session, TurnBlock } from "../types";
+import type {
+  AgentStatus,
+  ApprovalDecision,
+  CurrentTurn,
+  Message,
+  ModelOption,
+  Session,
+  TurnBlock,
+} from "../types";
 import { type ModelVariantWarningPayload, useChatStream } from "./useChatStream";
 import type { SelectedModel } from "./useModelAvailability";
 
@@ -63,7 +71,7 @@ export interface UseSessionManagerResult {
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
   handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
-  resolveApproval: (id: string, decision: "approve" | "deny") => Promise<void>;
+  resolveApproval: (id: string, decision: ApprovalDecision) => Promise<void>;
   cancelStream: () => Promise<void>;
   cancelStreamForSession: (sessionId: string | null) => Promise<void>;
 }
