@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { SkillSummary } from "../hooks/useSkills";
-import { findClosestSkill } from "../utils/levenshtein";
+import { filterSkills } from "../utils/skillSearch";
 
 interface SlashCommandMenuProps {
   skills: SkillSummary[];
@@ -18,14 +18,7 @@ export function SlashCommandMenu({
   onReload,
 }: SlashCommandMenuProps) {
   const { filtered, suggestion } = useMemo(() => {
-    const lower = filter.toLowerCase();
-    const matched = skills.filter((s) => s.name.toLowerCase().startsWith(lower));
-
-    if (matched.length > 0 || lower.length === 0) {
-      return { filtered: matched, suggestion: null as string | null };
-    }
-
-    return { filtered: [], suggestion: findClosestSkill(lower, skills) };
+    return filterSkills(skills, filter);
   }, [skills, filter]);
 
   if (!visible) return null;

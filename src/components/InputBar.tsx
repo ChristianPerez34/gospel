@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import type { ModelPreferences } from "../hooks/useModelPreferences";
 import { useSkills } from "../hooks/useSkills";
 import type { ModelOption } from "../types";
-import { findClosestSkill } from "../utils/levenshtein";
+import { filterSkills } from "../utils/skillSearch";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 
 interface InputBarProps {
@@ -240,8 +240,9 @@ export function InputBar({
 
     const firstLine = value.split("\n")[0] ?? "";
     if (firstLine.startsWith("/")) {
+      const hasSpace = /\s/.test(firstLine);
       const match = firstLine.match(/^\/([a-zA-Z0-9-]*)/);
-      if (match) {
+      if (match && !hasSpace) {
         setSlashFilter(match[1]);
         setShowSlashMenu(true);
         setUnknownSkill(null);
@@ -380,10 +381,11 @@ export function InputBar({
           const lower = match[1].toLowerCase();
           const exact = skills.find((s) => s.name.toLowerCase() === lower);
           if (!exact) {
-            const best = findClosestSkill(lower, skills);
-            if (best) {
+            const { filtered, suggestion } = filterSkills(skills, lower);
+            const target = filtered[0]?.name ?? suggestion;
+            if (target) {
               e.preventDefault();
-              handleSlashSelect(best);
+              handleSlashSelect(target);
               return;
             }
           }
