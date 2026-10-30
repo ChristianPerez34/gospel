@@ -2,14 +2,14 @@
 
 ## Overview
 
-Gospel discovers user-authored **skills** from the workspace and global data directory. A skill is a `SKILL.md` file with YAML frontmatter and a markdown body. Skills can steer the LLM's behaviour and bundle executable scripts.
+Gospel discovers user-authored **skills** from the workspace and the user-level agents directory. A skill is a `SKILL.md` file with YAML frontmatter and a markdown body. Skills can steer the LLM's behaviour and bundle executable scripts.
 
 ## Discovery
 
 Skills are scanned from two locations on every `list_skills` call (with caching):
 
 1. `<workspace>/.agents/skills/<name>/SKILL.md`
-2. `<app_data_dir>/skills/<name>/SKILL.md`
+2. `~/.agents/skills/<name>/SKILL.md`
 
 Workspace skills take precedence over global skills when names collide.
 
