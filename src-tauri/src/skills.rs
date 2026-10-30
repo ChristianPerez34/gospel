@@ -538,7 +538,7 @@ fn discover_skills_in_dir(skills_dir: &Path, source: SkillSource) -> Result<Vec<
 }
 
 pub fn global_skills_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join("gospel").join("skills"))
+    dirs::home_dir().map(|dir| dir.join(".agents").join("skills"))
 }
 
 pub fn list_skill_summaries(
@@ -553,6 +553,7 @@ pub fn list_skill_summaries(
 
 pub struct SkillLoader {
     cache: RwLock<HashMap<PathBuf, Vec<Skill>>>,
+    global_dir: Option<PathBuf>,
 }
 
 impl Default for SkillLoader {
@@ -565,6 +566,7 @@ impl SkillLoader {
     pub fn new() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
+            global_dir: global_skills_dir(),
         }
     }
 
@@ -579,8 +581,7 @@ impl SkillLoader {
             }
         }
 
-        let global_dir = self::global_skills_dir();
-        let discovered = discover_skills(workspace_path, global_dir.as_deref());
+        let discovered = discover_skills(workspace_path, self.global_dir.as_deref());
 
         if let Some(ref key) = canonical_key {
             if let Ok(mut cache) = self.cache.write() {
@@ -1336,12 +1337,22 @@ mod tests {
     }
 
     #[test]
+    fn global_skills_dir_is_user_agents_dir() {
+        let dir = global_skills_dir().expect("home dir should resolve");
+        assert_eq!(
+            dir,
+            dirs::home_dir().unwrap().join(".agents").join("skills")
+        );
+    }
+
+    #[test]
     fn loader_load_caches_results() {
         let dir = tempdir().unwrap();
         let skills_dir = dir.path().join(".agents").join("skills");
         write_skill(&skills_dir, "test", "test", "desc", "body");
 
-        let loader = SkillLoader::new();
+        let mut loader = SkillLoader::new();
+        loader.global_dir = Some(dir.path().join("global-skills"));
         let skills1 = loader.load(Some(dir.path()));
         assert_eq!(skills1.len(), 1);
 
@@ -1358,7 +1369,8 @@ mod tests {
         let skills_dir = dir.path().join(".agents").join("skills");
         write_skill(&skills_dir, "test", "test", "desc", "body");
 
-        let loader = SkillLoader::new();
+        let mut loader = SkillLoader::new();
+        loader.global_dir = Some(dir.path().join("global-skills"));
         loader.load(Some(dir.path()));
 
         loader.invalidate(dir.path());
