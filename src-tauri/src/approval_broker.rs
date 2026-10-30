@@ -209,28 +209,9 @@ fn normalize_command_for_policy(command: &str) -> String {
     let args: Vec<&str> = parts.collect();
 
     if executable.eq_ignore_ascii_case("git") {
-        let mut subcommand = 0;
-        while subcommand < args.len() {
-            match args[subcommand] {
-                "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env"
-                | "--super-prefix" => subcommand += 2,
-                option
-                    if option.starts_with("--git-dir=")
-                        || option.starts_with("--work-tree=")
-                        || option.starts_with("--namespace=")
-                        || option.starts_with("--config-env=")
-                        || option.starts_with("--super-prefix=")
-                        || option.starts_with("-C") && option.len() > 2
-                        || option.starts_with("-c") && option.len() > 2
-                        || option.starts_with('-') =>
-                {
-                    subcommand += 1;
-                }
-                _ => break,
-            }
-        }
-        return if subcommand < args.len() {
-            format!("git {}", args[subcommand..].join(" "))
+        let args = crate::shell_tools::git_subcommand_args(&args);
+        return if !args.is_empty() {
+            format!("git {}", args.join(" "))
         } else {
             "git".to_string()
         };
