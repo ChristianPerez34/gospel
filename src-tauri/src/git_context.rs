@@ -50,8 +50,7 @@ pub fn inspect_workspace(path: &Path) -> Result<Option<WorkspaceGitContext>, Str
         branch,
         revision,
         root: root_path.to_string_lossy().into_owned(),
-        is_worktree: resolve_git_dir(git_dir, &root_path)
-            != resolve_git_dir(common_dir, &root_path),
+        is_worktree: resolve_git_dir(git_dir, path) != resolve_git_dir(common_dir, path),
     }))
 }
 
@@ -69,12 +68,12 @@ fn run_git(path: &Path, args: &[&str]) -> Result<Option<String>, String> {
     ))
 }
 
-fn resolve_git_dir(path: &str, root: &Path) -> PathBuf {
+fn resolve_git_dir(path: &str, working_dir: &Path) -> PathBuf {
     let path = PathBuf::from(path);
     let path = if path.is_absolute() {
         path
     } else {
-        root.join(path)
+        working_dir.join(path)
     };
     std::fs::canonicalize(&path).unwrap_or(path)
 }
@@ -142,10 +141,33 @@ mod tests {
             std::fs::canonicalize(&linked_path).unwrap()
         );
 
+        let linked_subdirectory = linked_path.join("src").join("nested");
+        std::fs::create_dir_all(&linked_subdirectory).unwrap();
+        let nested_linked = inspect_workspace(&linked_subdirectory).unwrap().unwrap();
+        assert_eq!(nested_linked.branch, linked.branch);
+        assert_eq!(nested_linked.root, linked.root);
+        assert!(nested_linked.is_worktree);
+
         git(&linked_path, &["checkout", "--detach"]);
         let detached = inspect_workspace(&linked_path).unwrap().unwrap();
         assert_eq!(detached.branch, None);
         assert!(detached.revision.is_some());
+    }
+
+    #[test]
+    fn does_not_report_repository_subdirectories_as_linked_worktrees() {
+        let temp = TempDir::new().unwrap();
+        git(temp.path(), &["init", "--initial-branch=main"]);
+        let subdirectory = temp.path().join("src").join("nested");
+        std::fs::create_dir_all(&subdirectory).unwrap();
+
+        let context = inspect_workspace(&subdirectory).unwrap().unwrap();
+        assert_eq!(context.branch.as_deref(), Some("main"));
+        assert_eq!(
+            Path::new(&context.root),
+            std::fs::canonicalize(temp.path()).unwrap()
+        );
+        assert!(!context.is_worktree);
     }
 
     #[test]

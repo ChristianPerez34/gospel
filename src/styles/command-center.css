@@ -107,15 +107,15 @@
 .topbar-git-context {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   max-width: 260px;
   height: 25px;
-  padding: 0 7px;
+  padding: 0 8px;
   border-radius: 6px;
   background: color-mix(in srgb, var(--surface-overlay) 40%, transparent);
   color: var(--text-secondary);
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -133,7 +133,7 @@
 
 .topbar-git-kind {
   flex-shrink: 0;
-  padding-left: 5px;
+  padding-left: 4px;
   border-left: 1px solid var(--surface-line);
   color: var(--text-muted);
   font-family: var(--font-body);
@@ -1408,11 +1408,8 @@
     max-width: 106px;
   }
   .topbar-git-context {
-    max-width: 96px;
-    padding: 0 5px;
-  }
-  .topbar-git-kind {
-    display: none;
+    max-width: 130px;
+    padding: 0 4px;
   }
   .topbar-actions {
     gap: 6px;
