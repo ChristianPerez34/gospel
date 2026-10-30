@@ -296,14 +296,18 @@ impl CommandApproval for BrokerCommandApproval {
         let run_id = self.run_id.clone();
         Box::pin(async move {
             let destructive = matches!(request.risk, CommandRisk::Destructive);
+            let workspace_scoped = request.workspace_scoped;
             broker
-                .request(ApprovalRequest::command(
-                    request.tool_name,
-                    request.command_label,
-                    request.reason,
-                    destructive,
-                    run_id.as_deref(),
-                ))
+                .request(
+                    ApprovalRequest::command(
+                        request.tool_name,
+                        request.command_label,
+                        request.reason,
+                        destructive,
+                        run_id.as_deref(),
+                    )
+                    .with_workspace_scope(workspace_scoped),
+                )
                 .await
         })
     }

@@ -52,6 +52,7 @@ export interface ApprovalRequest {
   summary: string;
   reason: string;
   risk: ApprovalRisk;
+  workspace_scoped?: boolean;
   /** Streaming run that owns this request; used to route the approval card
    *  to the correct session's live turn. Absent/null falls back to the
    *  focused session. */
@@ -139,6 +140,7 @@ export type TurnBlock =
       summary: string;
       reason: string;
       risk: ApprovalRisk;
+      workspaceScoped?: boolean;
       status: "pending" | "approved" | "denied" | "timed_out" | "auto_approved" | "auto_denied";
     };
 

@@ -50,6 +50,8 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
   const isPending = block.status === "pending";
   const canResolve = isPending && Boolean(onResolve) && busy === null;
   const isDestructive = block.risk === "destructive";
+  const canAlwaysAllow =
+    block.approvalKind === "command" && !isDestructive && block.workspaceScoped !== false;
 
   const resolve = async (decision: ApprovalDecision) => {
     if (!onResolve) return;
@@ -109,7 +111,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
           >
             Allow
           </Button>
-          {!isDestructive && (
+          {canAlwaysAllow && (
             <Button
               size="sm"
               variant="secondary"

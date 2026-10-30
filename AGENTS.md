@@ -43,14 +43,15 @@ Gospel exposes three agent-facing tools for workspace command execution:
 ### Safety model
 
 - Read-only commands run directly.
-- Mutating or destructive commands require one-time user approval via a native Tauri dialog.
+- Mutating commands require one-time approval in Ask mode. Auto mode skips prompts only for a small allowlist of safe command families; other commands remain interactive unless explicitly always-allowed.
+- Destructive and sensitive commands are never auto-approved; hard-blocked commands continue to fail closed.
 - Hard-blocked commands always fail without approval:
   - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
   - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
   - `git push --force`, `git reset --hard`, `git clean`
   - `gh repo delete`
   - Shell interpreters (`sh`, `bash`, `zsh`, `powershell`, etc.) invoked through `run_shell_command`
-- Workspace-escaping paths require approval.
+- Workspace-escaping command paths and external-path requests require per-request approval; command allow rules never apply to external-path requests.
 
 ### Implementation notes
 

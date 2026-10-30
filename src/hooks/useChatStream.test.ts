@@ -75,6 +75,7 @@ const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   summary: "Runs `ls`",
   reason: "Mutating shell command",
   risk: "mutating",
+  workspace_scoped: true,
 };
 
 function turnText(turn: { blocks?: TurnBlock[] } | null | undefined): string {
@@ -424,6 +425,24 @@ describe("useChatStream", () => {
         id: "approval-1",
         status: "approved",
       });
+    });
+
+    it("preserves workspace scope on command approval cards", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          id: "approval-escape",
+          workspace_scoped: false,
+        });
+      });
+
+      const approvalBlock = result.current.currentTurn!.blocks.find(
+        (block) => block.kind === "approval" && block.id === "approval-escape"
+      );
+      expect(approvalBlock).toMatchObject({ workspaceScoped: false });
     });
 
     it("resolveApproval invokes the resolver on every call (not call-site idempotent); card transitions once per approval-resolved event", async () => {

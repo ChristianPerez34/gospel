@@ -27,7 +27,9 @@ You can run shell, git, and GitHub CLI commands in the active workspace.
 ### Safety Rules
 
 - Read-only commands run directly.
-- Mutating or destructive commands require one-time user approval before execution.
+- Mutating commands require approval in Ask mode. Auto mode skips prompts only for a small allowlist of safe command families; other commands remain interactive unless explicitly always-allowed.
+- Destructive and sensitive commands are never auto-approved; hard-blocked commands continue to fail closed.
+- Workspace-escaping command paths and external-path requests require per-request approval; command allow rules never apply to external-path requests.
 - The following are always blocked:
   - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
   - Any command containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
@@ -1054,6 +1056,7 @@ pub struct CommandApprovalRequest {
     pub command_label: String,
     pub reason: String,
     pub risk: CommandRisk,
+    pub workspace_scoped: bool,
 }
 
 pub(crate) type CommandApprovalFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
@@ -1098,16 +1101,29 @@ impl CommandExecutor {
     ) -> Result<CommandOutput, ShellToolError> {
         let classify_program = program.clone();
         let classify_args = args.clone();
-        let safety = self
+        let (safety, workspace_scoped) = self
             .classify_blocking(move |policy, workspace_root| {
-                policy.classify_shell(&classify_program, &classify_args, &workspace_root)
+                let workspace_scoped = executable_name(&classify_program)
+                    == classify_program.as_str()
+                    && has_shell_path_escape(&classify_program, &classify_args, &workspace_root)
+                        .is_none();
+                let safety =
+                    policy.classify_shell(&classify_program, &classify_args, &workspace_root);
+                (safety, workspace_scoped)
             })
             .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
-        self.run_with_approval(RunShellCommandTool::NAME, &program, &args, safety, timeout)
-            .await
+        self.run_with_approval(
+            RunShellCommandTool::NAME,
+            &program,
+            &args,
+            safety,
+            workspace_scoped,
+            timeout,
+        )
+        .await
     }
 
     pub async fn run_git(
@@ -1116,16 +1132,25 @@ impl CommandExecutor {
         timeout_seconds: Option<u64>,
     ) -> Result<CommandOutput, ShellToolError> {
         let classify_args = args.clone();
-        let safety = self
+        let (safety, workspace_scoped) = self
             .classify_blocking(move |policy, workspace_root| {
-                policy.classify_git(&classify_args, &workspace_root)
+                let workspace_scoped = has_path_escape(&classify_args, &workspace_root).is_none();
+                let safety = policy.classify_git(&classify_args, &workspace_root);
+                (safety, workspace_scoped)
             })
             .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
-        self.run_with_approval(RunGitCommandTool::NAME, "git", &args, safety, timeout)
-            .await
+        self.run_with_approval(
+            RunGitCommandTool::NAME,
+            "git",
+            &args,
+            safety,
+            workspace_scoped,
+            timeout,
+        )
+        .await
     }
 
     pub async fn run_gh(
@@ -1134,21 +1159,33 @@ impl CommandExecutor {
         timeout_seconds: Option<u64>,
     ) -> Result<CommandOutput, ShellToolError> {
         let classify_args = args.clone();
-        let safety = self
+        let (safety, workspace_scoped) = self
             .classify_blocking(move |policy, workspace_root| {
-                policy.classify_gh(&classify_args, &workspace_root)
+                let workspace_scoped = has_path_escape(&classify_args, &workspace_root).is_none();
+                let safety = policy.classify_gh(&classify_args, &workspace_root);
+                (safety, workspace_scoped)
             })
             .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
-        self.run_with_approval(RunGithubCliCommandTool::NAME, "gh", &args, safety, timeout)
-            .await
+        self.run_with_approval(
+            RunGithubCliCommandTool::NAME,
+            "gh",
+            &args,
+            safety,
+            workspace_scoped,
+            timeout,
+        )
+        .await
     }
 
-    async fn classify_blocking<F>(&self, classify: F) -> Result<CommandSafety, ShellToolError>
+    async fn classify_blocking<F>(
+        &self,
+        classify: F,
+    ) -> Result<(CommandSafety, bool), ShellToolError>
     where
-        F: FnOnce(CommandPolicy, PathBuf) -> CommandSafety + Send + 'static,
+        F: FnOnce(CommandPolicy, PathBuf) -> (CommandSafety, bool) + Send + 'static,
     {
         let policy = self.policy.clone();
         let workspace_root = self.workspace_root.clone();
@@ -1163,6 +1200,7 @@ impl CommandExecutor {
         program: &str,
         args: &[String],
         safety: CommandSafety,
+        workspace_scoped: bool,
         timeout: Duration,
     ) -> Result<CommandOutput, ShellToolError> {
         match safety {
@@ -1179,7 +1217,9 @@ impl CommandExecutor {
             }),
             CommandSafety::Mutating | CommandSafety::Destructive => {
                 let label = command_label(program, args);
-                let approved = self.request_approval(tool_name, &label, &safety).await;
+                let approved = self
+                    .request_approval(tool_name, &label, &safety, workspace_scoped)
+                    .await;
                 if !approved {
                     Ok(CommandOutput {
                         success: false,
@@ -1314,6 +1354,7 @@ impl CommandExecutor {
         tool_name: &'static str,
         command_label: &str,
         safety: &CommandSafety,
+        workspace_scoped: bool,
     ) -> bool {
         let Some(approval) = &self.approval else {
             return false;
@@ -1337,6 +1378,7 @@ impl CommandExecutor {
                 command_label: command_label.to_string(),
                 reason,
                 risk,
+                workspace_scoped,
             })
             .await
     }
@@ -2712,6 +2754,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approval_request_marks_workspace_escaping_command() {
+        let workspace_scoped = Arc::new(AtomicBool::new(true));
+        let approval = Arc::new(RecordingScopeApproval {
+            workspace_scoped: workspace_scoped.clone(),
+        });
+        let executor = CommandExecutor::new(workspace(), Some(approval));
+        let output = executor
+            .run_shell(
+                "mkdir".to_string(),
+                vec!["/tmp/gospel-approval-scope-test".to_string()],
+                Some(5),
+            )
+            .await
+            .expect("tool should return output");
+
+        assert!(!workspace_scoped.load(Ordering::SeqCst));
+        assert_eq!(output.needs_approval, Some(true));
+
+        workspace_scoped.store(true, Ordering::SeqCst);
+        let output = executor
+            .run_shell("/tmp/mkdir".to_string(), vec!["build".to_string()], Some(5))
+            .await
+            .expect("tool should return output");
+
+        assert!(!workspace_scoped.load(Ordering::SeqCst));
+        assert_eq!(output.needs_approval, Some(true));
+    }
+
+    #[tokio::test]
     async fn blocked_command_returns_blocked_reason() {
         let executor = CommandExecutor::new(workspace(), None);
         let output = executor
@@ -2728,6 +2799,21 @@ mod tests {
 
     struct AlwaysApproval {
         approved: Arc<AtomicBool>,
+    }
+
+    struct RecordingScopeApproval {
+        workspace_scoped: Arc<AtomicBool>,
+    }
+
+    impl CommandApproval for RecordingScopeApproval {
+        fn request_approval<'a>(
+            &'a self,
+            request: CommandApprovalRequest,
+        ) -> CommandApprovalFuture<'a> {
+            self.workspace_scoped
+                .store(request.workspace_scoped, Ordering::SeqCst);
+            Box::pin(async { false })
+        }
     }
 
     impl CommandApproval for AlwaysApproval {

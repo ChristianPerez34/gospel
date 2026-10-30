@@ -91,6 +91,37 @@ describe("ApprovalCard", () => {
     expect(screen.getByText(/Guarded/)).toBeTruthy();
   });
 
+  it("does not render Always Allow for external paths", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({
+            approvalKind: "external_path",
+            risk: "external_access",
+            id: "external-1",
+            summary: "/tmp/outside/My Notes.txt",
+          })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.queryByTestId("approval-always-allow-external-1")).toBeNull();
+  });
+
+  it("does not render Always Allow for workspace-escaping commands", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ id: "escape-1", workspaceScoped: false })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.queryByTestId("approval-always-allow-escape-1")).toBeNull();
+  });
+
   it("renders auto_approved and auto_denied statuses", () => {
     const { rerender } = render(
       <ol>
