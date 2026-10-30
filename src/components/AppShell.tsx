@@ -7,6 +7,7 @@ import { useModelPreferences } from "../hooks/useModelPreferences";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useSessionShortcuts } from "../hooks/useSessionShortcuts";
 import { useThemePreference } from "../hooks/useThemePreference";
+import { useWorkspaceGitContext } from "../hooks/useWorkspaceGitContext";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { noModelCopy } from "../modelAvailabilityCopy";
 import { deriveSessionActivity, nextSessionNeedingYou } from "../sessionActivity";
@@ -219,6 +220,9 @@ export function AppShell() {
     onOpenSettings: openSettings,
     onModelVariantFallback: handleModelVariantFallback,
   });
+  const gitContext = useWorkspaceGitContext(
+    overviewOpen || !session.activeSessionId ? undefined : activeWorkspace?.id
+  );
 
   const selectTask = (target: Session) => {
     if (creatingTaskRef.current) return;
@@ -988,6 +992,7 @@ export function AppShell() {
     >
       <TopBar
         workspace={activeWorkspace ?? { id: "", name: "No workspace", path: "", sessionCount: 0 }}
+        gitContext={gitContext}
         sessionTitle={sessionTitle}
         onSessionTitleChange={handleSessionTitleChange}
         model={currentModelName}

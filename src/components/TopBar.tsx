@@ -3,6 +3,7 @@ import {
   ChevronRight,
   Cpu,
   Folder,
+  GitBranch,
   Layers,
   LayoutDashboard,
   PanelLeft,
@@ -13,11 +14,12 @@ import {
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { needsYouLabel } from "../sessionActivity";
-import type { AgentStatus, AutonomyMode, Workspace } from "../types";
+import type { AgentStatus, AutonomyMode, Workspace, WorkspaceGitContext } from "../types";
 import { StatusIndicator } from "./StatusIndicator";
 
 interface TopBarProps {
   workspace: Workspace;
+  gitContext?: WorkspaceGitContext | null;
   sessionTitle: string;
   model: string;
   status: AgentStatus;
@@ -153,6 +155,7 @@ function WorkspaceScopeControl({
 
 export function TopBar({
   workspace,
+  gitContext,
   sessionTitle,
   model,
   status,
@@ -176,6 +179,14 @@ export function TopBar({
   const needsYouText = needsYouLabel(needsYouCount);
   const taskButtonLabel = needsYouCount > 0 ? `Toggle tasks, ${needsYouText}` : "Toggle tasks";
   const globalView = overviewOpen || taskSetupOpen;
+  const gitContextLabel = gitContext?.branch
+    ? gitContext.branch
+    : gitContext?.revision
+      ? `detached · ${gitContext.revision}`
+      : "unborn";
+  const gitContextTitle = gitContext
+    ? `${gitContext.branch ? `Branch: ${gitContext.branch}` : `Detached at: ${gitContext.revision ?? "no commit"}`}\n${gitContext.isWorktree ? "Git worktree" : "Working tree"}: ${gitContext.root}`
+    : undefined;
 
   return (
     <header className="app-topbar inset-topbar" data-navigation-open={sessionsOpen}>
@@ -220,6 +231,17 @@ export function TopBar({
             workspace={workspace}
             onWorkspaceSwitch={onWorkspaceSwitch}
           />
+          {!globalView && gitContext && (
+            <span
+              className="topbar-git-context"
+              data-testid="topbar-git-context"
+              title={gitContextTitle}
+            >
+              <GitBranch size={13} strokeWidth={1.6} aria-hidden="true" />
+              <span className="topbar-git-branch">{gitContextLabel}</span>
+              {gitContext.isWorktree && <span className="topbar-git-kind">worktree</span>}
+            </span>
+          )}
           <ChevronRight className="topbar-breadcrumb-divider" size={13} aria-hidden="true" />
           <SessionTitleControl
             globalView={globalView}

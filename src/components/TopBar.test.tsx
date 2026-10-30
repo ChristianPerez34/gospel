@@ -63,6 +63,25 @@ describe("TopBar", () => {
     expect(screen.queryByText("2 running")).toBeNull();
   });
 
+  it("shows the active Git branch and worktree, but not in the all-workspaces view", () => {
+    const gitContext = {
+      branch: "feat/git-context-indicator",
+      revision: null,
+      root: "/worktrees/git-context-indicator",
+      isWorktree: true,
+    };
+    renderTopBar({ gitContext });
+
+    const indicator = screen.getByTestId("topbar-git-context");
+    expect(indicator.textContent).toContain("feat/git-context-indicator");
+    expect(indicator.textContent).toContain("worktree");
+    expect(indicator.getAttribute("title")).toContain("/worktrees/git-context-indicator");
+
+    cleanup();
+    renderTopBar({ overviewOpen: true, gitContext });
+    expect(screen.queryByTestId("topbar-git-context")).toBeNull();
+  });
+
   it("calls onSessionTitleChange with the trimmed title on Enter", () => {
     const onSessionTitleChange = vi.fn();
     renderTopBar({ sessionTitle: "Old", onSessionTitleChange });
