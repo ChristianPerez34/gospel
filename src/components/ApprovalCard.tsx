@@ -56,7 +56,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
   const canAlwaysAllow =
     block.approvalKind === "command" && !isDestructive && block.workspaceScoped !== false;
 
-  const isLong = block.summary.length > 140 || block.summary.includes("\n");
+  const isLongSummary = block.summary.length > 140 || block.summary.includes("\n");
 
   const resolve = async (decision: ApprovalDecision) => {
     if (!onResolve) return;
@@ -117,14 +117,14 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
           className={`${
             expanded ? "max-h-none" : "max-h-48"
           } overflow-y-auto overflow-x-hidden break-words [overflow-wrap:anywhere] whitespace-pre-wrap select-text ${
-            isLong ? "pr-14" : "pr-7"
+            isLongSummary ? "pr-14" : "pr-7"
           } font-mono text-mono transition-[max-height] duration-200 ease-out`}
           title={block.summary}
         >
           {block.summary}
         </div>
         <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
-          {isLong && (
+          {isLongSummary && (
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}

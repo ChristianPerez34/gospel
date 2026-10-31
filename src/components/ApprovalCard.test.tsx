@@ -203,7 +203,7 @@ describe("ApprovalCard", () => {
 
   it("renders the entire long command without truncation and retains status visibility", () => {
     const longCommand =
-      "python3 -c (__import__('shutil').copyfile('.gospel/report-stage.html','/tmp/citrapr-architecture-review-origin-dev.html'))";
+      "python3 -c (__import__('shutil').copyfile('.gospel/report-stage.html','/tmp/citrapr-architecture-review-origin-dev.html')) --preserve-metadata --recursive --verbose --include-hidden-files";
     render(
       <ol>
         <ApprovalCard
@@ -216,10 +216,16 @@ describe("ApprovalCard", () => {
       </ol>
     );
 
-    // Entire long command must be present and un-truncated
-    expect(screen.getByText(longCommand)).toBeTruthy();
+    // Check the DOM content and the wrapping styles that keep it readable.
+    const command = screen.getByTitle(longCommand);
+    expect(command.classList.contains("break-words")).toBe(true);
+    expect(command.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
+    expect(command.classList.contains("whitespace-pre-wrap")).toBe(true);
+    expect(command.classList.contains("truncate")).toBe(false);
+    expect(command.classList.contains("max-h-48")).toBe(true);
     // Status must remain visible on the card
-    expect(screen.getByText("Allowed")).toBeTruthy();
+    const status = screen.getByText("Allowed");
+    expect(status.classList.contains("shrink-0")).toBe(true);
     expect(screen.getByText("Mutating")).toBeTruthy();
   });
 
@@ -254,13 +260,17 @@ describe("ApprovalCard", () => {
     );
 
     const expandBtn = screen.getByRole("button", { name: /expand full command/i });
+    const command = screen.getByTitle(/^python3 -c/);
+    expect(command.classList.contains("max-h-48")).toBe(true);
     expect(expandBtn.getAttribute("aria-expanded")).toBe("false");
 
     fireEvent.click(expandBtn);
+    expect(command.classList.contains("max-h-none")).toBe(true);
     expect(screen.getByRole("button", { name: /collapse command/i })).toBeTruthy();
     expect(expandBtn.getAttribute("aria-expanded")).toBe("true");
 
     fireEvent.click(expandBtn);
+    expect(command.classList.contains("max-h-48")).toBe(true);
     expect(screen.getByRole("button", { name: /expand full command/i })).toBeTruthy();
     expect(expandBtn.getAttribute("aria-expanded")).toBe("false");
   });
