@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CurrentTurn, Message } from "../types";
 import { ChatView } from "./ChatView";
 
@@ -57,6 +57,76 @@ function defineScrollMetrics(
 }
 
 describe("ChatView block timeline rendering", () => {
+  it("copies assistant text without including reasoning or tool payloads", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    renderChat({
+      messages: [
+        {
+          id: "answer",
+          role: "agent",
+          content: "fallback",
+          timestamp: new Date(),
+          blocks: [
+            { kind: "text", id: "text-1", text: "First paragraph." },
+            { kind: "reasoning", id: "reason-1", text: "Private reasoning.", phase: "complete" },
+            {
+              kind: "tool",
+              id: "tool-1",
+              name: "read_file",
+              status: "completed",
+              result: "private payload",
+            },
+            { kind: "text", id: "text-2", text: "Second paragraph." },
+          ],
+        },
+      ],
+    });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy message" })));
+    expect(writeText).toHaveBeenCalledWith("First paragraph.\n\nSecond paragraph.");
+    expect(screen.getByText("Copied")).not.toBeNull();
+  });
+
+  it("reports clipboard failures", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockRejectedValue(new Error("Permission denied")),
+      },
+    });
+    renderChat();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy message" })));
+    expect(screen.getByRole("alert").textContent).toContain("Unable to copy");
+  });
+
+  it("routes retry and fork to the selected assistant message and disables them while busy", () => {
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    const onFork = vi.fn().mockResolvedValue(undefined);
+    const answer: Message = {
+      id: "answer",
+      role: "agent",
+      content: "Response",
+      timestamp: new Date(),
+    };
+    const props = {
+      messages: [userMessage, answer],
+      workspacePath: "/workspace",
+      isThinking: false,
+      onRetry,
+      onFork,
+    };
+    const { rerender } = render(<ChatView {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fork conversation" }));
+    expect(onRetry).toHaveBeenCalledWith("answer");
+    expect(onFork).toHaveBeenCalledWith("answer");
+    rerender(<ChatView {...props} actionsDisabled />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fork conversation" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onFork).toHaveBeenCalledTimes(1);
+  });
+
   it("renders live text and tool blocks in occurrence order", () => {
     const { container } = renderChat({
       currentTurn: {
