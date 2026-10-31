@@ -277,6 +277,18 @@ export function useSessionManager({
   const isStreaming = status === "thinking" || status === "acting";
   const isThinking = status === "thinking";
 
+  // One availability rule for every prompt-sending path: the selected model
+  // must be listed and its provider must be credentialed.
+  const selectedModelAvailable = Boolean(
+    selectedModel &&
+      models.some(
+        (model) =>
+          model.provider.toLowerCase() === selectedModel.provider.toLowerCase() &&
+          model.model === selectedModel.model &&
+          model.configured !== false
+      )
+  );
+
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
     setStatus(models.length > 0 ? "connected" : "idle");
@@ -300,14 +312,7 @@ export function useSessionManager({
   const handleSend = useCallback(
     async (message: string, invokedSkill?: { name: string; args?: string }) => {
       if (messageActionPendingRef.current) return;
-      const selectedParentAvailable = selectedModel
-        ? models.some(
-            (m) =>
-              m.model === selectedModel.model &&
-              m.provider.toLowerCase() === selectedModel.provider.toLowerCase()
-          )
-        : false;
-      if (!selectedModel || !selectedParentAvailable) {
+      if (!selectedModel || !selectedModelAvailable) {
         onError?.("Select an available model before sending.", {
           label: "Open Settings",
           onClick: () => onOpenSettings?.(),
@@ -437,12 +442,12 @@ export function useSessionManager({
       activeSessionId,
       activeWorkspaceId,
       markSessionStatus,
-      models,
       onError,
       onOpenSettings,
       onSessionsChange,
       resetStream,
       selectedModel,
+      selectedModelAvailable,
       sessions,
       startStream,
     ]
@@ -571,16 +576,7 @@ export function useSessionManager({
         onError?.("There is no user message to retry or fork.");
         return;
       }
-      if (
-        !fork &&
-        (!selectedModel ||
-          !models.some(
-            (model) =>
-              model.provider.toLowerCase() === selectedModel.provider.toLowerCase() &&
-              model.model === selectedModel.model &&
-              model.configured !== false
-          ))
-      ) {
+      if (!fork && (!selectedModel || !selectedModelAvailable)) {
         onError?.("Select an available model before retrying.", {
           label: "Open Settings",
           onClick: () => onOpenSettings?.(),
@@ -606,13 +602,17 @@ export function useSessionManager({
           model: string;
           variant?: string | null;
           workspace_id?: string;
-        }>("prepare_session_message_action", {
-          sessionId: source.id,
-          turnCount: fork ? userTurns : userTurns - 1,
-          fork,
-          responseText: messages[index].content,
-          expectedUserTurns: messages.filter((message) => message.role === "user").length,
-          failedResponse: !fork && Boolean(messages[index].error) && index === messages.length - 1,
+        }>("run_session_message_action", {
+          request: {
+            sessionId: source.id,
+            turnCount: fork ? userTurns : userTurns - 1,
+            fork,
+            responseText: messages[index].content,
+            expectedUserTurns: messages.filter((message) => message.role === "user").length,
+            failedResponse:
+              !fork && Boolean(messages[index].error) && index === messages.length - 1,
+            retryPrompt: userMessage.content,
+          },
         });
         if (!detail?.id) throw new Error("The conversation could not be saved.");
         if (fork) {
@@ -691,13 +691,13 @@ export function useSessionManager({
       handleMessagesForSession,
       markSessionStatus,
       messages,
-      models,
       onError,
       onOpenSettings,
       onSessionsChange,
       onSuccess,
       resetStream,
       selectedModel,
+      selectedModelAvailable,
       sessions,
       startStream,
     ]
@@ -727,15 +727,7 @@ export function useSessionManager({
   const createTask = useCallback(
     async (title: string, workspaceId: string): Promise<Session> => {
       if (!title.trim() || !workspaceId) throw new Error("A task name and workspace are required.");
-      if (
-        !selectedModel ||
-        !models.some(
-          (model) =>
-            model.provider.toLowerCase() === selectedModel.provider.toLowerCase() &&
-            model.model === selectedModel.model &&
-            model.configured !== false
-        )
-      ) {
+      if (!selectedModel || !selectedModelAvailable) {
         throw new Error("Select an available model before creating a task.");
       }
       if (workspaceId !== activeWorkspaceId) {
@@ -777,7 +769,13 @@ export function useSessionManager({
       setStatus("connected");
       return task;
     },
-    [activeWorkspaceId, models, onSessionsChange, onSwitchWorkspace, selectedModel]
+    [
+      activeWorkspaceId,
+      onSessionsChange,
+      onSwitchWorkspace,
+      selectedModel,
+      selectedModelAvailable,
+    ]
   );
 
   return {

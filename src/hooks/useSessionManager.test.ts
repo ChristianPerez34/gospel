@@ -117,9 +117,9 @@ describe("useSessionManager", () => {
 
     function mockAction() {
       vi.mocked(invoke).mockImplementation(async (cmd, args) => {
-        if (cmd === "prepare_session_message_action")
+        if (cmd === "run_session_message_action")
           return {
-            id: (args as { fork: boolean }).fork ? "forked" : "s-existing",
+            id: (args as { request: { fork: boolean } }).request.fork ? "forked" : "s-existing",
             title: "Existing session (fork)",
             provider: "openai",
             model: "gpt-4o",
@@ -140,13 +140,16 @@ describe("useSessionManager", () => {
       });
       await act(async () => result.current.handleSessionSelect(source));
       await act(async () => result.current.retryMessage("answer"));
-      expect(invoke).toHaveBeenCalledWith("prepare_session_message_action", {
-        sessionId: source.id,
-        turnCount: 0,
-        fork: false,
-        responseText: "Original",
-        expectedUserTurns: 1,
-        failedResponse: false,
+      expect(invoke).toHaveBeenCalledWith("run_session_message_action", {
+        request: {
+          sessionId: source.id,
+          turnCount: 0,
+          fork: false,
+          responseText: "Original",
+          expectedUserTurns: 1,
+          failedResponse: false,
+          retryPrompt: "Try this",
+        },
       });
       expect(invoke).toHaveBeenCalledWith(
         "complete_streaming",
@@ -200,7 +203,7 @@ describe("useSessionManager", () => {
       await act(async () => result.current.retryMessage("answer"));
       expect(result.current.messages).toHaveLength(4);
       expect(
-        vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "prepare_session_message_action")
+        vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "run_session_message_action")
       ).toBe(false);
       confirm.mockReturnValue(true);
       await act(async () => result.current.retryMessage("answer"));
@@ -220,13 +223,16 @@ describe("useSessionManager", () => {
       });
       await act(async () => result.current.handleSessionSelect(source));
       await act(async () => result.current.forkMessage("answer"));
-      expect(invoke).toHaveBeenCalledWith("prepare_session_message_action", {
-        sessionId: source.id,
-        turnCount: 1,
-        fork: true,
-        responseText: "Original",
-        expectedUserTurns: 1,
-        failedResponse: false,
+      expect(invoke).toHaveBeenCalledWith("run_session_message_action", {
+        request: {
+          sessionId: source.id,
+          turnCount: 1,
+          fork: true,
+          responseText: "Original",
+          expectedUserTurns: 1,
+          failedResponse: false,
+          retryPrompt: "Try this",
+        },
       });
       expect(result.current.activeSessionId).toBe("forked");
       expect(result.current.sessions.find((item) => item.id === "forked")).toMatchObject({
@@ -269,7 +275,7 @@ describe("useSessionManager", () => {
       await act(async () => result.current.handleSessionSelect(source));
       await act(async () => result.current.retryMessage("answer"));
       expect(
-        vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "prepare_session_message_action")
+        vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "run_session_message_action")
       ).toBe(false);
       expect(result.current.messages).toEqual(source.messages);
       expect(onError).toHaveBeenCalledWith(
@@ -281,7 +287,7 @@ describe("useSessionManager", () => {
     it("suppresses duplicate actions while saving and does not steal focus after navigation", async () => {
       let finish: (detail: unknown) => void = () => {};
       vi.mocked(invoke).mockImplementation(async (cmd) => {
-        if (cmd === "prepare_session_message_action")
+        if (cmd === "run_session_message_action")
           return new Promise((resolve) => {
             finish = resolve;
           });
@@ -305,7 +311,7 @@ describe("useSessionManager", () => {
       expect(result.current.activeSessionId).toBe("other");
       expect(result.current.sessions.some((item) => item.id === "forked")).toBe(true);
       expect(
-        vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "prepare_session_message_action")
+        vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "run_session_message_action")
       ).toHaveLength(1);
     });
   });

@@ -1,34 +1,28 @@
 use crate::model_history::parse_model_history;
 use rig::completion::message::{AssistantContent, Message, UserContent};
 
-pub fn validate_turn_count(
-    raw_history: Option<&str>,
-    expected: usize,
-    retry_turn: Option<usize>,
-) -> Result<(), String> {
-    let history = parse_model_history(raw_history.unwrap_or("[]"))
-        .map_err(|error| format!("Unable to read conversation history: {error}"))?;
-    let actual = history.iter().filter(|message| matches!(
-        message, Message::User { content } if content.iter().any(|item| matches!(item, UserContent::Text(_)))
-    )).count();
-    // A failed turn may not have reached model-history persistence. Otherwise
-    // fail closed when pruning or another view has changed the saved history.
-    if actual == expected || (retry_turn == Some(actual) && expected == actual + 1) {
-        Ok(())
-    } else {
-        Err("The saved conversation has changed. Reopen the task and try again.".into())
-    }
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageActionRequest {
+    pub session_id: String,
+    pub turn_count: usize,
+    pub fork: bool,
+    pub response_text: String,
+    pub expected_user_turns: usize,
+    pub failed_response: bool,
+    pub retry_prompt: String,
 }
 
-/// Keep complete user turns, including their tool calls/results. Tool-result
-/// messages have the user role too, but must not count as new prompts.
-pub fn history_before_turn(
-    raw_history: Option<&str>,
-    turn_index: usize,
-) -> Result<Vec<Message>, String> {
-    let history = parse_model_history(raw_history.unwrap_or("[]"))
-        .map_err(|error| format!("Unable to read conversation history: {error}"))?;
-    let starts: Vec<usize> = history
+fn parse_history(raw_history: Option<&str>) -> Result<Vec<Message>, String> {
+    parse_model_history(raw_history.unwrap_or("[]"))
+        .map_err(|error| format!("Unable to read conversation history: {error}"))
+}
+
+/// Indices of messages that open a user turn: a User message containing text.
+/// Tool-result messages have the user role too, but must not count as new
+/// prompts.
+fn turn_starts(history: &[Message]) -> Vec<usize> {
+    history
         .iter()
         .enumerate()
         .filter_map(|(index, message)| match message {
@@ -41,7 +35,31 @@ pub fn history_before_turn(
             }
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+pub fn validate_turn_count(
+    raw_history: Option<&str>,
+    expected: usize,
+    retry_turn: Option<usize>,
+) -> Result<(), String> {
+    let actual = turn_starts(&parse_history(raw_history)?).len();
+    // A failed turn may not have reached model-history persistence. Otherwise
+    // fail closed when pruning or another view has changed the saved history.
+    if actual == expected || (retry_turn == Some(actual) && expected == actual + 1) {
+        Ok(())
+    } else {
+        Err("The saved conversation has changed. Reopen the task and try again.".into())
+    }
+}
+
+/// Keep complete user turns, including their tool calls/results.
+pub fn history_before_turn(
+    raw_history: Option<&str>,
+    turn_index: usize,
+) -> Result<Vec<Message>, String> {
+    let history = parse_history(raw_history)?;
+    let starts = turn_starts(&history);
     if turn_index > starts.len() {
         return Err("This response is no longer available in the saved conversation.".into());
     }
@@ -49,13 +67,54 @@ pub fn history_before_turn(
     Ok(history[..end].to_vec())
 }
 
+/// Transcript prefix through the `prompt_index`-th user entry (0-based). A
+/// retried prompt stays visible while its replacement runs, so a failed or
+/// abandoned retry does not silently drop it from the user's record. When the
+/// prompt never reached the transcript (its only turn failed before
+/// persistence), drop the failed attempt's leftover rows and re-add `prompt`.
+pub fn transcript_through_prompt(
+    raw_transcript: &str,
+    prompt_index: usize,
+    prompt: &str,
+) -> Result<String, String> {
+    let mut entries: Vec<serde_json::Value> = serde_json::from_str(raw_transcript)
+        .map_err(|error| format!("Unable to read conversation transcript: {error}"))?;
+    match entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.get("role").and_then(|role| role.as_str()) == Some("user"))
+        .map(|(index, _)| index)
+        .nth(prompt_index)
+    {
+        Some(end) => entries.truncate(end + 1),
+        None => {
+            while entries.last().is_some_and(|entry| {
+                entry.get("error").and_then(|value| value.as_bool()) == Some(true)
+                    || entry.get("controlled_stop").and_then(|value| value.as_bool())
+                        == Some(true)
+            }) {
+                entries.pop();
+            }
+            entries.push(serde_json::json!({"role": "user", "content": prompt}));
+        }
+    }
+    serde_json::to_string(&entries)
+        .map_err(|error| format!("Unable to save conversation transcript: {error}"))
+}
+
 pub fn history_through_response(
     raw_history: Option<&str>,
     turn_index: usize,
     response: &str,
 ) -> Result<Vec<Message>, String> {
-    let start = history_before_turn(raw_history, turn_index)?.len();
-    let mut history = history_before_turn(raw_history, turn_index + 1)?;
+    let history = parse_history(raw_history)?;
+    let starts = turn_starts(&history);
+    if turn_index + 1 > starts.len() {
+        return Err("This response is no longer available in the saved conversation.".into());
+    }
+    let start = starts[turn_index];
+    let end_bound = starts.get(turn_index + 1).copied().unwrap_or(history.len());
+    let mut history = history[..end_bound].to_vec();
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let target = normalize(response);
     let mut accumulated = String::new();
@@ -161,5 +220,59 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn transcript_through_prompt_keeps_the_retried_prompt_visible() {
+        let transcript = json!([
+            {"role":"user","content":"first"},
+            {"role":"assistant","content":"answer","blocks":[]},
+            {"role":"user","content":"second"},
+            {"role":"assistant","content":"later","blocks":[]}
+        ])
+        .to_string();
+        let kept: Vec<serde_json::Value> = serde_json::from_str(
+            &transcript_through_prompt(&transcript, 1, "second").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept[2]["content"], "second");
+        // A failed turn leaves prompt + error row in the transcript; retrying
+        // it still resolves the same prompt index.
+        let failed = json!([
+            {"role":"user","content":"first"},
+            {"role":"assistant","content":"answer","blocks":[]},
+            {"role":"user","content":"second"},
+            {"role":"assistant","content":"Error: down","blocks":[],"error":true}
+        ])
+        .to_string();
+        let kept: Vec<serde_json::Value> = serde_json::from_str(
+            &transcript_through_prompt(&failed, 1, "second").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 3);
+        // The retried prompt may never have persisted: its only turn failed
+        // before writing. Drop the failed attempt's error row and re-add it.
+        let missing = json!([
+            {"role":"user","content":"first"},
+            {"role":"assistant","content":"answer","blocks":[]},
+            {"role":"assistant","content":"Error: down","blocks":[],"error":true}
+        ])
+        .to_string();
+        let kept: Vec<serde_json::Value> = serde_json::from_str(
+            &transcript_through_prompt(&missing, 1, "second").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept[2]["role"], "user");
+        assert_eq!(kept[2]["content"], "second");
+        // A missing prompt with no trailing failure rows appends at the end.
+        let kept: Vec<serde_json::Value> = serde_json::from_str(
+            &transcript_through_prompt(&transcript, 2, "third").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 5);
+        assert_eq!(kept[4]["content"], "third");
+        assert!(transcript_through_prompt("not json", 0, "x").is_err());
     }
 }
