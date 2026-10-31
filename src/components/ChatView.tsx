@@ -1,14 +1,14 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
-import { Button } from "@/components/ui/button";
 import { codePlugin } from "@/lib/markdown";
 import { summarizeLiveToolActivity, toolActivitiesToTimelineSteps } from "../toolActivityCards";
 import type { ApprovalDecision, CurrentTurn, Message, ToolCallActivity, TurnBlock } from "../types";
 import { ActivityStep } from "./ActivityStep";
 import { ApprovalCard } from "./ApprovalCard";
+import { type MessageActionCallbacks, MessageActions } from "./MessageActions";
 import { MessageBlock } from "./MessageBlock";
 
-interface ChatViewProps {
+interface ChatViewProps extends MessageActionCallbacks {
   messages: Message[];
   workspacePath: string;
   isThinking: boolean;
@@ -16,7 +16,7 @@ interface ChatViewProps {
   onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<void>;
 }
 
-interface AgentTurnBlockProps {
+interface AgentTurnBlockProps extends MessageActionCallbacks {
   message?: Message;
   currentTurn?: CurrentTurn;
   isThinking: boolean;
@@ -191,27 +191,14 @@ function AgentHeader({ timestamp }: { timestamp: Date }) {
   );
 }
 
-function AgentActions() {
-  return (
-    <div className="message-actions ml-16 flex gap-3 opacity-0 transition-opacity duration-150 ease-out-quart pl-1 group-hover:opacity-100 group-focus-within:opacity-100">
-      <Button variant="ghost" size="xs" aria-label="Copy message">
-        Copy
-      </Button>
-      <Button variant="ghost" size="xs" aria-label="Retry message">
-        Retry
-      </Button>
-      <Button variant="ghost" size="xs" aria-label="Fork conversation">
-        Fork
-      </Button>
-    </div>
-  );
-}
-
 function AgentTurnBlock({
   message,
   currentTurn,
   isThinking,
   onResolveApproval,
+  onRetry,
+  onFork,
+  actionsDisabled,
 }: AgentTurnBlockProps) {
   const turnId = currentTurn?.id ?? message?.id ?? "agent-turn";
   const fallbackTimestampRef = useRef<Date | null>(null);
@@ -264,7 +251,15 @@ function AgentTurnBlock({
         )
       )}
       {message?.error && <ErrorBlock message={message.error} />}
-      {showActions && <AgentActions />}
+      {showActions && message && (
+        <MessageActions
+          message={message}
+          className="ml-16"
+          onRetry={onRetry}
+          onFork={onFork}
+          actionsDisabled={actionsDisabled}
+        />
+      )}
     </div>
   );
 }
@@ -275,6 +270,9 @@ export function ChatView({
   isThinking,
   currentTurn,
   onResolveApproval,
+  onRetry,
+  onFork,
+  actionsDisabled,
 }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const shouldFollowRef = useRef(true);
@@ -381,6 +379,9 @@ export function ChatView({
               message={msg}
               isThinking={isThinking}
               onResolveApproval={onResolveApproval}
+              onRetry={onRetry}
+              onFork={onFork}
+              actionsDisabled={actionsDisabled}
             />
           ) : (
             <div key={msg.id} className="flex flex-col gap-1.5">

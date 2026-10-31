@@ -98,6 +98,224 @@ describe("useSessionManager", () => {
     vi.clearAllMocks();
   });
 
+  describe("message actions", () => {
+    function conversation() {
+      const user: Message = {
+        id: "prompt",
+        role: "user",
+        content: "Try this",
+        timestamp: new Date(),
+      };
+      const answer: Message = {
+        id: "answer",
+        role: "agent",
+        content: "Original",
+        timestamp: new Date(),
+      };
+      return makeSession({ backendCreated: true, workspaceId: "ws-1", messages: [user, answer] });
+    }
+
+    function mockAction() {
+      vi.mocked(invoke).mockImplementation(async (cmd, args) => {
+        if (cmd === "run_session_message_action")
+          return {
+            id: (args as { request: { fork: boolean } }).request.fork ? "forked" : "s-existing",
+            title: "Existing session (fork)",
+            provider: "openai",
+            model: "gpt-4o",
+            workspace_id: "ws-1",
+            display_transcript: "[]",
+          };
+        if (cmd === "complete_streaming") return "run-retry";
+        return undefined;
+      });
+    }
+
+    it("rewinds the saved history and retries without duplicating the user message", async () => {
+      mockAction();
+      const source = conversation();
+      const { result } = renderSessionManager({
+        initialSessions: [source],
+        activeWorkspaceId: "ws-1",
+      });
+      await act(async () => result.current.handleSessionSelect(source));
+      await act(async () => result.current.retryMessage("answer"));
+      expect(invoke).toHaveBeenCalledWith("run_session_message_action", {
+        request: {
+          sessionId: source.id,
+          turnCount: 0,
+          fork: false,
+          responseText: "Original",
+          expectedUserTurns: 1,
+          failedResponse: false,
+          retryPrompt: "Try this",
+        },
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({
+          sessionId: source.id,
+          prompt: "Try this",
+          provider: "openai",
+          model: "gpt-4o",
+        })
+      );
+      expect(result.current.messages.map((message) => message.id)).toEqual(["prompt"]);
+      expect(result.current.isThinking).toBe(true);
+      await act(async () => result.current.retryMessage("answer"));
+      expect(
+        vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "complete_streaming")
+      ).toHaveLength(1);
+    });
+
+    it("keeps command failures retryable without duplicating error events", async () => {
+      mockAction();
+      const actionInvoke = vi.mocked(invoke).getMockImplementation()!;
+      vi.mocked(invoke).mockImplementation(async (cmd, args) => {
+        if (cmd === "complete_streaming") throw new Error("Provider unavailable");
+        return actionInvoke(cmd, args);
+      });
+      const source = conversation();
+      const { result } = renderSessionManager({ initialSessions: [source], onError: vi.fn() });
+      await act(async () => result.current.handleSessionSelect(source));
+      await act(async () => result.current.retryMessage("answer"));
+      expect(result.current.status).toBe("error");
+      expect(result.current.messages).toHaveLength(2);
+      const failed = result.current.messages[1];
+      expect(failed.error).toContain("retry failed");
+      await act(async () => result.current.retryMessage(failed.id));
+      expect(
+        vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "complete_streaming")
+      ).toHaveLength(2);
+      expect(result.current.messages).toHaveLength(2);
+    });
+
+    it("confirms before removing later turns and reuses the selected prompt", async () => {
+      mockAction();
+      const source = conversation();
+      source.messages.push(
+        { id: "later-user", role: "user", content: "Later prompt", timestamp: new Date() },
+        { id: "later-answer", role: "agent", content: "Later answer", timestamp: new Date() }
+      );
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      const { result } = renderSessionManager({ initialSessions: [source] });
+      await act(async () => result.current.handleSessionSelect(source));
+      await act(async () => result.current.retryMessage("answer"));
+      expect(result.current.messages).toHaveLength(4);
+      expect(
+        vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "run_session_message_action")
+      ).toBe(false);
+      confirm.mockReturnValue(true);
+      await act(async () => result.current.retryMessage("answer"));
+      expect(result.current.messages.map((message) => message.id)).toEqual(["prompt"]);
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({ prompt: "Try this" })
+      );
+    });
+
+    it("saves and selects a fork without changing the source or starting a run", async () => {
+      mockAction();
+      const source = conversation();
+      const { result } = renderSessionManager({
+        initialSessions: [source],
+        activeWorkspaceId: "ws-1",
+      });
+      await act(async () => result.current.handleSessionSelect(source));
+      await act(async () => result.current.forkMessage("answer"));
+      expect(invoke).toHaveBeenCalledWith("run_session_message_action", {
+        request: {
+          sessionId: source.id,
+          turnCount: 1,
+          fork: true,
+          responseText: "Original",
+          expectedUserTurns: 1,
+          failedResponse: false,
+          retryPrompt: "Try this",
+        },
+      });
+      expect(result.current.activeSessionId).toBe("forked");
+      expect(result.current.sessions.find((item) => item.id === "forked")).toMatchObject({
+        workspaceId: "ws-1",
+        messages: source.messages,
+        backendCreated: true,
+      });
+      expect(result.current.sessions.find((item) => item.id === source.id)?.messages).toEqual(
+        source.messages
+      );
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(
+        false
+      );
+    });
+
+    it("retains the conversation on save failure", async () => {
+      const onError = vi.fn();
+      const source = conversation();
+      const { result } = renderSessionManager({ initialSessions: [source], onError });
+      await act(async () => result.current.handleSessionSelect(source));
+      vi.mocked(invoke).mockRejectedValue(new Error("Storage unavailable"));
+      await act(async () => result.current.retryMessage("answer"));
+      expect(result.current.messages).toEqual(source.messages);
+      expect(result.current.activeSessionId).toBe(source.id);
+      expect(result.current.messageActionsPending).toBe(false);
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining("Storage unavailable"));
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(
+        false
+      );
+    });
+
+    it("does not rewind when there is no available model", async () => {
+      const source = conversation();
+      const onError = vi.fn();
+      const { result } = renderSessionManager({
+        initialSessions: [source],
+        selectedModel: null,
+        onError,
+      });
+      await act(async () => result.current.handleSessionSelect(source));
+      await act(async () => result.current.retryMessage("answer"));
+      expect(
+        vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "run_session_message_action")
+      ).toBe(false);
+      expect(result.current.messages).toEqual(source.messages);
+      expect(onError).toHaveBeenCalledWith(
+        expect.stringContaining("available model"),
+        expect.anything()
+      );
+    });
+
+    it("suppresses duplicate actions while saving and does not steal focus after navigation", async () => {
+      let finish: (detail: unknown) => void = () => {};
+      vi.mocked(invoke).mockImplementation(async (cmd) => {
+        if (cmd === "run_session_message_action")
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        return undefined;
+      });
+      const source = conversation();
+      const other = makeSession({ id: "other", messages: [] });
+      const { result } = renderSessionManager({ initialSessions: [source, other] });
+      await act(async () => result.current.handleSessionSelect(source));
+      let pending: Promise<void> | undefined;
+      act(() => {
+        pending = result.current.forkMessage("answer");
+      });
+      expect(result.current.messageActionsPending).toBe(true);
+      await act(async () => result.current.forkMessage("answer"));
+      await act(async () => result.current.handleSessionSelect(other));
+      await act(async () => {
+        finish({ id: "forked", title: "Fork", provider: "openai", model: "gpt-4o" });
+        await pending;
+      });
+      expect(result.current.activeSessionId).toBe("other");
+      expect(result.current.sessions.some((item) => item.id === "forked")).toBe(true);
+      expect(
+        vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "run_session_message_action")
+      ).toHaveLength(1);
+    });
+  });
+
   describe("session lifecycle", () => {
     it("saves an explicitly named task in its selected workspace before allowing its first turn", async () => {
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {

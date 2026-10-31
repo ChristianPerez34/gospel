@@ -23,6 +23,7 @@ mod provider_client;
 mod provider_credentials;
 mod providers;
 mod review;
+mod session_actions;
 pub mod session_store;
 mod session_turn;
 mod shell_tools;
@@ -2384,6 +2385,85 @@ fn get_session(
 }
 
 #[tauri::command]
+fn run_session_message_action(
+    session_store: tauri::State<'_, SessionStoreState>,
+    conversation_state: tauri::State<'_, ConversationState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    streaming_handles: tauri::State<'_, StreamingRunHandles>,
+    request: session_actions::MessageActionRequest,
+) -> Result<SessionDetail, String> {
+    let store = session_store
+        .store
+        .as_ref()
+        .ok_or("Session store is unavailable")?;
+    streaming_handles.mutate_if_idle([request.session_id.as_str()], || {
+        let source = authorized_session_detail(store, &request.session_id, app_config.inner())?;
+        session_actions::validate_turn_count(
+            source.model_history.as_deref(),
+            request.expected_user_turns,
+            (!request.fork && request.failed_response).then_some(request.turn_count),
+        )?;
+        let history = if request.fork {
+            let turn_index = request
+                .turn_count
+                .checked_sub(1)
+                .ok_or("No user turn to fork")?;
+            session_actions::history_through_response(
+                source.model_history.as_deref(),
+                turn_index,
+                &request.response_text,
+            )?
+        } else {
+            session_actions::history_before_turn(
+                source.model_history.as_deref(),
+                request.turn_count,
+            )?
+        };
+        let persistence = session_turn::successful_turn_persistence(Some(&history))
+            .ok_or("Unable to prepare conversation history")?;
+        let model_history = persistence
+            .model_history
+            .as_deref()
+            .ok_or("Unable to save conversation history")?;
+        // A retried prompt stays in the saved transcript (unlike model
+        // history, which the new turn re-extends itself) so a failed or
+        // abandoned retry cannot silently drop it from the user's record.
+        let display_transcript = if request.fork {
+            persistence.display_transcript.clone()
+        } else {
+            session_actions::transcript_through_prompt(
+                &source.display_transcript,
+                request.turn_count,
+                &request.retry_prompt,
+            )?
+        };
+        let detail = if request.fork {
+            store
+                .fork_session(&request.session_id, &display_transcript, model_history)
+                .map_err(|error| error.to_string())?
+        } else {
+            store
+                .persist_turn(
+                    &request.session_id,
+                    &display_transcript,
+                    Some(model_history),
+                )
+                .map_err(|error| error.to_string())?;
+            store
+                .get_session(&request.session_id)
+                .map_err(|error| error.to_string())?
+                .ok_or("Session not found")?
+        };
+        conversation_state
+            .store
+            .lock()
+            .unwrap()
+            .store_history(&detail.id, history);
+        Ok(detail)
+    })
+}
+
+#[tauri::command]
 fn list_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
@@ -3257,6 +3337,7 @@ pub fn run() {
             update_session_title,
             generate_session_title,
             get_session,
+            run_session_message_action,
             list_sessions,
             list_archived_sessions,
             get_archive_policy,

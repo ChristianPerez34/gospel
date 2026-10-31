@@ -68,6 +68,9 @@ export interface UseSessionManagerResult {
   /** Epoch ms when each streaming session's current run started. */
   runStartedAtBySession: Record<string, number>;
   createTask: (title: string, workspaceId: string) => Promise<Session>;
+  messageActionsPending: boolean;
+  retryMessage: (messageId: string) => Promise<void>;
+  forkMessage: (messageId: string) => Promise<void>;
   handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
   handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
@@ -101,6 +104,8 @@ export function useSessionManager({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<AgentStatus>("idle");
+  const [messageActionsPending, setMessageActionsPending] = useState(false);
+  const messageActionPendingRef = useRef(false);
   // ponytail: unread state is session-memory only; persist read timestamps if it must survive restarts.
   const [unreadSessionIds, setUnreadSessionIds] = useState<string[]>([]);
   const [liveTurnsBySession, setLiveTurnsBySession] = useState<Record<string, CurrentTurn | null>>(
@@ -272,6 +277,18 @@ export function useSessionManager({
   const isStreaming = status === "thinking" || status === "acting";
   const isThinking = status === "thinking";
 
+  // One availability rule for every prompt-sending path: the selected model
+  // must be listed and its provider must be credentialed.
+  const selectedModelAvailable = Boolean(
+    selectedModel &&
+      models.some(
+        (model) =>
+          model.provider.toLowerCase() === selectedModel.provider.toLowerCase() &&
+          model.model === selectedModel.model &&
+          model.configured !== false
+      )
+  );
+
   useEffect(() => {
     if (statusRef.current === "thinking" || statusRef.current === "acting") return;
     setStatus(models.length > 0 ? "connected" : "idle");
@@ -294,14 +311,8 @@ export function useSessionManager({
 
   const handleSend = useCallback(
     async (message: string, invokedSkill?: { name: string; args?: string }) => {
-      const selectedParentAvailable = selectedModel
-        ? models.some(
-            (m) =>
-              m.model === selectedModel.model &&
-              m.provider.toLowerCase() === selectedModel.provider.toLowerCase()
-          )
-        : false;
-      if (!selectedModel || !selectedParentAvailable) {
+      if (messageActionPendingRef.current) return;
+      if (!selectedModel || !selectedModelAvailable) {
         onError?.("Select an available model before sending.", {
           label: "Open Settings",
           onClick: () => onOpenSettings?.(),
@@ -431,12 +442,12 @@ export function useSessionManager({
       activeSessionId,
       activeWorkspaceId,
       markSessionStatus,
-      models,
       onError,
       onOpenSettings,
       onSessionsChange,
       resetStream,
       selectedModel,
+      selectedModelAvailable,
       sessions,
       startStream,
     ]
@@ -545,6 +556,162 @@ export function useSessionManager({
     [activeWorkspaceId, onError, onSessionsChange, onSwitchWorkspace, statusBySession]
   );
 
+  const runMessageAction = useCallback(
+    async (messageId: string, fork: boolean) => {
+      if (messageActionPendingRef.current || isRunningStatus(statusRef.current)) return;
+      const source = sessions.find((item) => item.id === activeSessionId);
+      const index = messages.findIndex(
+        (message) => message.id === messageId && message.role === "agent"
+      );
+      if (!source || index < 0) return;
+      if (source.backendCreated === false) {
+        onError?.("Save this conversation before retrying or forking it.");
+        return;
+      }
+      const preceding = messages.slice(0, index);
+      let userIndex = preceding.length - 1;
+      while (userIndex >= 0 && preceding[userIndex].role !== "user") userIndex -= 1;
+      const userMessage = preceding[userIndex];
+      if (!userMessage) {
+        onError?.("There is no user message to retry or fork.");
+        return;
+      }
+      if (!fork && (!selectedModel || !selectedModelAvailable)) {
+        onError?.("Select an available model before retrying.", {
+          label: "Open Settings",
+          onClick: () => onOpenSettings?.(),
+        });
+        return;
+      }
+      if (
+        !fork &&
+        index < messages.length - 1 &&
+        !window.confirm(
+          "Retry this response? Later messages in this conversation will be removed. Fork instead to keep them."
+        )
+      )
+        return;
+      const userTurns = preceding.filter((message) => message.role === "user").length;
+      messageActionPendingRef.current = true;
+      setMessageActionsPending(true);
+      try {
+        const detail = await invoke<{
+          id: string;
+          title: string;
+          provider: string;
+          model: string;
+          variant?: string | null;
+          workspace_id?: string;
+        }>("run_session_message_action", {
+          request: {
+            sessionId: source.id,
+            turnCount: fork ? userTurns : userTurns - 1,
+            fork,
+            responseText: messages[index].content,
+            expectedUserTurns: messages.filter((message) => message.role === "user").length,
+            failedResponse:
+              !fork && Boolean(messages[index].error) && index === messages.length - 1,
+            retryPrompt: userMessage.content,
+          },
+        });
+        if (!detail?.id) throw new Error("The conversation could not be saved.");
+        if (fork) {
+          const task: Session = {
+            ...source,
+            id: detail.id,
+            title: detail.title,
+            provider: detail.provider,
+            model: detail.model,
+            variant: detail.variant,
+            workspaceId: detail.workspace_id ?? source.workspaceId,
+            messages: messages.slice(0, index + 1),
+            timestamp: new Date(),
+            status: "active",
+            backendCreated: true,
+          };
+          onSessionsChange((previous) => [task, ...previous]);
+          // Do not steal focus if the user navigated away while saving.
+          if (activeSessionIdRef.current === source.id) {
+            setActiveSessionId(task.id);
+            activeSessionIdRef.current = task.id;
+            latestSelectedSessionRef.current = task.id;
+            setMessages(task.messages);
+            setStatus("connected");
+          }
+          onSuccess?.("Conversation forked.");
+          return;
+        }
+        const retryMessages = messages.slice(0, userIndex + 1);
+        onSessionsChange((previous) =>
+          previous.map((item) =>
+            item.id === source.id ? { ...item, messages: retryMessages } : item
+          )
+        );
+        if (activeSessionIdRef.current === source.id) {
+          setMessages(retryMessages);
+          setStatus("thinking");
+          resetStream();
+        }
+        markSessionStatus(source.id, "thinking");
+        if (!selectedModel) return;
+        void startStream({
+          ...selectedModel,
+          prompt: userMessage.content,
+          sessionId: source.id,
+          runSessionId: source.id,
+        }).catch((error) => {
+          handleStatusForSession(source.id, "error");
+          handleMessagesForSession(source.id, (previous) => {
+            // llm-error may already have finalized the failed turn. Command
+            // failures that arrive without that event still need a retryable row.
+            if (previous[previous.length - 1]?.error) return previous;
+            return [
+              ...previous,
+              {
+                id: `m-${crypto.randomUUID()}-error`,
+                role: "agent",
+                content: "",
+                timestamp: new Date(),
+                error: "The retry failed. Try again or check provider settings.",
+              },
+            ];
+          });
+          onError?.(`Failed to retry: ${error}`);
+        });
+      } catch (error) {
+        onError?.(`Failed to ${fork ? "fork" : "retry"}: ${error}`);
+      } finally {
+        messageActionPendingRef.current = false;
+        setMessageActionsPending(false);
+      }
+    },
+    [
+      activeSessionId,
+      handleStatusForSession,
+      handleMessagesForSession,
+      markSessionStatus,
+      messages,
+      onError,
+      onOpenSettings,
+      onSessionsChange,
+      onSuccess,
+      resetStream,
+      selectedModel,
+      selectedModelAvailable,
+      sessions,
+      startStream,
+    ]
+  );
+
+  const retryMessage = useCallback(
+    (messageId: string) => runMessageAction(messageId, false),
+    [runMessageAction]
+  );
+  const forkMessage = useCallback(
+    (messageId: string) => runMessageAction(messageId, true),
+    [runMessageAction]
+  );
+
   const handleNewSession = useCallback(() => {
     const leavingRun = isRunningStatus(statusRef.current);
     latestSelectedSessionRef.current = null;
@@ -560,15 +727,7 @@ export function useSessionManager({
   const createTask = useCallback(
     async (title: string, workspaceId: string): Promise<Session> => {
       if (!title.trim() || !workspaceId) throw new Error("A task name and workspace are required.");
-      if (
-        !selectedModel ||
-        !models.some(
-          (model) =>
-            model.provider.toLowerCase() === selectedModel.provider.toLowerCase() &&
-            model.model === selectedModel.model &&
-            model.configured !== false
-        )
-      ) {
+      if (!selectedModel || !selectedModelAvailable) {
         throw new Error("Select an available model before creating a task.");
       }
       if (workspaceId !== activeWorkspaceId) {
@@ -610,7 +769,13 @@ export function useSessionManager({
       setStatus("connected");
       return task;
     },
-    [activeWorkspaceId, models, onSessionsChange, onSwitchWorkspace, selectedModel]
+    [
+      activeWorkspaceId,
+      onSessionsChange,
+      onSwitchWorkspace,
+      selectedModel,
+      selectedModelAvailable,
+    ]
   );
 
   return {
@@ -627,6 +792,9 @@ export function useSessionManager({
     statusBySession,
     runStartedAtBySession,
     createTask,
+    messageActionsPending,
+    retryMessage,
+    forkMessage,
     handleSend,
     handleSessionSelect,
     handleNewSession,

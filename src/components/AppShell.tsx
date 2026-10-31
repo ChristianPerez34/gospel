@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
+import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useModelPreferences } from "../hooks/useModelPreferences";
 import { useSessionManager } from "../hooks/useSessionManager";
@@ -1098,6 +1098,9 @@ export function AppShell() {
                 isThinking={session.isThinking}
                 currentTurn={session.currentTurn}
                 onResolveApproval={session.resolveApproval}
+                onRetry={session.retryMessage}
+                onFork={session.forkMessage}
+                actionsDisabled={session.isStreaming || session.messageActionsPending}
               />
             )}
             {!overviewOpen && session.activeSessionId && (
@@ -1114,7 +1117,9 @@ export function AppShell() {
                 }}
                 onCancelStream={() => void session.cancelStream()}
                 isStreaming={session.isStreaming}
-                disabled={session.isStreaming || models.length === 0}
+                disabled={
+                  session.isStreaming || session.messageActionsPending || models.length === 0
+                }
                 unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
                 unavailableDetail={noModels.detail}
                 unavailableActionLabel={noModels.actionLabel}

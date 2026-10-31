@@ -1,8 +1,7 @@
-import { useCallback } from "react";
 import { Streamdown } from "streamdown";
-import { Button } from "@/components/ui/button";
 import { codePlugin } from "@/lib/markdown";
 import type { Message } from "../types";
+import { MessageActions } from "./MessageActions";
 
 interface MessageBlockProps {
   message: Message;
@@ -10,9 +9,6 @@ interface MessageBlockProps {
 }
 
 export function MessageBlock({ message, showActions = true }: MessageBlockProps) {
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(message.content);
-  }, [message.content]);
   const isUser = message.role === "user";
 
   const timeStr = message.timestamp.toLocaleTimeString([], {
@@ -50,23 +46,7 @@ export function MessageBlock({ message, showActions = true }: MessageBlockProps)
           <Streamdown plugins={{ code: codePlugin }}>{message.content}</Streamdown>
         )}
       </div>
-      {showActions && (
-        <div className="message-actions flex gap-3 opacity-0 transition-opacity duration-150 ease-out-quart pl-1 group-hover:opacity-100 group-focus-within:opacity-100">
-          <Button variant="ghost" size="xs" onClick={handleCopy} aria-label="Copy message">
-            Copy
-          </Button>
-          {!isUser && (
-            <>
-              <Button variant="ghost" size="xs" aria-label="Retry message">
-                Retry
-              </Button>
-              <Button variant="ghost" size="xs" aria-label="Fork conversation">
-                Fork
-              </Button>
-            </>
-          )}
-        </div>
-      )}
+      {showActions && <MessageActions message={message} />}
     </div>
   );
 }
