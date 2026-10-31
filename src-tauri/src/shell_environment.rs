@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -15,9 +15,16 @@ pub fn initialize() {
         .unwrap_or_else(|| default_shell.into());
     let mut command = Command::new(shell);
     // Interactive login mode loads both profile and rc paths (Homebrew, Bun, nvm).
+    // Disable job control (+m) so interactive shells in background process groups
+    // are not suspended by SIGTTIN/SIGTTOU on terminal-attached runs.
     command
-        .args(["-ilc", "printf '\\0GOSPEL_PATH\\0%s\\0' \"$PATH\""])
-        .current_dir(dirs::home_dir().unwrap_or_else(|| "/".into()));
+        .args(["+m", "-ilc", "printf '\\0GOSPEL_PATH\\0%s\\0' \"$PATH\""])
+        .current_dir(
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .or_else(dirs::home_dir)
+                .unwrap_or_else(|| "/".into()),
+        );
 
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
