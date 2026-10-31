@@ -26,6 +26,8 @@ mod review;
 mod session_actions;
 pub mod session_store;
 mod session_turn;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod shell_environment;
 mod shell_tools;
 mod skill_opt;
 pub mod skills;
@@ -3212,6 +3214,10 @@ fn validate_note_access(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cli = Cli::parse();
+
+    // Recover the terminal PATH before Tauri starts threads or launches tools.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    shell_environment::initialize();
 
     let app_config_state = match app_config::AppConfigStore::new() {
         Ok(store) => {
