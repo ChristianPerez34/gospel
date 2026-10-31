@@ -200,4 +200,47 @@ describe("ApprovalCard", () => {
     expect(allow.disabled).toBe(true);
     expect(deny.disabled).toBe(true);
   });
+
+  it("renders the entire long command without truncation and retains status visibility", () => {
+    const longCommand =
+      "python3 -c (__import__('shutil').copyfile('.gospel/report-stage.html','/tmp/citrapr-architecture-review-origin-dev.html'))";
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({
+            summary: longCommand,
+            status: "approved",
+          })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    // Entire long command must be present and un-truncated
+    expect(screen.getByText(longCommand)).toBeTruthy();
+    // Status must remain visible on the card
+    expect(screen.getByText("Allowed")).toBeTruthy();
+    expect(screen.getByText("Mutating")).toBeTruthy();
+  });
+
+  it("copies the command to clipboard when clicking the copy button", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(
+      <ol>
+        <ApprovalCard block={pendingApproval({ summary: "git push origin main" })} />
+      </ol>
+    );
+
+    const copyBtn = screen.getByRole("button", { name: /copy command/i });
+    expect(copyBtn).toBeTruthy();
+    fireEvent.click(copyBtn);
+
+    expect(writeText).toHaveBeenCalledWith("git push origin main");
+    expect(await screen.findByRole("button", { name: /copied/i })).toBeTruthy();
+  });
 });
