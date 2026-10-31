@@ -1,6 +1,8 @@
 import { ArrowRight, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useWorkspaceGitContext } from "../hooks/useWorkspaceGitContext";
 import type { Workspace } from "../types";
+import { GitContextBadge } from "./GitContextBadge";
 import { Button } from "./ui/button";
 import { WorkspacePicker } from "./WorkspacePicker";
 
@@ -39,6 +41,7 @@ export function NewTaskForm({
     if (!addingWorkspace) workspaceRef.current?.focus();
   }, [addingWorkspace]);
   const workspace = workspaces.find((item) => item.id === workspaceId);
+  const gitContext = useWorkspaceGitContext(workspace?.id);
   const addWorkspace = async () => {
     if (addingWorkspace) return;
     setAddingWorkspace(true);
@@ -74,6 +77,9 @@ export function NewTaskForm({
               disabled={creating || addingWorkspace}
               triggerRef={workspaceRef}
             />
+            {workspace && gitContext && (
+              <GitContextBadge gitContext={gitContext} className="new-task-git-context" />
+            )}
             <Button
               variant="ghost"
               size="sm"
