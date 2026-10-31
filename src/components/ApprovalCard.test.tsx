@@ -243,4 +243,25 @@ describe("ApprovalCard", () => {
     expect(writeText).toHaveBeenCalledWith("git push origin main");
     expect(await screen.findByRole("button", { name: /copied/i })).toBeTruthy();
   });
+
+  it("toggles expand and collapse when the command is long", () => {
+    const longCommand =
+      "python3 -c \"import sys; print('This is a very long multiline script that should be expandable by clicking the expand button on the card for full visibility')\"\nline2\nline3";
+    render(
+      <ol>
+        <ApprovalCard block={pendingApproval({ summary: longCommand })} />
+      </ol>
+    );
+
+    const expandBtn = screen.getByRole("button", { name: /expand full command/i });
+    expect(expandBtn.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(expandBtn);
+    expect(screen.getByRole("button", { name: /collapse command/i })).toBeTruthy();
+    expect(expandBtn.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(expandBtn);
+    expect(screen.getByRole("button", { name: /expand full command/i })).toBeTruthy();
+    expect(expandBtn.getAttribute("aria-expanded")).toBe("false");
+  });
 });

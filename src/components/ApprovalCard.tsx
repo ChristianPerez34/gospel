@@ -1,4 +1,4 @@
-import { Check, Copy } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { ApprovalDecision, ApprovalRisk, TurnBlock } from "../types";
@@ -49,11 +49,14 @@ function statusClass(status: ApprovalBlock["status"]): string {
 export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
   const [busy, setBusy] = useState<ApprovalDecision | null>(null);
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const isPending = block.status === "pending";
   const canResolve = isPending && Boolean(onResolve) && busy === null;
   const isDestructive = block.risk === "destructive";
   const canAlwaysAllow =
     block.approvalKind === "command" && !isDestructive && block.workspaceScoped !== false;
+
+  const isLong = block.summary.length > 140 || block.summary.includes("\n");
 
   const resolve = async (decision: ApprovalDecision) => {
     if (!onResolve) return;
@@ -111,24 +114,46 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
 
       <div className="group/cmd relative min-w-0 rounded-md border border-surface-overlay/80 bg-surface-base p-2.5 font-mono text-body-sm text-text-primary">
         <div
-          className="max-h-60 overflow-y-auto overflow-x-hidden break-words [overflow-wrap:anywhere] whitespace-pre-wrap select-text pr-7 font-mono text-mono"
+          className={`${
+            expanded ? "max-h-none" : "max-h-48"
+          } overflow-y-auto overflow-x-hidden break-words [overflow-wrap:anywhere] whitespace-pre-wrap select-text ${
+            isLong ? "pr-14" : "pr-7"
+          } font-mono text-mono transition-[max-height] duration-200 ease-out`}
           title={block.summary}
         >
           {block.summary}
         </div>
-        <button
-          type="button"
-          onClick={copySummary}
-          className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded text-text-muted opacity-0 transition-all duration-150 ease-out hover:bg-surface-overlay hover:text-text-primary focus-visible:opacity-100 group-hover/cmd:opacity-100 active:scale-[0.95]"
-          title={copied ? "Copied" : "Copy command"}
-          aria-label={copied ? "Copied" : "Copy command"}
-        >
-          {copied ? (
-            <Check className="h-3.5 w-3.5 text-status-success" />
-          ) : (
-            <Copy className="h-3.5 w-3.5" />
+        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
+          {isLong && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="flex h-6 w-6 items-center justify-center rounded text-text-muted opacity-80 transition-all duration-150 ease-out hover:bg-surface-overlay hover:text-text-primary hover:opacity-100 focus-visible:opacity-100 group-hover/cmd:opacity-100 active:scale-[0.95]"
+              title={expanded ? "Collapse command" : "Expand full command"}
+              aria-label={expanded ? "Collapse command" : "Expand full command"}
+              aria-expanded={expanded}
+            >
+              {expanded ? (
+                <ChevronUp className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" />
+              )}
+            </button>
           )}
-        </button>
+          <button
+            type="button"
+            onClick={copySummary}
+            className="flex h-6 w-6 items-center justify-center rounded text-text-muted opacity-0 transition-all duration-150 ease-out hover:bg-surface-overlay hover:text-text-primary focus-visible:opacity-100 group-hover/cmd:opacity-100 active:scale-[0.95]"
+            title={copied ? "Copied" : "Copy command"}
+            aria-label={copied ? "Copied" : "Copy command"}
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-status-success" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </div>
       </div>
 
       <p className="m-0 text-body-sm text-text-secondary">{block.reason}</p>
