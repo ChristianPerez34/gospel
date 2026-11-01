@@ -43,7 +43,7 @@ Gospel exposes three agent-facing tools for workspace command execution:
 ### Safety model
 
 - Read-only commands run directly.
-- Mutating commands require one-time approval in Ask mode. Auto mode skips prompts only for a small allowlist of safe command families; other commands remain interactive unless explicitly always-allowed.
+- Mutating commands require one-time approval in Ask mode. Auto mode skips prompts for routine, workspace-scoped development operations (`mkdir`, `touch`, local `git add`/`commit`, `cargo fmt`/`check`/`test`/`build`/`clippy`, and the `bun run` build, check, format, lint, test, and typecheck scripts). These still execute workspace code. Git global options, `--amend`, `--no-verify`, watch modes, and inline config overrides always prompt, as do remote and unlisted commands unless explicitly always-allowed.
 - Destructive and sensitive commands are never auto-approved; hard-blocked commands continue to fail closed.
 - Hard-blocked commands always fail without approval:
   - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
