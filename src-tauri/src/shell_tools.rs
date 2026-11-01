@@ -27,7 +27,7 @@ You can run shell, git, and GitHub CLI commands in the active workspace.
 ### Safety Rules
 
 - Read-only commands run directly.
-- Mutating commands require approval in Ask mode. Auto mode skips prompts only for a small allowlist of safe command families; other commands remain interactive unless explicitly always-allowed.
+- Mutating commands require approval in Ask mode. Auto mode skips prompts for routine, workspace-scoped development operations (such as builds, tests, and local `git add`/`commit`). Git global options, `--amend`, `--no-verify`, watch modes, and inline config overrides still prompt; other mutations remain interactive unless explicitly always-allowed.
 - Destructive and sensitive commands are never auto-approved; hard-blocked commands continue to fail closed.
 - Workspace-escaping command paths and external-path requests require per-request approval; command allow rules never apply to external-path requests.
 - The following are always blocked:
