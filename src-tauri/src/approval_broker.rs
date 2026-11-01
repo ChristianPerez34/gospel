@@ -196,9 +196,26 @@ pub const DEFAULT_REJECT_PATTERNS: &[&str] = &[
     "fdisk*",
 ];
 
-// Unknown executables may run arbitrary code, so Auto mode only skips prompts
-// for these known command families. Everything else remains interactive.
-const AUTO_APPROVE_PATTERNS: &[&str] = &["mkdir", "touch", "cargo fmt"];
+// Keep Auto to routine, workspace-local development operations. Unknown
+// commands and remote operations stay interactive.
+const AUTO_APPROVE_PATTERNS: &[&str] = &[
+    "mkdir",
+    "touch",
+    "git add",
+    "git commit",
+    "cargo fmt",
+    "cargo check",
+    "cargo test",
+    "cargo build",
+    "cargo clippy",
+    "bun run build",
+    "bun run check",
+    "bun run format",
+    "bun run format:check",
+    "bun run lint",
+    "bun run test",
+    "bun run typecheck",
+];
 
 fn normalize_command_for_policy(command: &str) -> String {
     let mut parts = command.split_whitespace();
@@ -826,8 +843,8 @@ mod tests {
         let (broker, _) = test_broker_with_timeout(Duration::from_secs(1));
         let request = ApprovalRequest::command(
             "run_git_command",
-            "git add src/main.rs",
-            "Stage source changes.",
+            "git push origin main",
+            "Push changes to the remote.",
             false,
             None,
         )
@@ -1147,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_mode_only_approves_known_command_families() {
+    fn auto_mode_approves_routine_workspace_commands_only() {
         let (broker, _) = test_broker();
         broker.set_autonomy_mode(AutonomyMode::Auto);
         let request = |summary: &str| {
@@ -1156,7 +1173,13 @@ mod tests {
         };
 
         assert!(broker.should_auto_approve(&request("mkdir -p build")));
-        assert!(!broker.should_auto_approve(&request("git add src/main.rs")));
+        assert!(broker.should_auto_approve(&request("git add src/main.rs")));
+        assert!(broker.should_auto_approve(&request("git commit -m update")));
+        assert!(broker.should_auto_approve(&request("cargo test --lib")));
+        assert!(broker.should_auto_approve(&request("bun run test")));
+        assert!(broker.should_auto_approve(&request("bun run build")));
+        assert!(!broker.should_auto_approve(&request("git push origin dev")));
+        assert!(!broker.should_auto_approve(&request("bun install")));
         assert!(!broker.should_auto_approve(&request(
             "python3 -c \"__import__('pathlib').Path('important.txt').unlink()\""
         )));
