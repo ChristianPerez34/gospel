@@ -22,6 +22,10 @@ const TOOL_LABELS: Record<string, string> = {
   source_edit: "Edit file",
   bash: "Run command",
   terminal: "Run command",
+  run_shell_command: "Run command",
+  run_git_command: "Git",
+  run_github_cli_command: "GitHub CLI",
+  run_skill_script: "Skill script",
   apply_patch: "Edit files",
   write_file: "Write file",
   edit_file: "Edit file",
@@ -521,6 +525,50 @@ function recordReviewOutcomeCard(activity: ToolCallActivity): Partial<ActionCard
   };
 }
 
+function commandLabel(activity: ToolCallActivity): string | undefined {
+  const args = parsedArguments(activity);
+  if (activity.name === "run_skill_script") {
+    const label = [args?.skill, args?.script].map(displayValue).filter(Boolean).join("/");
+    return label || undefined;
+  }
+  const program =
+    activity.name === "run_git_command"
+      ? "git"
+      : activity.name === "run_github_cli_command"
+        ? "gh"
+        : displayValue(args?.program);
+  const rest = asArray(args?.args).map(displayValue).filter(Boolean).join(" ");
+  const label = [program, rest].filter(Boolean).join(" ");
+  return label || undefined;
+}
+
+function commandCard(activity: ToolCallActivity): Partial<ActionCard> {
+  const result = resultRecord(activity);
+  const command = commandLabel(activity);
+  const stdout = displayValue(result?.stdout);
+  const stderr = displayValue(result?.stderr);
+  const quiet =
+    result && !stdout && !stderr && result.success !== false ? "(no output)" : undefined;
+  const sections = [
+    textSection("Command", command, true),
+    fieldsSection("Result", [
+      field("Exit", result?.exit_code),
+      field("Truncated", result?.truncated === true || undefined),
+    ]),
+    ...failureSection(result),
+    textSection("Output", stdout ?? quiet, true),
+    textSection("Stderr", stderr, true),
+    textSection("Error", result?.error),
+    ...waitingSection(activity),
+  ].filter(isRenderableSection);
+
+  return {
+    detail: command,
+    target: command,
+    sections,
+  };
+}
+
 function fallbackCard(activity: ToolCallActivity): Partial<ActionCard> {
   const sections = [
     textSection("Arguments", formatValue(activity.arguments), true),
@@ -546,7 +594,8 @@ function actionCardTypeForTool(name: string): ActionCardType {
   if (
     normalized.includes("bash") ||
     normalized.includes("command") ||
-    normalized.includes("terminal")
+    normalized.includes("terminal") ||
+    normalized.includes("script")
   ) {
     return "terminal";
   }
@@ -657,4 +706,8 @@ const TOOL_CARD_FORMATTERS: Record<string, (activity: ToolCallActivity) => Parti
   run_review: runReviewCard,
   run_security_review: runReviewCard,
   record_review_outcome: recordReviewOutcomeCard,
+  run_shell_command: commandCard,
+  run_git_command: commandCard,
+  run_github_cli_command: commandCard,
+  run_skill_script: commandCard,
 };
