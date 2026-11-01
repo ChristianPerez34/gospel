@@ -525,6 +525,10 @@ function recordReviewOutcomeCard(activity: ToolCallActivity): Partial<ActionCard
   };
 }
 
+function quoteCommandArgument(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function commandLabel(activity: ToolCallActivity): string | undefined {
   const args = parsedArguments(activity);
   if (activity.name === "run_skill_script") {
@@ -537,8 +541,10 @@ function commandLabel(activity: ToolCallActivity): string | undefined {
       : activity.name === "run_github_cli_command"
         ? "gh"
         : displayValue(args?.program);
-  const rest = asArray(args?.args).map(displayValue).filter(Boolean).join(" ");
-  const label = [program, rest].filter(Boolean).join(" ");
+  const label = [program, ...asArray(args?.args)]
+    .filter((value): value is string => typeof value === "string")
+    .map(quoteCommandArgument)
+    .join(" ");
   return label || undefined;
 }
 
@@ -551,6 +557,7 @@ function commandCard(activity: ToolCallActivity): Partial<ActionCard> {
     result && !stdout && !stderr && result.success !== false ? "(no output)" : undefined;
   const sections = [
     textSection("Command", command, true),
+    result ? undefined : textSection("Result", activity.result, true),
     fieldsSection("Result", [
       field("Exit", result?.exit_code),
       field("Truncated", result?.truncated === true || undefined),

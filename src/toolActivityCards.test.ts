@@ -440,6 +440,75 @@ describe("toolActivitiesToActionCards review tools", () => {
     });
   });
 
+  it.each([
+    ["run_shell_command", { program: "missing-program", args: [] }],
+    ["run_git_command", { args: ["status"] }],
+    ["run_github_cli_command", { args: ["auth", "status"] }],
+    ["run_skill_script", { skill: "diagnose", script: "run.sh" }],
+  ])("shows plain-text execution errors for %s", (name, args) => {
+    const result = "Command execution failed: No such file or directory (os error 2)";
+    const [card] = toolActivitiesToActionCards([
+      { id: "spawn-error", name, arguments: args, result, status: "completed" },
+    ]);
+
+    expect(card.sections).toContainEqual({
+      type: "text",
+      title: "Result",
+      content: result,
+      monospace: true,
+    });
+  });
+
+  it.each([
+    ["run_shell_command", { program: "git" }, "git"],
+    ["run_git_command", {}, "git"],
+    ["run_github_cli_command", {}, "gh"],
+  ])("preserves argument boundaries when grouping %s", (name, program, prefix) => {
+    const steps = toolActivitiesToTimelineSteps(
+      [
+        ["log", "--format=%h %s"],
+        ["log", "--format=%h", "%s"],
+        ["log", "--format=%h", "%s"],
+        ["log", "--format=%h", "%s", ""],
+      ].map((args, index) => ({
+        id: `command-${index}`,
+        name,
+        arguments: { ...program, args },
+        status: "completed" as const,
+      }))
+    );
+
+    expect(steps.map((step) => step.target)).toEqual([
+      `${prefix} log '--format=%h %s'`,
+      `${prefix} log --format=%h %s`,
+      `${prefix} log --format=%h %s ''`,
+    ]);
+    expect(steps[1].groupCount).toBe(2);
+  });
+
+  it("quotes program paths and arguments containing quotes or backslashes", () => {
+    const [card] = toolActivitiesToActionCards([
+      {
+        id: "quoted-command",
+        name: "run_shell_command",
+        arguments: {
+          program: "/my tools/runner",
+          args: ["it's", '"quoted"', "path\\name"],
+        },
+        status: "calling",
+      },
+    ]);
+
+    expect(card.target).toBe("'/my tools/runner' 'it'\\''s' '\"quoted\"' 'path\\name'");
+    expect(card.detail).toBe(card.target);
+    expect(card.sections).toContainEqual({
+      type: "text",
+      title: "Command",
+      content: card.target,
+      monospace: true,
+    });
+  });
+
   it("formats run_git_command failures with stderr, exit code, and reason", () => {
     const cards = toolActivitiesToActionCards([
       {
