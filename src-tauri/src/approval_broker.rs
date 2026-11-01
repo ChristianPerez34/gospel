@@ -316,8 +316,8 @@ pub fn matches_sensitive_target(command: &str) -> bool {
 }
 
 struct PendingEntry {
-    sender: oneshot::Sender<ApprovalDecision>,
-    summary: Option<String>,
+    sender: oneshot::Sender<ApprovalOutcome>,
+    summary: String,
     kind: ApprovalKind,
     workspace_scoped: bool,
     risk: ApprovalRisk,
@@ -418,22 +418,37 @@ impl ApprovalBroker {
     }
 
     pub fn should_auto_approve(&self, request: &ApprovalRequest) -> bool {
-        if request.kind != ApprovalKind::Command
-            || !request.workspace_scoped
-            || matches!(request.risk, ApprovalRisk::Destructive)
+        self.should_auto_approve_command(
+            request.kind,
+            request.workspace_scoped,
+            request.risk,
+            &request.summary,
+        )
+    }
+
+    fn should_auto_approve_command(
+        &self,
+        kind: ApprovalKind,
+        workspace_scoped: bool,
+        risk: ApprovalRisk,
+        command: &str,
+    ) -> bool {
+        if kind != ApprovalKind::Command
+            || !workspace_scoped
+            || matches!(risk, ApprovalRisk::Destructive)
         {
             return false;
         }
-        if self.is_command_rejected(&request.summary, request.risk) {
+        if self.is_command_rejected(command, risk) {
             return false;
         }
-        if self.matches_allow(&request.summary) {
+        if self.matches_allow(command) {
             return true;
         }
         let mode = *self.autonomy_mode.lock().expect("approval broker poisoned");
         matches!(mode, AutonomyMode::Auto)
             && AUTO_APPROVE_PATTERNS.iter().any(|pattern| {
-                matches_command_pattern(&normalize_command_for_policy(&request.summary), pattern)
+                matches_command_pattern(&normalize_command_for_policy(command), pattern)
             })
     }
 
@@ -481,8 +496,36 @@ impl ApprovalBroker {
     }
 
     pub fn set_autonomy_mode(&self, mode: AutonomyMode) {
-        let mut guard = self.autonomy_mode.lock().expect("approval broker poisoned");
-        *guard = mode;
+        {
+            let mut guard = self.autonomy_mode.lock().expect("approval broker poisoned");
+            *guard = mode;
+        }
+
+        if mode != AutonomyMode::Auto {
+            return;
+        }
+
+        let auto_approved = {
+            let mut pending = self.pending.lock().expect("approval broker poisoned");
+            let ids: Vec<String> = pending
+                .iter()
+                .filter_map(|(id, entry)| {
+                    self.should_auto_approve_command(
+                        entry.kind,
+                        entry.workspace_scoped,
+                        entry.risk,
+                        &entry.summary,
+                    )
+                    .then(|| id.clone())
+                })
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| pending.remove(&id))
+                .collect::<Vec<_>>()
+        };
+        for entry in auto_approved {
+            let _ = entry.sender.send(ApprovalOutcome::AutoApproved);
+        }
     }
 
     pub fn autonomy_mode(&self) -> AutonomyMode {
@@ -584,7 +627,7 @@ impl ApprovalBroker {
                 id.clone(),
                 PendingEntry {
                     sender,
-                    summary: Some(request.summary.clone()),
+                    summary: request.summary.clone(),
                     kind: request.kind,
                     workspace_scoped: request.workspace_scoped,
                     risk: request.risk,
@@ -594,20 +637,23 @@ impl ApprovalBroker {
 
         self.emitter.emit_requested(&request);
 
-        let timed_out;
-        let decision = match tokio::time::timeout(self.timeout, receiver).await {
-            Ok(Ok(decision)) => {
-                timed_out = false;
-                Some(decision)
+        // Recheck after registering so a concurrent switch to Auto can't miss
+        // a request that passed the initial Ask-mode check.
+        if self.should_auto_approve(&request) {
+            let entry = self
+                .pending
+                .lock()
+                .expect("approval broker poisoned")
+                .remove(&id);
+            if let Some(entry) = entry {
+                let _ = entry.sender.send(ApprovalOutcome::AutoApproved);
             }
-            Ok(Err(_dropped)) => {
-                timed_out = false;
-                None
-            }
-            Err(_elapsed) => {
-                timed_out = true;
-                None
-            }
+        }
+
+        let outcome = match tokio::time::timeout(self.timeout, receiver).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_dropped)) => ApprovalOutcome::Denied,
+            Err(_elapsed) => ApprovalOutcome::TimedOut,
         };
 
         {
@@ -615,7 +661,6 @@ impl ApprovalBroker {
             pending.remove(&id);
         }
 
-        let outcome = ApprovalOutcome::from_decision(decision, timed_out);
         self.emitter.emit_resolved(&ApprovalResolution {
             id,
             outcome,
@@ -638,24 +683,25 @@ impl ApprovalBroker {
         };
         match entry {
             Some(entry) => {
-                if let Some(cmd) = &entry.summary {
-                    match decision {
-                        ApprovalDecision::AlwaysAllow => {
-                            if entry.kind == ApprovalKind::Command
-                                && entry.workspace_scoped
-                                && !matches!(entry.risk, ApprovalRisk::Destructive)
-                                && !self.is_command_rejected(cmd, entry.risk)
-                            {
-                                self.add_allow_rule_for_command(cmd);
-                            }
+                match decision {
+                    ApprovalDecision::AlwaysAllow => {
+                        if entry.kind == ApprovalKind::Command
+                            && entry.workspace_scoped
+                            && !matches!(entry.risk, ApprovalRisk::Destructive)
+                            && !self.is_command_rejected(&entry.summary, entry.risk)
+                        {
+                            self.add_allow_rule_for_command(&entry.summary);
                         }
-                        ApprovalDecision::AlwaysDeny if entry.kind == ApprovalKind::Command => {
-                            self.add_reject_rule_for_command(cmd);
-                        }
-                        _ => {}
                     }
+                    ApprovalDecision::AlwaysDeny if entry.kind == ApprovalKind::Command => {
+                        self.add_reject_rule_for_command(&entry.summary);
+                    }
+                    _ => {}
                 }
-                entry.sender.send(decision).is_ok()
+                entry
+                    .sender
+                    .send(ApprovalOutcome::from_decision(Some(decision), false))
+                    .is_ok()
             }
             None => false,
         }
@@ -743,6 +789,62 @@ mod tests {
             emitter.resolved.lock().unwrap()[0].outcome,
             ApprovalOutcome::Approved
         );
+    }
+
+    #[tokio::test]
+    async fn switching_to_auto_auto_approves_pending_safe_command() {
+        let (broker, emitter) = test_broker_with_timeout(Duration::from_secs(1));
+        let request = ApprovalRequest::command(
+            "run_shell_command",
+            "mkdir -p build",
+            "Create build directory.",
+            false,
+            None,
+        )
+        .with_workspace_scope(true);
+        let broker_for_task = broker.clone();
+        let task = tokio::spawn(async move { broker_for_task.request(request).await });
+
+        wait_for_pending(&broker).await;
+        assert_eq!(broker.pending_count(), 1);
+
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+
+        assert!(tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .expect("pending safe command should be released when Auto is enabled")
+            .unwrap());
+        assert_eq!(broker.pending_count(), 0);
+        assert_eq!(
+            emitter.resolved.lock().unwrap()[0].outcome,
+            ApprovalOutcome::AutoApproved
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_to_auto_keeps_unlisted_pending_command_interactive() {
+        let (broker, _) = test_broker_with_timeout(Duration::from_secs(1));
+        let request = ApprovalRequest::command(
+            "run_git_command",
+            "git add src/main.rs",
+            "Stage source changes.",
+            false,
+            None,
+        )
+        .with_workspace_scope(true);
+        let id = request.id.clone();
+        let broker_for_task = broker.clone();
+        let mut task = tokio::spawn(async move { broker_for_task.request(request).await });
+
+        wait_for_pending(&broker).await;
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut task)
+            .await
+            .is_err());
+        assert_eq!(broker.pending_count(), 1);
+        assert!(broker.resolve(&id, ApprovalDecision::Approve));
+        assert!(task.await.unwrap());
     }
 
     #[tokio::test]
