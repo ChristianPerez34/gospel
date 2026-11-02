@@ -13,12 +13,14 @@ interface ApprovalCardProps {
 const RISK_LABEL: Record<ApprovalRisk, string> = {
   mutating: "Mutating",
   destructive: "Destructive",
+  restricted: "Restricted",
   external_access: "External access",
 };
 
 const RISK_ACCENT: Record<ApprovalRisk, string> = {
   mutating: "text-accent-data",
   destructive: "text-status-error",
+  restricted: "text-status-warning",
   external_access: "text-accent-signal",
 };
 
@@ -53,10 +55,12 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
   const isPending = block.status === "pending";
   const canResolve = isPending && Boolean(onResolve) && busy === null;
   const isDestructive = block.risk === "destructive";
+  const isRestricted = block.risk === "restricted";
   // MCP tool allow-rules are server-scoped (mcp://server/tool), not
   // workspace-scoped, so they skip the workspaceScoped check.
   const canAlwaysAllow =
     !isDestructive &&
+    !isRestricted &&
     (block.approvalKind === "mcp_tool" ||
       (block.approvalKind === "command" && block.workspaceScoped !== false));
 

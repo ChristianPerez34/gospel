@@ -27,7 +27,7 @@ pub const APPROVAL_RESOLVED_EVENT: &str = "approval-resolved";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalKind {
-    /// A shell/git/gh command classified as mutating or destructive.
+    /// A shell/git/gh command classified as mutating, destructive, or restricted.
     Command,
     /// A workspace tool reading from a path outside the active workspace.
     ExternalPath,
@@ -42,6 +42,7 @@ pub enum ApprovalKind {
 pub enum ApprovalRisk {
     Mutating,
     Destructive,
+    Restricted,
     ExternalAccess,
 }
 
@@ -100,6 +101,18 @@ impl ApprovalRequest {
 
     pub fn with_workspace_scope(mut self, workspace_scoped: bool) -> Self {
         self.workspace_scoped = workspace_scoped;
+        self
+    }
+
+    pub fn with_risk(mut self, risk: ApprovalRisk) -> Self {
+        self.risk = risk;
+        self.title = match risk {
+            ApprovalRisk::Mutating => "Allow mutating command?",
+            ApprovalRisk::Destructive => "Allow destructive command?",
+            ApprovalRisk::Restricted => "Review restricted command?",
+            ApprovalRisk::ExternalAccess => "Allow external file access?",
+        }
+        .to_string();
         self
     }
 
@@ -220,82 +233,6 @@ pub const DEFAULT_REJECT_PATTERNS: &[&str] = &[
     "dd *",
     "fdisk*",
 ];
-
-// Auto skips prompts for routine, workspace-local development commands. Builds,
-// tests, and `bun run` scripts still execute project code (build.rs, proc
-// macros, package.json scripts), so this list trusts the workspace contents;
-// unknown executables and remote operations stay interactive.
-const AUTO_APPROVE_PATTERNS: &[&str] = &[
-    "mkdir",
-    "touch",
-    "git add",
-    "git commit",
-    "cargo fmt",
-    "cargo check",
-    "cargo test",
-    "cargo build",
-    "cargo clippy",
-    "bun run build",
-    "bun run check",
-    "bun run format",
-    "bun run format:check",
-    "bun run lint",
-    "bun run test",
-    "bun run typecheck",
-];
-
-// Flags that turn an allowlisted command into something a reviewer should see:
-// history rewrites, hook bypasses, never-ending watchers, and inline config
-// that can point tools at executables outside the workspace.
-const AUTO_APPROVE_DENIED_FLAGS: &[&str] = &[
-    "--amend",
-    "--no-verify",
-    "-n",
-    "--watch",
-    "-w",
-    "--config",
-    "-Z",
-];
-
-fn matches_auto_approve_pattern(command: &str) -> bool {
-    let tokens: Vec<&str> = command.split_whitespace().collect();
-    let Some((program, args)) = tokens.split_first() else {
-        return false;
-    };
-    let executable = program.rsplit(['/', '\\']).next().unwrap_or(program);
-
-    // Git global options (-c, -C, --git-dir, ...) can redirect hooks, fsmonitor,
-    // or the repository itself, and policy normalization strips them.
-    if executable.eq_ignore_ascii_case("git")
-        && crate::shell_tools::git_subcommand_args(args).len() != args.len()
-    {
-        return false;
-    }
-
-    if args.iter().any(|arg| {
-        let flag = arg.split_once('=').map_or(*arg, |(name, _)| name);
-        AUTO_APPROVE_DENIED_FLAGS.contains(&flag) || has_embedded_external_path(arg)
-    }) {
-        return false;
-    }
-
-    let normalized = normalize_command_for_policy(command);
-    AUTO_APPROVE_PATTERNS
-        .iter()
-        .any(|pattern| matches_command_pattern(&normalized, pattern))
-}
-
-// Workspace scoping reads `core.hooksPath=/abs` or `--opt=key=/abs` as a single
-// relative path, so an external path behind a nested `=` passes as in-workspace.
-fn has_embedded_external_path(arg: &str) -> bool {
-    arg.split('=').skip(1).any(|value| {
-        value.starts_with(['/', '\\', '~'])
-            || value.contains("..")
-            || (value.len() >= 2
-                && value.as_bytes()[0].is_ascii_alphabetic()
-                && value.as_bytes()[1] == b':')
-    })
-}
 
 fn normalize_command_for_policy(command: &str) -> String {
     let mut parts = command.split_whitespace();
@@ -474,7 +411,7 @@ impl ApprovalBroker {
     }
 
     pub fn is_command_rejected(&self, command: &str, risk: ApprovalRisk) -> bool {
-        if matches!(risk, ApprovalRisk::Destructive) {
+        if matches!(risk, ApprovalRisk::Destructive | ApprovalRisk::Restricted) {
             return true;
         }
         let normalized = normalize_command_for_policy(command);
@@ -530,26 +467,24 @@ impl ApprovalBroker {
         risk: ApprovalRisk,
         command: &str,
     ) -> bool {
+        let mode = *self.autonomy_mode.lock().expect("approval broker poisoned");
+        if kind == ApprovalKind::Command && mode == AutonomyMode::Auto {
+            return true;
+        }
+
         // MCP tools never auto-approve under Auto mode: they are third-party
-        // calls, not routine workspace dev ops. An explicit always-allow rule
+        // calls, not command execution. An explicit always-allow rule
         // (mcp://server/tool) is the only skip.
         if kind == ApprovalKind::McpTool {
             return self.matches_allow(command);
         }
-        if kind != ApprovalKind::Command
-            || !workspace_scoped
-            || matches!(risk, ApprovalRisk::Destructive)
-        {
+        if kind != ApprovalKind::Command || !workspace_scoped {
             return false;
         }
         if self.is_command_rejected(command, risk) {
             return false;
         }
-        if self.matches_allow(command) {
-            return true;
-        }
-        let mode = *self.autonomy_mode.lock().expect("approval broker poisoned");
-        matches!(mode, AutonomyMode::Auto) && matches_auto_approve_pattern(command)
+        self.matches_allow(command)
     }
 
     pub fn add_allow_rule_for_command(&self, command: &str) {
@@ -609,15 +544,15 @@ impl ApprovalBroker {
             let mut pending = self.pending.lock().expect("approval broker poisoned");
             let ids: Vec<String> = pending
                 .iter()
-                .filter_map(|(id, entry)| {
+                .filter(|(_, entry)| {
                     self.should_auto_approve_command(
                         entry.kind,
                         entry.workspace_scoped,
                         entry.risk,
                         &entry.summary,
                     )
-                    .then(|| id.clone())
                 })
+                .map(|(id, _)| id.clone())
                 .collect();
             ids.into_iter()
                 .filter_map(|id| pending.remove(&id))
@@ -700,9 +635,9 @@ impl ApprovalBroker {
 
     /// Register a request, emit it to the frontend, and wait for a decision.
     ///
-    /// If the request matches an allow rule or autonomy mode (and does not
-    /// violate reject guardrails), it auto-approves immediately and emits
-    /// an `approval-resolved` event with `AutoApproved`.
+    /// Auto mode approves every command request. In Ask mode, only matching
+    /// allow rules auto-approve eligible requests. MCP requests can use an
+    /// explicit allow rule; external-path requests always wait for the user.
     ///
     /// Otherwise, waits for the frontend decision or timeout.
     pub async fn request(&self, request: ApprovalRequest) -> bool {
@@ -789,7 +724,7 @@ impl ApprovalBroker {
                             self.add_allow_rule(entry.summary.clone());
                         } else if entry.kind == ApprovalKind::Command
                             && entry.workspace_scoped
-                            && !matches!(entry.risk, ApprovalRisk::Destructive)
+                            && matches!(entry.risk, ApprovalRisk::Mutating)
                             && !self.is_command_rejected(&entry.summary, entry.risk)
                         {
                             self.add_allow_rule_for_command(&entry.summary);
@@ -894,16 +829,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switching_to_auto_auto_approves_pending_safe_command() {
+    async fn switching_to_auto_auto_approves_pending_destructive_command() {
         let (broker, emitter) = test_broker_with_timeout(Duration::from_secs(1));
         let request = ApprovalRequest::command(
-            "run_shell_command",
-            "mkdir -p build",
-            "Create build directory.",
-            false,
+            "run_git_command",
+            "git push --force origin main",
+            "Force push changes.",
+            true,
             None,
         )
-        .with_workspace_scope(true);
+        .with_workspace_scope(false);
         let broker_for_task = broker.clone();
         let task = tokio::spawn(async move { broker_for_task.request(request).await });
 
@@ -914,7 +849,7 @@ mod tests {
 
         assert!(tokio::time::timeout(Duration::from_millis(100), task)
             .await
-            .expect("pending safe command should be released when Auto is enabled")
+            .expect("pending command should be released when Auto is enabled")
             .unwrap());
         assert_eq!(broker.pending_count(), 0);
         assert_eq!(
@@ -924,7 +859,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switching_to_auto_keeps_unlisted_pending_command_interactive() {
+    async fn switching_to_auto_approves_unlisted_pending_command() {
         let (broker, _) = test_broker_with_timeout(Duration::from_secs(1));
         let request = ApprovalRequest::command(
             "run_git_command",
@@ -936,17 +871,17 @@ mod tests {
         .with_workspace_scope(true);
         let id = request.id.clone();
         let broker_for_task = broker.clone();
-        let mut task = tokio::spawn(async move { broker_for_task.request(request).await });
+        let task = tokio::spawn(async move { broker_for_task.request(request).await });
 
         wait_for_pending(&broker).await;
         broker.set_autonomy_mode(AutonomyMode::Auto);
 
-        assert!(tokio::time::timeout(Duration::from_millis(50), &mut task)
+        assert!(tokio::time::timeout(Duration::from_millis(100), task)
             .await
-            .is_err());
-        assert_eq!(broker.pending_count(), 1);
-        assert!(broker.resolve(&id, ApprovalDecision::Approve));
-        assert!(task.await.unwrap());
+            .expect("remote commands should auto-approve in Auto mode")
+            .unwrap());
+        assert_eq!(broker.pending_count(), 0);
+        assert!(!broker.resolve(&id, ApprovalDecision::Approve));
     }
 
     #[tokio::test]
@@ -1175,9 +1110,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_escaping_commands_never_auto_approve_or_save_allow_rules() {
+    async fn workspace_escaping_commands_need_ask_approval_but_auto_approves() {
         let (broker, _) = test_broker();
-        broker.set_autonomy_mode(AutonomyMode::Auto);
         let request = ApprovalRequest::command(
             "run_shell_command",
             "mkdir /tmp/outside",
@@ -1207,12 +1141,16 @@ mod tests {
         .with_workspace_scope(false);
         broker.add_allow_rule_for_command(&repeated.summary);
         assert!(!broker.should_auto_approve(&repeated));
+
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        assert!(broker.should_auto_approve(&repeated));
     }
 
     #[tokio::test]
-    async fn reject_patterns_guardrail_blocks_auto_approval() {
+    async fn auto_mode_ignores_reject_patterns() {
         let (broker, _emitter) = test_broker();
         broker.set_autonomy_mode(AutonomyMode::Auto);
+        broker.add_reject_rule("git fetch*");
 
         // A safe mutating command auto-approves in Auto mode
         let safe_cmd = ApprovalRequest::command(
@@ -1226,7 +1164,7 @@ mod tests {
         assert!(broker.request(safe_cmd).await);
         assert_eq!(broker.pending_count(), 0);
 
-        // A command matching a reject pattern (rm *) is blocked from auto-approval
+        // Reject rules remain visible policy, but Auto means all commands execute.
         let rm_cmd = ApprovalRequest::command(
             "run_shell_command",
             "rm -rf build",
@@ -1235,49 +1173,60 @@ mod tests {
             None,
         )
         .with_workspace_scope(true);
-        let broker_for_task = broker.clone();
-        let task = tokio::spawn(async move { broker_for_task.request(rm_cmd).await });
+        assert!(broker.should_auto_approve(&rm_cmd));
+        assert!(broker.is_command_rejected(&rm_cmd.summary, rm_cmd.risk));
 
-        wait_for_pending(&broker).await;
-        assert_eq!(broker.pending_count(), 1);
-        let id = {
-            let pending = broker.pending.lock().unwrap();
-            pending.keys().next().unwrap().clone()
-        };
-        assert!(broker.resolve(&id, ApprovalDecision::Deny));
-        assert!(!task.await.unwrap());
+        let rejected_command = ApprovalRequest::command(
+            "run_git_command",
+            "git fetch origin",
+            "Fetch remote changes.",
+            false,
+            None,
+        )
+        .with_workspace_scope(true);
+        assert!(broker.is_command_rejected(&rejected_command.summary, rejected_command.risk));
+        assert!(broker.should_auto_approve(&rejected_command));
     }
 
     #[test]
-    fn auto_mode_approves_routine_workspace_commands_only() {
+    fn auto_mode_approves_every_command_regardless_of_risk_scope_or_rules() {
         let (broker, _) = test_broker();
         broker.set_autonomy_mode(AutonomyMode::Auto);
-        let request = |summary: &str| {
-            ApprovalRequest::command("run_shell_command", summary, "Test command.", false, None)
-                .with_workspace_scope(true)
+        let request = |summary: &str, risk: ApprovalRisk, workspace_scoped: bool| {
+            ApprovalRequest::command(
+                "run_shell_command",
+                summary,
+                "Test command.",
+                risk == ApprovalRisk::Destructive,
+                None,
+            )
+            .with_workspace_scope(workspace_scoped)
+            .with_risk(risk)
         };
 
-        assert!(broker.should_auto_approve(&request("mkdir -p build")));
-        assert!(broker.should_auto_approve(&request("git add src/main.rs")));
-        assert!(broker.should_auto_approve(&request("git commit -m update")));
-        assert!(broker.should_auto_approve(&request("cargo test --lib")));
-        assert!(broker.should_auto_approve(&request("bun run test")));
-        assert!(broker.should_auto_approve(&request("bun run build")));
-        assert!(!broker.should_auto_approve(&request("git push origin dev")));
-        assert!(!broker.should_auto_approve(&request("bun install")));
-        assert!(!broker.should_auto_approve(&request(
-            "python3 -c \"__import__('pathlib').Path('important.txt').unlink()\""
-        )));
-        assert!(!broker.should_auto_approve(&request("env rm -rf build")));
-        assert!(!broker.should_auto_approve(&request("git -C . reset --hard")));
+        for (command, risk, workspace_scoped) in [
+            ("mkdir -p build", ApprovalRisk::Mutating, true),
+            ("git push origin dev", ApprovalRisk::Mutating, true),
+            ("bun install", ApprovalRisk::Mutating, true),
+            (
+                "python3 -c \"__import__('pathlib').Path('important.txt').unlink()\"",
+                ApprovalRisk::Restricted,
+                true,
+            ),
+            ("git reset --hard", ApprovalRisk::Destructive, false),
+        ] {
+            assert!(
+                broker.should_auto_approve(&request(command, risk, workspace_scoped)),
+                "{command} should auto-approve"
+            );
+        }
         assert!(broker.is_command_rejected("env", ApprovalRisk::Mutating));
         assert!(broker.is_command_rejected("/usr/bin/rm -rf build", ApprovalRisk::Mutating));
     }
 
     #[test]
-    fn auto_mode_keeps_remote_and_unlisted_commands_interactive() {
+    fn ask_mode_keeps_unlisted_commands_interactive() {
         let (broker, _) = test_broker();
-        broker.set_autonomy_mode(AutonomyMode::Auto);
         let request = |summary: &str| {
             ApprovalRequest::command("run_shell_command", summary, "Test command.", false, None)
                 .with_workspace_scope(true)
@@ -1292,13 +1241,13 @@ mod tests {
         ] {
             assert!(
                 !broker.should_auto_approve(&request(command)),
-                "{command} should prompt"
+                "{command} should prompt in Ask mode"
             );
         }
     }
 
     #[test]
-    fn auto_mode_prompts_for_risky_flags_on_allowlisted_commands() {
+    fn auto_mode_approves_commands_with_risky_flags() {
         let (broker, _) = test_broker();
         broker.set_autonomy_mode(AutonomyMode::Auto);
         let request = |summary: &str| {
@@ -1322,8 +1271,8 @@ mod tests {
             "bun run build --define=root=~/secrets",
         ] {
             assert!(
-                !broker.should_auto_approve(&request(command)),
-                "{command} should prompt"
+                broker.should_auto_approve(&request(command)),
+                "{command} should auto-approve"
             );
         }
         assert!(broker.should_auto_approve(&request("cargo test --lib -- --nocapture")));
@@ -1331,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_mode_never_approves_out_of_workspace_requests() {
+    fn auto_mode_approves_out_of_workspace_commands() {
         let (broker, _) = test_broker();
         broker.set_autonomy_mode(AutonomyMode::Auto);
         for command in [
@@ -1347,10 +1296,50 @@ mod tests {
             )
             .with_workspace_scope(false);
             assert!(
-                !broker.should_auto_approve(&request),
-                "{command} should prompt"
+                broker.should_auto_approve(&request),
+                "{command} should auto-approve"
             );
         }
+    }
+
+    #[test]
+    fn auto_mode_does_not_auto_approve_external_path_or_mcp_requests() {
+        let (broker, _) = test_broker();
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+
+        let external = ApprovalRequest::external_path(
+            "read_file",
+            "/tmp/outside.txt",
+            "Outside workspace.",
+            None,
+        );
+        let mcp = ApprovalRequest::mcp_tool(
+            "custom__delete_record",
+            "mcp://custom/delete_record",
+            "Third-party tool.",
+            None,
+        );
+
+        assert!(!broker.should_auto_approve(&external));
+        assert!(!broker.should_auto_approve(&mcp));
+    }
+
+    #[test]
+    fn ask_mode_does_not_auto_approve_restricted_commands_from_allow_rules() {
+        let (broker, _) = test_broker();
+        broker.add_allow_rule("git reset");
+        let request = ApprovalRequest::command(
+            "run_git_command",
+            "git reset --hard",
+            "Reset repository.",
+            false,
+            None,
+        )
+        .with_workspace_scope(true)
+        .with_risk(ApprovalRisk::Restricted);
+
+        assert!(!broker.should_auto_approve(&request));
+        assert!(broker.is_command_rejected(&request.summary, request.risk));
     }
 
     #[test]
@@ -1366,7 +1355,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sensitive_targets_are_rejected_from_auto_approval() {
+    async fn auto_mode_approves_sensitive_command_targets() {
         let (broker, _emitter) = test_broker();
         broker.set_autonomy_mode(AutonomyMode::Auto);
 
@@ -1378,17 +1367,8 @@ mod tests {
             None,
         )
         .with_workspace_scope(true);
-        let broker_for_task = broker.clone();
-        let task = tokio::spawn(async move { broker_for_task.request(env_cmd).await });
-
-        wait_for_pending(&broker).await;
-        assert_eq!(broker.pending_count(), 1);
-        let id = {
-            let pending = broker.pending.lock().unwrap();
-            pending.keys().next().unwrap().clone()
-        };
-        assert!(broker.resolve(&id, ApprovalDecision::Deny));
-        assert!(!task.await.unwrap());
+        assert!(broker.request(env_cmd).await);
+        assert_eq!(broker.pending_count(), 0);
     }
 
     #[test]

@@ -25,7 +25,7 @@ export type ReviewMode =
 
 export type ApprovalKind = "command" | "external_path" | "mcp_tool";
 
-export type ApprovalRisk = "mutating" | "destructive" | "external_access";
+export type ApprovalRisk = "mutating" | "destructive" | "restricted" | "external_access";
 
 export type ApprovalDecision = "approve" | "deny" | "always_allow" | "always_deny";
 

@@ -185,5 +185,9 @@ describe("TopBar", () => {
     const autoBadge = screen.getByTestId("topbar-autonomy-toggle");
     expect(autoBadge.textContent).toContain("Auto");
     expect(autoBadge.classList.contains("is-autonomous")).toBe(true);
+    expect(autoBadge.getAttribute("title")).toContain(
+      "All shell, git, and GitHub CLI commands execute without approval"
+    );
+    expect(autoBadge.getAttribute("aria-label")).toContain("all commands execute without approval");
   });
 });

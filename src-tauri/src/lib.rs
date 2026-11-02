@@ -63,7 +63,7 @@ mod model_fetch {
 use app_config::{AppConfigError, AppConfigState, AppConfigStore, Workspace};
 use approval_broker::{
     ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalPolicyPayload, ApprovalRequest,
-    ApprovalResolution, AutonomyMode,
+    ApprovalResolution, ApprovalRisk, AutonomyMode,
 };
 use conversation::{ConversationState, ConversationStore};
 use futures::{stream, StreamExt};
@@ -302,6 +302,11 @@ impl CommandApproval for BrokerCommandApproval {
         let run_id = self.run_id.clone();
         Box::pin(async move {
             let destructive = matches!(request.risk, CommandRisk::Destructive);
+            let risk = match request.risk {
+                CommandRisk::Mutating => ApprovalRisk::Mutating,
+                CommandRisk::Destructive => ApprovalRisk::Destructive,
+                CommandRisk::Restricted => ApprovalRisk::Restricted,
+            };
             let workspace_scoped = request.workspace_scoped;
             broker
                 .request(
@@ -312,7 +317,8 @@ impl CommandApproval for BrokerCommandApproval {
                         destructive,
                         run_id.as_deref(),
                     )
-                    .with_workspace_scope(workspace_scoped),
+                    .with_workspace_scope(workspace_scoped)
+                    .with_risk(risk),
                 )
                 .await
         })

@@ -91,6 +91,20 @@ describe("ApprovalCard", () => {
     expect(screen.getByText(/Guarded/)).toBeTruthy();
   });
 
+  it("does not render Always Allow for restricted commands", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ risk: "restricted", id: "restricted-1" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.getByText("Restricted")).toBeTruthy();
+    expect(screen.queryByTestId("approval-always-allow-restricted-1")).toBeNull();
+  });
+
   it("does not render Always Allow for external paths", () => {
     render(
       <ol>

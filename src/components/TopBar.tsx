@@ -257,23 +257,33 @@ export function TopBar({
                 data-testid="topbar-autonomy-toggle"
                 title={
                   autonomyMode === "auto"
-                    ? "Autonomous execution active: Safe commands auto-execute; destructive actions always prompt (Click to switch to Ask mode)"
+                    ? "Autonomous execution active: All shell, git, and GitHub CLI commands execute without approval, including destructive and restricted commands and regardless of allow/reject rules (Click to switch to Ask mode)"
                     : `Ask mode active: Approvals required for mutating commands${
                         allowedRuleCount > 0
                           ? ` (${allowedRuleCount} always-allowed rule${allowedRuleCount > 1 ? "s" : ""})`
                           : ""
                       } (Click to switch to Autonomous mode)`
                 }
-                aria-label={`Command autonomy: ${autonomyMode === "auto" ? "Autonomous" : "Ask mode"}`}
+                aria-label={`Command autonomy: ${autonomyMode === "auto" ? "Autonomous; all commands execute without approval" : "Ask mode"}`}
               >
                 {autonomyMode === "auto" ? (
                   <>
-                    <Zap size={12} strokeWidth={2} className="text-status-warning" aria-hidden="true" />
+                    <Zap
+                      size={12}
+                      strokeWidth={2}
+                      className="text-status-warning"
+                      aria-hidden="true"
+                    />
                     <span>Auto</span>
                   </>
                 ) : (
                   <>
-                    <Shield size={12} strokeWidth={1.8} className="text-text-muted" aria-hidden="true" />
+                    <Shield
+                      size={12}
+                      strokeWidth={1.8}
+                      className="text-text-muted"
+                      aria-hidden="true"
+                    />
                     <span>Ask</span>
                   </>
                 )}
