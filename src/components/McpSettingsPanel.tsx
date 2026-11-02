@@ -495,9 +495,16 @@ function ServerNotices({
   server: McpServer;
   missingSecrets: string[];
 }) {
+  const showLastError =
+    server.lastErrorSummary &&
+    !(
+      server.health === "auth_required" &&
+      server.lastErrorSummary.trim().toLowerCase().replace(/\.$/, "") === "sign-in required"
+    );
+
   return (
     <>
-      {server.lastErrorSummary && (
+      {showLastError && (
         <div className="text-caption text-status-warning">{server.lastErrorSummary}</div>
       )}
       {server.kind === "custom" && !server.trusted && (

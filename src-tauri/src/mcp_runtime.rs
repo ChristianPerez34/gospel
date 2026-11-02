@@ -24,9 +24,9 @@ use tokio::sync::Mutex;
 use crate::app_config::{AppConfigError, AppConfigStore};
 use crate::approval_broker::{ApprovalBroker, ApprovalRequest};
 use crate::mcp::{
-    self, McpRefreshUpdate, McpServer, McpToolInventoryItem, MCP_HEALTH_AUTH_REQUIRED,
-    MCP_HEALTH_CONNECTED, MCP_HEALTH_NOT_CONNECTED, MCP_READINESS_AWAITING_FIRST_CONNECTION,
-    MCP_READINESS_READY, MCP_TRANSPORT_HTTP, MCP_TRANSPORT_STDIO,
+    self, MCP_HEALTH_AUTH_REQUIRED, MCP_HEALTH_CONNECTED, MCP_HEALTH_NOT_CONNECTED,
+    MCP_READINESS_AWAITING_FIRST_CONNECTION, MCP_READINESS_READY, MCP_TRANSPORT_HTTP,
+    MCP_TRANSPORT_STDIO, McpRefreshUpdate, McpServer, McpToolInventoryItem,
 };
 use crate::mcp_credentials::{FileCredentialStore, McpServerSecrets};
 
@@ -307,14 +307,14 @@ fn failure_update(server: &McpServer, error: &str) -> McpRefreshUpdate {
     // shouldn't erase what the server last looked like when it worked.
     let (health, message) =
         if server.transport == MCP_TRANSPORT_HTTP && looks_like_auth_required(error) {
-            (MCP_HEALTH_AUTH_REQUIRED, "Sign-in required.".to_string())
+            (MCP_HEALTH_AUTH_REQUIRED, None)
         } else {
-            (MCP_HEALTH_NOT_CONNECTED, error.to_string())
+            (MCP_HEALTH_NOT_CONNECTED, Some(error.to_string()))
         };
     McpRefreshUpdate {
         readiness: MCP_READINESS_AWAITING_FIRST_CONNECTION.to_string(),
         health: health.to_string(),
-        last_error_summary: Some(message),
+        last_error_summary: message,
         last_success_at: server.last_success_at.clone(),
         last_resolved_executable_path: resolved_path_for(server),
         inventory: server.inventory.clone(),
@@ -673,7 +673,10 @@ mod tests {
                             None => ("202 Accepted", String::new()),
                         }
                     };
-                    let response = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
                     stream.write_all(response.as_bytes()).await.unwrap();
                     stream.shutdown().await.unwrap();
                 }
@@ -860,5 +863,25 @@ mod tests {
             )));
         }
         assert!(!looks_like_auth_required("Connection timed out"));
+    }
+
+    #[test]
+    fn failure_update_sets_auth_required_without_redundant_error_summary() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        let store = AppConfigStore::in_memory_for_test().unwrap();
+        let server = enabled_server(&store, "https://example.com/mcp");
+
+        let auth_update = failure_update(&server, "MCP handshake failed: 401 Unauthorized");
+        assert_eq!(auth_update.health, MCP_HEALTH_AUTH_REQUIRED);
+        assert_eq!(auth_update.last_error_summary, None);
+
+        let timeout_update = failure_update(&server, "Connection timed out");
+        assert_eq!(timeout_update.health, MCP_HEALTH_NOT_CONNECTED);
+        assert_eq!(
+            timeout_update.last_error_summary,
+            Some("Connection timed out".into())
+        );
     }
 }
