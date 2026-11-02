@@ -103,6 +103,7 @@ describe("ApprovalCard", () => {
 
     expect(screen.getByText("Restricted")).toBeTruthy();
     expect(screen.queryByTestId("approval-always-allow-restricted-1")).toBeNull();
+    expect(screen.getByText(/Guarded/)).toBeTruthy();
   });
 
   it("does not render Always Allow for external paths", () => {

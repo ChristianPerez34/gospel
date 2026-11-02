@@ -21,10 +21,11 @@ You can run commands in the active workspace with `run_shell_command`, `run_git_
 ### Safety Rules
 
 - Read-only commands run directly in either mode.
-- Ask mode requires approval for mutating, destructive, and restricted commands. Restricted commands include shell interpreters, shell metacharacters, secret-like arguments, `gh auth token`, recursive root deletion, force pushes, hard resets, `git clean`, and `gh repo delete`.
-- Auto mode executes every command-tool request without approval, regardless of risk, workspace scope, or allow/reject rules. This includes commands Ask mode marks restricted.
-- Ask mode can save eligible commands as always allowed. External-path requests still require per-request approval; MCP tools remain governed by explicit server/tool allow rules.
-- Empty or invalid command invocations remain blocked.
+- In Ask mode, mutating and destructive commands require approval, and restricted commands are blocked. Restricted commands include shell interpreters, shell metacharacters, secret-like arguments, `gh auth token`, recursive root deletion, low-level disk tools, `curl`, force pushes, hard resets, `git clean`, and `gh repo delete`.
+- In Auto mode, every command runs without approval, including destructive and restricted commands and commands outside the workspace. Only commands matching a deny rule the user saved still require approval.
+- External-path requests always require per-request approval; MCP tools need explicit server/tool allow rules.
+- Empty command invocations are always blocked.
+- Do not attempt to bypass these rules with encoded characters or indirect invocation.
 
 ### Guidance
 
@@ -47,8 +48,20 @@ pub enum CommandSafety {
     ReadOnly,
     Mutating,
     Destructive,
+    /// Blocked in Ask mode, allowed in Auto mode.
     Restricted(String),
     Blocked(String),
+}
+
+impl CommandSafety {
+    /// Wrapper classification (`env`, path-qualified `git`/`gh`) may promote
+    /// a result to Mutating but must never downgrade a guardrail.
+    fn is_guardrail(&self) -> bool {
+        matches!(
+            self,
+            CommandSafety::Blocked(_) | CommandSafety::Restricted(_)
+        )
+    }
 }
 
 /// Per-workspace policy used to classify commands before execution.
@@ -69,12 +82,11 @@ impl CommandPolicy {
     ) -> Option<CommandSafety> {
         let executable_lower = executable.to_ascii_lowercase();
 
-        // Restricted commands ask for approval in Ask mode; Auto mode permits them.
+        // Shell interpreters reintroduce the shell parsing that direct execution avoids.
         if is_shell_interpreter(&executable_lower) {
             return Some(CommandSafety::Restricted("shell_interpreter".to_string()));
         }
 
-        // Require confirmation in Ask mode for shell metacharacters and secret-like paths.
         if contains_shell_metacharacter(program) {
             return Some(CommandSafety::Restricted("shell_metacharacter".to_string()));
         }
@@ -86,7 +98,6 @@ impl CommandPolicy {
             return Some(self.classify_env_shell_wrapper(args, workspace_root));
         }
 
-        // Ask mode prompts for known-dangerous commands; Auto mode is explicit consent.
         if is_restricted_shell_pattern(&executable_lower, args) {
             return Some(CommandSafety::Restricted("dangerous_command".to_string()));
         }
@@ -114,12 +125,7 @@ impl CommandPolicy {
         }
 
         let promote_git_gh_safety = |safety: CommandSafety| {
-            if program_is_bare_name
-                || matches!(
-                    safety,
-                    CommandSafety::Blocked(_) | CommandSafety::Restricted(_)
-                )
-            {
+            if program_is_bare_name || safety.is_guardrail() {
                 safety
             } else {
                 CommandSafety::Mutating
@@ -140,7 +146,7 @@ impl CommandPolicy {
             }
         }
 
-        // Classify workspace-escaping paths as mutating for Ask-mode approval.
+        // Workspace-escaping paths are never read-only.
         if has_shell_path_escape(&executable_lower, args, workspace_root).is_some() {
             return CommandSafety::Mutating;
         }
@@ -150,7 +156,6 @@ impl CommandPolicy {
             return CommandSafety::ReadOnly;
         }
 
-        // Everything else is mutating; the selected mode decides whether to ask.
         CommandSafety::Mutating
     }
 
@@ -186,10 +191,7 @@ impl CommandPolicy {
             "gh" => self.classify_gh(args, workspace_root),
             _ => CommandSafety::Mutating,
         };
-        if matches!(
-            wrapped_safety,
-            CommandSafety::Blocked(_) | CommandSafety::Restricted(_)
-        ) {
+        if wrapped_safety.is_guardrail() {
             wrapped_safety
         } else {
             CommandSafety::Mutating
@@ -208,7 +210,7 @@ impl CommandPolicy {
         let command_args = git_subcommand_args(args);
         if command_args.len() != args.len() {
             // Global options may change Git's execution context or configuration.
-            // Preserve mutating classification (and Ask-mode approval) even for read-only subcommands.
+            // Preserve the approval requirement even for read-only subcommands.
             return match self.classify_git(command_args, workspace_root) {
                 CommandSafety::ReadOnly => CommandSafety::Mutating,
                 safety => safety,
@@ -216,7 +218,6 @@ impl CommandPolicy {
         }
         let subcommand = args[0].to_ascii_lowercase();
 
-        // Restricted git options require confirmation in Ask mode.
         if subcommand == "reset" && args.iter().any(|a| a == "--hard") {
             return CommandSafety::Restricted("git_reset_hard".to_string());
         }
@@ -381,7 +382,7 @@ impl CommandPolicy {
         }
 
         if first == "api" {
-            // `gh api` is read-only by default; mutating HTTP methods need Ask-mode approval.
+            // `gh api` is read-only by default; mutating HTTP methods require approval.
             return if gh_api_uses_mutating_method(args) {
                 CommandSafety::Mutating
             } else {
@@ -715,8 +716,8 @@ fn parse_rm_flags(args: &[String]) -> RmFlags {
 }
 
 fn is_restricted_shell_pattern(program: &str, args: &[String]) -> bool {
-    // rm -rf / or rm -rf /* and equivalent long-form invocations require
-    // confirmation in Ask mode; Auto mode explicitly permits them.
+    // rm -rf / or rm -rf /*, and the equivalent long-form invocations
+    // (`rm --recursive /`, with or without `--force`).
     if program == "rm" {
         let mut operands: Vec<&str> = Vec::new();
         let mut past_dashdash = false;
@@ -736,18 +737,19 @@ fn is_restricted_shell_pattern(program: &str, args: &[String]) -> bool {
         }
         let flags = parse_rm_flags(args);
         let root_target = operands.iter().any(|s| *s == "/" || *s == "/*");
-        // `--force` is not required: recursive root deletion is destructive either way.
+        // `--force` is not required: `rm --recursive /` alone performs the same
+        // irreversible action.
         if flags.recursive && root_target {
             return true;
         }
     }
 
-    // Low-level disk/filesystem tools require confirmation in Ask mode.
     if matches!(program, "dd" | "mkfs" | "fdisk" | "parted") {
         return true;
     }
 
-    // Keep curl in the restricted category; Ask mode can review network access.
+    // curl piped to a shell is caught via shell metacharacters; restricting curl
+    // itself encourages direct program use.
     if program == "curl" {
         return true;
     }
@@ -1084,6 +1086,12 @@ pub(crate) type CommandApprovalFuture<'a> = Pin<Box<dyn Future<Output = bool> + 
 pub trait CommandApproval: Send + Sync {
     fn request_approval<'a>(&'a self, request: CommandApprovalRequest)
         -> CommandApprovalFuture<'a>;
+
+    /// Whether restricted commands may be sent for approval at all. Only Auto
+    /// mode grants this; otherwise they are blocked without a prompt.
+    fn permits_restricted(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1225,16 +1233,10 @@ impl CommandExecutor {
     ) -> Result<CommandOutput, ShellToolError> {
         match safety {
             CommandSafety::ReadOnly => self.execute(program, args, timeout).await,
-            CommandSafety::Blocked(reason) => Ok(CommandOutput {
-                success: false,
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: String::new(),
-                truncated: false,
-                needs_approval: Some(false),
-                reason: Some(reason.clone()),
-                message: format!("Blocked: {}", reason),
-            }),
+            CommandSafety::Blocked(reason) => Ok(blocked_output(reason)),
+            CommandSafety::Restricted(reason) if !self.permits_restricted() => {
+                Ok(blocked_output(reason))
+            }
             CommandSafety::Mutating | CommandSafety::Destructive | CommandSafety::Restricted(_) => {
                 let label = command_label(program, args);
                 let approved = self
@@ -1369,6 +1371,12 @@ impl CommandExecutor {
         })
     }
 
+    fn permits_restricted(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_some_and(|approval| approval.permits_restricted())
+    }
+
     async fn request_approval(
         &self,
         tool_name: &'static str,
@@ -1386,9 +1394,7 @@ impl CommandExecutor {
                 CommandRisk::Destructive,
             ),
             CommandSafety::Restricted(reason) => (
-                format!(
-                    "This command matched a safety restriction ({reason}); review it before execution."
-                ),
+                format!("This command matched a safety restriction ({reason})."),
                 CommandRisk::Restricted,
             ),
             CommandSafety::Mutating => (
@@ -1407,6 +1413,19 @@ impl CommandExecutor {
                 workspace_scoped,
             })
             .await
+    }
+}
+
+fn blocked_output(reason: String) -> CommandOutput {
+    CommandOutput {
+        success: false,
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: String::new(),
+        truncated: false,
+        needs_approval: Some(false),
+        message: format!("Blocked: {}", reason),
+        reason: Some(reason),
     }
 }
 
@@ -1465,7 +1484,7 @@ impl PortableTool for RunShellCommandTool {
     type Output = CommandOutput;
 
     fn description(&self) -> String {
-        "Run a program directly with arguments in the active workspace. Ask mode requests approval for mutating, destructive, and restricted commands; Auto mode executes all commands without approval.".to_string()
+        "Run a program directly with arguments in the active workspace. Read-only commands run directly. In Ask mode, mutating and destructive commands require approval and restricted commands (shell interpreters, shell metacharacters, dangerous programs) are blocked. Auto mode runs all commands without approval.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1543,7 +1562,7 @@ impl PortableTool for RunGitCommandTool {
     type Output = CommandOutput;
 
     fn description(&self) -> String {
-        "Run a git command in the active workspace. Ask mode requests approval for mutating, destructive, and restricted commands; Auto mode executes all commands without approval.".to_string()
+        "Run a git command in the active workspace. Read-only commands run directly. In Ask mode, mutating commands require approval and restricted commands (push --force, reset --hard, clean) are blocked. Auto mode runs all commands without approval.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1615,7 +1634,7 @@ impl PortableTool for RunGithubCliCommandTool {
     type Output = CommandOutput;
 
     fn description(&self) -> String {
-        "Run a GitHub CLI (gh) command in the active workspace. Ask mode requests approval for mutating, destructive, and restricted commands; Auto mode executes all commands without approval.".to_string()
+        "Run a GitHub CLI (gh) command in the active workspace. Read-only commands run directly. In Ask mode, mutating commands require approval and restricted commands (repo delete, auth token) are blocked. Auto mode runs all commands without approval.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -2969,7 +2988,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restricted_command_requires_approval_in_ask_mode() {
+    async fn restricted_command_returns_blocked_reason_without_approval() {
         let executor = CommandExecutor::new(workspace(), None);
         let output = executor
             .run_shell(
@@ -2980,13 +2999,13 @@ mod tests {
             .await
             .expect("tool should return output");
         assert!(!output.success);
-        assert_eq!(output.reason.as_deref(), Some("approval_denied"));
-        assert_eq!(output.needs_approval, Some(true));
+        assert_eq!(output.reason.as_deref(), Some("shell_interpreter"));
+        assert_eq!(output.needs_approval, Some(false));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn ask_mode_runs_restricted_command_after_explicit_approval() {
+    async fn approval_that_does_not_permit_restricted_commands_cannot_run_them() {
         let root = tempfile::tempdir().unwrap();
         let executor = CommandExecutor::new(
             root.path().to_path_buf(),
@@ -3003,8 +3022,80 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(output.success, "{output:?}");
-        assert!(root.path().join("ask-approved").exists());
+        assert_eq!(output.reason.as_deref(), Some("shell_interpreter"));
+        assert!(!root.path().join("ask-approved").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ask_mode_blocks_restricted_commands_without_prompting() {
+        use crate::approval_broker::ApprovalBroker;
+
+        let root = tempfile::tempdir().unwrap();
+        let emitter = Arc::new(GuardrailEmitter::default());
+        let broker = Arc::new(ApprovalBroker::with_timeout(
+            emitter.clone(),
+            Duration::from_millis(1),
+        ));
+        let executor = CommandExecutor::new(
+            root.path().to_path_buf(),
+            Some(Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            })),
+        );
+
+        for (tool, output) in [
+            (
+                "shell",
+                executor
+                    .run_shell(
+                        "sh".to_string(),
+                        vec!["-c".to_string(), "touch ask-ran".to_string()],
+                        Some(5),
+                    )
+                    .await
+                    .unwrap(),
+            ),
+            (
+                "git",
+                executor
+                    .run_git(vec!["clean".to_string(), "-fd".to_string()], Some(5))
+                    .await
+                    .unwrap(),
+            ),
+        ] {
+            assert!(!output.success, "{tool}: {output:?}");
+            assert_eq!(output.needs_approval, Some(false), "{tool}");
+        }
+        assert!(!root.path().join("ask-ran").exists());
+        assert_eq!(emitter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn auto_mode_still_blocks_empty_commands() {
+        use crate::approval_broker::{ApprovalBroker, AutonomyMode};
+
+        let emitter = Arc::new(GuardrailEmitter::default());
+        let broker = Arc::new(ApprovalBroker::with_timeout(
+            emitter.clone(),
+            Duration::from_millis(1),
+        ));
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        let executor = CommandExecutor::new(
+            workspace(),
+            Some(Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            })),
+        );
+
+        let output = executor
+            .run_shell("  ".to_string(), Vec::new(), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(output.reason.as_deref(), Some("empty_program"));
+        assert_eq!(emitter.requested.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(unix)]

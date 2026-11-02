@@ -204,7 +204,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
             Deny
           </Button>
           <span className="ml-auto font-mono text-caption text-text-muted">
-            {isDestructive ? "Guarded · Auto-denies in 60s" : "Auto-denies in 60s"}
+            {isDestructive || isRestricted ? "Guarded · Auto-denies in 60s" : "Auto-denies in 60s"}
           </span>
         </div>
       )}

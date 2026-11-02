@@ -257,8 +257,8 @@ export function TopBar({
                 data-testid="topbar-autonomy-toggle"
                 title={
                   autonomyMode === "auto"
-                    ? "Autonomous execution active: All shell, git, and GitHub CLI commands execute without approval, including destructive and restricted commands and regardless of allow/reject rules (Click to switch to Ask mode)"
-                    : `Ask mode active: Approvals required for mutating commands${
+                    ? "Autonomous execution active: All shell, git, GitHub CLI, and skill script commands execute without approval, including destructive and restricted commands and commands outside the workspace. Commands matching your deny rules still ask. Enabling Auto also approves commands already waiting in any task. (Click to switch to Ask mode)"
+                    : `Ask mode active: Approvals required for mutating commands; restricted commands are blocked${
                         allowedRuleCount > 0
                           ? ` (${allowedRuleCount} always-allowed rule${allowedRuleCount > 1 ? "s" : ""})`
                           : ""

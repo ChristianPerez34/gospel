@@ -173,6 +173,7 @@ describe("TopBar", () => {
     const badge = screen.getByTestId("topbar-autonomy-toggle");
     expect(badge.textContent).toContain("Ask");
     expect(badge.getAttribute("title")).toContain("2 always-allowed rules");
+    expect(badge.getAttribute("title")).toContain("restricted commands are blocked");
 
     fireEvent.click(badge);
     expect(onToggleAutonomy).toHaveBeenCalledTimes(1);
@@ -186,8 +187,9 @@ describe("TopBar", () => {
     expect(autoBadge.textContent).toContain("Auto");
     expect(autoBadge.classList.contains("is-autonomous")).toBe(true);
     expect(autoBadge.getAttribute("title")).toContain(
-      "All shell, git, and GitHub CLI commands execute without approval"
+      "All shell, git, GitHub CLI, and skill script commands execute without approval"
     );
+    expect(autoBadge.getAttribute("title")).toContain("deny rules still ask");
     expect(autoBadge.getAttribute("aria-label")).toContain("all commands execute without approval");
   });
 });

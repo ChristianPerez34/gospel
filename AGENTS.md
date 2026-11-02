@@ -43,10 +43,17 @@ Gospel exposes three agent-facing tools for workspace command execution:
 ### Safety model
 
 - Read-only commands run directly.
-- Auto mode executes every command-tool request without approval, regardless of risk, workspace scope, or allow/reject rules. This intentionally includes destructive, remote, shell-interpreter, and otherwise restricted commands; selecting Auto grants that control to the agent.
-- In Ask mode, mutating commands require one-time approval. Restricted commands—including recursive root deletion, shell interpreters/metacharacters, secret-like arguments, `gh auth token`, `git push --force`, `git reset --hard`, `git clean`, and `gh repo delete`—also require approval instead of being hard-blocked.
-- Ask mode can always-allow eligible workspace-scoped commands. Workspace-escaping command calls still require per-request approval in Ask; external-path requests always require per-request approval, and MCP tools need explicit server/tool allow rules.
-- Invalid empty command invocations remain blocked in either mode.
+- In Ask mode, mutating and destructive commands require one-time approval, and restricted commands fail without a prompt. Restricted commands are:
+  - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
+  - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL) or secret-like path arguments
+  - Shell interpreters (`sh`, `bash`, `zsh`, `powershell`, etc.), `curl`, and low-level disk tools (`dd`, `mkfs`, `fdisk`, `parted`) invoked through `run_shell_command`
+  - `git push --force`, `git reset --hard`, `git clean`
+  - `gh repo delete`, `gh auth token`
+- Ask mode can always-allow eligible workspace-scoped mutating commands. Workspace-escaping command calls require per-request approval.
+- Auto mode runs every command-tool and skill-script request without approval, including destructive, restricted, and workspace-escaping commands, and ignores the built-in reject patterns. Commands matching a user-saved deny rule ("Always deny") still prompt. See ADR-0014.
+- The mode is global. Switching to Auto approves every pending command request in every session except those matching a user deny rule; switching to Ask denies pending restricted commands.
+- External-path requests always require per-request approval, and MCP tools need explicit server/tool allow rules, in either mode.
+- Empty command invocations are blocked in either mode.
 
 ### Implementation notes
 

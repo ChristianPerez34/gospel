@@ -63,7 +63,7 @@ mod model_fetch {
 use app_config::{AppConfigError, AppConfigState, AppConfigStore, Workspace};
 use approval_broker::{
     ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalPolicyPayload, ApprovalRequest,
-    ApprovalResolution, ApprovalRisk, AutonomyMode,
+    ApprovalResolution, AutonomyMode,
 };
 use conversation::{ConversationState, ConversationStore};
 use futures::{stream, StreamExt};
@@ -75,7 +75,7 @@ use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
     SessionRecord, SessionStore, SessionStoreState,
 };
-use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest, CommandRisk};
+use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest};
 use skills::SkillSummary;
 use std::sync::LazyLock;
 use std::{
@@ -301,12 +301,6 @@ impl CommandApproval for BrokerCommandApproval {
         let broker = self.broker.clone();
         let run_id = self.run_id.clone();
         Box::pin(async move {
-            let destructive = matches!(request.risk, CommandRisk::Destructive);
-            let risk = match request.risk {
-                CommandRisk::Mutating => ApprovalRisk::Mutating,
-                CommandRisk::Destructive => ApprovalRisk::Destructive,
-                CommandRisk::Restricted => ApprovalRisk::Restricted,
-            };
             let workspace_scoped = request.workspace_scoped;
             broker
                 .request(
@@ -314,14 +308,17 @@ impl CommandApproval for BrokerCommandApproval {
                         request.tool_name,
                         request.command_label,
                         request.reason,
-                        destructive,
+                        request.risk,
                         run_id.as_deref(),
                     )
-                    .with_workspace_scope(workspace_scoped)
-                    .with_risk(risk),
+                    .with_workspace_scope(workspace_scoped),
                 )
                 .await
         })
+    }
+
+    fn permits_restricted(&self) -> bool {
+        self.broker.autonomy_mode() == AutonomyMode::Auto
     }
 }
 
