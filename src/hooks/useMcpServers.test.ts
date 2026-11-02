@@ -13,9 +13,15 @@ function sampleServer(overrides: Partial<McpServer> = {}): McpServer {
     trusted: false,
     safetyClass: "read_only",
     scope: "main_and_exploration",
+    transport: "stdio",
     args: [],
     env: [],
+    headers: [],
     secretEnvKeys: [],
+    secretHeaderKeys: [],
+    missingSecretEnvKeys: [],
+    missingSecretHeaderKeys: [],
+    authStatus: "none",
     readiness: "awaiting_first_connection",
     health: "not_connected",
     inventory: [],
@@ -144,5 +150,83 @@ describe("useMcpServers", () => {
       id: server.id,
       enabled: true,
     });
+  });
+
+  it("addAndConnect creates, approves, then enables the server", async () => {
+    const created = sampleServer({ id: "mcp-new", trusted: false, enabled: false });
+    const trusted = sampleServer({ id: "mcp-new", trusted: true, enabled: false });
+    const enabled = sampleServer({ id: "mcp-new", trusted: true, enabled: true });
+    const calls: string[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      calls.push(cmd);
+      if (cmd === "list_mcp_servers") return [];
+      if (cmd === "create_mcp_server") return created;
+      if (cmd === "trust_mcp_server") return trusted;
+      if (cmd === "set_mcp_server_enabled") return enabled;
+      return undefined;
+    });
+
+    const { result } = renderHook(() => useMcpServers(true));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    let returned: McpServer | undefined;
+    await act(async () => {
+      returned = await result.current.addAndConnect({ displayName: "New" });
+    });
+
+    expect(calls).toEqual([
+      "list_mcp_servers",
+      "create_mcp_server",
+      "trust_mcp_server",
+      "set_mcp_server_enabled",
+    ]);
+    expect(returned).toEqual(enabled);
+    expect(result.current.servers).toEqual([enabled]);
+  });
+
+  it("startOAuth invokes the oauth flow and updates the row", async () => {
+    const server = sampleServer({ authStatus: "required", health: "auth_required" });
+    const authorized = sampleServer({ authStatus: "authorized", health: "connected" });
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_mcp_servers") return [server];
+      if (cmd === "start_mcp_server_oauth") return authorized;
+      return undefined;
+    });
+
+    const { result } = renderHook(() => useMcpServers(true));
+    await waitFor(() => {
+      expect(result.current.servers).toEqual([server]);
+    });
+
+    await act(async () => {
+      await result.current.startOAuth(server);
+    });
+
+    expect(invoke).toHaveBeenCalledWith("start_mcp_server_oauth", { id: server.id });
+    expect(result.current.servers).toEqual([authorized]);
+  });
+
+  it("logoutOAuth clears stored tokens and updates the row", async () => {
+    const server = sampleServer({ authStatus: "authorized", transport: "http" });
+    const signedOut = sampleServer({ authStatus: "none", transport: "http" });
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_mcp_servers") return [server];
+      if (cmd === "logout_mcp_server_oauth") return signedOut;
+      return undefined;
+    });
+
+    const { result } = renderHook(() => useMcpServers(true));
+    await waitFor(() => {
+      expect(result.current.servers).toEqual([server]);
+    });
+
+    await act(async () => {
+      await result.current.logoutOAuth(server);
+    });
+
+    expect(invoke).toHaveBeenCalledWith("logout_mcp_server_oauth", { id: server.id });
+    expect(result.current.servers).toEqual([signedOut]);
   });
 });

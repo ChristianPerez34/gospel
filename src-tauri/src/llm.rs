@@ -73,7 +73,10 @@ fn normalize_session_title(output: &str) -> Option<String> {
     {
         let after_title = &candidate[5..];
         let stripped = after_title.trim_start_matches(['*', '_', ' ']);
-        if let Some(rest) = stripped.strip_prefix(':').or_else(|| stripped.strip_prefix('-')) {
+        if let Some(rest) = stripped
+            .strip_prefix(':')
+            .or_else(|| stripped.strip_prefix('-'))
+        {
             candidate = rest.trim();
         }
     }
@@ -174,25 +177,30 @@ impl LlmError {
                 code: "API_KEY_MISSING".to_string(),
                 message: "API key not configured. Open Settings to add one.".to_string(),
             },
-            LlmError::ProviderError(msg) => match crate::credential_failure::classify_credential_failure(msg)
-            {
-                Some(crate::credential_failure::CredentialFailureKind::ReauthRequired) => {
-                    LlmErrorDto {
-                        code: "AUTH_EXPIRED".to_string(),
-                        message: crate::credential_failure::reauth_user_message().to_string(),
+            LlmError::ProviderError(msg) => {
+                match crate::credential_failure::classify_credential_failure(msg) {
+                    Some(crate::credential_failure::CredentialFailureKind::ReauthRequired) => {
+                        LlmErrorDto {
+                            code: "AUTH_EXPIRED".to_string(),
+                            message: crate::credential_failure::reauth_user_message().to_string(),
+                        }
                     }
-                }
-                Some(crate::credential_failure::CredentialFailureKind::EntitlementBlocked) => {
-                    LlmErrorDto {
-                        code: "ENTITLEMENT_FAILED".to_string(),
-                        message: crate::credential_failure::entitlement_user_message().to_string(),
+                    Some(crate::credential_failure::CredentialFailureKind::EntitlementBlocked) => {
+                        LlmErrorDto {
+                            code: "ENTITLEMENT_FAILED".to_string(),
+                            message: crate::credential_failure::entitlement_user_message()
+                                .to_string(),
+                        }
                     }
+                    None => LlmErrorDto {
+                        code: "PROVIDER_ERROR".to_string(),
+                        message: format!(
+                            "Completion failed: {}",
+                            sanitize_provider_error_detail(msg)
+                        ),
+                    },
                 }
-                None => LlmErrorDto {
-                    code: "PROVIDER_ERROR".to_string(),
-                    message: format!("Completion failed: {}", sanitize_provider_error_detail(msg)),
-                },
-            },
+            }
             LlmError::ModelUnavailable(model) => LlmErrorDto {
                 code: "MODEL_UNAVAILABLE".to_string(),
                 message: format!("Model {} is not available", model),
@@ -732,6 +740,7 @@ pub async fn stream_completion<F>(
     memory_section: Option<String>,
     skill_script_tool: Option<crate::skills::RunSkillScriptTool>,
     session_id: Option<&str>,
+    mcp_tools: Vec<RegisteredTool>,
     mut on_event: F,
 ) -> Result<StreamCompletionResult, LlmError>
 where
@@ -789,6 +798,7 @@ where
             external_path_approval,
             command_approval,
             contributions,
+            mcp_tools,
         }),
     })
     .map_err(|error| LlmError::ProviderError(error.to_string()))?;
@@ -1141,6 +1151,7 @@ mod tests {
             None,
             None,
             None,
+            vec![],
             |event| events.push(event),
         )
         .await
@@ -1391,9 +1402,9 @@ mod tests {
 
         // The complete Reasoning reuses the active burst id so the
         // frontend collapses it onto the accumulated deltas.
-        let complete_id = active.clone().unwrap_or_else(|| {
-            ensure_active_reasoning_id(&mut active, &mut seq)
-        });
+        let complete_id = active
+            .clone()
+            .unwrap_or_else(|| ensure_active_reasoning_id(&mut active, &mut seq));
         assert_eq!(complete_id, "reasoning-1");
     }
 

@@ -12,10 +12,11 @@ mod grok_oauth;
 mod harness_plan;
 mod harness_profile;
 mod json_utils;
-pub(crate) mod symlink_guard;
 pub mod keychain;
 mod llm;
 pub mod mcp;
+mod mcp_credentials;
+mod mcp_runtime;
 mod model_history;
 mod models;
 mod oauth;
@@ -32,6 +33,7 @@ mod shell_tools;
 mod skill_opt;
 pub mod skills;
 pub mod subprocess_output;
+pub(crate) mod symlink_guard;
 mod text_utils;
 pub mod trace;
 pub mod verification;
@@ -68,7 +70,6 @@ use futures::{stream, StreamExt};
 use llm::LlmError;
 use models::{ModelInfo, ModelRegistry};
 use oauth::OauthChallenge;
-use std::sync::LazyLock;
 use serde::Serialize;
 use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
@@ -76,6 +77,7 @@ use session_store::{
 };
 use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest, CommandRisk};
 use skills::SkillSummary;
+use std::sync::LazyLock;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -445,70 +447,157 @@ fn create_mcp_server(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn update_mcp_server(
-    app_config: tauri::State<'_, AppConfigState>,
-    id: String,
-    request: mcp::UpdateMcpServerRequest,
+/// Run the runtime's connect/teardown for a custom server and persist the
+/// resulting diagnostics. Built-ins take the sync refresh path instead.
+async fn connect_custom_mcp_server(
+    store: &AppConfigStore,
+    runtime: &mcp_runtime::McpRuntime,
+    id: &str,
 ) -> Result<mcp::McpServer, String> {
-    app_config_store(app_config.inner())?
-        .update_mcp_server(&id, request)
+    let server = store
+        .get_mcp_server(mcp::MCP_KIND_CUSTOM, id)
+        .map_err(|e| e.to_string())?;
+    let update = runtime.connect_and_report(&server).await;
+    store
+        .persist_mcp_refresh(mcp::MCP_KIND_CUSTOM, id, &update)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_mcp_server(
+async fn update_mcp_server(
     app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
+    id: String,
+    request: mcp::UpdateMcpServerRequest,
+) -> Result<mcp::McpServer, String> {
+    let store = app_config_store(app_config.inner())?;
+    store
+        .update_mcp_server(&id, request)
+        .map_err(|e| e.to_string())?;
+    // The update may have revoked approval (transport/command/url change);
+    // connect_and_report handles that case without contacting anything.
+    connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await
+}
+
+#[tauri::command]
+async fn delete_mcp_server(
+    app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
     id: String,
 ) -> Result<(), String> {
+    mcp_runtime_state.disconnect(&id).await;
     app_config_store(app_config.inner())?
         .delete_mcp_server(&id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn set_mcp_server_enabled(
+async fn set_mcp_server_enabled(
     app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
     kind: String,
     id: String,
     enabled: bool,
 ) -> Result<mcp::McpServer, String> {
-    app_config_store(app_config.inner())?
+    let store = app_config_store(app_config.inner())?;
+    let server = store
         .set_mcp_server_enabled(&kind, &id, enabled)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if kind != mcp::MCP_KIND_CUSTOM {
+        return Ok(server);
+    }
+    connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await
 }
 
 #[tauri::command]
-fn trust_mcp_server(
+async fn trust_mcp_server(
     app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
     id: String,
 ) -> Result<mcp::McpServer, String> {
-    app_config_store(app_config.inner())?
-        .trust_mcp_server(&id)
-        .map_err(|e| e.to_string())
+    let store = app_config_store(app_config.inner())?;
+    store.trust_mcp_server(&id).map_err(|e| e.to_string())?;
+    connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await
 }
 
 #[tauri::command]
-fn revoke_trust_mcp_server(
+async fn revoke_trust_mcp_server(
     app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
     id: String,
 ) -> Result<mcp::McpServer, String> {
-    app_config_store(app_config.inner())?
+    let store = app_config_store(app_config.inner())?;
+    store
         .revoke_trust_mcp_server(&id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await
 }
 
 #[tauri::command]
-fn refresh_mcp_server(
+async fn refresh_mcp_server(
     app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
     kind: String,
     id: String,
 ) -> Result<mcp::McpServer, String> {
     let store = app_config_store(app_config.inner())?;
+    if kind == mcp::MCP_KIND_CUSTOM {
+        return connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await;
+    }
     let active_workspace_path = store.get_workspace_path().ok().flatten().map(PathBuf::from);
     store
         .refresh_mcp_server(&kind, &id, active_workspace_path.as_deref())
         .map_err(|e| e.to_string())
+}
+
+/// Open the provider's OAuth page in the user's browser, then wait for the
+/// loopback callback, store the tokens, and connect. Returns the refreshed
+/// server row (auth_status becomes "authorized" on success).
+#[tauri::command]
+async fn start_mcp_server_oauth(
+    app: tauri::AppHandle,
+    app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
+    id: String,
+) -> Result<mcp::McpServer, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let store = app_config_store(app_config.inner())?;
+    let server = store
+        .get_mcp_server(mcp::MCP_KIND_CUSTOM, &id)
+        .map_err(|e| e.to_string())?;
+    if server.transport != mcp::MCP_TRANSPORT_HTTP {
+        return Err("OAuth sign-in is only available for HTTP MCP servers.".to_string());
+    }
+    if !server.trusted {
+        return Err("Approve the server before signing in.".to_string());
+    }
+
+    let flow = mcp_runtime::start_mcp_oauth(&server).await?;
+    app.opener()
+        .open_url(&flow.auth_url, None::<String>)
+        .map_err(|e| format!("Failed to open browser: {e}"))?;
+    if let Err(error) = flow.wait_for_callback(&id).await {
+        // Record the resulting state (typically "sign-in required") so the
+        // row reflects reality rather than looking stuck.
+        let _ = connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await;
+        return Err(error);
+    }
+
+    connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await
+}
+
+/// Remove stored OAuth tokens and disconnect. The server stays approved;
+/// signing in again is all that is needed to reconnect.
+#[tauri::command]
+async fn logout_mcp_server_oauth(
+    app_config: tauri::State<'_, AppConfigState>,
+    mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
+    id: String,
+) -> Result<mcp::McpServer, String> {
+    let store = app_config_store(app_config.inner())?;
+    mcp_credentials::delete_oauth_credentials(&id).map_err(|e| e.to_string())?;
+    connect_custom_mcp_server(store, mcp_runtime_state.inner(), &id).await
 }
 
 #[tauri::command]
@@ -1184,6 +1273,11 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 broker: broker.clone(),
                 run_id: request.run_id.map(str::to_string),
             });
+            let mcp_tools = self
+                .app
+                .state::<mcp_runtime::McpRuntime>()
+                .session_tools(broker.clone(), request.run_id.map(str::to_string))
+                .await;
             let mut skill_script_tool = request.skill_script_tool;
             if let Some(tool) = &mut skill_script_tool {
                 tool.command_approval = Some(command_approval.clone());
@@ -1207,6 +1301,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.memory_section,
                 skill_script_tool,
                 request.session_id,
+                mcp_tools,
                 move |event| on_event(session_turn::SessionTurnEvent::from(event)),
             )
             .await
@@ -1689,9 +1784,7 @@ fn set_active_workspace(
                         .invalidate(&PathBuf::from(&workspace.path));
                 }
                 Ok(None) => {
-                    tracing::debug!(
-                        "set active workspace succeeded but no workspace is active"
-                    );
+                    tracing::debug!("set active workspace succeeded but no workspace is active");
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1779,8 +1872,7 @@ fn read_harness_plan(
     .ok_or_else(|| "No active workspace selected".to_string())?;
 
     let workspace_root = PathBuf::from(&workspace.path);
-    let workspace_root =
-        symlink_guard::canonical(&workspace_root).map_err(|e| e.to_string())?;
+    let workspace_root = symlink_guard::canonical(&workspace_root).map_err(|e| e.to_string())?;
     let plan_path = workspace_root.join(".gospel").join("PLAN.md");
 
     if !plan_path.exists() {
@@ -3287,6 +3379,7 @@ pub fn run() {
         .manage(SkillCache::new())
         .manage(ApprovalBrokerState::new())
         .manage(StreamingRunHandles::new())
+        .manage(mcp_runtime::McpRuntime::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -3302,6 +3395,8 @@ pub fn run() {
             trust_mcp_server,
             revoke_trust_mcp_server,
             refresh_mcp_server,
+            start_mcp_server_oauth,
+            logout_mcp_server_oauth,
             preview_import_mcp_servers,
             apply_import_mcp_servers,
             complete_streaming,
@@ -3377,6 +3472,31 @@ pub fn run() {
             });
             let broker = Arc::new(ApprovalBroker::new(emitter));
             app.state::<ApprovalBrokerState>().install(broker);
+
+            // Reconnect previously enabled + approved custom MCP servers in
+            // the background; each connect updates its own diagnostics row.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let app_config = handle.state::<AppConfigState>();
+                let Some(store) = app_config.store.as_ref() else {
+                    return;
+                };
+                let servers = match store.list_mcp_servers() {
+                    Ok(servers) => servers,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to list MCP servers on startup");
+                        return;
+                    }
+                };
+                let runtime = handle.state::<mcp_runtime::McpRuntime>();
+                for server in servers {
+                    if server.kind != mcp::MCP_KIND_CUSTOM || !server.enabled || !server.trusted {
+                        continue;
+                    }
+                    let update = runtime.connect_and_report(&server).await;
+                    let _ = store.persist_mcp_refresh(mcp::MCP_KIND_CUSTOM, &server.id, &update);
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
