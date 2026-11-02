@@ -21,6 +21,7 @@ import {
   applySourceText,
   emptyDraft,
   isLikelySecretKey,
+  joinCommandLine,
   type PairDraft,
   pairDrafts,
   requestFromDraft,
@@ -38,9 +39,7 @@ const monoInputClass =
 
 function draftFromServer(server: McpServer): ServerDraft {
   const commandLine =
-    server.transport === "http"
-      ? ""
-      : [server.command ?? "", ...server.args].filter(Boolean).join(" ");
+    server.transport === "http" ? "" : joinCommandLine([server.command ?? "", ...server.args]);
   return {
     sourceText: "",
     transport: server.transport,

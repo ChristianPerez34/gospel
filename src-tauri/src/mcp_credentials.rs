@@ -8,7 +8,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use thiserror::Error;
+
+static CREDENTIAL_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Error, Debug)]
 pub enum McpCredentialError {
@@ -74,6 +77,7 @@ pub fn sync_secret_values(
     kind: &str,
     declared: &[(String, String)],
 ) -> Result<(), McpCredentialError> {
+    let _lock = lock_writes()?;
     let mut file = read_file()?;
     let entry = file.servers.entry(server_id.to_string()).or_default();
     let target = match kind {
@@ -97,6 +101,7 @@ pub fn sync_secret_values(
 }
 
 pub fn delete_secrets(server_id: &str) -> Result<(), McpCredentialError> {
+    let _lock = lock_writes()?;
     let mut file = read_file()?;
     if file.servers.remove(server_id).is_some() {
         write_file(&file)?;
@@ -151,25 +156,13 @@ impl rmcp::transport::auth::CredentialStore for FileCredentialStore {
         &self,
         credentials: rmcp::transport::auth::StoredCredentials,
     ) -> Result<(), rmcp::transport::auth::AuthError> {
-        let mut file = read_file()
-            .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))?;
-        file.servers
-            .entry(self.server_id.clone())
-            .or_default()
-            .oauth = Some(credentials);
-        write_file(&file)
+        store_oauth_credentials(&self.server_id, credentials)
             .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))
     }
 
     async fn clear(&self) -> Result<(), rmcp::transport::auth::AuthError> {
-        let mut file = read_file()
-            .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))?;
-        if let Some(entry) = file.servers.get_mut(&self.server_id) {
-            entry.oauth = None;
-            write_file(&file)
-                .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))?;
-        }
-        Ok(())
+        delete_oauth_credentials(&self.server_id)
+            .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))
     }
 }
 
@@ -177,6 +170,7 @@ pub fn store_oauth_credentials(
     server_id: &str,
     credentials: rmcp::transport::auth::StoredCredentials,
 ) -> Result<(), McpCredentialError> {
+    let _lock = lock_writes()?;
     let mut file = read_file()?;
     file.servers.entry(server_id.to_string()).or_default().oauth = Some(credentials);
     write_file(&file)
@@ -189,6 +183,7 @@ pub fn has_oauth_credentials(server_id: &str) -> bool {
 }
 
 pub fn delete_oauth_credentials(server_id: &str) -> Result<(), McpCredentialError> {
+    let _lock = lock_writes()?;
     let mut file = read_file()?;
     if let Some(entry) = file.servers.get_mut(server_id) {
         entry.oauth = None;
@@ -197,10 +192,58 @@ pub fn delete_oauth_credentials(server_id: &str) -> Result<(), McpCredentialErro
     Ok(())
 }
 
+fn lock_writes() -> Result<std::sync::MutexGuard<'static, ()>, McpCredentialError> {
+    CREDENTIAL_WRITE_LOCK
+        .lock()
+        .map_err(|_| std::io::Error::other("MCP credential write lock was poisoned").into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::keychain::{isolate_config_home, lock_config_home};
+
+    #[test]
+    fn concurrent_secret_and_oauth_updates_preserve_every_server() {
+        use rmcp::transport::auth::{CredentialStore, StoredCredentials};
+        use std::sync::{Arc, Barrier};
+
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        let barrier = Arc::new(Barrier::new(24));
+        std::thread::scope(|scope| {
+            for index in 0..24 {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    let id = format!("server-{index}");
+                    barrier.wait();
+                    sync_secret_values(&id, "env", &[("TOKEN".into(), id.clone())]).unwrap();
+                    sync_secret_values(&id, "headers", &[("Authorization".into(), id.clone())])
+                        .unwrap();
+                    let store = FileCredentialStore::new(&id);
+                    futures::executor::block_on(store.save(StoredCredentials::new(
+                        id.clone(),
+                        None,
+                        vec![],
+                        None,
+                    )))
+                    .unwrap();
+                    if index % 2 == 0 {
+                        futures::executor::block_on(store.clear()).unwrap();
+                    }
+                });
+            }
+        });
+        let file = read_file().unwrap();
+        for index in 0..24 {
+            let id = format!("server-{index}");
+            let secrets = &file.servers[&id];
+            assert_eq!(secrets.env["TOKEN"], id);
+            assert_eq!(secrets.headers["Authorization"], id);
+            assert_eq!(secrets.oauth.is_some(), index % 2 != 0);
+        }
+    }
 
     #[test]
     fn secret_values_roundtrip_and_missing_keys() {

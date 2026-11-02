@@ -18,8 +18,10 @@ use rmcp::transport::child_process::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use crate::app_config::{AppConfigError, AppConfigStore};
 use crate::approval_broker::{ApprovalBroker, ApprovalRequest};
 use crate::mcp::{
     self, McpRefreshUpdate, McpServer, McpToolInventoryItem, MCP_HEALTH_AUTH_REQUIRED,
@@ -41,6 +43,7 @@ struct ActiveConnection {
 /// App-level registry of live MCP connections, keyed by server id.
 pub struct McpRuntime {
     connections: Mutex<HashMap<String, ActiveConnection>>,
+    transitions: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Default for McpRuntime {
@@ -53,13 +56,47 @@ impl McpRuntime {
     pub fn new() -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
+            transitions: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Connect (or reconnect) a custom server and report diagnostics.
+    pub async fn connect_and_report(
+        &self,
+        store: &AppConfigStore,
+        server_id: &str,
+    ) -> Result<McpServer, AppConfigError> {
+        let _transition = self.lock_server(server_id).await;
+        // Read after acquiring the lock: startup and queued refreshes may have stale state.
+        let server = store.get_mcp_server(mcp::MCP_KIND_CUSTOM, server_id)?;
+        let update = self.connect(&server).await;
+        store.persist_mcp_refresh(mcp::MCP_KIND_CUSTOM, server_id, &update)
+    }
+
+    pub async fn delete_server(
+        &self,
+        store: &AppConfigStore,
+        server_id: &str,
+    ) -> Result<(), AppConfigError> {
+        let _transition = self.lock_server(server_id).await;
+        self.disconnect(server_id).await;
+        store.delete_mcp_server(server_id)
+    }
+
+    async fn lock_server(&self, server_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .transitions
+            .lock()
+            .await
+            .entry(server_id.to_string())
+            .or_default()
+            .clone();
+        lock.lock_owned().await
+    }
+
+    /// Connect (or reconnect) a custom server while holding its transition lock.
     /// Never contacts an unapproved or disabled server — those return a
     /// persisted-state update without any side effects.
-    pub async fn connect_and_report(&self, server: &McpServer) -> McpRefreshUpdate {
+    async fn connect(&self, server: &McpServer) -> McpRefreshUpdate {
         self.disconnect(&server.id).await;
 
         if !server.trusted {
@@ -210,13 +247,7 @@ impl McpRuntime {
 
         let transport =
             StreamableHttpClientTransport::with_client(reqwest_rmcp::Client::new(), config);
-        let service = ().serve(transport).await.map_err(|e| {
-            if looks_like_auth_required(&e.to_string()) {
-                AUTH_REQUIRED_ERROR.to_string()
-            } else {
-                format!("MCP handshake failed: {e}")
-            }
-        })?;
+        let service = ().serve(transport).await.map_err(|e| format!("MCP handshake failed: {e}"))?;
         let tools = service
             .peer()
             .list_all_tools()
@@ -227,8 +258,9 @@ impl McpRuntime {
 
     /// Drop and cancel a connection. Also tears down the child process for
     /// stdio transports.
-    pub async fn disconnect(&self, server_id: &str) {
-        if let Some(connection) = self.connections.lock().await.remove(server_id) {
+    async fn disconnect(&self, server_id: &str) {
+        let connection = self.connections.lock().await.remove(server_id);
+        if let Some(connection) = connection {
             let _ = connection.service.cancel().await;
         }
     }
@@ -261,23 +293,24 @@ impl McpRuntime {
     }
 }
 
-const AUTH_REQUIRED_ERROR: &str = "__auth_required__";
-
 fn looks_like_auth_required(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("401")
         || message.contains("unauthorized")
         || message.contains("authorization required")
+        || message.contains("auth required")
+        || message.contains("insufficient scope")
 }
 
 fn failure_update(server: &McpServer, error: &str) -> McpRefreshUpdate {
     // Keep the prior success timestamp + inventory: a failed reconnect
     // shouldn't erase what the server last looked like when it worked.
-    let (health, message) = if error == AUTH_REQUIRED_ERROR {
-        (MCP_HEALTH_AUTH_REQUIRED, "Sign-in required.".to_string())
-    } else {
-        (MCP_HEALTH_NOT_CONNECTED, error.to_string())
-    };
+    let (health, message) =
+        if server.transport == MCP_TRANSPORT_HTTP && looks_like_auth_required(error) {
+            (MCP_HEALTH_AUTH_REQUIRED, "Sign-in required.".to_string())
+        } else {
+            (MCP_HEALTH_NOT_CONNECTED, error.to_string())
+        };
     McpRefreshUpdate {
         readiness: MCP_READINESS_AWAITING_FIRST_CONNECTION.to_string(),
         health: health.to_string(),
@@ -299,8 +332,7 @@ fn resolved_path_for(server: &McpServer) -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
-/// `mcp_<slug>` — tool namespacing prefix derived from the display name so
-/// `search` on two different servers stays distinct and readable.
+/// Keep a readable label; the registration hash carries the server identity.
 fn tool_slug(server: &McpServer) -> String {
     let slug: String = server
         .display_name
@@ -321,10 +353,18 @@ fn tool_slug(server: &McpServer) -> String {
     }
 }
 
-/// `mcp_<slug>__<tool>` capped at 64 characters (provider tool-name limits).
-fn registered_tool_name(slug: &str, tool_name: &str) -> String {
+/// Hash the original server/tool identity so normalization and truncation cannot merge names.
+fn registered_tool_name(server_id: &str, slug: &str, tool_name: &str) -> String {
     let prefix = format!("mcp_{slug}__");
-    let budget = 64usize.saturating_sub(prefix.len());
+    let mut hash = Sha256::new();
+    hash.update(server_id.as_bytes());
+    hash.update([0]);
+    hash.update(tool_name.as_bytes());
+    let suffix: String = hash.finalize()[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let budget = 64usize.saturating_sub(prefix.len() + suffix.len() + 1);
     let tool_part: String = tool_name
         .chars()
         .map(|ch| {
@@ -336,7 +376,7 @@ fn registered_tool_name(slug: &str, tool_name: &str) -> String {
         })
         .take(budget)
         .collect();
-    format!("{prefix}{tool_part}")
+    format!("{prefix}{tool_part}_{suffix}")
 }
 
 fn build_session_tool(
@@ -347,7 +387,7 @@ fn build_session_tool(
     broker: Arc<ApprovalBroker>,
     run_id: Option<String>,
 ) -> Option<DynamicTool> {
-    let registered = registered_tool_name(slug, &tool.name);
+    let registered = registered_tool_name(server_id, slug, &tool.name);
     let name = ToolName::new(registered.clone()).ok()?;
     let description = tool.description.as_deref().unwrap_or("").to_string();
     let parameters = tool.schema_as_json_value();
@@ -420,7 +460,7 @@ async fn oauth_manager(server_id: &str, url: &str) -> Result<AuthorizationManage
         .await
         .map_err(|e| format!("Failed to restore OAuth credentials: {e}"))?;
     if !restored {
-        return Err("No stored OAuth credentials".to_string());
+        return Err(rmcp::transport::auth::AuthError::AuthorizationRequired.to_string());
     }
     Ok(manager)
 }
@@ -541,4 +581,284 @@ async fn accept_oauth_callback(listener: &tokio::net::TcpListener) -> Result<Str
 
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     Ok(format!("http://127.0.0.1:{port}{path}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keychain::{isolate_config_home, lock_config_home};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::Notify;
+
+    struct TestServer {
+        url: String,
+        listing: Arc<Notify>,
+        release: Arc<Notify>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for TestServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl TestServer {
+        async fn start() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let listing = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let (started, resume) = (listing.clone(), release.clone());
+            let task = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let body_start = loop {
+                        let mut buffer = [0; 4096];
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        assert_ne!(count, 0);
+                        request.extend_from_slice(&buffer[..count]);
+                        if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&request[..body_start]);
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let is_post = headers.starts_with("POST ");
+                    while request.len() < body_start + length {
+                        let mut buffer = [0; 4096];
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        assert_ne!(count, 0);
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    let (status, body) = if !is_post {
+                        ("404 Not Found", String::new())
+                    } else {
+                        let message: serde_json::Value =
+                            serde_json::from_slice(&request[body_start..body_start + length])
+                                .unwrap();
+                        let result = match message["method"].as_str().unwrap() {
+                            "initialize" => Some(serde_json::json!({
+                                "protocolVersion": message["params"]["protocolVersion"],
+                                "capabilities": {"tools": {}},
+                                "serverInfo": {"name": "test", "version": "1"},
+                            })),
+                            "tools/list" => {
+                                started.notify_one();
+                                resume.notified().await;
+                                Some(serde_json::json!({"tools": [{
+                                    "name": "search", "inputSchema": {"type": "object"},
+                                    "annotations": {"readOnlyHint": true},
+                                }]}))
+                            }
+                            "notifications/initialized" => None,
+                            other => panic!("unexpected MCP request: {other}"),
+                        };
+                        match result {
+                            Some(result) => (
+                                "200 OK",
+                                serde_json::json!({
+                                    "jsonrpc": "2.0", "id": message["id"], "result": result,
+                                })
+                                .to_string(),
+                            ),
+                            None => ("202 Accepted", String::new()),
+                        }
+                    };
+                    let response = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.shutdown().await.unwrap();
+                }
+            });
+            Self {
+                url,
+                listing,
+                release,
+                task,
+            }
+        }
+    }
+
+    fn enabled_server(store: &AppConfigStore, url: &str) -> McpServer {
+        let server = store
+            .create_mcp_server(mcp::CreateMcpServerRequest {
+                display_name: "Test".into(),
+                transport: Some(MCP_TRANSPORT_HTTP.into()),
+                url: Some(url.into()),
+                ..Default::default()
+            })
+            .unwrap();
+        store.trust_mcp_server(&server.id).unwrap();
+        store
+            .set_mcp_server_enabled(mcp::MCP_KIND_CUSTOM, &server.id, true)
+            .unwrap()
+    }
+
+    #[test]
+    fn pending_connect_cannot_survive_disable_revoke_or_delete() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for action in ["disable", "revoke", "delete"] {
+                let remote = TestServer::start().await;
+                let store = Arc::new(AppConfigStore::in_memory_for_test().unwrap());
+                let runtime = Arc::new(McpRuntime::new());
+                let server = enabled_server(&store, &remote.url);
+                let connecting = {
+                    let (runtime, store, id) = (runtime.clone(), store.clone(), server.id.clone());
+                    tokio::spawn(async move { runtime.connect_and_report(&store, &id).await })
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(5), remote.listing.notified())
+                    .await
+                    .unwrap();
+                match action {
+                    "disable" => {
+                        store
+                            .set_mcp_server_enabled(mcp::MCP_KIND_CUSTOM, &server.id, false)
+                            .unwrap();
+                    }
+                    "revoke" => {
+                        store.revoke_trust_mcp_server(&server.id).unwrap();
+                    }
+                    _ => {}
+                }
+                let stopping = async {
+                    if action == "delete" {
+                        runtime.delete_server(&store, &server.id).await
+                    } else {
+                        runtime
+                            .connect_and_report(&store, &server.id)
+                            .await
+                            .map(|_| ())
+                    }
+                };
+                tokio::pin!(stopping);
+                assert!(futures::poll!(stopping.as_mut()).is_pending());
+                remote.release.notify_one();
+                connecting.await.unwrap().unwrap();
+                stopping.await.unwrap();
+                assert!(runtime.connections.lock().await.is_empty(), "{action}");
+                // A startup refresh queued before the change must also read current state.
+                let refreshed = runtime.connect_and_report(&store, &server.id).await;
+                if action == "delete" {
+                    assert!(matches!(
+                        refreshed,
+                        Err(AppConfigError::McpServerNotFound(_))
+                    ));
+                } else {
+                    assert_ne!(refreshed.unwrap().health, MCP_HEALTH_CONNECTED);
+                }
+                assert!(runtime.connections.lock().await.is_empty());
+            }
+        });
+    }
+
+    #[test]
+    fn tool_names_remain_distinct_after_normalization_and_truncation() {
+        let names = [
+            registered_tool_name("one", "github", "search"),
+            registered_tool_name("two", "github", "search"),
+            registered_tool_name("one", "github", "search/a"),
+            registered_tool_name("one", "github", "search?a"),
+            registered_tool_name("one", "github", &format!("{}a", "x".repeat(100))),
+            registered_tool_name("one", "github", &format!("{}b", "x".repeat(100))),
+        ];
+        assert_eq!(
+            names.iter().collect::<std::collections::HashSet<_>>().len(),
+            names.len()
+        );
+        for name in names {
+            assert!(name.len() <= 64);
+            assert!(ToolName::new(name).is_ok());
+        }
+    }
+
+    #[test]
+    fn expired_stored_oauth_credentials_require_sign_in() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let remote = TestServer::start().await;
+            let store = AppConfigStore::in_memory_for_test().unwrap();
+            let server = enabled_server(&store, &remote.url);
+            let credentials = serde_json::from_value(serde_json::json!({
+                "client_id": "test-client",
+                "token_response": {
+                    "access_token": "expired", "token_type": "Bearer", "expires_in": 1,
+                },
+                "token_received_at": 1,
+            }))
+            .unwrap();
+            crate::mcp_credentials::store_oauth_credentials(&server.id, credentials).unwrap();
+            let updated = McpRuntime::new()
+                .connect_and_report(&store, &server.id)
+                .await
+                .unwrap();
+            assert_eq!(updated.health, MCP_HEALTH_AUTH_REQUIRED);
+            assert_eq!(updated.auth_status, mcp::MCP_AUTH_REQUIRED);
+            assert!(crate::mcp_credentials::has_oauth_credentials(&server.id));
+        });
+    }
+
+    #[test]
+    fn missing_local_executable_preserves_its_error_even_when_name_contains_401() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        let store = AppConfigStore::in_memory_for_test().unwrap();
+        let server = store
+            .create_mcp_server(mcp::CreateMcpServerRequest {
+                display_name: "Missing local executable".into(),
+                command: dir
+                    .path()
+                    .join("missing-mcp-401")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.trust_mcp_server(&server.id).unwrap();
+        store
+            .set_mcp_server_enabled(mcp::MCP_KIND_CUSTOM, &server.id, true)
+            .unwrap();
+        let updated = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(McpRuntime::new().connect_and_report(&store, &server.id))
+            .unwrap();
+        assert_eq!(updated.health, MCP_HEALTH_NOT_CONNECTED);
+        assert_eq!(updated.auth_status, mcp::MCP_AUTH_NONE);
+        assert_eq!(
+            updated.last_error_summary,
+            Some(format!(
+                "Executable was not found: {}",
+                server.command.unwrap(),
+            ))
+        );
+    }
+
+    #[test]
+    fn http_auth_challenges_and_oauth_failures_are_sign_in_errors() {
+        use rmcp::transport::auth::AuthError;
+        use rmcp::transport::streamable_http_client::{AuthRequiredError, StreamableHttpError};
+        let errors = [
+            StreamableHttpError::<std::io::Error>::Auth(AuthError::AuthorizationRequired),
+            StreamableHttpError::AuthRequired(AuthRequiredError::new("Bearer".into())),
+        ];
+        for error in errors {
+            assert!(looks_like_auth_required(&format!(
+                "MCP handshake failed: {error}"
+            )));
+        }
+        assert!(!looks_like_auth_required("Connection timed out"));
+    }
 }

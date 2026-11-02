@@ -454,12 +454,9 @@ async fn connect_custom_mcp_server(
     runtime: &mcp_runtime::McpRuntime,
     id: &str,
 ) -> Result<mcp::McpServer, String> {
-    let server = store
-        .get_mcp_server(mcp::MCP_KIND_CUSTOM, id)
-        .map_err(|e| e.to_string())?;
-    let update = runtime.connect_and_report(&server).await;
-    store
-        .persist_mcp_refresh(mcp::MCP_KIND_CUSTOM, id, &update)
+    runtime
+        .connect_and_report(store, id)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -485,9 +482,9 @@ async fn delete_mcp_server(
     mcp_runtime_state: tauri::State<'_, mcp_runtime::McpRuntime>,
     id: String,
 ) -> Result<(), String> {
-    mcp_runtime_state.disconnect(&id).await;
-    app_config_store(app_config.inner())?
-        .delete_mcp_server(&id)
+    mcp_runtime_state
+        .delete_server(app_config_store(app_config.inner())?, &id)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -3493,8 +3490,7 @@ pub fn run() {
                     if server.kind != mcp::MCP_KIND_CUSTOM || !server.enabled || !server.trusted {
                         continue;
                     }
-                    let update = runtime.connect_and_report(&server).await;
-                    let _ = store.persist_mcp_refresh(mcp::MCP_KIND_CUSTOM, &server.id, &update);
+                    let _ = runtime.connect_and_report(store, &server.id).await;
                 }
             });
             Ok(())

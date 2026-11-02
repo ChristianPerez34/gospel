@@ -79,6 +79,7 @@ export function pairDrafts(
 export function splitCommandLine(text: string): string[] {
   const tokens: string[] = [];
   let current = "";
+  let started = false;
   let quote: '"' | "'" | null = null;
   for (const ch of text) {
     if (quote) {
@@ -90,18 +91,27 @@ export function splitCommandLine(text: string): string[] {
       continue;
     }
     if (ch === '"' || ch === "'") {
+      started = true;
       quote = ch;
     } else if (/\s/.test(ch)) {
-      if (current) {
+      if (started) {
         tokens.push(current);
         current = "";
+        started = false;
       }
     } else {
+      started = true;
       current += ch;
     }
   }
-  if (current) tokens.push(current);
+  if (started) tokens.push(current);
   return tokens;
+}
+
+export function joinCommandLine(parts: string[]): string {
+  return parts
+    .map((part) => (part && !/[\s"']/.test(part) ? part : `'${part.replace(/'/g, "'\"'\"'")}'`))
+    .join(" ");
 }
 
 /** Suggest a display name: hostname for URLs, last non-flag arg's basename for commands. */
@@ -223,7 +233,7 @@ export function applySourceText(draft: ServerDraft, text: string): ServerDraft {
         url: entry.url ?? "",
         commandLine:
           entry.transport === "stdio"
-            ? [entry.command ?? "", ...(entry.args ?? [])].filter(Boolean).join(" ")
+            ? joinCommandLine([entry.command ?? "", ...(entry.args ?? [])])
             : "",
         env,
         headers,

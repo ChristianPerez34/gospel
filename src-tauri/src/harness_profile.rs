@@ -295,11 +295,13 @@ pub fn resolve_harness_profile(
             tools: request
                 .main_tool_inputs
                 .map(|inputs| {
-                    inputs
+                    let mut tools = inputs
                         .contributions
                         .into_iter()
                         .map(MainToolContribution::into_tool)
-                        .collect()
+                        .collect::<Result<Vec<_>, _>>()?;
+                    tools.extend(inputs.mcp_tools);
+                    Ok::<_, HarnessProfileError>(tools)
                 })
                 .transpose()?
                 .unwrap_or_default(),
@@ -529,6 +531,26 @@ mod tests {
             command_approval: None,
             contributions: vec![],
             mcp_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn main_receives_mcp_tools_with_and_without_a_workspace() {
+        for workspace_available in [false, true] {
+            let mut request = request(AgentRole::Main, workspace_available, true);
+            let tool = rig::tool::DynamicTool::new(
+                rig::message::ToolName::new("mcp_test__search").unwrap(),
+                "Search the remote server",
+                serde_json::json!({ "type": "object", "properties": {} }),
+                |_| Box::pin(async { Ok(serde_json::json!({"found": true}).into()) }),
+            );
+            request.main_tool_inputs.as_mut().unwrap().mcp_tools =
+                vec![RegisteredTool::from_dynamic(tool)];
+            let profile = resolve_harness_profile(request).unwrap();
+            assert!(profile
+                .tool_names()
+                .contains(&"mcp_test__search".to_string()));
+            assert_eq!(profile.workspace_available, workspace_available);
         }
     }
 

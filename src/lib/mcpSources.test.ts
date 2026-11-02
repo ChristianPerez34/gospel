@@ -4,6 +4,7 @@ import {
   emptyDraft,
   entryFromJson,
   isLikelySecretKey,
+  joinCommandLine,
   requestFromDraft,
   splitCommandLine,
   suggestName,
@@ -11,6 +12,19 @@ import {
 } from "./mcpSources";
 
 describe("splitCommandLine", () => {
+  it("round-trips arguments from an existing server without changing boundaries", () => {
+    const parts = [
+      "/tmp/My Tools/node",
+      "a b",
+      "",
+      "single'quote",
+      'double"quote',
+      "C:\\tools\\server",
+      "\t\n",
+    ];
+    expect(splitCommandLine(joinCommandLine(parts))).toEqual(parts);
+    expect(splitCommandLine("node '' \"\" tail")).toEqual(["node", "", "", "tail"]);
+  });
   it("splits on whitespace and keeps quoted groups", () => {
     expect(splitCommandLine('npx -y @scope/server --arg "a b"')).toEqual([
       "npx",
@@ -25,6 +39,12 @@ describe("splitCommandLine", () => {
 });
 
 describe("applySourceText", () => {
+  it("preserves structured command arguments from pasted JSON", () => {
+    const command = "/tmp/My Tools/node";
+    const args = ["/tmp/my server.js", "--label", "a b", "", "x'y", 'x"y'];
+    const draft = applySourceText(emptyDraft(), JSON.stringify({ command, args }));
+    expect(requestFromDraft(draft)).toMatchObject({ command, args });
+  });
   it("detects a pasted URL as http and suggests a hostname name", () => {
     const next = applySourceText(emptyDraft(), "https://api.mobbin.com/mcp");
     expect(next.transport).toBe("http");

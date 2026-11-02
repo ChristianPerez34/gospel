@@ -579,10 +579,10 @@ pub fn compose_custom_server(
     let secret_header_keys: Vec<String> = parse_json_vec(&record.secret_header_keys_json);
     let auth_status = if transport != MCP_TRANSPORT_HTTP {
         MCP_AUTH_NONE
-    } else if crate::mcp_credentials::has_oauth_credentials(&record.id) {
-        MCP_AUTH_AUTHORIZED
     } else if diagnostics.health == MCP_HEALTH_AUTH_REQUIRED {
         MCP_AUTH_REQUIRED
+    } else if crate::mcp_credentials::has_oauth_credentials(&record.id) {
+        MCP_AUTH_AUTHORIZED
     } else {
         MCP_AUTH_NONE
     };
