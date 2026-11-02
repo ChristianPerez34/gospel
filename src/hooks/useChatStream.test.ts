@@ -76,6 +76,7 @@ const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   reason: "Mutating shell command",
   risk: "mutating",
   workspace_scoped: true,
+  expires_at_ms: 1_800_000_060_000,
 };
 
 function turnText(turn: { blocks?: TurnBlock[] } | null | undefined): string {
@@ -405,6 +406,7 @@ describe("useChatStream", () => {
         status: "pending",
         toolName: "shell",
         approvalKind: "command",
+        expiresAtMs: BASE_APPROVAL_REQUEST.expires_at_ms,
       });
 
       await act(async () => {
