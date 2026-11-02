@@ -60,19 +60,27 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
 
   useEffect(() => {
     if (!isPending || expiresAtMs == null) return;
+    let interval: ReturnType<typeof setInterval> | undefined;
     const update = () => {
       const currentTime = Date.now();
       setNow(currentTime);
-      if (currentTime >= expiresAtMs) clearInterval(interval);
+      if (currentTime >= expiresAtMs && interval !== undefined) {
+        clearInterval(interval);
+      }
     };
-    const interval = setInterval(update, 1000);
+    interval = setInterval(update, 1000);
     update();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") {
+        update();
+      }
+    };
     window.addEventListener("focus", update);
-    document.addEventListener("visibilitychange", update);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      clearInterval(interval);
+      if (interval !== undefined) clearInterval(interval);
       window.removeEventListener("focus", update);
-      document.removeEventListener("visibilitychange", update);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [isPending, expiresAtMs]);
   // MCP tool allow-rules are server-scoped (mcp://server/tool), not
