@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronUp, Copy } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { ApprovalDecision, ApprovalRisk, TurnBlock } from "../types";
 
@@ -50,9 +50,39 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
   const [busy, setBusy] = useState<ApprovalDecision | null>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [now, setNow] = useState(Date.now);
   const isPending = block.status === "pending";
-  const canResolve = isPending && Boolean(onResolve) && busy === null;
+  const expiresAtMs = block.expiresAtMs;
+  const secondsRemaining =
+    expiresAtMs == null ? null : Math.max(0, Math.ceil((expiresAtMs - now) / 1000));
+  const canResolve = isPending && secondsRemaining !== 0 && Boolean(onResolve) && busy === null;
   const isDestructive = block.risk === "destructive";
+
+  useEffect(() => {
+    if (!isPending || expiresAtMs == null) return;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const update = () => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+      if (currentTime >= expiresAtMs && interval !== undefined) {
+        clearInterval(interval);
+      }
+    };
+    interval = setInterval(update, 1000);
+    update();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") {
+        update();
+      }
+    };
+    window.addEventListener("focus", update);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      if (interval !== undefined) clearInterval(interval);
+      window.removeEventListener("focus", update);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isPending, expiresAtMs]);
   // MCP tool allow-rules are server-scoped (mcp://server/tool), not
   // workspace-scoped, so they skip the workspaceScoped check.
   const canAlwaysAllow =
@@ -199,8 +229,17 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
           >
             Deny
           </Button>
-          <span className="ml-auto font-mono text-caption text-text-muted">
-            {isDestructive ? "Guarded · Auto-denies in 60s" : "Auto-denies in 60s"}
+          <span
+            className="ml-auto font-mono text-caption tabular-nums text-text-muted"
+            role="timer"
+            aria-live="off"
+          >
+            {isDestructive && "Guarded · "}
+            {secondsRemaining === null
+              ? "Auto-denies if unanswered"
+              : secondsRemaining === 0
+                ? "Approval window expired"
+                : `Auto-denies in ${secondsRemaining}s`}
           </span>
         </div>
       )}
