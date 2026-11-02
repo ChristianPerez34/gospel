@@ -25,7 +25,13 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-rig = "0.44"
+rig = { version = "0.44", features = ["rmcp"] }
+rmcp = { version = "2.2", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "auth",
+] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
 dirs = "6"
 thiserror = "2"
@@ -41,6 +47,9 @@ globset = "0.4"
 regex = "1"
 sha2 = "0.11.0"
 nix = { version = "0.31.3", features = ["signal", "process"] }
+async-trait = "0.1"
+reqwest-rmcp = { package = "reqwest", version = "0.13.2" }
+http = "1"
 
 [dev-dependencies]
 rig = { version = "0.44", features = ["test-utils"] }

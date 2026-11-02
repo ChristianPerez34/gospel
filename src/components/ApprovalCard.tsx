@@ -53,8 +53,12 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
   const isPending = block.status === "pending";
   const canResolve = isPending && Boolean(onResolve) && busy === null;
   const isDestructive = block.risk === "destructive";
+  // MCP tool allow-rules are server-scoped (mcp://server/tool), not
+  // workspace-scoped, so they skip the workspaceScoped check.
   const canAlwaysAllow =
-    block.approvalKind === "command" && !isDestructive && block.workspaceScoped !== false;
+    !isDestructive &&
+    (block.approvalKind === "mcp_tool" ||
+      (block.approvalKind === "command" && block.workspaceScoped !== false));
 
   const isLongSummary = block.summary.length > 140 || block.summary.includes("\n");
 
@@ -128,7 +132,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
-              className="flex h-6 w-6 items-center justify-center rounded text-text-muted opacity-80 transition-all duration-150 ease-out hover:bg-surface-overlay hover:text-text-primary hover:opacity-100 focus-visible:opacity-100 group-hover/cmd:opacity-100 active:scale-[0.95]"
+              className="flex h-6 w-6 items-center justify-center rounded text-text-muted opacity-80 transition-[color,background-color,opacity,transform] duration-150 ease-out hover:bg-surface-overlay hover:text-text-primary hover:opacity-100 focus-visible:opacity-100 group-hover/cmd:opacity-100 active:scale-[0.95]"
               title={expanded ? "Collapse command" : "Expand full command"}
               aria-label={expanded ? "Collapse command" : "Expand full command"}
               aria-expanded={expanded}
@@ -143,7 +147,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
           <button
             type="button"
             onClick={copySummary}
-            className="flex h-6 w-6 items-center justify-center rounded text-text-muted opacity-0 transition-all duration-150 ease-out hover:bg-surface-overlay hover:text-text-primary focus-visible:opacity-100 group-hover/cmd:opacity-100 active:scale-[0.95]"
+            className="flex h-6 w-6 items-center justify-center rounded text-text-muted opacity-0 transition-[color,background-color,opacity,transform] duration-150 ease-out hover:bg-surface-overlay hover:text-text-primary focus-visible:opacity-100 group-hover/cmd:opacity-100 active:scale-[0.95]"
             title={copied ? "Copied" : "Copy command"}
             aria-label={copied ? "Copied" : "Copy command"}
           >

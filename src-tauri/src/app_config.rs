@@ -127,9 +127,40 @@ impl AppConfigStore {
 
     fn from_connection(conn: Connection) -> Result<Self, AppConfigError> {
         conn.execute_batch(APP_CONFIG_SCHEMA)?;
+        Self::ensure_mcp_transport_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    fn ensure_mcp_transport_columns(conn: &Connection) -> Result<(), AppConfigError> {
+        for (column, ddl) in [
+            (
+                "transport",
+                "ALTER TABLE mcp_custom_servers ADD COLUMN transport TEXT NOT NULL DEFAULT 'stdio'",
+            ),
+            (
+                "url",
+                "ALTER TABLE mcp_custom_servers ADD COLUMN url TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "headers_json",
+                "ALTER TABLE mcp_custom_servers ADD COLUMN headers_json TEXT NOT NULL DEFAULT '[]'",
+            ),
+            (
+                "secret_header_keys_json",
+                "ALTER TABLE mcp_custom_servers ADD COLUMN secret_header_keys_json TEXT NOT NULL DEFAULT '[]'",
+            ),
+        ] {
+            let mut stmt = conn.prepare("PRAGMA table_info(mcp_custom_servers)")?;
+            let exists = stmt
+                .query_map(params![], |row| row.get::<_, String>(1))?
+                .any(|name| name.map(|name| name == column).unwrap_or(false));
+            if !exists {
+                conn.execute(ddl, params![])?;
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -358,7 +389,10 @@ impl AppConfigStore {
         let conn = self.lock_conn();
         let id = mcp::new_custom_server_id();
         insert_custom_mcp_server_locked(&conn, &id, &request, None)?;
-        query_mcp_server_locked(&conn, MCP_KIND_CUSTOM, &id)
+        let server = query_mcp_server_locked(&conn, MCP_KIND_CUSTOM, &id)?;
+        drop(conn);
+        store_request_secret_values(&id, &request.secret_env, &request.secret_headers);
+        Ok(server)
     }
 
     pub fn update_mcp_server(
@@ -369,7 +403,10 @@ impl AppConfigStore {
         mcp::validate_update_request(&request).map_err(AppConfigError::InvalidMcpServer)?;
         let conn = self.lock_conn();
         update_custom_mcp_server_locked(&conn, id, &request, None)?;
-        query_mcp_server_locked(&conn, MCP_KIND_CUSTOM, id)
+        let server = query_mcp_server_locked(&conn, MCP_KIND_CUSTOM, id)?;
+        drop(conn);
+        store_request_secret_values(id, &request.secret_env, &request.secret_headers);
+        Ok(server)
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<(), AppConfigError> {
@@ -390,6 +427,10 @@ impl AppConfigStore {
             "DELETE FROM mcp_server_diagnostics WHERE server_id = ?1 AND kind = ?2",
             params![id, MCP_KIND_CUSTOM],
         )?;
+        drop(conn);
+        if let Err(error) = crate::mcp_credentials::delete_secrets(id) {
+            tracing::warn!(%error, server_id = id, "failed to delete MCP server secrets");
+        }
         Ok(())
     }
 
@@ -449,6 +490,24 @@ impl AppConfigStore {
         query_mcp_server_locked(&conn, MCP_KIND_CUSTOM, id)
     }
 
+    pub fn get_mcp_server(&self, kind: &str, id: &str) -> Result<McpServer, AppConfigError> {
+        let conn = self.lock_conn();
+        query_mcp_server_locked(&conn, kind, id)
+    }
+
+    /// Persist diagnostics + inventory produced by a connect attempt and
+    /// return the recomposed server row.
+    pub fn persist_mcp_refresh(
+        &self,
+        kind: &str,
+        id: &str,
+        update: &mcp::McpRefreshUpdate,
+    ) -> Result<McpServer, AppConfigError> {
+        let conn = self.lock_conn();
+        persist_mcp_refresh_locked(&conn, kind, id, update)?;
+        query_mcp_server_locked(&conn, kind, id)
+    }
+
     pub fn refresh_mcp_server(
         &self,
         kind: &str,
@@ -462,8 +521,19 @@ impl AppConfigStore {
 
         let update = if kind == MCP_KIND_BUILT_IN {
             mcp::refresh_built_in(active_workspace_path)
+        } else if !server.trusted {
+            mcp::refresh_untrusted(&server)
         } else {
-            mcp::refresh_custom(&server)
+            // Trusted custom servers connect through the MCP runtime; this
+            // path only runs for built-ins and untrusted rows.
+            mcp::McpRefreshUpdate {
+                readiness: mcp::MCP_READINESS_AWAITING_FIRST_CONNECTION.to_string(),
+                health: mcp::MCP_HEALTH_NOT_CONNECTED.to_string(),
+                last_error_summary: None,
+                last_success_at: None,
+                last_resolved_executable_path: server.last_resolved_executable_path.clone(),
+                inventory: server.inventory.clone(),
+            }
         };
 
         let conn = self.lock_conn();
@@ -477,7 +547,7 @@ impl AppConfigStore {
     ) -> Result<McpImportPreview, AppConfigError> {
         let content = std::fs::read_to_string(source_path)?;
         let existing_servers = self.list_mcp_servers()?;
-        let preview = mcp::parse_opencode_import(source_path, &content, &existing_servers)
+        let preview = mcp::parse_mcp_import(source_path, &content, &existing_servers)
             .map_err(AppConfigError::McpImport)?;
         let preview_json = mcp::serialize_json(&preview).map_err(AppConfigError::McpImport)?;
         let conn = self.lock_conn();
@@ -528,6 +598,11 @@ impl AppConfigStore {
                         args: item.proposed.args,
                         env: item.proposed.env,
                         secret_env_keys: item.proposed.secret_env_keys,
+                        secret_env: item.proposed.secret_env.clone(),
+                        transport: item.proposed.transport.clone(),
+                        url: item.proposed.url.clone(),
+                        headers: item.proposed.headers.clone(),
+                        secret_headers: item.proposed.secret_headers.clone(),
                         safety_class: item.proposed.safety_class,
                         scope: item.proposed.scope,
                     };
@@ -565,6 +640,25 @@ fn app_data_dir() -> PathBuf {
         .or_else(dirs::data_dir)
         .unwrap_or_else(std::env::temp_dir)
         .join("gospel")
+}
+
+/// Persist secret values carried by a create/update request. Failures are
+/// logged, not fatal — the definition is already committed and the UI shows
+/// the affected keys as missing.
+fn store_request_secret_values(
+    id: &str,
+    secret_env: &[mcp::McpEnvValue],
+    secret_headers: &[mcp::McpEnvValue],
+) {
+    for (kind, pairs) in [("env", secret_env), ("headers", secret_headers)] {
+        let declared: Vec<(String, String)> = pairs
+            .iter()
+            .map(|pair| (pair.key.clone(), pair.value.clone()))
+            .collect();
+        if let Err(error) = crate::mcp_credentials::sync_secret_values(id, kind, &declared) {
+            tracing::warn!(%error, server_id = id, kind, "failed to store MCP secret values");
+        }
+    }
 }
 
 fn bool_int(value: bool) -> i64 {
@@ -639,15 +733,18 @@ fn ensure_mcp_server_exists_locked(
     query_mcp_server_locked(conn, kind, id).map(|_| ())
 }
 
+const CUSTOM_MCP_COLUMNS: &str = "id, display_name, transport, command, args_json, env_json,
+         url, headers_json, secret_env_keys_json, secret_header_keys_json,
+         safety_class, scope, external_fingerprint, created_at, updated_at";
+
 fn query_custom_mcp_records_locked(
     conn: &Connection,
 ) -> Result<Vec<mcp::CustomMcpServerRecord>, AppConfigError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, display_name, command, args_json, env_json, secret_env_keys_json,
-                safety_class, scope, external_fingerprint, created_at, updated_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {CUSTOM_MCP_COLUMNS}
          FROM mcp_custom_servers
          ORDER BY display_name COLLATE NOCASE, created_at",
-    )?;
+    ))?;
     let rows = stmt.query_map(params![], custom_mcp_record_from_row)?;
     let mut records = Vec::new();
     for row in rows {
@@ -661,10 +758,11 @@ fn query_custom_mcp_record_locked(
     id: &str,
 ) -> Result<Option<mcp::CustomMcpServerRecord>, AppConfigError> {
     conn.query_row(
-        "SELECT id, display_name, command, args_json, env_json, secret_env_keys_json,
-                safety_class, scope, external_fingerprint, created_at, updated_at
+        &format!(
+            "SELECT {CUSTOM_MCP_COLUMNS}
          FROM mcp_custom_servers
-         WHERE id = ?1",
+         WHERE id = ?1"
+        ),
         params![id],
         custom_mcp_record_from_row,
     )
@@ -678,15 +776,19 @@ fn custom_mcp_record_from_row(
     Ok(mcp::CustomMcpServerRecord {
         id: row.get(0)?,
         display_name: row.get(1)?,
-        command: row.get(2)?,
-        args_json: row.get(3)?,
-        env_json: row.get(4)?,
-        secret_env_keys_json: row.get(5)?,
-        safety_class: row.get(6)?,
-        scope: row.get(7)?,
-        external_fingerprint: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        transport: row.get(2)?,
+        command: row.get(3)?,
+        args_json: row.get(4)?,
+        env_json: row.get(5)?,
+        url: row.get(6)?,
+        headers_json: row.get(7)?,
+        secret_env_keys_json: row.get(8)?,
+        secret_header_keys_json: row.get(9)?,
+        safety_class: row.get(10)?,
+        scope: row.get(11)?,
+        external_fingerprint: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
     })
 }
 
@@ -756,32 +858,62 @@ fn query_mcp_inventory_locked(
     .map_err(AppConfigError::Database)
 }
 
+fn secret_key_names(declared: &[String], pairs: &[mcp::McpEnvValue]) -> Vec<String> {
+    let mut names: Vec<String> = declared.to_vec();
+    for pair in pairs {
+        if !names.contains(&pair.key) {
+            names.push(pair.key.clone());
+        }
+    }
+    names
+}
+
 fn insert_custom_mcp_server_locked(
     conn: &Connection,
     id: &str,
     request: &CreateMcpServerRequest,
     external_fingerprint: Option<&str>,
 ) -> Result<(), AppConfigError> {
+    let transport = mcp::request_transport(request.transport.as_deref(), request.url.as_deref());
     let safety_class = mcp::default_safety_class(request.safety_class.clone());
     let scope = mcp::default_custom_scope(request.scope.clone());
     let args_json = mcp::serialize_json(&request.args).map_err(AppConfigError::InvalidMcpServer)?;
     let env_json = mcp::serialize_json(&request.env).map_err(AppConfigError::InvalidMcpServer)?;
-    let secret_env_keys_json =
-        mcp::serialize_json(&request.secret_env_keys).map_err(AppConfigError::InvalidMcpServer)?;
+    let url = request
+        .url
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let headers_json =
+        mcp::serialize_json(&request.headers).map_err(AppConfigError::InvalidMcpServer)?;
+    let secret_env_keys_json = mcp::serialize_json(&secret_key_names(
+        &request.secret_env_keys,
+        &request.secret_env,
+    ))
+    .map_err(AppConfigError::InvalidMcpServer)?;
+    let secret_header_keys_json =
+        mcp::serialize_json(&secret_key_names(&[], &request.secret_headers))
+            .map_err(AppConfigError::InvalidMcpServer)?;
 
     conn.execute(
         "INSERT INTO mcp_custom_servers (
-            id, display_name, command, args_json, env_json, secret_env_keys_json,
+            id, display_name, transport, command, args_json, env_json,
+            url, headers_json, secret_env_keys_json, secret_header_keys_json,
             safety_class, scope, external_fingerprint, created_at, updated_at
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         params![
             id,
             request.display_name.trim(),
+            transport,
             request.command.trim(),
             args_json,
             env_json,
+            url,
+            headers_json,
             secret_env_keys_json,
+            secret_header_keys_json,
             safety_class,
             scope,
             external_fingerprint,
@@ -817,40 +949,67 @@ fn update_custom_mcp_server_locked(
 ) -> Result<(), AppConfigError> {
     let existing = query_custom_mcp_record_locked(conn, id)?
         .ok_or_else(|| AppConfigError::McpServerNotFound(id.to_string()))?;
-    let command_changed = existing.command != request.command.trim();
+    let transport = mcp::request_transport(request.transport.as_deref(), request.url.as_deref());
+    let url = request
+        .url
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    // Any change to what would be executed or contacted revokes approval —
+    // the user approved a specific binary/endpoint, not the row.
+    let connection_changed = existing.transport != transport
+        || existing.command != request.command.trim()
+        || existing.url != url;
     let safety_class = mcp::default_safety_class(request.safety_class.clone());
     let scope = mcp::default_custom_scope(request.scope.clone());
     let args_json = mcp::serialize_json(&request.args).map_err(AppConfigError::InvalidMcpServer)?;
     let env_json = mcp::serialize_json(&request.env).map_err(AppConfigError::InvalidMcpServer)?;
-    let secret_env_keys_json =
-        mcp::serialize_json(&request.secret_env_keys).map_err(AppConfigError::InvalidMcpServer)?;
+    let headers_json =
+        mcp::serialize_json(&request.headers).map_err(AppConfigError::InvalidMcpServer)?;
+    let secret_env_keys_json = mcp::serialize_json(&secret_key_names(
+        &request.secret_env_keys,
+        &request.secret_env,
+    ))
+    .map_err(AppConfigError::InvalidMcpServer)?;
+    let secret_header_keys_json =
+        mcp::serialize_json(&secret_key_names(&[], &request.secret_headers))
+            .map_err(AppConfigError::InvalidMcpServer)?;
 
     conn.execute(
         "UPDATE mcp_custom_servers SET
             display_name = ?2,
-            command = ?3,
-            args_json = ?4,
-            env_json = ?5,
-            secret_env_keys_json = ?6,
-            safety_class = ?7,
-            scope = ?8,
-            external_fingerprint = COALESCE(?9, external_fingerprint),
+            transport = ?3,
+            command = ?4,
+            args_json = ?5,
+            env_json = ?6,
+            url = ?7,
+            headers_json = ?8,
+            secret_env_keys_json = ?9,
+            secret_header_keys_json = ?10,
+            safety_class = ?11,
+            scope = ?12,
+            external_fingerprint = COALESCE(?13, external_fingerprint),
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?1",
         params![
             id,
             request.display_name.trim(),
+            transport,
             request.command.trim(),
             args_json,
             env_json,
+            url,
+            headers_json,
             secret_env_keys_json,
+            secret_header_keys_json,
             safety_class,
             scope,
             external_fingerprint,
         ],
     )?;
 
-    if command_changed {
+    if connection_changed {
         conn.execute(
             "INSERT INTO mcp_server_state (
                 server_id, kind, enabled, trusted, trust_revoked_reason, created_at, updated_at
@@ -1047,10 +1206,8 @@ mod tests {
                 display_name: "Local".to_string(),
                 command: "node".to_string(),
                 args: vec!["server.js".to_string()],
-                env: Vec::new(),
-                secret_env_keys: Vec::new(),
                 safety_class: Some(mcp::MCP_SAFETY_UNKNOWN.to_string()),
-                scope: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -1064,10 +1221,8 @@ mod tests {
                     display_name: "Local".to_string(),
                     command: "python".to_string(),
                     args: vec!["server.py".to_string()],
-                    env: Vec::new(),
-                    secret_env_keys: Vec::new(),
                     safety_class: Some(mcp::MCP_SAFETY_UNKNOWN.to_string()),
-                    scope: None,
+                    ..Default::default()
                 },
             )
             .unwrap();
