@@ -2,7 +2,7 @@ use crate::shell_tools::CommandRisk;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -76,6 +76,9 @@ pub struct ApprovalRequest {
     /// the approval card to the correct session's live turn; `None` falls
     /// back to the focused session.
     pub run_id: Option<String>,
+    /// Unix timestamp in milliseconds for the broker's decision deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
 }
 
 impl ApprovalRequest {
@@ -103,6 +106,7 @@ impl ApprovalRequest {
             workspace_scoped: false,
             tool_name,
             run_id: run_id.map(str::to_string),
+            expires_at_ms: None,
         }
     }
 
@@ -130,6 +134,7 @@ impl ApprovalRequest {
             workspace_scoped: false,
             tool_name: tool_name.into(),
             run_id: run_id.map(str::to_string),
+            expires_at_ms: None,
         }
     }
 
@@ -149,6 +154,7 @@ impl ApprovalRequest {
             workspace_scoped: false,
             tool_name: tool_name.into(),
             run_id: run_id.map(str::to_string),
+            expires_at_ms: None,
         }
     }
 }
@@ -650,7 +656,7 @@ impl ApprovalBroker {
     /// user.
     ///
     /// Otherwise, waits for the frontend decision or timeout.
-    pub async fn request(&self, request: ApprovalRequest) -> bool {
+    pub async fn request(&self, mut request: ApprovalRequest) -> bool {
         let id = request.id.clone();
         let run_id = request.run_id.clone();
 
@@ -686,6 +692,14 @@ impl ApprovalBroker {
             );
         }
 
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        request.expires_at_ms = Some(
+            (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                + self.timeout)
+                .as_millis() as u64,
+        );
         self.emitter.emit_requested(&request);
 
         // Recheck after registering so a concurrent mode switch can't miss a
@@ -708,7 +722,7 @@ impl ApprovalBroker {
             }
         }
 
-        let outcome = match tokio::time::timeout(self.timeout, receiver).await {
+        let outcome = match tokio::time::timeout_at(deadline, receiver).await {
             Ok(Ok(outcome)) => outcome,
             Ok(Err(_dropped)) => ApprovalOutcome::Denied,
             Err(_elapsed) => ApprovalOutcome::TimedOut,
@@ -980,7 +994,25 @@ mod tests {
         );
         let id = request.id.clone();
 
+        let before_request_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         let approved = broker.request(request).await;
+        let after_request_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let emitted = emitter.requested.lock().unwrap()[0].clone();
+        let expires_at_ms = emitted
+            .expires_at_ms
+            .expect("pending request needs a deadline");
+        assert!(expires_at_ms >= before_request_ms + 10);
+        assert!(expires_at_ms <= after_request_ms + 10);
+        assert_eq!(
+            serde_json::to_value(&emitted).unwrap()["expires_at_ms"],
+            expires_at_ms
+        );
         assert!(!approved);
         assert_eq!(
             emitter.resolved.lock().unwrap()[0].id,
