@@ -24,9 +24,9 @@ use tokio::sync::Mutex;
 use crate::app_config::{AppConfigError, AppConfigStore};
 use crate::approval_broker::{ApprovalBroker, ApprovalRequest};
 use crate::mcp::{
-    self, MCP_HEALTH_AUTH_REQUIRED, MCP_HEALTH_CONNECTED, MCP_HEALTH_NOT_CONNECTED,
-    MCP_READINESS_AWAITING_FIRST_CONNECTION, MCP_READINESS_READY, MCP_TRANSPORT_HTTP,
-    MCP_TRANSPORT_STDIO, McpRefreshUpdate, McpServer, McpToolInventoryItem,
+    self, McpRefreshUpdate, McpServer, McpToolInventoryItem, MCP_HEALTH_AUTH_REQUIRED,
+    MCP_HEALTH_CONNECTED, MCP_HEALTH_NOT_CONNECTED, MCP_READINESS_AWAITING_FIRST_CONNECTION,
+    MCP_READINESS_READY, MCP_TRANSPORT_HTTP, MCP_TRANSPORT_STDIO,
 };
 use crate::mcp_credentials::{FileCredentialStore, McpServerSecrets};
 
@@ -673,10 +673,7 @@ mod tests {
                             None => ("202 Accepted", String::new()),
                         }
                     };
-                    let response = format!(
-                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
+                    let response = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
                     stream.write_all(response.as_bytes()).await.unwrap();
                     stream.shutdown().await.unwrap();
                 }

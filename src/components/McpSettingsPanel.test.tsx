@@ -57,13 +57,24 @@ describe("McpSettingsPanel", () => {
       expect(screen.getByText("api.mobbin.com")).toBeTruthy();
     });
 
-    // The status badge displays "sign-in required"
-    const statusBadges = screen.getAllByText(/sign-in required/i);
-    expect(statusBadges).toHaveLength(1);
-    expect(statusBadges[0].tagName.toLowerCase()).toBe("span");
-
-    // The Sign in button is rendered
+    expect(screen.getByText("sign-in required")).toBeTruthy();
+    expect(screen.queryByText("Sign-in required.")).toBeNull();
     expect(screen.getByRole("button", { name: /sign in/i })).toBeTruthy();
+  });
+
+  it("keeps a distinct error summary for a server that needs authentication", async () => {
+    const server = sampleServer({ lastErrorSummary: "Token refresh failed" });
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_mcp_servers") return [server];
+      return undefined;
+    });
+
+    render(<McpSettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Token refresh failed")).toBeTruthy();
+    });
+    expect(screen.getByText("sign-in required")).toBeTruthy();
   });
 
   it("displays non-auth error summary when connection fails for other reasons", async () => {

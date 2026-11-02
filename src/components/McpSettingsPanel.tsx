@@ -495,11 +495,13 @@ function ServerNotices({
   server: McpServer;
   missingSecrets: string[];
 }) {
+  // Rows saved before the runtime stopped writing "Sign-in required." keep it until the
+  // next reconnect; hide it so it doesn't repeat the status badge.
   const showLastError =
     server.lastErrorSummary &&
     !(
       server.health === "auth_required" &&
-      server.lastErrorSummary.trim().toLowerCase().replace(/\.$/, "") === "sign-in required"
+      server.lastErrorSummary.replace(/\.$/, "").toLowerCase() === healthLabel(server)
     );
 
   return (
