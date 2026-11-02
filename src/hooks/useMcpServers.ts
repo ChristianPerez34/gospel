@@ -117,22 +117,62 @@ export function useMcpServers(active: boolean) {
     }
   }, []);
 
-  const create = useCallback(
-    async (request: CreateMcpServerRequest) => {
-      setLoading(true);
-      setError(null);
-      try {
-        await invoke<McpServer>("create_mcp_server", { request });
-        await reload();
-      } catch (e) {
-        setError(`Failed to create MCP server: ${e}`);
-        throw e;
-      } finally {
-        setLoading(false);
-      }
-    },
-    [reload]
-  );
+  /**
+   * "Add and connect": create the server, approve it, and enable it — each
+   * backend transition already handles connect/teardown, so enabling is the
+   * step that performs the handshake. Returns the final server row.
+   */
+  const addAndConnect = useCallback(async (request: CreateMcpServerRequest): Promise<McpServer> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const created = await invoke<McpServer>("create_mcp_server", { request });
+      setServers((current) => [...current, created]);
+      const trusted = await invoke<McpServer>("trust_mcp_server", { id: created.id });
+      setServers((current) => replaceServer(current, trusted));
+      const enabled = await invoke<McpServer>("set_mcp_server_enabled", {
+        kind: trusted.kind,
+        id: trusted.id,
+        enabled: true,
+      });
+      setServers((current) => replaceServer(current, enabled));
+      return enabled;
+    } catch (e) {
+      setError(`Failed to add MCP server: ${e}`);
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  /** Open the OAuth browser flow, wait for the callback, then connect. */
+  const startOAuth = useCallback(async (server: McpServer) => {
+    setSavingId(server.id);
+    setError(null);
+    try {
+      const updated = await invoke<McpServer>("start_mcp_server_oauth", { id: server.id });
+      setServers((current) => replaceServer(current, updated));
+      return updated;
+    } catch (e) {
+      setError(`Sign-in failed: ${e}`);
+      throw e;
+    } finally {
+      setSavingId(null);
+    }
+  }, []);
+
+  const logoutOAuth = useCallback(async (server: McpServer) => {
+    setSavingId(server.id);
+    setError(null);
+    try {
+      const updated = await invoke<McpServer>("logout_mcp_server_oauth", { id: server.id });
+      setServers((current) => replaceServer(current, updated));
+    } catch (e) {
+      setError(`Failed to sign out: ${e}`);
+    } finally {
+      setSavingId(null);
+    }
+  }, []);
 
   const update = useCallback(async (id: string, request: UpdateMcpServerRequest) => {
     setSavingId(id);
@@ -218,7 +258,9 @@ export function useMcpServers(active: boolean) {
     trust,
     revokeTrust,
     refresh,
-    create,
+    addAndConnect,
+    startOAuth,
+    logoutOAuth,
     update,
     remove,
     previewImport,

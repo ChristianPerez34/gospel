@@ -9,9 +9,9 @@ use crate::shell_tools::{
 };
 use crate::workspace_tools::{
     build_base_workspace_tools, build_base_workspace_tools_with_external_approval,
-    create_source_edit_tool, create_write_harness_file_tool,
-    ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
-    READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    create_source_edit_tool, create_write_harness_file_tool, ExternalPathApproval,
+    HARNESS_CONTROL_AREA_SYSTEM_PROMPT, READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 use rig::tool::server::{ToolServer, ToolServerHandle};
 use rig::tool::RegisteredTool;
@@ -203,6 +203,9 @@ pub struct MainToolInputs {
     pub external_path_approval: Option<Arc<dyn ExternalPathApproval>>,
     pub command_approval: Option<Arc<dyn CommandApproval>>,
     pub contributions: Vec<MainToolContribution>,
+    /// Dynamic tools from connected MCP servers, already namespaced and
+    /// approval-wired for this run.
+    pub mcp_tools: Vec<RegisteredTool>,
 }
 
 pub struct HarnessProfileRequest {
@@ -333,6 +336,7 @@ pub fn resolve_harness_profile(
         external_path_approval,
         command_approval,
         contributions,
+        mcp_tools,
     } = request
         .main_tool_inputs
         .ok_or(HarnessProfileError::MainToolInputsRequired)?;
@@ -390,6 +394,7 @@ pub fn resolve_harness_profile(
             .map(MainToolContribution::into_tool)
             .collect::<Result<Vec<_>, _>>()?,
     );
+    tools.extend(mcp_tools);
 
     let preamble = compose_preamble(
         request.role,
@@ -523,6 +528,7 @@ mod tests {
             external_path_approval: None,
             command_approval: None,
             contributions: vec![],
+            mcp_tools: vec![],
         }
     }
 
@@ -605,20 +611,15 @@ mod tests {
                     let summary = profile.summary();
                     assert_eq!(
                         names,
-                        expected_tool_names(
-                            role,
-                            workspace_available,
-                            source_edit_allowed,
-                        )
+                        expected_tool_names(role, workspace_available, source_edit_allowed,)
                     );
                     assert_eq!(summary.role, role);
                     assert_eq!(summary.workspace_available, workspace_available);
                     assert_eq!(summary.tool_names, names);
                     assert_eq!(summary.guards, profile.guards);
 
-                    let source_edit_expected = workspace_available
-                        && role == AgentRole::Main
-                        && source_edit_allowed;
+                    let source_edit_expected =
+                        workspace_available && role == AgentRole::Main && source_edit_allowed;
                     assert_eq!(
                         names.contains(&"source_edit".to_string()),
                         source_edit_expected
@@ -758,8 +759,7 @@ mod tests {
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
-            let profile = resolve_harness_profile(request(role, true, true))
-                .expect("profile");
+            let profile = resolve_harness_profile(request(role, true, true)).expect("profile");
             let guards = profile.guards;
             assert_eq!(guards.max_turns, max_turns);
             assert_eq!(

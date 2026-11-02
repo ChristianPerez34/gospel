@@ -129,7 +129,7 @@ pub(crate) fn chatgpt_auth_file_path() -> PathBuf {
     xdg_config_dir().join("chatgpt").join("auth.json")
 }
 
-fn gospel_config_dir() -> PathBuf {
+pub(crate) fn gospel_config_dir() -> PathBuf {
     xdg_config_dir().join("gospel")
 }
 

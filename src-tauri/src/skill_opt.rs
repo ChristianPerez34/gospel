@@ -244,6 +244,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
             None,
             None,
             None,
+            Vec::new(),
             |_| {},
         )
         .await
@@ -466,6 +467,7 @@ impl SkillOptimizer for StreamCompletionSkillOptimizer {
             None,
             None,
             None,
+            Vec::new(),
             |_| {},
         )
         .await

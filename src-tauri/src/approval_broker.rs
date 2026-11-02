@@ -31,6 +31,9 @@ pub enum ApprovalKind {
     Command,
     /// A workspace tool reading from a path outside the active workspace.
     ExternalPath,
+    /// A tool call against a connected MCP server that did not declare the
+    /// tool read-only.
+    McpTool,
 }
 
 /// Severity classification used by the UI to color and label the request.
@@ -98,6 +101,28 @@ impl ApprovalRequest {
     pub fn with_workspace_scope(mut self, workspace_scoped: bool) -> Self {
         self.workspace_scoped = workspace_scoped;
         self
+    }
+
+    /// Approval for a non-read-only MCP tool call. `summary` doubles as the
+    /// always-allow rule key: `mcp://<server_id>/<tool_name>` — always-allow
+    /// applies to that tool on that server regardless of arguments.
+    pub fn mcp_tool(
+        tool_name: impl Into<String>,
+        summary: impl Into<String>,
+        reason: impl Into<String>,
+        run_id: Option<&str>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            kind: ApprovalKind::McpTool,
+            title: "Allow MCP tool?".to_string(),
+            summary: summary.into(),
+            reason: reason.into(),
+            risk: ApprovalRisk::Mutating,
+            workspace_scoped: false,
+            tool_name: tool_name.into(),
+            run_id: run_id.map(str::to_string),
+        }
     }
 
     pub fn external_path(
@@ -505,6 +530,12 @@ impl ApprovalBroker {
         risk: ApprovalRisk,
         command: &str,
     ) -> bool {
+        // MCP tools never auto-approve under Auto mode: they are third-party
+        // calls, not routine workspace dev ops. An explicit always-allow rule
+        // (mcp://server/tool) is the only skip.
+        if kind == ApprovalKind::McpTool {
+            return self.matches_allow(command);
+        }
         if kind != ApprovalKind::Command
             || !workspace_scoped
             || matches!(risk, ApprovalRisk::Destructive)
@@ -754,7 +785,9 @@ impl ApprovalBroker {
             Some(entry) => {
                 match decision {
                     ApprovalDecision::AlwaysAllow => {
-                        if entry.kind == ApprovalKind::Command
+                        if entry.kind == ApprovalKind::McpTool {
+                            self.add_allow_rule(entry.summary.clone());
+                        } else if entry.kind == ApprovalKind::Command
                             && entry.workspace_scoped
                             && !matches!(entry.risk, ApprovalRisk::Destructive)
                             && !self.is_command_rejected(&entry.summary, entry.risk)

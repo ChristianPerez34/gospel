@@ -1,6 +1,10 @@
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   ChevronDown,
   Edit3,
+  FolderOpen,
+  KeyRound,
+  Lock,
   Plus,
   RefreshCw,
   Save,
@@ -10,117 +14,65 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useMcpServers } from "../hooks/useMcpServers";
-import type { CreateMcpServerRequest, McpEnvValue, McpSafetyClass, McpServer } from "../types";
-
-interface EnvDraft {
-  id: string;
-  key: string;
-  value: string;
-}
-
-interface SecretDraft {
-  id: string;
-  key: string;
-}
-
-interface ServerDraft {
-  displayName: string;
-  command: string;
-  argsText: string;
-  safetyClass: McpSafetyClass;
-  env: EnvDraft[];
-  secretEnv: SecretDraft[];
-  showAdvanced: boolean;
-}
+import {
+  applySourceText,
+  emptyDraft,
+  isLikelySecretKey,
+  type PairDraft,
+  pairDrafts,
+  requestFromDraft,
+  rowId,
+  type ServerDraft,
+  suggestName,
+  validationErrors,
+} from "../lib/mcpSources";
+import type { McpServer } from "../types";
 
 const inputClass =
   "w-full py-1.5 px-2.5 bg-surface-base border border-surface-overlay rounded-sm text-text-primary font-body text-body-sm outline-none transition-colors duration-150 ease-out-quart placeholder:text-text-muted focus:border-accent-action";
 const monoInputClass =
   "w-full py-1.5 px-2.5 bg-surface-base border border-surface-overlay rounded-sm text-text-primary font-mono text-mono outline-none transition-colors duration-150 ease-out-quart placeholder:text-text-muted focus:border-accent-action";
-const selectClass =
-  "w-full py-1.5 px-2.5 bg-surface-base border border-surface-overlay rounded-sm text-text-primary font-body text-body-sm outline-none focus:border-accent-action";
-
-function rowId() {
-  return Math.random().toString(36).slice(2);
-}
-
-function emptyDraft(): ServerDraft {
-  return {
-    displayName: "",
-    command: "",
-    argsText: "",
-    safetyClass: "unknown",
-    env: [],
-    secretEnv: [],
-    showAdvanced: false,
-  };
-}
 
 function draftFromServer(server: McpServer): ServerDraft {
+  const commandLine =
+    server.transport === "http"
+      ? ""
+      : [server.command ?? "", ...server.args].filter(Boolean).join(" ");
   return {
+    sourceText: "",
+    transport: server.transport,
     displayName: server.displayName,
-    command: server.command ?? "",
-    argsText: server.args.join("\n"),
-    safetyClass: server.safetyClass,
-    env: server.env.map((entry) => ({ id: rowId(), ...entry })),
-    secretEnv: server.secretEnvKeys.map((key) => ({ id: rowId(), key })),
-    showAdvanced: server.env.length > 0 || server.secretEnvKeys.length > 0,
+    nameTouched: true,
+    commandLine,
+    url: server.url ?? "",
+    env: pairDrafts(server.env, server.secretEnvKeys, server.missingSecretEnvKeys),
+    headers: pairDrafts(server.headers, server.secretHeaderKeys, server.missingSecretHeaderKeys),
+    showAdvanced:
+      server.env.length +
+        server.secretEnvKeys.length +
+        server.headers.length +
+        server.secretHeaderKeys.length >
+      0,
   };
-}
-
-function requestFromDraft(draft: ServerDraft): CreateMcpServerRequest {
-  return {
-    displayName: draft.displayName.trim(),
-    command: draft.command.trim(),
-    args: draft.argsText
-      .split("\n")
-      .map((arg) => arg.trim())
-      .filter(Boolean),
-    env: draft.env
-      .map((entry) => ({ key: entry.key.trim(), value: entry.value }))
-      .filter((entry) => entry.key),
-    secretEnvKeys: draft.secretEnv.map((entry) => entry.key.trim()).filter(Boolean),
-    safetyClass: draft.safetyClass,
-    scope: "main_and_exploration",
-  };
-}
-
-function validationErrors(draft: ServerDraft) {
-  const request = requestFromDraft(draft);
-  const errors: string[] = [];
-  if (!request.displayName) errors.push("Name is required.");
-  if (!request.command) errors.push("Command is required.");
-
-  const nonSecretKeys = request.env.map((entry) => entry.key);
-  const secretKeys = request.secretEnvKeys;
-  const duplicateNonSecret = firstDuplicate(nonSecretKeys);
-  const duplicateSecret = firstDuplicate(secretKeys);
-  const overlap = nonSecretKeys.find((key) => secretKeys.includes(key));
-  if (duplicateNonSecret) errors.push(`Duplicate env key: ${duplicateNonSecret}.`);
-  if (duplicateSecret) errors.push(`Duplicate secret key: ${duplicateSecret}.`);
-  if (overlap) errors.push(`${overlap} cannot be both secret and non-secret.`);
-  return errors;
-}
-
-function firstDuplicate(values: string[]) {
-  const seen = new Set<string>();
-  return values.find((value) => {
-    if (seen.has(value)) return true;
-    seen.add(value);
-    return false;
-  });
 }
 
 function labelize(value: string) {
   return value.replace(/_/g, " ");
 }
 
+function healthLabel(server: McpServer) {
+  if (server.health === "auth_required") return "sign-in required";
+  if (server.health === "untrusted") return "not approved";
+  return labelize(server.health);
+}
+
 function statusColor(server: McpServer) {
   if (server.health === "connected") return "text-status-success";
   if (server.health === "untrusted" || server.health === "not_found") return "text-status-error";
+  if (server.health === "auth_required") return "text-status-warning";
   return "text-text-muted";
 }
 
@@ -137,7 +89,9 @@ export function McpSettingsPanel() {
     trust,
     revokeTrust,
     refresh,
-    create,
+    addAndConnect,
+    startOAuth,
+    logoutOAuth,
     update,
     remove,
     previewImport,
@@ -145,18 +99,6 @@ export function McpSettingsPanel() {
   } = useMcpServers(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ServerDraft | null>(null);
-  const [importPath, setImportPath] = useState("");
-  const [selectedImports, setSelectedImports] = useState<Set<string>>(new Set());
-  const [overwriteExisting, setOverwriteExisting] = useState(false);
-  const [lastImportSummary, setLastImportSummary] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!importPreview) {
-      setSelectedImports(new Set());
-      return;
-    }
-    setSelectedImports(new Set(importPreview.servers.map((server) => server.externalId)));
-  }, [importPreview]);
 
   const draftErrors = useMemo(() => (draft ? validationErrors(draft) : []), [draft]);
   const canSaveDraft = draft !== null && draftErrors.length === 0;
@@ -167,23 +109,10 @@ export function McpSettingsPanel() {
     if (editingId) {
       await update(editingId, request);
     } else {
-      await create(request);
+      await addAndConnect(request);
     }
     setDraft(null);
     setEditingId(null);
-  }
-
-  async function applySelectedImport() {
-    if (!importPreview || selectedImports.size === 0) return;
-    const result = await applyImport(
-      importPreview.token,
-      Array.from(selectedImports),
-      overwriteExisting
-    );
-    if (!result) return;
-    setLastImportSummary(
-      `${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped`
-    );
   }
 
   return (
@@ -194,27 +123,29 @@ export function McpSettingsPanel() {
         </div>
       )}
 
-      <section className="grid gap-3">
-        <SectionHeading
-          title="Built-in"
-          detail={loading ? "Loading" : `${builtInServers.length} available`}
-        />
-        <div className="grid gap-2">
-          {builtInServers.map((server) => (
-            <ServerRow
-              key={server.id}
-              server={server}
-              saving={savingId === server.id}
-              onToggle={(enabled) => void setEnabled(server, enabled)}
-              onRefresh={() => void refresh(server)}
-            />
-          ))}
-        </div>
-      </section>
+      {builtInServers.length > 0 && (
+        <section className="grid gap-3">
+          <SectionHeading
+            title="Built-in"
+            detail={loading ? "Loading" : `${builtInServers.length} available`}
+          />
+          <div className="grid gap-2">
+            {builtInServers.map((server) => (
+              <ServerRow
+                key={server.id}
+                server={server}
+                saving={savingId === server.id}
+                onToggle={(enabled) => void setEnabled(server, enabled)}
+                onRefresh={() => void refresh(server)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="grid gap-3">
         <div className="flex items-center justify-between gap-3">
-          <SectionHeading title="Custom" detail={`${customServers.length} configured`} />
+          <SectionHeading title="Servers" detail={`${customServers.length} configured`} />
           <Button
             type="button"
             size="sm"
@@ -248,7 +179,7 @@ export function McpSettingsPanel() {
         <div className="grid gap-2">
           {customServers.length === 0 && !draft ? (
             <div className="rounded-md border border-dashed border-surface-overlay px-3 py-4 text-body-sm text-text-muted">
-              No custom MCP servers configured.
+              No MCP servers yet. Add a URL or command to give the agent more tools.
             </div>
           ) : (
             customServers.map((server) => (
@@ -260,6 +191,8 @@ export function McpSettingsPanel() {
                 onRefresh={() => void refresh(server)}
                 onTrust={() => void trust(server)}
                 onRevokeTrust={() => void revokeTrust(server)}
+                onSignIn={() => void startOAuth(server)}
+                onSignOut={() => void logoutOAuth(server)}
                 onEdit={() => {
                   setEditingId(server.id);
                   setDraft(draftFromServer(server));
@@ -271,130 +204,215 @@ export function McpSettingsPanel() {
         </div>
       </section>
 
-      <section className="grid gap-3">
-        <SectionHeading title="Import" detail="OpenCode-compatible" />
-        <div className="grid gap-2">
-          <div className="flex gap-2">
-            <input
-              className={monoInputClass}
-              value={importPath}
-              onChange={(event) => setImportPath(event.target.value)}
-              placeholder="/path/to/opencode.json"
-              aria-label="OpenCode MCP import path"
-            />
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={!importPath.trim() || loading}
-              onClick={() => void previewImport(importPath.trim())}
-            >
-              <Upload aria-hidden="true" />
-              Preview
-            </Button>
-          </div>
-
-          {lastImportSummary && (
-            <div className="text-caption text-status-success">{lastImportSummary}</div>
-          )}
-
-          {importPreview && (
-            <div className="grid gap-2 rounded-md border border-surface-overlay p-3">
-              {importPreview.warnings.map((warning) => (
-                <div key={warning} className="text-caption text-status-warning">
-                  {warning}
-                </div>
-              ))}
-
-              {importPreview.servers.map((server) => {
-                const selected = selectedImports.has(server.externalId);
-                return (
-                  <label
-                    key={server.externalId}
-                    className="grid gap-2 rounded-sm border border-surface-overlay bg-surface-base p-2"
-                  >
-                    <span className="flex items-start justify-between gap-3">
-                      <span className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={(event) => {
-                            setSelectedImports((current) => {
-                              const next = new Set(current);
-                              if (event.target.checked) next.add(server.externalId);
-                              else next.delete(server.externalId);
-                              return next;
-                            });
-                          }}
-                          aria-label={`Select ${server.name}`}
-                        />
-                        <span className="font-body text-body-sm font-medium text-text-primary">
-                          {server.name}
-                        </span>
-                      </span>
-                      <span className="font-mono text-caption text-text-muted">
-                        {server.matchedServerId ? "match" : "new"}
-                      </span>
-                    </span>
-
-                    <span className="font-mono text-caption text-text-muted">
-                      {server.proposed.command} {server.proposed.args.join(" ")}
-                    </span>
-
-                    {server.fieldDiffs.length > 0 && (
-                      <span className="grid gap-1">
-                        {server.fieldDiffs.map((diff) => (
-                          <span key={diff.field} className="text-caption text-text-muted">
-                            {diff.field}: {diff.current ?? "(empty)"} -&gt;{" "}
-                            {diff.incoming ?? "(empty)"}
-                          </span>
-                        ))}
-                      </span>
-                    )}
-
-                    {server.warnings.map((warning) => (
-                      <span key={warning} className="text-caption text-status-warning">
-                        {warning}
-                      </span>
-                    ))}
-                  </label>
-                );
-              })}
-
-              <label className="flex items-center gap-2 text-body-sm text-text-secondary">
-                <input
-                  type="checkbox"
-                  checked={overwriteExisting}
-                  onChange={(event) => setOverwriteExisting(event.target.checked)}
-                />
-                Overwrite matched local fields
-              </label>
-
-              <div className="flex items-center justify-end gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setImportPreview(null)}
-                >
-                  <X aria-hidden="true" />
-                  Clear
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={selectedImports.size === 0 || loading}
-                  onClick={() => void applySelectedImport()}
-                >
-                  <Save aria-hidden="true" />
-                  Apply
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
+      <ImportSection
+        loading={loading}
+        importPreview={importPreview}
+        setImportPreview={setImportPreview}
+        previewImport={previewImport}
+        applyImport={applyImport}
+      />
     </div>
+  );
+}
+
+type McpHook = ReturnType<typeof useMcpServers>;
+
+function ImportSection({
+  loading,
+  importPreview,
+  setImportPreview,
+  previewImport,
+  applyImport,
+}: {
+  loading: boolean;
+  importPreview: McpHook["importPreview"];
+  setImportPreview: McpHook["setImportPreview"];
+  previewImport: McpHook["previewImport"];
+  applyImport: McpHook["applyImport"];
+}) {
+  const [importPath, setImportPath] = useState("");
+  /** `null` = "all incoming servers selected" (the default for a fresh preview). */
+  const [selectedOverrides, setSelectedOverrides] = useState<Set<string> | null>(null);
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
+  const [lastImportSummary, setLastImportSummary] = useState<string | null>(null);
+
+  const selectedImports =
+    selectedOverrides ?? new Set(importPreview?.servers.map((server) => server.externalId) ?? []);
+
+  async function preview(path: string) {
+    setSelectedOverrides(null);
+    setLastImportSummary(null);
+    await previewImport(path);
+  }
+
+  async function browseImport() {
+    const selected = await openFileDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (typeof selected === "string" && selected) {
+      setImportPath(selected);
+      await preview(selected);
+    }
+  }
+
+  function toggleImport(externalId: string, checked: boolean) {
+    setSelectedOverrides((current) => {
+      const next = new Set(
+        current ?? importPreview?.servers.map((server) => server.externalId) ?? []
+      );
+      if (checked) next.add(externalId);
+      else next.delete(externalId);
+      return next;
+    });
+  }
+
+  async function applySelectedImport() {
+    if (!importPreview || selectedImports.size === 0) return;
+    const result = await applyImport(
+      importPreview.token,
+      Array.from(selectedImports),
+      overwriteExisting
+    );
+    if (!result) return;
+    setLastImportSummary(
+      `${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped`
+    );
+  }
+
+  return (
+    <section className="grid gap-3">
+      <SectionHeading title="Import" detail="Claude, Cursor, OpenCode, VS Code configs" />
+      <div className="grid gap-2">
+        <div className="flex gap-2">
+          <input
+            className={monoInputClass}
+            value={importPath}
+            onChange={(event) => setImportPath(event.target.value)}
+            placeholder="/path/to/mcp-config.json"
+            aria-label="MCP config import path"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={loading}
+            onClick={() => void browseImport()}
+          >
+            <FolderOpen aria-hidden="true" />
+            Browse
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!importPath.trim() || loading}
+            onClick={() => void preview(importPath.trim())}
+          >
+            <Upload aria-hidden="true" />
+            Preview
+          </Button>
+        </div>
+
+        {lastImportSummary && (
+          <div className="text-caption text-status-success">{lastImportSummary}</div>
+        )}
+
+        {importPreview && (
+          <div className="grid gap-2 rounded-md border border-surface-overlay p-3">
+            {importPreview.warnings.map((warning) => (
+              <div key={warning} className="text-caption text-status-warning">
+                {warning}
+              </div>
+            ))}
+
+            {importPreview.servers.map((server) => {
+              const selected = selectedImports.has(server.externalId);
+              return (
+                <label
+                  key={server.externalId}
+                  className="grid gap-2 rounded-sm border border-surface-overlay bg-surface-base p-2"
+                >
+                  <span className="flex items-start justify-between gap-3">
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={(event) => toggleImport(server.externalId, event.target.checked)}
+                        aria-label={`Select ${server.name}`}
+                      />
+                      <span className="font-body text-body-sm font-medium text-text-primary">
+                        {server.name}
+                      </span>
+                    </span>
+                    <span className="font-mono text-caption text-text-muted">
+                      {server.proposed.transport ?? "stdio"}
+                      {server.matchedServerId ? " - match" : " - new"}
+                    </span>
+                  </span>
+
+                  <span className="font-mono text-caption text-text-muted">
+                    {server.proposed.url ??
+                      `${server.proposed.command ?? ""} ${(server.proposed.args ?? []).join(" ")}`}
+                  </span>
+
+                  {server.fieldDiffs.length > 0 && (
+                    <span className="grid gap-1">
+                      {server.fieldDiffs.map((diff) => (
+                        <span key={diff.field} className="text-caption text-text-muted">
+                          {diff.field}: {diff.current ?? "(empty)"} -&gt;{" "}
+                          {diff.incoming ?? "(empty)"}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+
+                  {server.warnings.map((warning) => (
+                    <span key={warning} className="text-caption text-status-warning">
+                      {warning}
+                    </span>
+                  ))}
+                </label>
+              );
+            })}
+
+            <label className="flex items-center gap-2 text-body-sm text-text-secondary">
+              <input
+                type="checkbox"
+                checked={overwriteExisting}
+                onChange={(event) => setOverwriteExisting(event.target.checked)}
+              />
+              Overwrite matched local fields
+            </label>
+
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setImportPreview(null);
+                  setSelectedOverrides(null);
+                }}
+              >
+                <X aria-hidden="true" />
+                Clear
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={selectedImports.size === 0 || loading}
+                onClick={() => void applySelectedImport()}
+              >
+                <Save aria-hidden="true" />
+                Apply
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -407,6 +425,152 @@ function SectionHeading({ title, detail }: { title: string; detail: string }) {
   );
 }
 
+function ServerDetails({
+  server,
+  saving,
+  onSignIn,
+  onSignOut,
+}: {
+  server: McpServer;
+  saving: boolean;
+  onSignIn?: () => void;
+  onSignOut?: () => void;
+}) {
+  const mutatingCount = server.inventory.filter((tool) => !tool.readOnly).length;
+  const missingSecrets = [...server.missingSecretEnvKeys, ...server.missingSecretHeaderKeys];
+  const needsSignIn =
+    server.transport === "http" &&
+    server.trusted &&
+    (server.authStatus === "required" || server.health === "auth_required");
+  const signedIn = server.transport === "http" && server.authStatus === "authorized";
+
+  return (
+    <div className="min-w-0 grid gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-body text-body-sm font-medium text-text-primary">
+          {server.displayName}
+        </span>
+        <span className="rounded-sm bg-surface-overlay px-1.5 py-0.5 font-mono text-caption text-text-muted">
+          {server.transport}
+        </span>
+        <span className={`font-mono text-caption ${statusColor(server)}`}>
+          {server.enabled ? healthLabel(server) : "disabled"}
+        </span>
+      </div>
+      {server.description && (
+        <div className="text-body-sm text-text-muted">{server.description}</div>
+      )}
+      <div className="truncate font-mono text-caption text-text-muted">
+        {server.transport === "http"
+          ? server.url
+          : `${server.command ?? ""} ${server.args.join(" ")}`.trim()}
+      </div>
+      {server.inventory.length > 0 && (
+        <div className="text-caption text-text-muted">
+          {server.inventory.length} tools
+          {mutatingCount > 0 ? ` (${mutatingCount} need approval)` : ""}
+        </div>
+      )}
+      {server.lastResolvedExecutablePath && (
+        <div className="truncate font-mono text-caption text-text-muted">
+          {server.lastResolvedExecutablePath}
+        </div>
+      )}
+      <ServerNotices server={server} missingSecrets={missingSecrets} />
+      <OAuthControls
+        saving={saving}
+        needsSignIn={needsSignIn}
+        signedIn={signedIn}
+        onSignIn={onSignIn}
+        onSignOut={onSignOut}
+      />
+      {server.inventory.length > 0 && <ToolChips inventory={server.inventory} />}
+    </div>
+  );
+}
+
+function ServerNotices({
+  server,
+  missingSecrets,
+}: {
+  server: McpServer;
+  missingSecrets: string[];
+}) {
+  return (
+    <>
+      {server.lastErrorSummary && (
+        <div className="text-caption text-status-warning">{server.lastErrorSummary}</div>
+      )}
+      {server.kind === "custom" && !server.trusted && (
+        <div className="text-caption text-status-error">
+          Not approved — nothing will run until you approve it
+          {server.trustRevokedReason ? ` (${labelize(server.trustRevokedReason)})` : ""}
+        </div>
+      )}
+      {missingSecrets.length > 0 && (
+        <div className="text-caption text-status-warning">
+          Missing secret values: {missingSecrets.join(", ")} — edit to fill them in.
+        </div>
+      )}
+    </>
+  );
+}
+
+function OAuthControls({
+  saving,
+  needsSignIn,
+  signedIn,
+  onSignIn,
+  onSignOut,
+}: {
+  saving: boolean;
+  needsSignIn: boolean;
+  signedIn: boolean;
+  onSignIn?: () => void;
+  onSignOut?: () => void;
+}) {
+  if (needsSignIn && onSignIn) {
+    return (
+      <div className="pt-1">
+        <Button type="button" size="xs" variant="outline" disabled={saving} onClick={onSignIn}>
+          <KeyRound aria-hidden="true" />
+          Sign in
+        </Button>
+      </div>
+    );
+  }
+  if (signedIn) {
+    return (
+      <div className="flex items-center gap-2 pt-1">
+        <span className="text-caption text-status-success">Signed in</span>
+        {onSignOut && (
+          <Button type="button" size="xs" variant="ghost" disabled={saving} onClick={onSignOut}>
+            Sign out
+          </Button>
+        )}
+      </div>
+    );
+  }
+  return null;
+}
+
+function ToolChips({ inventory }: { inventory: McpServer["inventory"] }) {
+  return (
+    <div className="flex flex-wrap gap-1 pt-1">
+      {inventory.map((tool) => (
+        <span
+          key={tool.name}
+          className="rounded-sm border border-surface-overlay px-1.5 py-0.5 font-mono text-caption text-text-muted"
+          title={tool.description ?? tool.name}
+        >
+          {tool.name}
+          {tool.readOnly ? "" : "*"}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function ServerRow({
   server,
   saving,
@@ -414,6 +578,8 @@ function ServerRow({
   onRefresh,
   onTrust,
   onRevokeTrust,
+  onSignIn,
+  onSignOut,
   onEdit,
   onDelete,
 }: {
@@ -423,62 +589,15 @@ function ServerRow({
   onRefresh: () => void;
   onTrust?: () => void;
   onRevokeTrust?: () => void;
+  onSignIn?: () => void;
+  onSignOut?: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
   return (
     <div className="rounded-md border border-surface-overlay bg-surface-elevated p-3">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 grid gap-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-body text-body-sm font-medium text-text-primary">
-              {server.displayName}
-            </span>
-            <span className="rounded-sm bg-surface-overlay px-1.5 py-0.5 font-mono text-caption text-text-muted">
-              {labelize(server.safetyClass)}
-            </span>
-            <span className={`font-mono text-caption ${statusColor(server)}`}>
-              {labelize(server.health)}
-            </span>
-          </div>
-          {server.description && (
-            <div className="text-body-sm text-text-muted">{server.description}</div>
-          )}
-          {server.command && (
-            <div className="truncate font-mono text-caption text-text-muted">
-              {server.command} {server.args.join(" ")}
-            </div>
-          )}
-          <div className="text-caption text-text-muted">
-            {server.enabled ? labelize(server.readiness) : "disabled"}
-            {server.inventory.length > 0 ? ` - ${server.inventory.length} tools` : ""}
-          </div>
-          {server.lastResolvedExecutablePath && (
-            <div className="truncate font-mono text-caption text-text-muted">
-              {server.lastResolvedExecutablePath}
-            </div>
-          )}
-          {server.lastErrorSummary && (
-            <div className="text-caption text-status-warning">{server.lastErrorSummary}</div>
-          )}
-          {server.kind === "custom" && !server.trusted && (
-            <div className="text-caption text-status-error">
-              Untrusted{server.trustRevokedReason ? `: ${labelize(server.trustRevokedReason)}` : ""}
-            </div>
-          )}
-          {server.inventory.length > 0 && (
-            <div className="flex flex-wrap gap-1 pt-1">
-              {server.inventory.map((tool) => (
-                <span
-                  key={tool.name}
-                  className="rounded-sm border border-surface-overlay px-1.5 py-0.5 font-mono text-caption text-text-muted"
-                >
-                  {tool.name}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+        <ServerDetails server={server} saving={saving} onSignIn={onSignIn} onSignOut={onSignOut} />
 
         <div className="flex shrink-0 flex-col items-end gap-2">
           <Toggle
@@ -494,8 +613,8 @@ function ServerRow({
               variant="ghost"
               disabled={saving}
               onClick={onRefresh}
-              title="Refresh"
-              aria-label={`Refresh ${server.displayName}`}
+              title="Reconnect"
+              aria-label={`Reconnect ${server.displayName}`}
             >
               <RefreshCw aria-hidden="true" />
             </Button>
@@ -508,8 +627,8 @@ function ServerRow({
                     variant="ghost"
                     disabled={saving}
                     onClick={onRevokeTrust}
-                    title="Revoke trust"
-                    aria-label={`Revoke trust for ${server.displayName}`}
+                    title="Revoke approval"
+                    aria-label={`Revoke approval for ${server.displayName}`}
                   >
                     <ShieldOff aria-hidden="true" />
                   </Button>
@@ -520,8 +639,8 @@ function ServerRow({
                     variant="ghost"
                     disabled={saving}
                     onClick={onTrust}
-                    title="Trust"
-                    aria-label={`Trust ${server.displayName}`}
+                    title="Approve server"
+                    aria-label={`Approve ${server.displayName}`}
                   >
                     <ShieldCheck aria-hidden="true" />
                   </Button>
@@ -588,6 +707,88 @@ function Toggle({
   );
 }
 
+function PairRows({
+  pairs,
+  valuePlaceholder,
+  addLabel,
+  removeLabel,
+  onChange,
+}: {
+  pairs: PairDraft[];
+  valuePlaceholder: string;
+  addLabel: string;
+  removeLabel: string;
+  onChange: (pairs: PairDraft[]) => void;
+}) {
+  const update = (id: string, patch: Partial<PairDraft>) => {
+    onChange(pairs.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
+  };
+  return (
+    <div className="grid gap-2">
+      {pairs.map((entry) => (
+        <div key={entry.id} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2">
+          <input
+            className={monoInputClass}
+            value={entry.key}
+            onChange={(event) => {
+              // Secret-looking keys start out locked; the user can unlock.
+              const key = event.target.value;
+              update(entry.id, { key, secret: entry.secret || isLikelySecretKey(key) });
+            }}
+            placeholder="NAME"
+            aria-label="Name"
+          />
+          <input
+            className={`${monoInputClass} ${entry.needsValue ? "border-status-warning" : ""}`}
+            type={entry.secret ? "password" : "text"}
+            autoComplete="off"
+            value={entry.value}
+            onChange={(event) => update(entry.id, { value: event.target.value })}
+            placeholder={
+              entry.needsValue
+                ? "value required"
+                : entry.secret
+                  ? "stored securely"
+                  : valuePlaceholder
+            }
+            aria-label="Value"
+          />
+          <Button
+            type="button"
+            size="icon-sm"
+            variant={entry.secret ? "default" : "ghost"}
+            onClick={() => update(entry.id, { secret: !entry.secret })}
+            title={entry.secret ? "Stored as secret" : "Mark as secret"}
+            aria-label={entry.secret ? "Unmark as secret" : "Mark as secret"}
+          >
+            <Lock aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            onClick={() => onChange(pairs.filter((item) => item.id !== entry.id))}
+            aria-label={removeLabel}
+          >
+            <X aria-hidden="true" />
+          </Button>
+        </div>
+      ))}
+      <div>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          onClick={() => onChange([...pairs, { id: rowId(), key: "", value: "", secret: false }])}
+        >
+          <Plus aria-hidden="true" />
+          {addLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function CustomServerEditor({
   draft,
   errors,
@@ -607,29 +808,17 @@ function CustomServerEditor({
   onCancel: () => void;
   onSave: () => void;
 }) {
-  const updateEnv = (id: string, patch: Partial<McpEnvValue>) => {
-    onChange({
-      ...draft,
-      env: draft.env.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
-    });
-  };
-
-  const updateSecret = (id: string, key: string) => {
-    onChange({
-      ...draft,
-      secretEnv: draft.secretEnv.map((entry) => (entry.id === id ? { ...entry, key } : entry)),
-    });
-  };
-
   return (
     <div className="grid gap-3 rounded-md border border-accent-action bg-surface-elevated p-3">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h4 className="m-0 text-body-sm font-medium text-text-primary">
-            {editing ? "Edit custom server" : "New custom server"}
+            {editing ? "Edit server" : "New server"}
           </h4>
           <p className="m-0 text-caption text-text-muted">
-            Custom servers stay disabled and untrusted until explicitly enabled and trusted.
+            {editing
+              ? "Changing the command or URL revokes approval and reconnects."
+              : "Adding approves and connects the server. Mutating tools ask before they run."}
           </p>
         </div>
         <Button type="button" size="icon-xs" variant="ghost" onClick={onCancel} aria-label="Cancel">
@@ -637,48 +826,57 @@ function CustomServerEditor({
         </Button>
       </div>
 
-      <div className="grid gap-2">
+      <label className="grid gap-1 text-caption font-medium uppercase text-text-muted">
+        Paste to fill
+        <textarea
+          className={`${monoInputClass} min-h-[52px] resize-y`}
+          value={draft.sourceText}
+          onChange={(event) => onChange(applySourceText(draft, event.target.value))}
+          placeholder={
+            "https://api.mobbin.com/mcp\nor npx -y @modelcontextprotocol/server-everything\nor a JSON config from Claude / Cursor / OpenCode / VS Code"
+          }
+          aria-label="Paste server URL, command, or JSON config"
+        />
+      </label>
+
+      <div className="grid grid-cols-[auto_1fr] items-center gap-2">
+        <span className="rounded-sm bg-surface-overlay px-1.5 py-0.5 font-mono text-caption text-text-muted">
+          {draft.transport === "http" ? "http" : "stdio"}
+        </span>
         <label className="grid gap-1 text-caption font-medium uppercase text-text-muted">
           Name
           <input
             className={inputClass}
             value={draft.displayName}
-            onChange={(event) => onChange({ ...draft, displayName: event.target.value })}
+            onChange={(event) =>
+              onChange({ ...draft, displayName: event.target.value, nameTouched: true })
+            }
+            placeholder={suggestName(draft.transport, draft.url, draft.commandLine) || "server"}
           />
         </label>
+      </div>
+
+      {draft.transport === "http" ? (
+        <label className="grid gap-1 text-caption font-medium uppercase text-text-muted">
+          URL
+          <input
+            className={monoInputClass}
+            value={draft.url}
+            onChange={(event) => onChange({ ...draft, url: event.target.value })}
+            placeholder="https://api.mobbin.com/mcp"
+          />
+        </label>
+      ) : (
         <label className="grid gap-1 text-caption font-medium uppercase text-text-muted">
           Command
           <input
             className={monoInputClass}
-            value={draft.command}
-            onChange={(event) => onChange({ ...draft, command: event.target.value })}
-            placeholder="node"
+            value={draft.commandLine}
+            onChange={(event) => onChange({ ...draft, commandLine: event.target.value })}
+            placeholder="npx -y @modelcontextprotocol/server-everything"
           />
         </label>
-        <label className="grid gap-1 text-caption font-medium uppercase text-text-muted">
-          Args
-          <textarea
-            className={`${monoInputClass} min-h-[68px] resize-y`}
-            value={draft.argsText}
-            onChange={(event) => onChange({ ...draft, argsText: event.target.value })}
-            placeholder={"server.js\n--stdio"}
-          />
-        </label>
-        <label className="grid gap-1 text-caption font-medium uppercase text-text-muted">
-          Safety
-          <select
-            className={selectClass}
-            value={draft.safetyClass}
-            onChange={(event) =>
-              onChange({ ...draft, safetyClass: event.target.value as McpSafetyClass })
-            }
-          >
-            <option value="unknown">Unknown</option>
-            <option value="read_only">Read only</option>
-            <option value="mutating">Mutating</option>
-          </select>
-        </label>
-      </div>
+      )}
 
       <button
         type="button"
@@ -689,105 +887,33 @@ function CustomServerEditor({
           aria-hidden="true"
           className={`size-4 transition-transform ${draft.showAdvanced ? "rotate-180" : ""}`}
         />
-        Environment
+        {draft.transport === "http" ? "Headers" : "Environment"}
       </button>
 
       {draft.showAdvanced && (
-        <div className="grid gap-3">
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-caption font-medium uppercase text-text-muted">
-                Non-secret env
-              </div>
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                onClick={() =>
-                  onChange({
-                    ...draft,
-                    env: [...draft.env, { id: rowId(), key: "", value: "" }],
-                  })
-                }
-              >
-                <Plus aria-hidden="true" />
-                Row
-              </Button>
-            </div>
-            {draft.env.map((entry) => (
-              <div key={entry.id} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-                <input
-                  className={monoInputClass}
-                  value={entry.key}
-                  onChange={(event) => updateEnv(entry.id, { key: event.target.value })}
-                  placeholder="KEY"
-                />
-                <input
-                  className={monoInputClass}
-                  value={entry.value}
-                  onChange={(event) => updateEnv(entry.id, { value: event.target.value })}
-                  placeholder="value"
-                />
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={() =>
-                    onChange({ ...draft, env: draft.env.filter((item) => item.id !== entry.id) })
-                  }
-                  aria-label="Remove env row"
-                >
-                  <X aria-hidden="true" />
-                </Button>
-              </div>
-            ))}
-          </div>
-
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-caption font-medium uppercase text-text-muted">
-                Required secrets
-              </div>
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                onClick={() =>
-                  onChange({
-                    ...draft,
-                    secretEnv: [...draft.secretEnv, { id: rowId(), key: "" }],
-                  })
-                }
-              >
-                <Plus aria-hidden="true" />
-                Key
-              </Button>
-            </div>
-            {draft.secretEnv.map((entry) => (
-              <div key={entry.id} className="grid grid-cols-[1fr_auto] gap-2">
-                <input
-                  className={monoInputClass}
-                  value={entry.key}
-                  onChange={(event) => updateSecret(entry.id, event.target.value)}
-                  placeholder="API_KEY"
-                />
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={() =>
-                    onChange({
-                      ...draft,
-                      secretEnv: draft.secretEnv.filter((item) => item.id !== entry.id),
-                    })
-                  }
-                  aria-label="Remove secret env row"
-                >
-                  <X aria-hidden="true" />
-                </Button>
-              </div>
-            ))}
-          </div>
+        <div className="grid gap-2">
+          <p className="m-0 text-caption text-text-muted">
+            {draft.transport === "http"
+              ? "Locked headers are stored in the credential store and sent with every request. OAuth servers sign in through the browser after you add them."
+              : "Locked values are stored in the credential store and passed to the process only."}
+          </p>
+          {draft.transport === "http" ? (
+            <PairRows
+              pairs={draft.headers}
+              valuePlaceholder="value"
+              addLabel="Header"
+              removeLabel="Remove header"
+              onChange={(headers) => onChange({ ...draft, headers })}
+            />
+          ) : (
+            <PairRows
+              pairs={draft.env}
+              valuePlaceholder="value"
+              addLabel="Variable"
+              removeLabel="Remove variable"
+              onChange={(env) => onChange({ ...draft, env })}
+            />
+          )}
         </div>
       )}
 
@@ -807,7 +933,7 @@ function CustomServerEditor({
         </Button>
         <Button type="button" size="sm" disabled={!canSave || saving} onClick={onSave}>
           <Save aria-hidden="true" />
-          {saving ? "Saving" : "Save"}
+          {saving ? "Working" : editing ? "Save and reconnect" : "Add and connect"}
         </Button>
       </div>
     </div>
