@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import type { ModelPreferences } from "../hooks/useModelPreferences";
 import { useSkills } from "../hooks/useSkills";
 import type { ModelOption } from "../types";
-import { findClosestSkill } from "../utils/levenshtein";
+import { filterSkills } from "../utils/skillSearch";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 
 interface InputBarProps {
@@ -240,8 +240,9 @@ export function InputBar({
 
     const firstLine = value.split("\n")[0] ?? "";
     if (firstLine.startsWith("/")) {
+      const hasSpace = /\s/.test(firstLine);
       const match = firstLine.match(/^\/([a-zA-Z0-9-]*)/);
-      if (match) {
+      if (match && !hasSpace) {
         setSlashFilter(match[1]);
         setShowSlashMenu(true);
         setUnknownSkill(null);
@@ -380,10 +381,11 @@ export function InputBar({
           const lower = match[1].toLowerCase();
           const exact = skills.find((s) => s.name.toLowerCase() === lower);
           if (!exact) {
-            const best = findClosestSkill(lower, skills);
-            if (best) {
+            const { filtered, suggestion } = filterSkills(skills, lower);
+            const target = filtered[0]?.name ?? suggestion;
+            if (target) {
               e.preventDefault();
-              handleSlashSelect(best);
+              handleSlashSelect(target);
               return;
             }
           }
@@ -458,14 +460,17 @@ export function InputBar({
                     <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
                       Model
                     </span>
-                    <span className="max-w-full truncate font-mono text-caption text-text-primary">
+                    <span
+                      className="max-w-full truncate font-mono text-caption text-text-primary"
+                      title={currentModel?.name || selectedModelFallbackLabel || undefined}
+                    >
                       {currentModel?.name || selectedModelFallbackLabel || unavailableMessage}
                     </span>
                   </span>
                   <ChevronDown className="size-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                 </Button>
                 {modelOpen && (
-                  <div className="model-menu absolute bottom-full left-0 mb-2 flex max-h-[320px] w-80 max-w-[calc(100vw-2rem)] origin-bottom-left flex-col overflow-hidden rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)">
+                  <div className="model-menu absolute bottom-full left-0 mb-2 flex max-h-[320px] w-96 max-w-[calc(100vw-2rem)] origin-bottom-left flex-col overflow-hidden rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)">
                     {models.length === 0 ? (
                       <div className="flex flex-col gap-1 overflow-y-auto p-3 text-body-sm text-text-muted">
                         <strong className="font-medium text-text-primary">
@@ -547,7 +552,7 @@ export function InputBar({
                                     disabled={isDisabled}
                                     onClick={() => selectModelFromMenu(m)}
                                   >
-                                    <span className="truncate text-body-sm text-text-primary">
+                                    <span className="min-w-0 break-words text-body-sm leading-snug text-text-primary">
                                       {m.name}
                                     </span>
                                     <span className="flex shrink-0 items-center gap-1 font-mono text-caption text-text-muted">
@@ -631,7 +636,7 @@ export function InputBar({
                                     key={m.id}
                                     className="flex min-h-9 w-full items-center gap-0.5 px-2 opacity-50"
                                   >
-                                    <span className="min-w-0 flex-1 truncate px-1 text-body-sm text-text-primary">
+                                    <span className="min-w-0 flex-1 break-words px-1 text-body-sm leading-snug text-text-primary">
                                       {m.name}
                                     </span>
                                     <span className="shrink-0 font-mono text-caption text-text-muted">

@@ -5,8 +5,16 @@ import { type ModelPreferences, useModelPreferences } from "../hooks/useModelPre
 import { modelOptionId } from "../types";
 import { InputBar } from "./InputBar";
 
+let mockSkills: Array<{
+  name: string;
+  description: string;
+  source: string;
+  scripts: string[];
+  user_invocable: boolean;
+}> = [];
+
 vi.mock("../hooks/useSkills", () => ({
-  useSkills: () => ({ skills: [], reloadSkills: vi.fn() }),
+  useSkills: () => ({ skills: mockSkills, reloadSkills: vi.fn() }),
 }));
 
 const models = [
@@ -92,6 +100,7 @@ function domRect({
 
 describe("InputBar", () => {
   afterEach(() => {
+    mockSkills = [];
     cleanup();
   });
 
@@ -418,5 +427,88 @@ describe("InputBar", () => {
     fireEvent.keyDown(search, { key: "Enter" });
 
     expect(onModelChange).toHaveBeenCalledWith(modelOptionId("anthropic", "claude-sonnet-4"));
+  });
+
+  it("filters slash command menu with both code-review and review-animations when user types /review", () => {
+    mockSkills = [
+      {
+        name: "code-review",
+        description: "Review pull requests and code changes",
+        source: "Workspace",
+        scripts: [],
+        user_invocable: true,
+      },
+      {
+        name: "review-animations",
+        description: "Audit and polish UI animations",
+        source: "Workspace",
+        scripts: [],
+        user_invocable: true,
+      },
+      {
+        name: "tdd",
+        description: "Test-driven development",
+        source: "Workspace",
+        scripts: [],
+        user_invocable: true,
+      },
+    ];
+
+    renderInputBar();
+
+    const textarea = screen.getByRole("textbox", { name: "Message input" });
+    fireEvent.change(textarea, { target: { value: "/review" } });
+
+    expect(screen.getByRole("button", { name: /\/code-review/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /\/review-animations/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /\/tdd/ })).toBeNull();
+  });
+
+  it("autocompletes top filtered skill on Tab press", () => {
+    mockSkills = [
+      {
+        name: "review-animations",
+        description: "Audit animations",
+        source: "Workspace",
+        scripts: [],
+        user_invocable: true,
+      },
+      {
+        name: "code-review",
+        description: "Review pull requests",
+        source: "Workspace",
+        scripts: [],
+        user_invocable: true,
+      },
+    ];
+
+    renderInputBar();
+
+    const textarea = screen.getByRole("textbox", { name: "Message input" }) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "/rev" } });
+    fireEvent.keyDown(textarea, { key: "Tab" });
+
+    expect(textarea.value).toBe("/review-animations");
+  });
+
+  it("closes slash command menu when typing arguments with space", () => {
+    mockSkills = [
+      {
+        name: "code-review",
+        description: "Review pull requests",
+        source: "Workspace",
+        scripts: [],
+        user_invocable: true,
+      },
+    ];
+
+    renderInputBar();
+
+    const textarea = screen.getByRole("textbox", { name: "Message input" });
+    fireEvent.change(textarea, { target: { value: "/code-review" } });
+    expect(screen.getByRole("button", { name: /\/code-review/ })).toBeTruthy();
+
+    fireEvent.change(textarea, { target: { value: "/code-review please check this" } });
+    expect(screen.queryByRole("button", { name: /\/code-review/ })).toBeNull();
   });
 });

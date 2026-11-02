@@ -62,6 +62,86 @@ describe("ApprovalCard", () => {
     );
     fireEvent.click(screen.getByTestId("approval-deny-approval-1"));
     expect(onResolve).toHaveBeenCalledWith("approval-1", "deny");
+
+    // Mount fresh card to test Always Allow
+    onResolve.mockClear();
+    cleanup();
+    render(
+      <ol>
+        <ApprovalCard block={pendingApproval()} onResolve={onResolve} />
+      </ol>
+    );
+    fireEvent.click(screen.getByTestId("approval-always-allow-approval-1"));
+    expect(onResolve).toHaveBeenCalledWith("approval-1", "always_allow");
+  });
+
+  it("does not render Always Allow button for destructive commands", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ risk: "destructive", id: "dest-1" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.getByTestId("approval-allow-dest-1")).toBeTruthy();
+    expect(screen.getByTestId("approval-deny-dest-1")).toBeTruthy();
+    expect(screen.queryByTestId("approval-always-allow-dest-1")).toBeNull();
+    expect(screen.getByText(/Guarded/)).toBeTruthy();
+  });
+
+  it("does not render Always Allow for external paths", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({
+            approvalKind: "external_path",
+            risk: "external_access",
+            id: "external-1",
+            summary: "/tmp/outside/My Notes.txt",
+          })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.queryByTestId("approval-always-allow-external-1")).toBeNull();
+  });
+
+  it("does not render Always Allow for workspace-escaping commands", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ id: "escape-1", workspaceScoped: false })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.queryByTestId("approval-always-allow-escape-1")).toBeNull();
+  });
+
+  it("renders auto_approved and auto_denied statuses", () => {
+    const { rerender } = render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ status: "auto_approved" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+    expect(screen.getByText("Auto-allowed")).toBeTruthy();
+
+    rerender(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ status: "auto_denied" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+    expect(screen.getByText("Auto-rejected")).toBeTruthy();
   });
 
   it("hides the actions once the request is resolved and shows the outcome", () => {
@@ -119,5 +199,79 @@ describe("ApprovalCard", () => {
     const deny = screen.getByTestId("approval-deny-approval-1") as HTMLButtonElement;
     expect(allow.disabled).toBe(true);
     expect(deny.disabled).toBe(true);
+  });
+
+  it("renders the entire long command without truncation and retains status visibility", () => {
+    const longCommand =
+      "python3 -c (__import__('shutil').copyfile('.gospel/report-stage.html','/tmp/citrapr-architecture-review-origin-dev.html')) --preserve-metadata --recursive --verbose --include-hidden-files";
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({
+            summary: longCommand,
+            status: "approved",
+          })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    // Check the DOM content and the wrapping styles that keep it readable.
+    const command = screen.getByTitle(longCommand);
+    expect(command.classList.contains("break-words")).toBe(true);
+    expect(command.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
+    expect(command.classList.contains("whitespace-pre-wrap")).toBe(true);
+    expect(command.classList.contains("truncate")).toBe(false);
+    expect(command.classList.contains("max-h-48")).toBe(true);
+    // Status must remain visible on the card
+    const status = screen.getByText("Allowed");
+    expect(status.classList.contains("shrink-0")).toBe(true);
+    expect(screen.getByText("Mutating")).toBeTruthy();
+  });
+
+  it("copies the command to clipboard when clicking the copy button", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(
+      <ol>
+        <ApprovalCard block={pendingApproval({ summary: "git push origin main" })} />
+      </ol>
+    );
+
+    const copyBtn = screen.getByRole("button", { name: /copy command/i });
+    expect(copyBtn).toBeTruthy();
+    fireEvent.click(copyBtn);
+
+    expect(writeText).toHaveBeenCalledWith("git push origin main");
+    expect(await screen.findByRole("button", { name: /copied/i })).toBeTruthy();
+  });
+
+  it("toggles expand and collapse when the command is long", () => {
+    const longCommand =
+      "python3 -c \"import sys; print('This is a very long multiline script that should be expandable by clicking the expand button on the card for full visibility')\"\nline2\nline3";
+    render(
+      <ol>
+        <ApprovalCard block={pendingApproval({ summary: longCommand })} />
+      </ol>
+    );
+
+    const expandBtn = screen.getByRole("button", { name: /expand full command/i });
+    const command = screen.getByTitle(/^python3 -c/);
+    expect(command.classList.contains("max-h-48")).toBe(true);
+    expect(expandBtn.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(expandBtn);
+    expect(command.classList.contains("max-h-none")).toBe(true);
+    expect(screen.getByRole("button", { name: /collapse command/i })).toBeTruthy();
+    expect(expandBtn.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(expandBtn);
+    expect(command.classList.contains("max-h-48")).toBe(true);
+    expect(screen.getByRole("button", { name: /expand full command/i })).toBeTruthy();
+    expect(expandBtn.getAttribute("aria-expanded")).toBe("false");
   });
 });

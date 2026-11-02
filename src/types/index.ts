@@ -21,15 +21,23 @@ export type ReviewMode =
   | { type: "pull_request"; pr_number: number }
   | { type: "full_scan" };
 
-// ── In-app approval flow (one-time, no persistence) ──
+// ── In-app approval flow & autonomy ──
 
-export type ApprovalKind = "command" | "external_path";
+export type ApprovalKind = "command" | "external_path" | "mcp_tool";
 
 export type ApprovalRisk = "mutating" | "destructive" | "external_access";
 
-export type ApprovalDecision = "approve" | "deny";
+export type ApprovalDecision = "approve" | "deny" | "always_allow" | "always_deny";
 
-export type ApprovalOutcome = "approved" | "denied" | "timed_out";
+export type ApprovalOutcome = "approved" | "denied" | "timed_out" | "auto_approved" | "auto_denied";
+
+export type AutonomyMode = "ask" | "auto";
+
+export interface ApprovalPolicy {
+  mode: AutonomyMode;
+  allowed_patterns: string[];
+  reject_patterns: string[];
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -39,6 +47,7 @@ export interface ApprovalRequest {
   summary: string;
   reason: string;
   risk: ApprovalRisk;
+  workspace_scoped?: boolean;
   /** Streaming run that owns this request; used to route the approval card
    *  to the correct session's live turn. Absent/null falls back to the
    *  focused session. */
@@ -126,7 +135,8 @@ export type TurnBlock =
       summary: string;
       reason: string;
       risk: ApprovalRisk;
-      status: "pending" | "approved" | "denied" | "timed_out";
+      workspaceScoped?: boolean;
+      status: "pending" | "approved" | "denied" | "timed_out" | "auto_approved" | "auto_denied";
     };
 
 export interface CurrentTurn {
@@ -239,7 +249,13 @@ export interface McpEnvValue {
 export interface McpToolInventoryItem {
   name: string;
   description?: string | null;
+  /** True when the server declares readOnlyHint — the tool skips approval. */
+  readOnly: boolean;
 }
+
+export type McpTransport = "stdio" | "http";
+
+export type McpAuthStatus = "none" | "required" | "authorized";
 
 export interface McpServer {
   id: string;
@@ -251,10 +267,19 @@ export interface McpServer {
   trustRevokedReason?: string | null;
   safetyClass: McpSafetyClass;
   scope: string;
+  transport: McpTransport;
   command?: string | null;
   args: string[];
   env: McpEnvValue[];
+  url?: string | null;
+  headers: McpEnvValue[];
+  /** Secret key names only — values never leave the credential store. */
   secretEnvKeys: string[];
+  secretHeaderKeys: string[];
+  /** Declared secrets that still need a value. */
+  missingSecretEnvKeys: string[];
+  missingSecretHeaderKeys: string[];
+  authStatus: McpAuthStatus;
   readiness: string;
   health: string;
   inventory: McpToolInventoryItem[];
@@ -268,10 +293,17 @@ export interface McpServer {
 
 export interface CreateMcpServerRequest {
   displayName: string;
-  command: string;
-  args: string[];
-  env: McpEnvValue[];
-  secretEnvKeys: string[];
+  command?: string;
+  args?: string[];
+  env?: McpEnvValue[];
+  /** Secret env pairs. Empty value = declared, value to fill later. */
+  secretEnv?: McpEnvValue[];
+  secretEnvKeys?: string[];
+  transport?: McpTransport;
+  url?: string;
+  headers?: McpEnvValue[];
+  /** Secret header pairs, same storage contract as secretEnv. */
+  secretHeaders?: McpEnvValue[];
   safetyClass?: McpSafetyClass;
   scope?: string;
 }
@@ -313,6 +345,13 @@ export interface Workspace {
   name: string;
   path: string;
   sessionCount: number;
+}
+
+export interface WorkspaceGitContext {
+  branch: string | null;
+  revision: string | null;
+  root: string;
+  isWorktree: boolean;
 }
 
 /**

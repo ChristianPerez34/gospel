@@ -15,7 +15,7 @@ Gospel is an LLM coding assistant. Users want to steer the LLM's behaviour for s
 Skills are discovered from two locations:
 
 1. **Workspace skills**: `<workspace>/.agents/skills/<name>/SKILL.md` — project-specific, version-controlled with the repo.
-2. **Global skills**: `<app_data_dir>/skills/<name>/SKILL.md` — user-installed, shared across all workspaces.
+2. **Global skills**: `~/.agents/skills/<name>/SKILL.md` — user-installed, shared across all workspaces. (Amended from `<app_data_dir>/skills`: `~/.agents` is the standard agents directory shared by other agent tooling.)
 
 When a skill name exists in both locations, the workspace version wins. The discovery scan walks each location, parses each `SKILL.md`, and validates the frontmatter.
 

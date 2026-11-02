@@ -75,6 +75,7 @@ const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   summary: "Runs `ls`",
   reason: "Mutating shell command",
   risk: "mutating",
+  workspace_scoped: true,
 };
 
 function turnText(turn: { blocks?: TurnBlock[] } | null | undefined): string {
@@ -426,6 +427,24 @@ describe("useChatStream", () => {
       });
     });
 
+    it("preserves workspace scope on command approval cards", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent("approval-requested", {
+          ...BASE_APPROVAL_REQUEST,
+          id: "approval-escape",
+          workspace_scoped: false,
+        });
+      });
+
+      const approvalBlock = result.current.currentTurn!.blocks.find(
+        (block) => block.kind === "approval" && block.id === "approval-escape"
+      );
+      expect(approvalBlock).toMatchObject({ workspaceScoped: false });
+    });
+
     it("resolveApproval invokes the resolver on every call (not call-site idempotent); card transitions once per approval-resolved event", async () => {
       const onResolveApproval = vi.fn().mockResolvedValue(undefined);
       const { result } = renderChatStream({ onResolveApproval });
@@ -452,6 +471,33 @@ describe("useChatStream", () => {
       );
       expect(approvalBlocks).toHaveLength(1);
       expect(approvalBlocks[0]).toMatchObject({ status: "approved" });
+    });
+
+    it("resolves with always_allow decision and handles auto_approved outcome", async () => {
+      const onResolveApproval = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderChatStream({ onResolveApproval });
+      await act(async () => {});
+
+      await act(async () => {
+        triggerEvent("approval-requested", BASE_APPROVAL_REQUEST);
+      });
+
+      await act(async () => {
+        await result.current.resolveApproval("approval-1", "always_allow");
+      });
+      expect(onResolveApproval).toHaveBeenCalledWith("approval-1", "always_allow");
+
+      await act(async () => {
+        triggerEvent("approval-resolved", { id: "approval-1", outcome: "auto_approved" });
+      });
+
+      const turn = result.current.currentTurn!;
+      const block = turn.blocks.find((b) => b.kind === "approval" && b.id === "approval-1");
+      expect(block).toMatchObject({
+        kind: "approval",
+        id: "approval-1",
+        status: "auto_approved",
+      });
     });
 
     it("approval-requested with a background run_id stashes the card under that session, not currentTurn", async () => {

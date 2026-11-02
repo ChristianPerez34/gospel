@@ -605,6 +605,28 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn fork_session(
+        &self,
+        source_id: &str,
+        display_transcript: &str,
+        model_history: &str,
+    ) -> Result<SessionDetail, SessionStoreError> {
+        let id = Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "INSERT INTO sessions (id, title, provider, model, variant, status, workspace_id,
+                                   display_transcript, model_history)
+             SELECT ?1, title || ' (fork)', provider, model, variant, 'active', workspace_id, ?2, ?3
+             FROM sessions WHERE id = ?4",
+            params![id, display_transcript, model_history, source_id],
+        )?;
+        if rows == 0 {
+            return Err(SessionStoreError::NotFound(source_id.to_string()));
+        }
+        drop(conn);
+        self.get_session(&id)?.ok_or(SessionStoreError::NotFound(id))
+    }
+
     pub fn activate_draft_if_needed(&self, id: &str) -> Result<(), SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -1378,6 +1400,30 @@ fn app_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_persists_independent_history_and_preserves_workspace_and_selection() {
+        let store = test_store();
+        let source = store
+            .create_session_with_selection(
+                "Original", "openai", "test", Some("high"), Some("ws1"),
+            )
+            .unwrap();
+        store
+            .persist_turn(&source.id, "[1,2,3]", Some("[4,5,6]"))
+            .unwrap();
+        let fork = store.fork_session(&source.id, "[1]", "[4]").unwrap();
+        assert_ne!(fork.id, source.id);
+        assert_eq!(fork.title, "Original (fork)");
+        assert_eq!(fork.workspace_id.as_deref(), Some("ws1"));
+        assert_eq!(fork.variant.as_deref(), Some("high"));
+        assert_eq!(fork.display_transcript, "[1]");
+        assert_eq!(fork.model_history.as_deref(), Some("[4]"));
+        let original = store.get_session(&source.id).unwrap().unwrap();
+        assert_eq!(original.display_transcript, "[1,2,3]");
+        assert_eq!(original.model_history.as_deref(), Some("[4,5,6]"));
+        assert!(store.fork_session("missing", "[]", "[]").is_err());
+    }
 
     #[test]
     fn automatic_session_title_preserves_manual_renames() {

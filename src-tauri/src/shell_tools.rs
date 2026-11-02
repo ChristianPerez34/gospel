@@ -27,7 +27,9 @@ You can run shell, git, and GitHub CLI commands in the active workspace.
 ### Safety Rules
 
 - Read-only commands run directly.
-- Mutating or destructive commands require one-time user approval before execution.
+- Mutating commands require approval in Ask mode. Auto mode skips prompts for routine, workspace-scoped development operations (such as builds, tests, and local `git add`/`commit`). Git global options, `--amend`, `--no-verify`, watch modes, and inline config overrides still prompt; other mutations remain interactive unless explicitly always-allowed.
+- Destructive and sensitive commands are never auto-approved; hard-blocked commands continue to fail closed.
+- Workspace-escaping command paths and external-path requests require per-request approval; command allow rules never apply to external-path requests.
 - The following are always blocked:
   - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
   - Any command containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
@@ -205,6 +207,15 @@ impl CommandPolicy {
             return safety;
         }
 
+        let command_args = git_subcommand_args(args);
+        if command_args.len() != args.len() {
+            // Global options may change Git's execution context or configuration.
+            // Preserve the approval requirement even for read-only subcommands.
+            return match self.classify_git(command_args, workspace_root) {
+                CommandSafety::ReadOnly => CommandSafety::Mutating,
+                safety => safety,
+            };
+        }
         let subcommand = args[0].to_ascii_lowercase();
 
         // Hard-block destructive git options.
@@ -915,6 +926,20 @@ fn has_path_escape_for_values<'a>(
     None
 }
 
+/// Strip Git's global options consistently for risk classification and policy matching.
+pub(crate) fn git_subcommand_args<T: AsRef<str>>(args: &[T]) -> &[T] {
+    let mut subcommand = 0;
+    while subcommand < args.len() {
+        match args[subcommand].as_ref() {
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env"
+            | "--super-prefix" => subcommand += 2,
+            option if option.starts_with('-') => subcommand += 1,
+            _ => break,
+        }
+    }
+    &args[subcommand.min(args.len())..]
+}
+
 fn shell_path_argument_value<'a>(
     program: &str,
     args: &'a [String],
@@ -964,6 +989,7 @@ fn is_shell_file_operand(program: &str, args: &[String], index: usize) -> bool {
     if !matches!(
         program,
         "cat" | "head" | "tail" | "ls" | "find" | "grep" | "rg" | "stat" | "file" | "wc"
+            | "mkdir" | "touch"
     ) {
         return false;
     }
@@ -1054,6 +1080,7 @@ pub struct CommandApprovalRequest {
     pub command_label: String,
     pub reason: String,
     pub risk: CommandRisk,
+    pub workspace_scoped: bool,
 }
 
 pub(crate) type CommandApprovalFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
@@ -1098,16 +1125,29 @@ impl CommandExecutor {
     ) -> Result<CommandOutput, ShellToolError> {
         let classify_program = program.clone();
         let classify_args = args.clone();
-        let safety = self
+        let (safety, workspace_scoped) = self
             .classify_blocking(move |policy, workspace_root| {
-                policy.classify_shell(&classify_program, &classify_args, &workspace_root)
+                let workspace_scoped = executable_name(&classify_program)
+                    == classify_program.as_str()
+                    && has_shell_path_escape(&classify_program, &classify_args, &workspace_root)
+                        .is_none();
+                let safety =
+                    policy.classify_shell(&classify_program, &classify_args, &workspace_root);
+                (safety, workspace_scoped)
             })
             .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
-        self.run_with_approval(RunShellCommandTool::NAME, &program, &args, safety, timeout)
-            .await
+        self.run_with_approval(
+            RunShellCommandTool::NAME,
+            &program,
+            &args,
+            safety,
+            workspace_scoped,
+            timeout,
+        )
+        .await
     }
 
     pub async fn run_git(
@@ -1116,16 +1156,25 @@ impl CommandExecutor {
         timeout_seconds: Option<u64>,
     ) -> Result<CommandOutput, ShellToolError> {
         let classify_args = args.clone();
-        let safety = self
+        let (safety, workspace_scoped) = self
             .classify_blocking(move |policy, workspace_root| {
-                policy.classify_git(&classify_args, &workspace_root)
+                let workspace_scoped = has_path_escape(&classify_args, &workspace_root).is_none();
+                let safety = policy.classify_git(&classify_args, &workspace_root);
+                (safety, workspace_scoped)
             })
             .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
-        self.run_with_approval(RunGitCommandTool::NAME, "git", &args, safety, timeout)
-            .await
+        self.run_with_approval(
+            RunGitCommandTool::NAME,
+            "git",
+            &args,
+            safety,
+            workspace_scoped,
+            timeout,
+        )
+        .await
     }
 
     pub async fn run_gh(
@@ -1134,21 +1183,33 @@ impl CommandExecutor {
         timeout_seconds: Option<u64>,
     ) -> Result<CommandOutput, ShellToolError> {
         let classify_args = args.clone();
-        let safety = self
+        let (safety, workspace_scoped) = self
             .classify_blocking(move |policy, workspace_root| {
-                policy.classify_gh(&classify_args, &workspace_root)
+                let workspace_scoped = has_path_escape(&classify_args, &workspace_root).is_none();
+                let safety = policy.classify_gh(&classify_args, &workspace_root);
+                (safety, workspace_scoped)
             })
             .await?;
         let timeout = timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(COMMAND_TIMEOUT);
-        self.run_with_approval(RunGithubCliCommandTool::NAME, "gh", &args, safety, timeout)
-            .await
+        self.run_with_approval(
+            RunGithubCliCommandTool::NAME,
+            "gh",
+            &args,
+            safety,
+            workspace_scoped,
+            timeout,
+        )
+        .await
     }
 
-    async fn classify_blocking<F>(&self, classify: F) -> Result<CommandSafety, ShellToolError>
+    async fn classify_blocking<F>(
+        &self,
+        classify: F,
+    ) -> Result<(CommandSafety, bool), ShellToolError>
     where
-        F: FnOnce(CommandPolicy, PathBuf) -> CommandSafety + Send + 'static,
+        F: FnOnce(CommandPolicy, PathBuf) -> (CommandSafety, bool) + Send + 'static,
     {
         let policy = self.policy.clone();
         let workspace_root = self.workspace_root.clone();
@@ -1163,6 +1224,7 @@ impl CommandExecutor {
         program: &str,
         args: &[String],
         safety: CommandSafety,
+        workspace_scoped: bool,
         timeout: Duration,
     ) -> Result<CommandOutput, ShellToolError> {
         match safety {
@@ -1179,7 +1241,9 @@ impl CommandExecutor {
             }),
             CommandSafety::Mutating | CommandSafety::Destructive => {
                 let label = command_label(program, args);
-                let approved = self.request_approval(tool_name, &label, &safety).await;
+                let approved = self
+                    .request_approval(tool_name, &label, &safety, workspace_scoped)
+                    .await;
                 if !approved {
                     Ok(CommandOutput {
                         success: false,
@@ -1314,6 +1378,7 @@ impl CommandExecutor {
         tool_name: &'static str,
         command_label: &str,
         safety: &CommandSafety,
+        workspace_scoped: bool,
     ) -> bool {
         let Some(approval) = &self.approval else {
             return false;
@@ -1337,6 +1402,7 @@ impl CommandExecutor {
                 command_label: command_label.to_string(),
                 reason,
                 risk,
+                workspace_scoped,
             })
             .await
     }
@@ -2712,6 +2778,191 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approval_request_marks_workspace_escaping_command() {
+        let workspace_scoped = Arc::new(AtomicBool::new(true));
+        let approval = Arc::new(RecordingScopeApproval {
+            workspace_scoped: workspace_scoped.clone(),
+        });
+        let executor = CommandExecutor::new(workspace(), Some(approval));
+        let output = executor
+            .run_shell(
+                "mkdir".to_string(),
+                vec!["/tmp/gospel-approval-scope-test".to_string()],
+                Some(5),
+            )
+            .await
+            .expect("tool should return output");
+
+        assert!(!workspace_scoped.load(Ordering::SeqCst));
+        assert_eq!(output.needs_approval, Some(true));
+
+        workspace_scoped.store(true, Ordering::SeqCst);
+        let output = executor
+            .run_shell("/tmp/mkdir".to_string(), vec!["build".to_string()], Some(5))
+            .await
+            .expect("tool should return output");
+
+        assert!(!workspace_scoped.load(Ordering::SeqCst));
+        assert_eq!(output.needs_approval, Some(true));
+    }
+
+    #[tokio::test]
+    async fn autonomy_guardrails_require_approval_for_spaced_external_paths() {
+        use crate::approval_broker::{ApprovalBroker, AutonomyMode};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        for (program, relative) in [
+            ("mkdir", false),
+            ("touch", false),
+            ("mkdir", true),
+            ("touch", true),
+        ] {
+            let emitter = Arc::new(GuardrailEmitter::default());
+            let broker = Arc::new(ApprovalBroker::with_timeout(
+                emitter.clone(),
+                Duration::from_millis(1),
+            ));
+            broker.set_autonomy_mode(AutonomyMode::Auto);
+            let approval = Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            });
+            let executor = CommandExecutor::new(root.clone(), Some(approval));
+            let target = fixture.path().join(format!("outside {program}"));
+            let operand = if relative {
+                format!("../outside {program}")
+            } else {
+                target.display().to_string()
+            };
+            let output = executor
+                .run_shell(program.to_string(), vec![operand], Some(5))
+                .await
+                .unwrap();
+
+            assert_eq!(emitter.requested.load(Ordering::SeqCst), 1, "{program}");
+            assert_eq!(output.reason.as_deref(), Some("approval_denied"));
+            assert!(!target.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn autonomy_guardrails_allow_spaced_workspace_paths() {
+        use crate::approval_broker::{ApprovalBroker, AutonomyMode};
+
+        let root = tempfile::tempdir().unwrap();
+        let broker = Arc::new(ApprovalBroker::with_timeout(
+            Arc::new(GuardrailEmitter::default()),
+            Duration::from_millis(1),
+        ));
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        let executor = CommandExecutor::new(
+            root.path().to_path_buf(),
+            Some(Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            })),
+        );
+        for program in ["mkdir", "touch"] {
+            let target = format!("inside {program}");
+            let output = executor
+                .run_shell(program.to_string(), vec![target.clone()], Some(5))
+                .await
+                .unwrap();
+            assert!(output.success, "{program}: {output:?}");
+            assert!(root.path().join(target).exists());
+        }
+    }
+
+    #[test]
+    fn autonomy_guardrails_classify_git_global_options_consistently() {
+        let policy = CommandPolicy;
+        for prefix in [
+            vec!["-C", "."],
+            vec!["-c", "core.abbrev=7"],
+            vec!["--git-dir=."],
+            vec!["--work-tree", "."],
+            vec!["--no-pager", "-C.", "-ccore.abbrev=7"],
+        ] {
+            for (command, expected) in [
+                (vec!["tag", "-d", "marker"], CommandSafety::Destructive),
+                (vec!["branch", "-D", "topic"], CommandSafety::Destructive),
+                (vec!["checkout", "-f", "main"], CommandSafety::Destructive),
+                (vec!["status"], CommandSafety::Mutating),
+                (vec!["tag", "marker"], CommandSafety::Mutating),
+                (
+                    vec!["reset", "--hard"],
+                    CommandSafety::Blocked("git_reset_hard".to_string()),
+                ),
+                (
+                    vec!["push", "--force"],
+                    CommandSafety::Blocked("git_push_force".to_string()),
+                ),
+                (
+                    vec!["clean", "-fd"],
+                    CommandSafety::Blocked("git_clean".to_string()),
+                ),
+            ] {
+                let args: Vec<String> = prefix
+                    .iter()
+                    .chain(command.iter())
+                    .map(|arg| arg.to_string())
+                    .collect();
+                assert_eq!(policy.classify_git(&args, &workspace()), expected, "{args:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn autonomy_guardrails_require_approval_for_git_global_option_deletion() {
+        use crate::approval_broker::ApprovalBroker;
+
+        let root = tempfile::tempdir().unwrap();
+        for prefix in [
+            vec!["-C", "."],
+            vec!["-c", "core.abbrev=7"],
+            vec!["-C."],
+            vec!["-ccore.abbrev=7"],
+            vec!["--no-pager", "-C", ".", "-c", "core.abbrev=7"],
+        ] {
+            let emitter = Arc::new(GuardrailEmitter::default());
+            let broker = Arc::new(ApprovalBroker::with_timeout(
+                emitter.clone(),
+                Duration::from_millis(1),
+            ));
+            broker.add_allow_rule_for_command("git tag review-marker");
+            let approval = Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            });
+            let executor = CommandExecutor::new(root.path().to_path_buf(), Some(approval));
+            let args = prefix
+                .into_iter()
+                .chain(["tag", "-d", "review-marker"])
+                .map(str::to_string)
+                .collect();
+            let output = executor.run_git(args, Some(5)).await.unwrap();
+
+            assert_eq!(emitter.requested.load(Ordering::SeqCst), 1);
+            assert_eq!(output.reason.as_deref(), Some("approval_denied"));
+        }
+    }
+
+    #[derive(Default)]
+    struct GuardrailEmitter {
+        requested: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::approval_broker::ApprovalEventEmitter for GuardrailEmitter {
+        fn emit_requested(&self, _: &crate::approval_broker::ApprovalRequest) {
+            self.requested.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn emit_resolved(&self, _: &crate::approval_broker::ApprovalResolution) {}
+    }
+
+    #[tokio::test]
     async fn blocked_command_returns_blocked_reason() {
         let executor = CommandExecutor::new(workspace(), None);
         let output = executor
@@ -2728,6 +2979,21 @@ mod tests {
 
     struct AlwaysApproval {
         approved: Arc<AtomicBool>,
+    }
+
+    struct RecordingScopeApproval {
+        workspace_scoped: Arc<AtomicBool>,
+    }
+
+    impl CommandApproval for RecordingScopeApproval {
+        fn request_approval<'a>(
+            &'a self,
+            request: CommandApprovalRequest,
+        ) -> CommandApprovalFuture<'a> {
+            self.workspace_scoped
+                .store(request.workspace_scoped, Ordering::SeqCst);
+            Box::pin(async { false })
+        }
     }
 
     impl CommandApproval for AlwaysApproval {

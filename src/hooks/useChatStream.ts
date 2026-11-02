@@ -122,6 +122,7 @@ function appendApproval(turn: CurrentTurn, req: ApprovalRequest): CurrentTurn {
         summary: req.summary,
         reason: req.reason,
         risk: req.risk,
+        workspaceScoped: req.workspace_scoped,
         status: "pending",
       },
     ],

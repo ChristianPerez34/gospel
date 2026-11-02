@@ -25,15 +25,31 @@ export function findClosestSkill(
   skills: { name: string }[],
   maxDistance = 3
 ): string | null {
-  const lower = query.toLowerCase();
+  const lower = query.trim().toLowerCase();
+  if (!lower) return null;
+
+  const effectiveMaxDist = Math.min(maxDistance, Math.max(1, lower.length - 1));
+
   let bestName = "";
   let bestDist = Infinity;
+
   for (const s of skills) {
-    const dist = levenshtein(lower, s.name.toLowerCase());
-    if (dist < bestDist) {
-      bestDist = dist;
+    const skillNameLower = s.name.toLowerCase();
+    const fullDist = levenshtein(lower, skillNameLower);
+    if (fullDist < bestDist) {
+      bestDist = fullDist;
       bestName = s.name;
     }
+
+    const segments = skillNameLower.split(/[^a-z0-9]+/).filter(Boolean);
+    for (const seg of segments) {
+      const segDist = levenshtein(lower, seg);
+      if (segDist < bestDist) {
+        bestDist = segDist;
+        bestName = s.name;
+      }
+    }
   }
-  return bestDist <= maxDistance && bestName ? bestName : null;
+
+  return bestDist <= effectiveMaxDist && bestName ? bestName : null;
 }

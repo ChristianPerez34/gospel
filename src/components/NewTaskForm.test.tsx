@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewTaskForm } from "./NewTaskForm";
@@ -77,6 +78,35 @@ describe("NewTaskForm", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }));
     expect(props.onContinue).toHaveBeenCalledWith(added.id);
+  });
+
+  it("shows the selected workspace's git branch and worktree status", async () => {
+    vi.mocked(invoke).mockImplementation((command, args) =>
+      Promise.resolve(
+        command === "get_workspace_git_context"
+          ? {
+              branch: `feat/${(args as { workspaceId: string }).workspaceId}`,
+              revision: null,
+              root: "/projects",
+              isWorktree: true,
+            }
+          : undefined
+      )
+    );
+    render(<NewTaskForm {...props} />);
+
+    const badge = await screen.findByTestId("topbar-git-context");
+    expect(badge.textContent).toContain("feat/alpha");
+    expect(badge.textContent).toContain("worktree");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Workspace" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Beta/ }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("get_workspace_git_context", { workspaceId: "beta" })
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("topbar-git-context").textContent).toContain("feat/beta")
+    );
   });
 
   it("syncs activeWorkspaceId when it resolves after initial render", () => {

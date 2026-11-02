@@ -403,4 +403,219 @@ describe("toolActivitiesToActionCards review tools", () => {
       "list_directory",
     ]);
   });
+
+  it("formats run_shell_command with the command line and captured output", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "cmd-1",
+        name: "run_shell_command",
+        arguments: { program: "bun", args: ["run", "test"] },
+        result: JSON.stringify({
+          success: true,
+          exit_code: 0,
+          stdout: "42 tests passed",
+          stderr: "",
+          truncated: false,
+          needs_approval: null,
+          reason: null,
+          message: "Command `bun run test` completed with exit code 0",
+        }),
+        status: "completed",
+      },
+    ]);
+
+    expect(cards[0]?.summary).toBe("Run command");
+    expect(cards[0]?.type).toBe("terminal");
+    expect(cards[0]?.target).toBe("bun run test");
+    expect(cards[0]?.detail).toBe("bun run test");
+    const output = cards[0]?.sections?.find(
+      (section) => section.type === "text" && section.title === "Output"
+    );
+    expect(output).toMatchObject({ content: "42 tests passed", monospace: true });
+    const exitField = cards[0]?.sections?.find(
+      (section) => section.type === "fields" && section.title === "Result"
+    );
+    expect(exitField).toMatchObject({
+      fields: expect.arrayContaining([{ label: "Exit", value: "0" }]),
+    });
+  });
+
+  it.each([
+    ["run_shell_command", { program: "missing-program", args: [] }],
+    ["run_git_command", { args: ["status"] }],
+    ["run_github_cli_command", { args: ["auth", "status"] }],
+    ["run_skill_script", { skill: "diagnose", script: "run.sh" }],
+  ])("shows plain-text execution errors for %s", (name, args) => {
+    const result = "Command execution failed: No such file or directory (os error 2)";
+    const [card] = toolActivitiesToActionCards([
+      { id: "spawn-error", name, arguments: args, result, status: "completed" },
+    ]);
+
+    expect(card.sections).toContainEqual({
+      type: "text",
+      title: "Result",
+      content: result,
+      monospace: true,
+    });
+  });
+
+  it.each([
+    ["run_shell_command", { program: "git" }, "git"],
+    ["run_git_command", {}, "git"],
+    ["run_github_cli_command", {}, "gh"],
+  ])("preserves argument boundaries when grouping %s", (name, program, prefix) => {
+    const steps = toolActivitiesToTimelineSteps(
+      [
+        ["log", "--format=%h %s"],
+        ["log", "--format=%h", "%s"],
+        ["log", "--format=%h", "%s"],
+        ["log", "--format=%h", "%s", ""],
+      ].map((args, index) => ({
+        id: `command-${index}`,
+        name,
+        arguments: { ...program, args },
+        status: "completed" as const,
+      }))
+    );
+
+    expect(steps.map((step) => step.target)).toEqual([
+      `${prefix} log '--format=%h %s'`,
+      `${prefix} log --format=%h %s`,
+      `${prefix} log --format=%h %s ''`,
+    ]);
+    expect(steps[1].groupCount).toBe(2);
+  });
+
+  it("quotes program paths and arguments containing quotes or backslashes", () => {
+    const [card] = toolActivitiesToActionCards([
+      {
+        id: "quoted-command",
+        name: "run_shell_command",
+        arguments: {
+          program: "/my tools/runner",
+          args: ["it's", '"quoted"', "path\\name"],
+        },
+        status: "calling",
+      },
+    ]);
+
+    expect(card.target).toBe("'/my tools/runner' 'it'\\''s' '\"quoted\"' 'path\\name'");
+    expect(card.detail).toBe(card.target);
+    expect(card.sections).toContainEqual({
+      type: "text",
+      title: "Command",
+      content: card.target,
+      monospace: true,
+    });
+  });
+
+  it("formats run_git_command failures with stderr, exit code, and reason", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "cmd-2",
+        name: "run_git_command",
+        arguments: { args: ["push", "--force"] },
+        result: JSON.stringify({
+          success: false,
+          exit_code: -1,
+          stdout: "",
+          stderr: "",
+          truncated: false,
+          needs_approval: false,
+          reason: "destructive command blocked",
+          message: "Blocked: destructive command blocked",
+        }),
+        status: "completed",
+      },
+    ]);
+
+    expect(cards[0]?.summary).toBe("Git");
+    expect(cards[0]?.target).toBe("git push --force");
+    const failure = cards[0]?.sections?.find(
+      (section) => section.type === "fields" && section.title === "Failure"
+    );
+    expect(failure).toMatchObject({
+      fields: [{ label: "Reason", value: "destructive command blocked" }],
+    });
+  });
+
+  it("shows run_git_command stderr when a command fails at runtime", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "cmd-3",
+        name: "run_git_command",
+        arguments: { args: ["rebase", "main"] },
+        result: JSON.stringify({
+          success: false,
+          exit_code: 1,
+          stdout: "",
+          stderr: "error: could not apply abc123",
+          truncated: false,
+          needs_approval: null,
+          reason: "non_zero_exit",
+          message:
+            "Command `git rebase main` failed with exit code 1: error: could not apply abc123",
+        }),
+        status: "completed",
+      },
+    ]);
+
+    const stderrSection = cards[0]?.sections?.find(
+      (section) => section.type === "text" && section.title === "Stderr"
+    );
+    expect(stderrSection).toMatchObject({ content: "error: could not apply abc123" });
+  });
+
+  it("shows (no output) when a command succeeds silently", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "cmd-4",
+        name: "run_shell_command",
+        arguments: { program: "touch", args: ["file.txt"] },
+        result: JSON.stringify({
+          success: true,
+          exit_code: 0,
+          stdout: "",
+          stderr: "",
+          truncated: false,
+          needs_approval: null,
+          reason: null,
+          message: "Command `touch file.txt` completed with exit code 0",
+        }),
+        status: "completed",
+      },
+    ]);
+
+    const output = cards[0]?.sections?.find(
+      (section) => section.type === "text" && section.title === "Output"
+    );
+    expect(output).toMatchObject({ content: "(no output)" });
+  });
+
+  it("formats run_skill_script with skill/script target and error output", () => {
+    const cards = toolActivitiesToActionCards([
+      {
+        id: "cmd-5",
+        name: "run_skill_script",
+        arguments: { skill: "diagnose", script: "run.sh" },
+        result: JSON.stringify({
+          success: false,
+          stdout: "",
+          stderr: "",
+          exit_code: -1,
+          truncated: false,
+          error: "Unknown skill 'diagnose'",
+        }),
+        status: "completed",
+      },
+    ]);
+
+    expect(cards[0]?.summary).toBe("Skill script");
+    expect(cards[0]?.type).toBe("terminal");
+    expect(cards[0]?.target).toBe("diagnose/run.sh");
+    const errorSection = cards[0]?.sections?.find(
+      (section) => section.type === "text" && section.title === "Error"
+    );
+    expect(errorSection).toMatchObject({ content: "Unknown skill 'diagnose'" });
+  });
 });
