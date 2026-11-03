@@ -13,12 +13,14 @@ interface ApprovalCardProps {
 const RISK_LABEL: Record<ApprovalRisk, string> = {
   mutating: "Mutating",
   destructive: "Destructive",
+  restricted: "Restricted",
   external_access: "External access",
 };
 
 const RISK_ACCENT: Record<ApprovalRisk, string> = {
   mutating: "text-accent-data",
   destructive: "text-status-error",
+  restricted: "text-status-warning",
   external_access: "text-accent-signal",
 };
 
@@ -57,6 +59,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
     expiresAtMs == null ? null : Math.max(0, Math.ceil((expiresAtMs - now) / 1000));
   const canResolve = isPending && secondsRemaining !== 0 && Boolean(onResolve) && busy === null;
   const isDestructive = block.risk === "destructive";
+  const isRestricted = block.risk === "restricted";
 
   useEffect(() => {
     if (!isPending || expiresAtMs == null) return;
@@ -87,6 +90,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
   // workspace-scoped, so they skip the workspaceScoped check.
   const canAlwaysAllow =
     !isDestructive &&
+    !isRestricted &&
     (block.approvalKind === "mcp_tool" ||
       (block.approvalKind === "command" && block.workspaceScoped !== false));
 
@@ -234,7 +238,7 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
             role="timer"
             aria-live="off"
           >
-            {isDestructive && "Guarded · "}
+            {(isDestructive || isRestricted) && "Guarded · "}
             {secondsRemaining === null
               ? "Auto-denies if unanswered"
               : secondsRemaining === 0
