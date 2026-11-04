@@ -4,7 +4,7 @@
 //! `providers::CREDENTIALED_PROVIDERS` and given a match arm in
 //! [`completion_model`].
 
-use rig::http_client::{DynHttpClient, HeaderMap, HeaderValue, HttpMiddleware, Method, Uri};
+use rig::http_client::{DynHttpClient, Exchange, HeaderMap, HeaderValue, HttpMiddleware};
 use rig::providers::{anthropic, chatgpt, copilot, gemini, groq, mistral, openai, xai};
 use rig::wasm_compat::WasmBoxedFuture;
 
@@ -43,22 +43,22 @@ pub(crate) async fn completion_model(
     let client_err = |error: String| ProviderClientError::Client(error);
     let model = match provider {
         "openai" => openai::OpenAI::new(api_key).completion(model).into(),
-        "chatgpt" => openai::OpenAIConfig::with_key(&chatgpt::DIALECT, "")
-            .client()
-            .authenticate(&chatgpt_authenticator(None))
-            .await
-            .map_err(|e| client_err(e.to_string()))?
-            .completion(model)
-            .into(),
-        "github_copilot" => {
-            let client = copilot::CopilotConfig::new("")
-                .client()
-                .authenticate(&copilot_authenticator(None))
+        "chatgpt" => {
+            let auth = chatgpt_authenticator(None)
+                .auth_context(&rig::rig_reqwest::shared())
                 .await
                 .map_err(|e| client_err(e.to_string()))?;
+            let mut config = openai::OpenAIConfig::with_key(&chatgpt::DIALECT, auth.api_key);
+            if let Some(account) = auth.account_id {
+                config = config.with_account_id(account);
+            }
+            config.client().completion(model).into()
+        }
+        "github_copilot" => {
+            let config = copilot_config().await.map_err(client_err)?;
             let endpoints = ModelRegistry::copilot_supported_endpoints(model).await;
             copilot_completion_model(
-                client.config().clone(),
+                config,
                 rig::rig_reqwest::shared(),
                 model,
                 endpoints.as_deref(),
@@ -97,8 +97,20 @@ pub(crate) async fn completion_model(
     Ok(model)
 }
 
+pub(crate) async fn copilot_config() -> Result<openai::OpenAIConfig, String> {
+    let auth = copilot_authenticator(None)
+        .auth_context(&rig::rig_reqwest::shared())
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut config = openai::OpenAIConfig::with_key(&copilot::DIALECT, auth.api_key);
+    if let Some(base) = auth.api_base {
+        config = config.with_base_url(base);
+    }
+    Ok(config)
+}
+
 fn copilot_completion_model(
-    config: copilot::CopilotConfig,
+    config: openai::OpenAIConfig,
     http: impl rig::http_client::HttpClientExt + 'static,
     model: &str,
     supported_endpoints: Option<&[String]>,
@@ -149,7 +161,7 @@ pub(crate) fn chatgpt_authenticator(
     let allow_device_flow = device_code_handler.is_some();
     chatgpt::auth::Authenticator::new(
         chatgpt::auth::AuthSource::OAuth,
-        Some(crate::keychain::chatgpt_auth_file_path()),
+        crate::provider_token_store::ProviderTokenStore,
         device_code_handler.unwrap_or_default(),
         allow_device_flow,
     )
@@ -163,8 +175,7 @@ pub(crate) fn copilot_authenticator(
     let allow_device_flow = device_code_handler.is_some();
     copilot::auth::Authenticator::new(
         copilot::auth::AuthSource::OAuth,
-        Some(crate::keychain::github_copilot_access_token_path()),
-        Some(crate::keychain::github_copilot_api_key_path()),
+        crate::provider_token_store::ProviderTokenStore,
         device_code_handler.unwrap_or_default(),
         allow_device_flow,
     )
@@ -186,8 +197,7 @@ impl StaticHeaders {
 impl HttpMiddleware for StaticHeaders {
     fn before_request_headers<'a>(
         &'a self,
-        _method: &'a Method,
-        _uri: &'a Uri,
+        _exchange: Exchange<'a>,
         headers: &'a mut HeaderMap,
     ) -> WasmBoxedFuture<'a, rig::http_client::Result<()>> {
         self.apply(headers);
@@ -343,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn copilot_uses_advertised_responses_endpoint_and_keeps_copilot_headers() {
-        use rig::core::test_utils::RecordingHttpClient;
+        use rig::test_utils::RecordingHttpClient;
         use std::future::IntoFuture;
 
         let model_id = "future-responses-only-model";
@@ -371,7 +381,7 @@ mod tests {
             .unwrap(),
         );
         let model = copilot_completion_model(
-            copilot::CopilotConfig::new("copilot-session-token")
+            openai::OpenAIConfig::with_key(&copilot::DIALECT, "copilot-session-token")
                 .with_base_url("https://api.business.githubcopilot.com"),
             DynHttpClient::new(http.clone()),
             model_id,
@@ -454,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn grok_subscription_one_shot_prompt_does_not_request_sse() {
-        use rig::core::test_utils::RecordingHttpClient;
+        use rig::test_utils::RecordingHttpClient;
         use std::future::IntoFuture;
 
         let http = RecordingHttpClient::new(

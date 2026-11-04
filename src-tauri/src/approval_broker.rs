@@ -392,6 +392,31 @@ pub struct ApprovalBroker {
     reject_patterns: Mutex<Vec<String>>,
 }
 
+/// A cancelled tool must not leave an approval waiting in the broker.
+struct PendingApproval<'a> {
+    broker: &'a ApprovalBroker,
+    id: String,
+    run_id: Option<String>,
+}
+
+impl Drop for PendingApproval<'_> {
+    fn drop(&mut self) {
+        let removed = self
+            .broker
+            .pending
+            .lock()
+            .expect("approval broker poisoned")
+            .remove(&self.id);
+        if removed.is_some() {
+            self.broker.emitter.emit_resolved(&ApprovalResolution {
+                id: self.id.clone(),
+                outcome: ApprovalOutcome::Denied,
+                run_id: self.run_id.clone(),
+            });
+        }
+    }
+}
+
 impl ApprovalBroker {
     pub fn new(emitter: Arc<dyn ApprovalEventEmitter>) -> Self {
         Self::with_timeout(emitter, APPROVAL_TIMEOUT)
@@ -692,6 +717,11 @@ impl ApprovalBroker {
             );
         }
 
+        let _pending = PendingApproval {
+            broker: self,
+            id: id.clone(),
+            run_id: run_id.clone(),
+        };
         let deadline = tokio::time::Instant::now() + self.timeout;
         request.expires_at_ms = Some(
             (SystemTime::now()
