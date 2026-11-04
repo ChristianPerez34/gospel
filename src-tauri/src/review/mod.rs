@@ -17,6 +17,7 @@ pub use progress::{
     ReviewProgressEmitter, ReviewProgressEvent, ToolEventKind,
 };
 
+use crate::completion_retry::agent_builder;
 use crate::harness_profile::{
     resolve_harness_profile, tool_server_handle, ActiveWorkspaceContext, AgentRole,
     HarnessProfileRequest, LoopDetector, LoopStatus,
@@ -27,7 +28,6 @@ use futures::StreamExt;
 use std::sync::LazyLock;
 use regex::Regex;
 use rig::agent::MultiTurnStreamItem;
-use rig::AgentBuilder;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::ErrorKind;
@@ -2258,7 +2258,7 @@ pub(crate) async fn run_workspace_agent(
             ReviewAgentError::Provider(message)
         }
     })?;
-    let agent = AgentBuilder::new(model)
+    let agent = agent_builder(model)
         .preamble(profile_preamble)
         .default_max_turns(profile_guards.max_turns)
         .tool_server_handle(tool_server_handle(profile_tools))

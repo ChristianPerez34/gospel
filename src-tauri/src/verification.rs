@@ -1,10 +1,10 @@
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::streaming::{Item, StreamEvent};
-use rig::AgentBuilder;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
+use crate::completion_retry::agent_builder;
 use crate::harness_profile::{
     resolve_harness_profile, tool_server_handle, ActiveWorkspaceContext, AgentRole, HarnessProfile,
     HarnessProfileRequest, LoopDetector, LoopStatus,
@@ -133,7 +133,7 @@ async fn run_verification_agent(
     let model = crate::provider_client::completion_model(provider, model, api_key, session_id)
         .await
         .map_err(|error| error.to_string())?;
-    let agent = AgentBuilder::new(model)
+    let agent = agent_builder(model)
         .preamble(preamble)
         .default_max_turns(guards.max_turns)
         .tool_server_handle(tool_server_handle(tools))

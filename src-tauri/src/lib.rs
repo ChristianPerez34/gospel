@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 mod app_config;
+mod completion_retry;
 pub mod approval_broker;
 mod conversation;
 mod copilot_models;
