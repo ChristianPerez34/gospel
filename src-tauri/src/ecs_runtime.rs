@@ -157,7 +157,10 @@ impl RunState {
 }
 
 #[derive(Component)]
-struct Observed;
+struct Gated;
+
+#[derive(Component)]
+struct Reviewed;
 
 fn prepare_models(
     mut models: Query<(Entity, &mut ModelRequest), (ModelCalls, Added<Admitted>)>,
@@ -175,8 +178,8 @@ fn prepare_models(
     reason = "Bevy systems declare component access in query types"
 )]
 fn gate_calls(
-    models: Query<(&ForAgent, &CallOf), (ModelCalls, ReadyToStart, Without<Observed>)>,
-    tools: Query<(Entity, &ForAgent, &ToolRequest), (ToolCalls, ReadyToStart, Without<Observed>)>,
+    models: Query<(Entity, &ForAgent, &CallOf), (ModelCalls, ReadyToStart, Without<Gated>)>,
+    tools: Query<(Entity, &ForAgent, &ToolRequest), (ToolCalls, ReadyToStart, Without<Gated>)>,
     recoveries: Query<&Recovery>,
     mut state: ResMut<RunState>,
     mut commands: Commands,
@@ -184,7 +187,8 @@ fn gate_calls(
     if state.controlled_stop.is_some() {
         return;
     }
-    for (agent, of) in &models {
+    for (entity, agent, of) in &models {
+        commands.entity(entity).insert(Gated);
         let retry = recoveries
             .get(of.0)
             .is_ok_and(|recovery| recovery.retries > 0);
@@ -205,7 +209,7 @@ fn gate_calls(
         state.active_reasoning = None;
     }
     for (entity, agent, request) in &tools {
-        commands.entity(entity).insert(Observed);
+        commands.entity(entity).insert(Gated);
         let name = request.call.function.name.to_string();
         let arguments = serde_json::Value::Object(request.call.function.arguments.clone());
         match state.detector.record_call(&name, &arguments) {
@@ -293,7 +297,7 @@ fn reasoning_id(state: &mut RunState) -> String {
 fn review_retries(
     mut failures: Query<
         (Entity, &Outcome, &mut RetryVerdict, &CallOf),
-        (ModelCalls, ReadyToSettle, Without<Observed>),
+        (ModelCalls, ReadyToSettle, Without<Reviewed>),
     >,
     recoveries: Query<&Recovery>,
     mut state: ResMut<RunState>,
@@ -305,7 +309,7 @@ fn review_retries(
         ..RetryPolicy::DEFAULT
     };
     for (entity, outcome, mut verdict, of) in &mut failures {
-        commands.entity(entity).insert(Observed);
+        commands.entity(entity).insert(Reviewed);
         let Err(report) = &outcome.0 else {
             continue;
         };

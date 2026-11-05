@@ -397,10 +397,29 @@ struct PendingApproval<'a> {
     broker: &'a ApprovalBroker,
     id: String,
     run_id: Option<String>,
+    defused: bool,
+}
+
+impl<'a> PendingApproval<'a> {
+    fn new(broker: &'a ApprovalBroker, id: String, run_id: Option<String>) -> Self {
+        Self {
+            broker,
+            id,
+            run_id,
+            defused: false,
+        }
+    }
+
+    fn defuse(&mut self) {
+        self.defused = true;
+    }
 }
 
 impl Drop for PendingApproval<'_> {
     fn drop(&mut self) {
+        if self.defused {
+            return;
+        }
         let removed = self
             .broker
             .pending
@@ -717,11 +736,7 @@ impl ApprovalBroker {
             );
         }
 
-        let _pending = PendingApproval {
-            broker: self,
-            id: id.clone(),
-            run_id: run_id.clone(),
-        };
+        let mut pending_guard = PendingApproval::new(self, id.clone(), run_id.clone());
         let deadline = tokio::time::Instant::now() + self.timeout;
         request.expires_at_ms = Some(
             (SystemTime::now()
@@ -757,6 +772,8 @@ impl ApprovalBroker {
             Ok(Err(_dropped)) => ApprovalOutcome::Denied,
             Err(_elapsed) => ApprovalOutcome::TimedOut,
         };
+
+        pending_guard.defuse();
 
         {
             let mut pending = self.pending.lock().expect("approval broker poisoned");
