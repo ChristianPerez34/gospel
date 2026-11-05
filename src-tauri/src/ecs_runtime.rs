@@ -163,10 +163,10 @@ struct Gated;
 struct Reviewed;
 
 fn prepare_models(
-    mut models: Query<(Entity, &mut ModelRequest), (ModelCalls, Added<Admitted>)>,
+    mut models: Query<&mut ModelRequest, (ModelCalls, Added<Admitted>)>,
     state: Res<RunState>,
 ) {
-    for (_, mut model) in &mut models {
+    for mut model in &mut models {
         if let Some(params) = &state.additional_params {
             model.request_mut().additional_params = Some(params.clone());
         }
@@ -286,7 +286,6 @@ fn reasoning_id(state: &mut RunState) -> String {
     let id =
         llm::ensure_active_reasoning_id(&mut state.active_reasoning, &mut state.reasoning_sequence);
     state.reasoning_ids.push(id.clone());
-    state.active_reasoning = Some(id.clone());
     id
 }
 
