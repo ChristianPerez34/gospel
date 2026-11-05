@@ -392,6 +392,50 @@ pub struct ApprovalBroker {
     reject_patterns: Mutex<Vec<String>>,
 }
 
+/// A cancelled tool must not leave an approval waiting in the broker.
+struct PendingApproval<'a> {
+    broker: &'a ApprovalBroker,
+    id: String,
+    run_id: Option<String>,
+    defused: bool,
+}
+
+impl<'a> PendingApproval<'a> {
+    fn new(broker: &'a ApprovalBroker, id: String, run_id: Option<String>) -> Self {
+        Self {
+            broker,
+            id,
+            run_id,
+            defused: false,
+        }
+    }
+
+    fn defuse(&mut self) {
+        self.defused = true;
+    }
+}
+
+impl Drop for PendingApproval<'_> {
+    fn drop(&mut self) {
+        if self.defused {
+            return;
+        }
+        let removed = self
+            .broker
+            .pending
+            .lock()
+            .expect("approval broker poisoned")
+            .remove(&self.id);
+        if removed.is_some() {
+            self.broker.emitter.emit_resolved(&ApprovalResolution {
+                id: self.id.clone(),
+                outcome: ApprovalOutcome::Denied,
+                run_id: self.run_id.clone(),
+            });
+        }
+    }
+}
+
 impl ApprovalBroker {
     pub fn new(emitter: Arc<dyn ApprovalEventEmitter>) -> Self {
         Self::with_timeout(emitter, APPROVAL_TIMEOUT)
@@ -692,6 +736,7 @@ impl ApprovalBroker {
             );
         }
 
+        let mut pending_guard = PendingApproval::new(self, id.clone(), run_id.clone());
         let deadline = tokio::time::Instant::now() + self.timeout;
         request.expires_at_ms = Some(
             (SystemTime::now()
@@ -727,6 +772,8 @@ impl ApprovalBroker {
             Ok(Err(_dropped)) => ApprovalOutcome::Denied,
             Err(_elapsed) => ApprovalOutcome::TimedOut,
         };
+
+        pending_guard.defuse();
 
         {
             let mut pending = self.pending.lock().expect("approval broker poisoned");

@@ -158,6 +158,17 @@ pub fn delete_chatgpt_auth_file() -> Result<(), KeychainError> {
 }
 
 pub fn has_github_copilot_oauth_session() -> bool {
+    if let Ok(record) = std::fs::read_to_string(github_copilot_token_dir().join("copilot.json")) {
+        if let Ok(record) = serde_json::from_str::<serde_json::Value>(&record) {
+            if ["github_token", "token"].iter().any(|key| {
+                record[*key]
+                    .as_str()
+                    .is_some_and(|value| !value.trim().is_empty())
+            }) {
+                return true;
+            }
+        }
+    }
     let access_token_path = github_copilot_access_token_path();
     if let Ok(token) = std::fs::read_to_string(access_token_path) {
         if !token.trim().is_empty() {
@@ -183,6 +194,7 @@ pub fn has_github_copilot_oauth_session() -> bool {
 
 pub fn delete_github_copilot_auth_files() -> Result<(), KeychainError> {
     for path in [
+        github_copilot_token_dir().join("copilot.json"),
         github_copilot_access_token_path(),
         github_copilot_api_key_path(),
     ] {

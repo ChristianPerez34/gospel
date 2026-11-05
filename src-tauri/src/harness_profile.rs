@@ -13,7 +13,6 @@ use crate::workspace_tools::{
     HARNESS_CONTROL_AREA_SYSTEM_PROMPT, READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT,
     WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
-use rig::tool::server::{ToolServer, ToolServerHandle};
 use rig::tool::RegisteredTool;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -216,14 +215,6 @@ pub struct HarnessProfileRequest {
     pub invoked_skill_section: Option<String>,
     pub memory_section: Option<String>,
     pub main_tool_inputs: Option<MainToolInputs>,
-}
-
-/// Starts a tool registry for an agent built over `tools`.
-pub(crate) fn tool_server_handle(tools: Vec<RegisteredTool>) -> ToolServerHandle {
-    tools
-        .into_iter()
-        .fold(ToolServer::new(), ToolServer::registered_tool)
-        .run()
 }
 
 pub struct HarnessProfile {
@@ -518,7 +509,6 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::agent::AgentBuilder;
     use rig::test_utils::MockCompletionModel;
     use std::path::PathBuf;
 
@@ -793,8 +783,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolved_profile_can_be_consumed_by_the_real_rig_builder() {
+    #[tokio::test]
+    async fn resolved_profile_can_be_consumed_by_the_ecs_runtime() {
         let profile = resolve_harness_profile(HarnessProfileRequest {
             role: AgentRole::Verification,
             workspace: Some(ActiveWorkspaceContext {
@@ -810,11 +800,26 @@ mod tests {
         .expect("profile");
 
         let preamble = profile.preamble.unwrap_or_default();
-        let _agent = AgentBuilder::new(MockCompletionModel::text("ok"))
-            .preamble(&preamble)
-            .default_max_turns(profile.guards.max_turns)
-            .tool_server_handle(tool_server_handle(profile.tools))
-            .build();
+        let result = crate::ecs_runtime::run(
+            crate::ecs_runtime::RunRequest {
+                session_id: None,
+                model: MockCompletionModel::from_stream_turns([vec![
+                    rig::test_utils::MockStreamEvent::text("ok"),
+                    rig::test_utils::MockStreamEvent::final_response_with_default_usage(),
+                ]])
+                .into(),
+                prompt: "Verify".into(),
+                preamble: Some(preamble),
+                tools: profile.tools,
+                history: Vec::new(),
+                guards: profile.guards,
+                additional_params: None,
+            },
+            |_| {},
+        )
+        .await
+        .expect("ECS executes the profile");
+        assert_eq!(result.full_response, "ok");
     }
 
     #[test]

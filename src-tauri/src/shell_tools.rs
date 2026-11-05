@@ -1,5 +1,5 @@
 use crate::text_utils::truncate_text_bytes;
-use rig::tool::{PortableTool, ToolExecutionError};
+use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::ffi::OsStr;
@@ -1476,7 +1476,7 @@ impl std::fmt::Debug for RunShellCommandTool {
     }
 }
 
-impl PortableTool for RunShellCommandTool {
+impl Tool for RunShellCommandTool {
     const NAME: &'static str = "run_shell_command";
 
     type Error = ShellToolError;
@@ -1513,7 +1513,11 @@ impl PortableTool for RunShellCommandTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let executor = CommandExecutor::new(self.workspace_root.clone(), self.approval.clone());
         executor
             .run_shell(args.program, args.args, args.timeout_seconds)
@@ -1554,7 +1558,7 @@ impl std::fmt::Debug for RunGitCommandTool {
     }
 }
 
-impl PortableTool for RunGitCommandTool {
+impl Tool for RunGitCommandTool {
     const NAME: &'static str = "run_git_command";
 
     type Error = ShellToolError;
@@ -1587,7 +1591,11 @@ impl PortableTool for RunGitCommandTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let executor = CommandExecutor::new(self.workspace_root.clone(), self.approval.clone());
         executor.run_git(args.args, args.timeout_seconds).await
     }
@@ -1626,7 +1634,7 @@ impl std::fmt::Debug for RunGithubCliCommandTool {
     }
 }
 
-impl PortableTool for RunGithubCliCommandTool {
+impl Tool for RunGithubCliCommandTool {
     const NAME: &'static str = "run_github_cli_command";
 
     type Error = ShellToolError;
@@ -1659,7 +1667,11 @@ impl PortableTool for RunGithubCliCommandTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let executor = CommandExecutor::new(self.workspace_root.clone(), self.approval.clone());
         executor.run_gh(args.args, args.timeout_seconds).await
     }

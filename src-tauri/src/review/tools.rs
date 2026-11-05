@@ -5,7 +5,7 @@ use super::{
 };
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
-use rig::tool::{PortableTool, ToolExecutionError};
+use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fmt;
@@ -130,7 +130,7 @@ pub struct RunReviewOutput {
     pub findings: Vec<IndexedReviewComment>,
 }
 
-impl PortableTool for RunReviewTool {
+impl Tool for RunReviewTool {
     const NAME: &'static str = "run_review";
 
     type Error = WorkspaceToolError;
@@ -149,7 +149,11 @@ impl PortableTool for RunReviewTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         run_review_tool(
             self.workspace_root.clone(),
             self.provider.clone(),
@@ -163,7 +167,7 @@ impl PortableTool for RunReviewTool {
     }
 }
 
-impl PortableTool for RunMultiReviewTool {
+impl Tool for RunMultiReviewTool {
     const NAME: &'static str = "run_multi_review";
 
     type Error = WorkspaceToolError;
@@ -205,7 +209,11 @@ impl PortableTool for RunMultiReviewTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let focuses = args.focuses.unwrap_or_else(|| multi::ALL_FOCUSES.to_vec());
         let mode_enum =
             ReviewMode::parse(&args.mode, args.pr_number).map_err(WorkspaceToolError::Internal)?;
@@ -227,7 +235,7 @@ impl PortableTool for RunMultiReviewTool {
     }
 }
 
-impl PortableTool for RunSecurityReviewTool {
+impl Tool for RunSecurityReviewTool {
     const NAME: &'static str = "run_security_review";
 
     type Error = WorkspaceToolError;
@@ -246,7 +254,11 @@ impl PortableTool for RunSecurityReviewTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         run_review_tool(
             self.workspace_root.clone(),
             self.provider.clone(),
@@ -371,7 +383,7 @@ pub struct RecordReviewOutcomeToolOutput {
     pub outcome: Option<ReviewOutcome>,
 }
 
-impl PortableTool for RecordReviewOutcomeTool {
+impl Tool for RecordReviewOutcomeTool {
     const NAME: &'static str = "record_review_outcome";
 
     type Error = WorkspaceToolError;
@@ -407,7 +419,11 @@ impl PortableTool for RecordReviewOutcomeTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let _guard = REJECTION_STORE_LOCK.lock().await;
         match record_review_outcome(
             &self.workspace_root,
@@ -546,8 +562,8 @@ mod tests {
             "sk-secret-value".to_string(),
         );
 
-        let canonical_parameters = PortableTool::parameters(&canonical);
-        let alias_parameters = PortableTool::parameters(&alias);
+        let canonical_parameters = Tool::parameters(&canonical);
+        let alias_parameters = Tool::parameters(&alias);
 
         assert!(canonical_parameters.to_string().contains("focus"));
         assert_eq!(
@@ -572,7 +588,7 @@ mod tests {
             "sk-secret-value".to_string(),
         );
 
-        let parameters = PortableTool::parameters(&tool);
+        let parameters = Tool::parameters(&tool);
 
         assert_eq!(
             parameters["properties"]["focuses"]["items"]["enum"],

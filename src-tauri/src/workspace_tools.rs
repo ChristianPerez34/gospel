@@ -1,8 +1,7 @@
 use crate::text_utils::truncate_text_bytes;
 use globset::{Glob, GlobMatcher, GlobSet, GlobSetBuilder};
-use std::sync::LazyLock;
 use regex::Regex;
-use rig::tool::{PortableTool, RegisteredTool, ToolExecutionError};
+use rig::tool::{RegisteredTool, Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
@@ -12,6 +11,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use thiserror::Error;
 
 pub const WORKSPACE_TOOLS_SYSTEM_PROMPT: &str = r#"
@@ -490,7 +490,7 @@ impl From<ExternalResolvedPath> for ReadFileTarget {
     }
 }
 
-impl PortableTool for ReadFileTool {
+impl Tool for ReadFileTool {
     const NAME: &'static str = "read_file";
 
     type Error = WorkspaceToolError;
@@ -526,7 +526,11 @@ impl PortableTool for ReadFileTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
         let target: ReadFileTarget = match resolve_external_path(Some(&args.path), &access) {
             Ok(Some(external)) => {
@@ -739,7 +743,7 @@ pub struct SearchCodeOutput {
     skipped_files: usize,
 }
 
-impl PortableTool for SearchCodeTool {
+impl Tool for SearchCodeTool {
     const NAME: &'static str = "search_code";
 
     type Error = WorkspaceToolError;
@@ -779,7 +783,11 @@ impl PortableTool for SearchCodeTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
         let scope = match access.resolve_path(args.path.as_deref()) {
             Ok(scope) => scope,
@@ -926,7 +934,7 @@ pub struct FindFilesOutput {
     scanned_entries: usize,
 }
 
-impl PortableTool for FindFilesTool {
+impl Tool for FindFilesTool {
     const NAME: &'static str = "find_files";
 
     type Error = WorkspaceToolError;
@@ -962,7 +970,11 @@ impl PortableTool for FindFilesTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
         let scope = match access.resolve_path(args.path.as_deref()) {
             Ok(scope) => scope,
@@ -1168,7 +1180,7 @@ pub struct WorkspaceRootInventory {
     pub truncated: bool,
 }
 
-impl PortableTool for ListDirectoryTool {
+impl Tool for ListDirectoryTool {
     const NAME: &'static str = "list_directory";
 
     type Error = WorkspaceToolError;
@@ -1204,7 +1216,11 @@ impl PortableTool for ListDirectoryTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
         let scope: ListDirectoryTarget = match resolve_external_path(args.path.as_deref(), &access)
         {
@@ -1421,9 +1437,12 @@ pub(crate) fn build_base_workspace_tools_with_external_approval(
         None => RegisteredTool::from_tool(create_read_file_tool(workspace_path.clone())),
     };
     let list_directory_tool = match external_path_approval {
-        Some(approval) => RegisteredTool::from_tool(
-            create_list_directory_tool_with_external_approval(workspace_path.clone(), Some(approval)),
-        ),
+        Some(approval) => {
+            RegisteredTool::from_tool(create_list_directory_tool_with_external_approval(
+                workspace_path.clone(),
+                Some(approval),
+            ))
+        }
         None => RegisteredTool::from_tool(create_list_directory_tool(workspace_path.clone())),
     };
 
@@ -1462,7 +1481,7 @@ pub struct SourceEditOutput {
     truncated: bool,
 }
 
-impl PortableTool for SourceEditTool {
+impl Tool for SourceEditTool {
     const NAME: &'static str = "source_edit";
 
     type Error = WorkspaceToolError;
@@ -1498,7 +1517,11 @@ impl PortableTool for SourceEditTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
         let path = args.path.trim();
         if path.is_empty() {
@@ -1695,7 +1718,7 @@ pub struct WriteHarnessFileOutput {
     size_bytes: Option<u64>,
 }
 
-impl PortableTool for WriteHarnessFileTool {
+impl Tool for WriteHarnessFileTool {
     const NAME: &'static str = "write_harness_file";
 
     type Error = WorkspaceToolError;
@@ -1727,7 +1750,11 @@ impl PortableTool for WriteHarnessFileTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let access = WorkspaceAccess::new(&self.workspace_root)?;
 
         let trimmed_path = args.path.trim();
@@ -2926,7 +2953,7 @@ fn natural_path_cmp(left: &str, right: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::tool::PortableTool;
+    use rig::tool::Tool;
     use std::fs;
     use std::sync::{
         atomic::{AtomicUsize, Ordering as AtomicOrdering},
@@ -2994,22 +3021,28 @@ mod tests {
         let tool = create_read_file_tool(dir.path().to_path_buf());
 
         let relative = tool
-            .call(ReadFileArgs {
-                path: "src/main.rs".to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: "src/main.rs".to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
         assert!(relative.success);
         assert_eq!(relative.path.as_deref(), Some("src/main.rs"));
 
         let absolute = tool
-            .call(ReadFileArgs {
-                path: file_path.display().to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: file_path.display().to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
         assert!(absolute.success);
@@ -3025,11 +3058,14 @@ mod tests {
 
         let tool = create_read_file_tool(workspace.path().to_path_buf());
         let denied = tool
-            .call(ReadFileArgs {
-                path: external_file.display().to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: external_file.display().to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3057,11 +3093,14 @@ mod tests {
         );
 
         let approved = tool
-            .call(ReadFileArgs {
-                path: external_file.display().to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: external_file.display().to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3073,11 +3112,14 @@ mod tests {
         assert_eq!(approved.content.as_deref(), Some("1: outside"));
 
         let secret = tool
-            .call(ReadFileArgs {
-                path: secret_file.display().to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: secret_file.display().to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3098,22 +3140,28 @@ mod tests {
         let tool = create_read_file_tool(dir.path().to_path_buf());
 
         let invalid = tool
-            .call(ReadFileArgs {
-                path: "notes.txt".to_string(),
-                start_line: Some(300),
-                end_line: Some(200),
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: "notes.txt".to_string(),
+                    start_line: Some(300),
+                    end_line: Some(200),
+                },
+            )
             .await
             .unwrap();
         assert!(!invalid.success);
         assert_eq!(invalid.reason.as_deref(), Some("invalid_range"));
 
         let truncated = tool
-            .call(ReadFileArgs {
-                path: "notes.txt".to_string(),
-                start_line: Some(1),
-                end_line: Some(450),
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: "notes.txt".to_string(),
+                    start_line: Some(1),
+                    end_line: Some(450),
+                },
+            )
             .await
             .unwrap();
         assert!(truncated.success);
@@ -3129,22 +3177,28 @@ mod tests {
         let tool = create_read_file_tool(dir.path().to_path_buf());
 
         let binary = tool
-            .call(ReadFileArgs {
-                path: "image.bin".to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: "image.bin".to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
         assert!(!binary.success);
         assert_eq!(binary.reason.as_deref(), Some("binary"));
 
         let secret = tool
-            .call(ReadFileArgs {
-                path: ".env".to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: ".env".to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
         assert!(!secret.success);
@@ -3217,11 +3271,14 @@ mod tests {
         let tool = create_read_file_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(ReadFileArgs {
-                path: "linked.txt".to_string(),
-                start_line: None,
-                end_line: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ReadFileArgs {
+                    path: "linked.txt".to_string(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3237,11 +3294,14 @@ mod tests {
         let tool = create_source_edit_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(SourceEditArgs {
-                path: "src/main.rs".to_string(),
-                old_text: "println!(\"old\")".to_string(),
-                new_text: "println!(\"new\")".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "src/main.rs".to_string(),
+                    old_text: "println!(\"old\")".to_string(),
+                    new_text: "println!(\"new\")".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -3276,11 +3336,14 @@ mod tests {
 
         let tool = create_source_edit_tool(dir.path().to_path_buf());
         let output = tool
-            .call(SourceEditArgs {
-                path: "src/main.rs".to_string(),
-                old_text: "old".to_string(),
-                new_text: "new".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "src/main.rs".to_string(),
+                    old_text: "old".to_string(),
+                    new_text: "new".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -3300,33 +3363,42 @@ mod tests {
         let tool = create_source_edit_tool(dir.path().to_path_buf());
 
         let no_match = tool
-            .call(SourceEditArgs {
-                path: "src/lib.rs".to_string(),
-                old_text: "missing".to_string(),
-                new_text: "new".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "src/lib.rs".to_string(),
+                    old_text: "missing".to_string(),
+                    new_text: "new".to_string(),
+                },
+            )
             .await
             .unwrap();
         assert!(!no_match.success);
         assert_eq!(no_match.reason.as_deref(), Some("no_match"));
 
         let ambiguous = tool
-            .call(SourceEditArgs {
-                path: "src/lib.rs".to_string(),
-                old_text: "old".to_string(),
-                new_text: "new".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "src/lib.rs".to_string(),
+                    old_text: "old".to_string(),
+                    new_text: "new".to_string(),
+                },
+            )
             .await
             .unwrap();
         assert!(!ambiguous.success);
         assert_eq!(ambiguous.reason.as_deref(), Some("ambiguous_match"));
 
         let no_op = tool
-            .call(SourceEditArgs {
-                path: "src/lib.rs".to_string(),
-                old_text: "old".to_string(),
-                new_text: "old".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "src/lib.rs".to_string(),
+                    old_text: "old".to_string(),
+                    new_text: "old".to_string(),
+                },
+            )
             .await
             .unwrap();
         assert!(!no_op.success);
@@ -3353,11 +3425,14 @@ mod tests {
             ".env",
         ] {
             let output = tool
-                .call(SourceEditArgs {
-                    path: path.to_string(),
-                    old_text: "old".to_string(),
-                    new_text: "new".to_string(),
-                })
+                .call(
+                    &mut ToolContext::default(),
+                    SourceEditArgs {
+                        path: path.to_string(),
+                        old_text: "old".to_string(),
+                        new_text: "new".to_string(),
+                    },
+                )
                 .await
                 .unwrap();
             assert!(!output.success, "{path} should be blocked");
@@ -3377,33 +3452,42 @@ mod tests {
         let tool = create_source_edit_tool(dir.path().to_path_buf());
 
         let binary = tool
-            .call(SourceEditArgs {
-                path: "binary.dat".to_string(),
-                old_text: "old".to_string(),
-                new_text: "new".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "binary.dat".to_string(),
+                    old_text: "old".to_string(),
+                    new_text: "new".to_string(),
+                },
+            )
             .await
             .unwrap();
         assert!(!binary.success);
         assert_eq!(binary.reason.as_deref(), Some("binary"));
 
         let invalid = tool
-            .call(SourceEditArgs {
-                path: "invalid.txt".to_string(),
-                old_text: "old".to_string(),
-                new_text: "new".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "invalid.txt".to_string(),
+                    old_text: "old".to_string(),
+                    new_text: "new".to_string(),
+                },
+            )
             .await
             .unwrap();
         assert!(!invalid.success);
         assert_eq!(invalid.reason.as_deref(), Some("invalid_utf8"));
 
         let oversized = tool
-            .call(SourceEditArgs {
-                path: "large.txt".to_string(),
-                old_text: "a".to_string(),
-                new_text: "b".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                SourceEditArgs {
+                    path: "large.txt".to_string(),
+                    old_text: "a".to_string(),
+                    new_text: "b".to_string(),
+                },
+            )
             .await
             .unwrap();
         assert!(!oversized.success);
@@ -3418,24 +3502,30 @@ mod tests {
         let tool = create_search_code_tool(dir.path().to_path_buf());
 
         let invalid = tool
-            .call(SearchCodeArgs {
-                pattern: "(".to_string(),
-                path: None,
-                include_glob: None,
-                max_results: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                SearchCodeArgs {
+                    pattern: "(".to_string(),
+                    path: None,
+                    include_glob: None,
+                    max_results: None,
+                },
+            )
             .await
             .unwrap();
         assert!(!invalid.success);
         assert_eq!(invalid.reason.as_deref(), Some("invalid_regex"));
 
         let output = tool
-            .call(SearchCodeArgs {
-                pattern: "target".to_string(),
-                path: None,
-                include_glob: Some("src/**/*.rs".to_string()),
-                max_results: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                SearchCodeArgs {
+                    pattern: "target".to_string(),
+                    path: None,
+                    include_glob: Some("src/**/*.rs".to_string()),
+                    max_results: None,
+                },
+            )
             .await
             .unwrap();
         assert!(output.success);
@@ -3487,11 +3577,14 @@ mod tests {
         let tool = create_find_files_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(FindFilesArgs {
-                glob: "**/*.rs".to_string(),
-                path: Some("src".to_string()),
-                max_results: Some(1),
-            })
+            .call(
+                &mut ToolContext::default(),
+                FindFilesArgs {
+                    glob: "**/*.rs".to_string(),
+                    path: Some("src".to_string()),
+                    max_results: Some(1),
+                },
+            )
             .await
             .unwrap();
         assert!(output.success);
@@ -3512,11 +3605,14 @@ mod tests {
 
         let tool = create_list_directory_tool(dir.path().to_path_buf());
         let output = tool
-            .call(ListDirectoryArgs {
-                path: None,
-                depth: Some(3),
-                max_entries: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ListDirectoryArgs {
+                    path: None,
+                    depth: Some(3),
+                    max_entries: None,
+                },
+            )
             .await
             .unwrap();
         assert!(output.success);
@@ -3537,11 +3633,14 @@ mod tests {
 
         let tool = create_list_directory_tool(dir.path().to_path_buf());
         let output = tool
-            .call(ListDirectoryArgs {
-                path: Some("alias/src".to_string()),
-                depth: Some(1),
-                max_entries: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ListDirectoryArgs {
+                    path: Some("alias/src".to_string()),
+                    depth: Some(1),
+                    max_entries: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3570,11 +3669,14 @@ mod tests {
         );
 
         let output = tool
-            .call(ListDirectoryArgs {
-                path: Some(external.path().display().to_string()),
-                depth: Some(2),
-                max_entries: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ListDirectoryArgs {
+                    path: Some(external.path().display().to_string()),
+                    depth: Some(2),
+                    max_entries: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3611,11 +3713,14 @@ mod tests {
         );
 
         let output = tool
-            .call(ListDirectoryArgs {
-                path: Some(external.path().display().to_string()),
-                depth: Some(2),
-                max_entries: None,
-            })
+            .call(
+                &mut ToolContext::default(),
+                ListDirectoryArgs {
+                    path: Some(external.path().display().to_string()),
+                    depth: Some(2),
+                    max_entries: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3636,10 +3741,13 @@ mod tests {
         let tool = create_write_harness_file_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(WriteHarnessFileArgs {
-                path: ".gospel/PLAN.md".to_string(),
-                content: "# Plan\n\n## Goal\nTest.\n".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                WriteHarnessFileArgs {
+                    path: ".gospel/PLAN.md".to_string(),
+                    content: "# Plan\n\n## Goal\nTest.\n".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -3656,10 +3764,13 @@ mod tests {
         let tool = create_write_harness_file_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(WriteHarnessFileArgs {
-                path: "src/main.rs".to_string(),
-                content: "fn main() {}".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                WriteHarnessFileArgs {
+                    path: "src/main.rs".to_string(),
+                    content: "fn main() {}".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -3674,10 +3785,13 @@ mod tests {
         let big_content = "x".repeat(1024 * 1024 + 1);
 
         let output = tool
-            .call(WriteHarnessFileArgs {
-                path: ".gospel/PLAN.md".to_string(),
-                content: big_content,
-            })
+            .call(
+                &mut ToolContext::default(),
+                WriteHarnessFileArgs {
+                    path: ".gospel/PLAN.md".to_string(),
+                    content: big_content,
+                },
+            )
             .await
             .unwrap();
 
@@ -3691,10 +3805,13 @@ mod tests {
         let tool = create_write_harness_file_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(WriteHarnessFileArgs {
-                path: "".to_string(),
-                content: "content".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                WriteHarnessFileArgs {
+                    path: "".to_string(),
+                    content: "content".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -3708,10 +3825,13 @@ mod tests {
         let tool = create_write_harness_file_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(WriteHarnessFileArgs {
-                path: ".gospel/notes/design.md".to_string(),
-                content: "# Design notes".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                WriteHarnessFileArgs {
+                    path: ".gospel/notes/design.md".to_string(),
+                    content: "# Design notes".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -3727,10 +3847,13 @@ mod tests {
         let tool = create_write_harness_file_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(WriteHarnessFileArgs {
-                path: ".gospel/corpus/notes.md".to_string(),
-                content: "Legacy path is no longer reserved.".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                WriteHarnessFileArgs {
+                    path: ".gospel/corpus/notes.md".to_string(),
+                    content: "Legacy path is no longer reserved.".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -3751,10 +3874,13 @@ mod tests {
         let tool = create_write_harness_file_tool(dir.path().to_path_buf());
 
         let output = tool
-            .call(WriteHarnessFileArgs {
-                path: ".gospel/escape/src/pwned.rs".to_string(),
-                content: "fn main() {}".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                WriteHarnessFileArgs {
+                    path: ".gospel/escape/src/pwned.rs".to_string(),
+                    content: "fn main() {}".to_string(),
+                },
+            )
             .await
             .unwrap();
 

@@ -1,11 +1,11 @@
 use rig::http_client::HttpClientExt;
-use rig::providers::copilot::{model_listing::Models, CopilotConfig};
+use rig::providers::{copilot::model_listing::Models, openai::OpenAIConfig};
 use rig::wire::{Mode, Wire};
 
 use crate::models::{ModelInfo, ModelRegistry};
 
 pub(crate) async fn fetch_models(
-    config: &CopilotConfig,
+    config: &OpenAIConfig,
     http: &impl HttpClientExt,
 ) -> Result<Vec<ModelInfo>, String> {
     // Rig's normalized model list discards Copilot's tool-calling capabilities.
@@ -104,8 +104,8 @@ pub(crate) async fn fetch_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::core::test_utils::RecordingHttpClient;
     use rig::http_client::StatusCode;
+    use rig::test_utils::RecordingHttpClient;
     use serde_json::json;
 
     #[tokio::test]
@@ -132,7 +132,7 @@ mod tests {
             ]}))
             .unwrap(),
         );
-        let config = CopilotConfig::new("test-token")
+        let config = OpenAIConfig::with_key(&rig::providers::copilot::DIALECT, "test-token")
             .with_base_url("https://api.business.githubcopilot.com");
 
         let models = fetch_models(&config, &http).await.unwrap();
@@ -190,7 +190,7 @@ mod tests {
             ]}))
             .unwrap(),
         );
-        let config = CopilotConfig::new("test-token")
+        let config = OpenAIConfig::with_key(&rig::providers::copilot::DIALECT, "test-token")
             .with_base_url("https://api.business.githubcopilot.com");
         let models = fetch_models(&config, &http).await.unwrap();
         assert_eq!(
@@ -211,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_invalid_responses_and_preserves_http_failures() {
-        let config = CopilotConfig::new("test-token");
+        let config = OpenAIConfig::with_key(&rig::providers::copilot::DIALECT, "test-token");
         for body in ["not json", "{}", "{\"data\": null}"] {
             let http = RecordingHttpClient::new(body.as_bytes().to_vec());
             assert!(fetch_models(&config, &http).await.is_err());
@@ -241,9 +241,12 @@ mod tests {
     #[tokio::test]
     async fn accepts_an_empty_catalog() {
         let http = RecordingHttpClient::new(br#"{"data": []}"#.to_vec());
-        assert!(fetch_models(&CopilotConfig::new("test-token"), &http)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(fetch_models(
+            &OpenAIConfig::with_key(&rig::providers::copilot::DIALECT, "test-token"),
+            &http
+        )
+        .await
+        .unwrap()
+        .is_empty());
     }
 }

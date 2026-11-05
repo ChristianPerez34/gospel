@@ -18,21 +18,17 @@ pub use progress::{
 };
 
 use crate::harness_profile::{
-    resolve_harness_profile, tool_server_handle, ActiveWorkspaceContext, AgentRole,
-    HarnessProfileRequest, LoopDetector, LoopStatus,
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
 };
 use crate::provider_client::ProviderClientError;
 use crate::workspace_tools::is_secret_like;
-use futures::StreamExt;
-use std::sync::LazyLock;
 use regex::Regex;
-use rig::agent::MultiTurnStreamItem;
-use rig::AgentBuilder;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::process::Command;
@@ -2258,99 +2254,42 @@ pub(crate) async fn run_workspace_agent(
             ReviewAgentError::Provider(message)
         }
     })?;
-    let agent = AgentBuilder::new(model)
-        .preamble(profile_preamble)
-        .default_max_turns(profile_guards.max_turns)
-        .tool_server_handle(tool_server_handle(profile_tools))
-        .build();
-    let stream = agent
-        .prompt(config.prompt)
-        .max_turns(profile_guards.max_turns)
-        .stream();
-    timeout(
-        deadline,
-        consume_agent_stream(stream, profile_guards.loop_guard, config.on_tool_event),
-    )
-    .await
-    .map_err(|_| ReviewAgentError::Timeout)?
-}
-
-/// Consumes a multi-turn agent stream to completion, returning the final
-/// assistant text. Tool calls/results are forwarded to the observer when
-/// present. The whole stream is bounded by `deadline` so a stuck agent
-/// surfaces as a timeout rather than hanging forever.
-async fn consume_agent_stream(
-    mut stream: rig::agent::StreamingResult,
-    loop_guard: crate::harness_profile::LoopGuardPolicy,
-    on_tool_event: Option<&dyn ToolEventObserver>,
-) -> Result<String, ReviewAgentError> {
-    let mut tool_name_by_id: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut final_output = String::new();
-    let mut loop_detector = LoopDetector::new(loop_guard);
-
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(MultiTurnStreamItem::ToolCall { tool_call }) => {
-                let tool_name = tool_call.function.name.as_str().to_string();
-                let arguments = serde_json::Value::Object(tool_call.function.arguments.clone());
-                match loop_detector.record_call(&tool_name, &arguments) {
-                    LoopStatus::Stop => {
-                        return Err(ReviewAgentError::Provider(format!(
-                            "review agent stopped after a repeated '{}' tool-call loop",
-                            tool_name
-                        )))
+    let mut guards = profile_guards;
+    guards.deadline = None;
+    let work = crate::ecs_runtime::run(
+        crate::ecs_runtime::RunRequest {
+            session_id: None,
+            model,
+            prompt: config.prompt.to_owned(),
+            preamble: Some(profile_preamble),
+            tools: profile_tools,
+            history: Vec::new(),
+            guards,
+            additional_params: None,
+        },
+        |event| {
+            if let Some(observer) = config.on_tool_event {
+                match event {
+                    crate::llm::StreamEvent::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } => observer.on_tool_call(&id, &name, &arguments),
+                    crate::llm::StreamEvent::ToolResult { id, name, result } => {
+                        observer.on_tool_result(&id, &name, &result)
                     }
-                    LoopStatus::Warning(count) => tracing::warn!(
-                        role = "review",
-                        count,
-                        tool_name,
-                        "repeated tool-call warning"
-                    ),
-                    LoopStatus::Ok => {}
-                }
-                let call_id = tool_call.id.to_string();
-                tool_name_by_id.insert(call_id.clone(), tool_name.clone());
-                if let Some(observer) = on_tool_event {
-                    observer.on_tool_call(&call_id, &tool_name, &arguments);
+                    _ => {}
                 }
             }
-            Ok(MultiTurnStreamItem::ToolResult { tool_result }) => {
-                if let Some(observer) = on_tool_event {
-                    let (id, name, result_text) =
-                        extract_tool_result(&tool_result, &tool_name_by_id);
-                    observer.on_tool_result(&id, &name, &result_text);
-                }
-            }
-            Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
-                final_output = final_response.output();
-                break;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                return Err(ReviewAgentError::Provider(error.to_string()));
-            }
-        }
-    }
-
-    Ok(final_output)
+        },
+    );
+    timeout(deadline, work)
+        .await
+        .map_err(|_| ReviewAgentError::Timeout)?
+        .map(|result| result.full_response)
+        .map_err(|error| ReviewAgentError::Provider(error.to_string()))
 }
 
-/// Extracts the tool name and a text summary from a streamed tool result,
-/// falling back to the result's executed tool name when the call id has no
-/// recorded name.
-fn extract_tool_result(
-    tool_result: &rig::completion::message::ToolResult,
-    tool_name_by_id: &std::collections::HashMap<String, String>,
-) -> (String, String, String) {
-    let call_id = tool_result.call.to_string();
-    let name = tool_name_by_id
-        .get(&call_id)
-        .cloned()
-        .unwrap_or_else(|| tool_result.name.as_str().to_string());
-    let result_text = crate::llm::tool_result_summary(&tool_result.content);
-    (call_id, name, result_text)
-}
 #[cfg(test)]
 mod tests {
     use super::*;

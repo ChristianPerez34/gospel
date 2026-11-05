@@ -49,9 +49,7 @@ pub async fn fetch_models_for_provider(
             Some(ModelFetchKind::CustomChatGpt) => fetch_chatgpt_models_impl().await,
             Some(ModelFetchKind::RigOauthCopilot) => fetch_github_copilot_models_impl().await,
             Some(ModelFetchKind::CustomGrok) => fetch_grok_models_impl(api_key).await,
-            Some(ModelFetchKind::CustomXai) => {
-                fetch_xai_models_impl(api_key.unwrap_or("")).await
-            }
+            Some(ModelFetchKind::CustomXai) => fetch_xai_models_impl(api_key.unwrap_or("")).await,
             Some(ModelFetchKind::RigAnthropic) => {
                 fetch_anthropic_models_impl(api_key.unwrap_or("")).await
             }
@@ -186,12 +184,8 @@ async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
         return Err("GitHub Copilot OAuth session not found".to_string());
     }
 
-    let client = rig::providers::copilot::CopilotConfig::new("")
-        .client()
-        .authenticate(&crate::provider_client::copilot_authenticator(None))
-        .await
-        .map_err(|e| format!("failed to authenticate GitHub Copilot: {}", e))?;
-    crate::copilot_models::fetch_models(client.config(), &rig::rig_reqwest::shared()).await
+    let config = crate::provider_client::copilot_config().await?;
+    crate::copilot_models::fetch_models(&config, &rig::rig_reqwest::shared()).await
 }
 
 async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {

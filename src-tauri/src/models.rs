@@ -12,14 +12,38 @@ mod model_lists {
         CLAUDE_HAIKU_4_5, CLAUDE_OPUS_4_6, CLAUDE_OPUS_4_7, CLAUDE_SONNET_4_6,
     };
     pub use rig::providers::gemini::completion::{
-        GEMINI_2_0_FLASH, GEMINI_2_0_FLASH_LITE, GEMINI_2_5_FLASH, GEMINI_2_5_FLASH_PREVIEW_04_17,
-        GEMINI_2_5_PRO_EXP_03_25, GEMINI_2_5_PRO_PREVIEW_03_25, GEMINI_2_5_PRO_PREVIEW_05_06,
-        GEMINI_2_5_PRO_PREVIEW_06_05, GEMINI_3_1_FLASH_LITE_PREVIEW, GEMINI_3_FLASH_PREVIEW,
+        GEMINI_2_0_FLASH, GEMINI_2_5_FLASH, GEMINI_2_5_PRO_EXP_03_25, GEMINI_2_5_PRO_PREVIEW_06_05,
+        GEMINI_3_1_FLASH_LITE_PREVIEW, GEMINI_3_FLASH_PREVIEW,
     };
     pub use rig::providers::groq::LLAMA_3_1_8B_INSTANT;
     pub use rig::providers::mistral::{
         CODESTRAL, MINISTRAL_3B, MINISTRAL_8B, MISTRAL_LARGE, MISTRAL_SMALL,
     };
+
+    pub const GEMINI_2_0_FLASH_LITE: &str = "gemini-2.0-flash-lite";
+    pub const GEMINI_2_5_FLASH_PREVIEW_04_17: &str = "gemini-2.5-flash-preview-04-17";
+    pub const GEMINI_2_5_PRO_PREVIEW_03_25: &str = "gemini-2.5-pro-preview-03-25";
+    pub const GEMINI_2_5_PRO_PREVIEW_05_06: &str = "gemini-2.5-pro-preview-05-06";
+    pub const GPT_4O_2024_05_13: &str = "gpt-4o-2024-05-13";
+    pub const GPT_4_0125_PREVIEW: &str = "gpt-4-0125-preview";
+    pub const GPT_4_0613: &str = "gpt-4-0613";
+    pub const GPT_4_1106_PREVIEW: &str = "gpt-4-1106-preview";
+    pub const GPT_4_1106_VISION_PREVIEW: &str = "gpt-4-1106-vision-preview";
+    pub const GPT_4_5_PREVIEW: &str = "gpt-4.5-preview";
+    pub const GPT_4_5_PREVIEW_2025_02_27: &str = "gpt-4.5-preview-2025-02-27";
+    pub const GPT_4_TURBO_2024_04_09: &str = "gpt-4-turbo-2024-04-09";
+    pub const GPT_4_TURBO_PREVIEW: &str = "gpt-4-turbo-preview";
+    pub const GPT_4_VISION_PREVIEW: &str = "gpt-4-vision-preview";
+    pub const O1_2024_12_17: &str = "o1-2024-12-17";
+    pub const O1_MINI_2024_09_12: &str = "o1-mini-2024-09-12";
+    pub const O1_PREVIEW_2024_09_12: &str = "o1-preview-2024-09-12";
+    pub const O1_PRO: &str = "o1-pro";
+    pub const O3_MINI_2025_01_31: &str = "o3-mini-2025-01-31";
+    pub const O4_MINI_2025_04_16: &str = "o4-mini-2025-04-16";
+    pub const GROK_2_1212: &str = "grok-2-1212";
+    pub const GROK_2_VISION_1212: &str = "grok-2-vision-1212";
+    pub const GROK_3_FAST: &str = "grok-3-fast";
+    pub const GROK_3_MINI_FAST: &str = "grok-3-mini-fast";
 
     // Model ids rig dropped from its constant lists; kept so the hardcoded
     // fallback lists stay stable.
@@ -41,17 +65,11 @@ mod model_lists {
     pub const MISTRAL_NEMO: &str = "open-mistral-nemo";
     pub const CODESTRAL_MAMBA: &str = "open-codestral-mamba";
     pub use rig::providers::openai::{
-        GPT_4, GPT_4O, GPT_4O_2024_05_13, GPT_4O_2024_11_20, GPT_4O_MINI, GPT_4_0125_PREVIEW,
-        GPT_4_0613, GPT_4_1, GPT_4_1106_PREVIEW, GPT_4_1106_VISION_PREVIEW, GPT_4_1_2025_04_14,
-        GPT_4_1_MINI, GPT_4_1_NANO, GPT_4_32K, GPT_4_32K_0613, GPT_4_5_PREVIEW,
-        GPT_4_5_PREVIEW_2025_02_27, GPT_4_TURBO, GPT_4_TURBO_2024_04_09, GPT_4_TURBO_PREVIEW,
-        GPT_4_VISION_PREVIEW, GPT_5, GPT_5_1, GPT_5_2, GPT_5_5, GPT_5_MINI, GPT_5_NANO, O1,
-        O1_2024_12_17, O1_MINI, O1_MINI_2024_09_12, O1_PREVIEW, O1_PREVIEW_2024_09_12, O1_PRO, O3,
-        O3_MINI, O3_MINI_2025_01_31, O4_MINI, O4_MINI_2025_04_16,
+        GPT_4, GPT_4O, GPT_4O_2024_11_20, GPT_4O_MINI, GPT_4_1, GPT_4_1_2025_04_14, GPT_4_1_MINI,
+        GPT_4_1_NANO, GPT_4_32K, GPT_4_32K_0613, GPT_4_TURBO, GPT_5, GPT_5_1, GPT_5_2, GPT_5_5,
+        GPT_5_MINI, GPT_5_NANO, O1, O1_MINI, O1_PREVIEW, O3, O3_MINI, O4_MINI,
     };
-    pub use rig::providers::xai::{
-        GROK_2_1212, GROK_2_VISION_1212, GROK_3, GROK_3_FAST, GROK_3_MINI, GROK_3_MINI_FAST, GROK_4,
-    };
+    pub use rig::providers::xai::{GROK_3, GROK_3_MINI, GROK_4};
 
     pub const OPENAI_MODELS: &[&str] = &[
         GPT_5_5,
