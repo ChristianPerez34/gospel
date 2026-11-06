@@ -810,6 +810,9 @@ where
     let mut builder =
         AgentBuilder::new(completion_model(provider, model, api_key, session_id).await?)
             .default_max_turns(profile_guards.max_turns);
+    if let Some(effort) = variant_resolution.effort {
+        builder = builder.reasoning(effort);
+    }
     if let Some(additional_params) = variant_resolution.additional_params.clone() {
         builder = builder.additional_params(additional_params);
     }
