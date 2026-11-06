@@ -952,7 +952,23 @@ mod availability_tests {
                 "grok-4-0709"
             ]
         );
-        assert!(grok_models.iter().all(|model| model.variants.is_empty()));
+        for model in &grok_models {
+            match model.model.as_str() {
+                "grok-3-mini" | "grok-3-mini-fast" => assert_eq!(
+                    model
+                        .variants
+                        .iter()
+                        .map(|variant| variant.id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["reasoning-low", "reasoning-high"]
+                ),
+                _ => assert!(
+                    model.variants.is_empty(),
+                    "{} has no effort levels",
+                    model.model
+                ),
+            }
+        }
     }
 
     #[tokio::test]

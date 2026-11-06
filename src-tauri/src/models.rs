@@ -1,9 +1,12 @@
-use serde::Serialize;
+use rig::catalog::{Catalog, ModelSpec};
+use rig::completion::Effort;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
+#[cfg(not(test))]
+use tokio::sync::Mutex;
 use tokio::sync::{Notify, RwLock};
 
 #[cfg(not(test))]
@@ -409,11 +412,11 @@ pub struct ModelVariant {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ModelVariantDefinition {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
+    id: String,
+    name: String,
+    description: String,
     deprecated: bool,
-    additional_params: serde_json::Value,
+    effort: Effort,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -426,6 +429,7 @@ pub struct ModelVariantWarning {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedModelVariant {
     pub variant: Option<String>,
+    pub effort: Option<Effort>,
     pub additional_params: Option<serde_json::Value>,
     pub warning: Option<ModelVariantWarning>,
 }
@@ -468,6 +472,48 @@ pub static PENDING_REQUESTS: LazyLock<PendingMap> =
     LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
+#[cfg(not(test))]
+const LIVE_MODEL_CATALOG_URL: &str = "https://models.dev/api.json?type=chat";
+#[cfg(not(test))]
+const LIVE_MODEL_CATALOG_TTL: Duration = Duration::from_secs(DEFAULT_CACHE_TTL_SECS);
+// ponytail: coalesce forced refreshes for 10s so parallel provider fetches share one request.
+#[cfg(not(test))]
+const LIVE_MODEL_CATALOG_FORCE_COALESCE: Duration = Duration::from_secs(10);
+// ponytail: raise this cap if models.dev's chat catalog grows beyond 16 MiB.
+#[cfg(not(test))]
+const MAX_LIVE_MODEL_CATALOG_BYTES: usize = 16 * 1024 * 1024;
+
+type LiveModelEffortCatalog = HashMap<String, HashMap<String, Vec<Effort>>>;
+
+#[derive(Default)]
+struct CachedLiveModelEfforts {
+    by_provider: LiveModelEffortCatalog,
+    provider_overrides: LiveModelEffortCatalog,
+    #[cfg(not(test))]
+    etag: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ModelsDevProviderCatalog {
+    #[serde(default)]
+    models: HashMap<String, ModelsDevModel>,
+}
+
+#[derive(Deserialize)]
+struct ModelsDevModel {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    reasoning: Option<bool>,
+    #[serde(default)]
+    reasoning_options: Option<serde_json::Value>,
+}
+
+static LIVE_MODEL_EFFORTS: LazyLock<StdRwLock<CachedLiveModelEfforts>> =
+    LazyLock::new(|| StdRwLock::new(CachedLiveModelEfforts::default()));
+#[cfg(not(test))]
+static LIVE_MODEL_CATALOG_REFRESHED_AT: LazyLock<Mutex<Option<Instant>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 pub fn get_cache_ttl() -> Duration {
     match std::env::var("GOSPEL_MODEL_CACHE_TTL_SECONDS") {
@@ -482,6 +528,71 @@ pub fn get_cache_ttl() -> Duration {
 pub struct ModelRegistry;
 
 impl ModelRegistry {
+    #[cfg(not(test))]
+    pub(crate) async fn refresh_live_model_catalog(force_refresh: bool) {
+        let mut refreshed_at = LIVE_MODEL_CATALOG_REFRESHED_AT.lock().await;
+        if let Some(last_refresh) = *refreshed_at {
+            let age = last_refresh.elapsed();
+            if age < LIVE_MODEL_CATALOG_FORCE_COALESCE
+                || (!force_refresh && age < LIVE_MODEL_CATALOG_TTL)
+            {
+                return;
+            }
+        }
+
+        let etag = LIVE_MODEL_EFFORTS
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .etag
+            .clone();
+        match fetch_live_model_efforts(etag.as_deref()).await {
+            Ok(Some(catalog)) if !catalog.by_provider.is_empty() => {
+                let provider_count = catalog.by_provider.len();
+                let mut cached = LIVE_MODEL_EFFORTS
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                cached.by_provider = catalog.by_provider;
+                cached.etag = catalog.etag;
+                tracing::info!(
+                    providers = provider_count,
+                    "Refreshed live model reasoning metadata from models.dev"
+                );
+            }
+            Ok(Some(_)) => {
+                tracing::warn!("models.dev returned no reasoning metadata; retaining the prior catalog");
+            }
+            Ok(None) => tracing::debug!("models.dev reasoning metadata has not changed"),
+            Err(error) => tracing::warn!(
+                "Failed to refresh live model reasoning metadata; using cached or bundled data: {error}"
+            ),
+        }
+        *refreshed_at = Some(Instant::now());
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn replace_live_model_effort_provider(
+        provider: &str,
+        model_efforts: HashMap<String, Vec<String>>,
+    ) {
+        let model_efforts = model_efforts
+            .into_iter()
+            .map(|(model, values)| {
+                (
+                    model,
+                    values
+                        .iter()
+                        .filter_map(|value| parse_live_effort(value))
+                        .collect(),
+                )
+            })
+            .collect();
+        LIVE_MODEL_EFFORTS
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .provider_overrides
+            .insert(models_dev_provider_id(provider).to_string(), model_efforts);
+    }
+
     pub fn model_info(provider: &str, model: &str) -> ModelInfo {
         ModelInfo {
             model: model.to_string(),
@@ -496,9 +607,9 @@ impl ModelRegistry {
             .into_iter()
             .filter(|variant| !variant.deprecated)
             .map(|variant| ModelVariant {
-                id: variant.id.to_string(),
-                name: variant.name.to_string(),
-                description: variant.description.to_string(),
+                id: variant.id,
+                name: variant.name,
+                description: variant.description,
                 deprecated: variant.deprecated,
             })
             .collect()
@@ -513,6 +624,7 @@ impl ModelRegistry {
         let Some(variant) = variant.map(str::trim).filter(|value| !value.is_empty()) else {
             return ResolvedModelVariant {
                 variant: None,
+                effort: None,
                 additional_params: default_additional_params,
                 warning: None,
             };
@@ -532,14 +644,16 @@ impl ModelRegistry {
                 None
             };
             return ResolvedModelVariant {
-                variant: Some(definition.id.to_string()),
-                additional_params: Some(definition.additional_params),
+                variant: Some(definition.id),
+                effort: Some(definition.effort),
+                additional_params: default_additional_params,
                 warning,
             };
         }
 
         ResolvedModelVariant {
             variant: None,
+            effort: None,
             additional_params: default_additional_params,
             warning: Some(ModelVariantWarning {
                 kind: "missing".to_string(),
@@ -553,13 +667,19 @@ impl ModelRegistry {
     }
 
     fn reasoning_stream_params(provider: &str, model: &str) -> Option<serde_json::Value> {
-        let supports_reasoning_summary = match provider {
-            "openai" => openai_reasoning_effort_supported(model),
-            "chatgpt" => chatgpt_reasoning_effort_supported(model),
+        let supports_summary = match provider {
+            "openai" => matches!(model, "gpt-5.1" | "gpt-5.2"),
+            "chatgpt" => model != "gpt-5.6-luna" && Self::is_chatgpt_subscription_model(model),
+            "opencode_go" => {
+                matches!(
+                    crate::provider_client::opencode_go_protocol(model),
+                    crate::provider_client::OpencodeGoProtocol::OpenAiResponses
+                ) && Self::reasoning_effort_levels(provider, model)
+                    .is_some_and(|levels| !levels.is_empty())
+            }
             _ => false,
         };
-
-        supports_reasoning_summary.then(|| {
+        supports_summary.then(|| {
             json!({
                 "reasoning": {
                     "summary": "auto"
@@ -579,57 +699,28 @@ impl ModelRegistry {
     }
 
     fn variant_definitions(provider: &str, model: &str) -> Vec<ModelVariantDefinition> {
-        let supports_reasoning_effort = match provider {
-            "openai" => openai_reasoning_effort_supported(model),
-            "chatgpt" => chatgpt_reasoning_effort_supported(model),
-            _ => false,
-        };
-        if !supports_reasoning_effort {
+        let Some(levels) = Self::reasoning_effort_levels(provider, model) else {
             return Vec::new();
+        };
+
+        levels
+            .into_iter()
+            .map(variant_definition_for_effort)
+            .collect()
+    }
+
+    fn reasoning_effort_levels(provider: &str, model: &str) -> Option<Vec<Effort>> {
+        if provider == "chatgpt"
+            && (model == "gpt-5.6-luna" || !Self::is_chatgpt_subscription_model(model))
+        {
+            return None;
         }
 
-        [
-            (
-                "reasoning-low",
-                "Low reasoning",
-                "Lower reasoning effort for faster responses.",
-            ),
-            (
-                "reasoning-medium",
-                "Medium reasoning",
-                "Medium reasoning effort when the provider default should be made explicit.",
-            ),
-            (
-                "reasoning-high",
-                "High reasoning",
-                "Higher reasoning effort for harder prompts that benefit from deeper deliberation.",
-            ),
-            (
-                "reasoning-extra-high",
-                "Extra high reasoning",
-                "Maximum reasoning effort for the hardest problems that require deeper deliberation.",
-            ),
-        ]
-        .into_iter()
-        .map(|(id, name, description)| {
-            let effort = match id {
-                "reasoning-extra-high" => "xhigh",
-                _ => id.trim_start_matches("reasoning-"),
-            };
-            ModelVariantDefinition {
-                id,
-                name,
-                description,
-                deprecated: false,
-                additional_params: json!({
-                    "reasoning": {
-                        "effort": effort,
-                        "summary": "auto"
-                    }
-                }),
-            }
+        live_model_effort_levels(provider, model).or_else(|| {
+            catalog_model_spec(provider, model)
+                .filter(|spec| spec.reasoning.supported())
+                .and_then(|spec| spec.reasoning.levels().map(<[Effort]>::to_vec))
         })
-        .collect()
     }
 
     pub fn models_for_provider(provider: &str) -> &'static [&'static str] {
@@ -835,15 +926,227 @@ impl ModelRegistry {
     }
 }
 
-fn openai_reasoning_effort_supported(model: &str) -> bool {
-    matches!(model, "gpt-5.1" | "gpt-5.2")
+fn parse_live_model_effort_catalog(
+    json: &str,
+) -> Result<LiveModelEffortCatalog, serde_json::Error> {
+    let providers: HashMap<String, ModelsDevProviderCatalog> = serde_json::from_str(json)?;
+    let mut catalog = HashMap::new();
+
+    for (provider_id, provider) in providers {
+        let mut models = HashMap::new();
+        for (model_id, model) in provider.models {
+            let levels = model
+                .reasoning_options
+                .as_ref()
+                .and_then(parse_live_effort_options)
+                .or_else(|| {
+                    model
+                        .reasoning
+                        .filter(|supports_reasoning| !supports_reasoning)
+                        .map(|_| Vec::new())
+                });
+            let Some(levels) = levels else {
+                continue;
+            };
+
+            models.insert(model_id.clone(), levels.clone());
+            if let Some(id) = model.id.filter(|id| id != &model_id) {
+                models.insert(id, levels);
+            }
+        }
+        if !models.is_empty() {
+            catalog.insert(provider_id, models);
+        }
+    }
+
+    Ok(catalog)
 }
 
-fn chatgpt_reasoning_effort_supported(model: &str) -> bool {
-    if model == "gpt-5.6-luna" {
-        return false;
+fn parse_live_effort_options(options: &serde_json::Value) -> Option<Vec<Effort>> {
+    let options = options.as_array()?;
+    let mut efforts = Vec::new();
+    for option in options {
+        if option.get("type").and_then(serde_json::Value::as_str) != Some("effort") {
+            continue;
+        }
+        for value in option
+            .get("values")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(effort) = value.as_str().and_then(parse_live_effort) else {
+                continue;
+            };
+            if !efforts.contains(&effort) {
+                efforts.push(effort);
+            }
+        }
     }
-    ModelRegistry::is_chatgpt_subscription_model(model)
+    Some(efforts)
+}
+
+fn parse_live_effort(value: &str) -> Option<Effort> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "minimal" => Some(Effort::Minimal),
+        "low" => Some(Effort::Low),
+        "medium" => Some(Effort::Medium),
+        "high" => Some(Effort::High),
+        "xhigh" | "x-high" | "extra_high" | "extra-high" => Some(Effort::XHigh),
+        "max" | "maximum" => Some(Effort::Max),
+        _ => None,
+    }
+}
+
+fn models_dev_provider_id(provider: &str) -> &str {
+    match provider {
+        "gemini" => "google",
+        "github_copilot" => "github-copilot",
+        "grok" => "xai",
+        "opencode_go" => "opencode-go",
+        _ => provider,
+    }
+}
+
+fn live_model_effort_levels(provider: &str, model: &str) -> Option<Vec<Effort>> {
+    let catalog = LIVE_MODEL_EFFORTS
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    live_effort_levels_from(&catalog.provider_overrides, provider, model)
+        .or_else(|| live_effort_levels_from(&catalog.by_provider, provider, model))
+}
+
+fn live_effort_levels_from(
+    catalog: &LiveModelEffortCatalog,
+    provider: &str,
+    model: &str,
+) -> Option<Vec<Effort>> {
+    catalog
+        .get(models_dev_provider_id(provider))?
+        .get(model)
+        .cloned()
+}
+
+#[cfg(not(test))]
+async fn fetch_live_model_efforts(
+    etag: Option<&str>,
+) -> Result<Option<CachedLiveModelEfforts>, String> {
+    let client = reqwest::Client::new();
+    let mut request = client
+        .get(LIVE_MODEL_CATALOG_URL)
+        .timeout(Duration::from_secs(8));
+    if let Some(etag) = etag {
+        request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+    }
+
+    let mut response = request.send().await.map_err(|error| error.to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    response = response
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_LIVE_MODEL_CATALOG_BYTES as u64)
+    {
+        return Err("models.dev response exceeded the 16 MiB size limit".to_string());
+    }
+
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if body.len().saturating_add(chunk.len()) > MAX_LIVE_MODEL_CATALOG_BYTES {
+            return Err("models.dev response exceeded the 16 MiB size limit".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let json = std::str::from_utf8(&body).map_err(|error| error.to_string())?;
+    let by_provider = parse_live_model_effort_catalog(json).map_err(|error| error.to_string())?;
+    if by_provider.is_empty() {
+        return Err("models.dev returned no model effort metadata".to_string());
+    }
+
+    Ok(Some(CachedLiveModelEfforts {
+        by_provider,
+        provider_overrides: HashMap::new(),
+        etag,
+    }))
+}
+
+fn catalog_model_spec(provider: &str, model: &str) -> Option<&'static ModelSpec> {
+    let catalog = Catalog::builtin();
+    let vendor = match provider {
+        "gemini" => "gcp.gemini",
+        "github_copilot" => "copilot",
+        "grok" => "xai",
+        _ => provider,
+    };
+    let resolve = |reference: String| catalog.resolve(&reference).ok().map(|found| found.spec);
+    if let Some(spec) = resolve(format!("{vendor}/{model}")) {
+        return Some(spec);
+    }
+
+    match provider {
+        "chatgpt" => resolve(format!("openai/{model}")),
+        "opencode_go" => {
+            if let Some(spec) = resolve(format!("openai/{model}")) {
+                return Some(spec);
+            }
+
+            // ponytail: gateway IDs must resolve unambiguously by exact model ID; provider capability metadata would remove this ceiling.
+            let mut matches = catalog.iter().filter(|spec| spec.id == model);
+            let first = matches.next()?;
+            let reasoning = &first.reasoning;
+            matches
+                .all(|spec| {
+                    spec.reasoning.supported() == reasoning.supported()
+                        && spec.reasoning.levels() == reasoning.levels()
+                })
+                .then_some(first)
+        }
+        _ => None,
+    }
+}
+
+fn variant_definition_for_effort(effort: Effort) -> ModelVariantDefinition {
+    let label = match effort {
+        Effort::Minimal => "Minimal",
+        Effort::Low => "Low",
+        Effort::Medium => "Medium",
+        Effort::High => "High",
+        Effort::XHigh => "Extra high",
+        Effort::Max => "Max",
+        _ => effort.as_str(),
+    };
+    let description = match effort {
+        Effort::Minimal => "Minimal reasoning effort for simple prompts.",
+        Effort::Low => "Lower reasoning effort for faster responses.",
+        Effort::Medium => "Medium reasoning effort for balanced responses.",
+        Effort::High => "Higher reasoning effort for harder prompts.",
+        Effort::XHigh => {
+            "Extra-high reasoning effort for difficult prompts that benefit from deeper deliberation."
+        }
+        Effort::Max => "Maximum reasoning effort for the most demanding prompts.",
+        _ => "Provider-supported reasoning effort.",
+    };
+    let id = if effort == Effort::XHigh {
+        "reasoning-extra-high".to_string()
+    } else {
+        format!("reasoning-{}", effort.as_str())
+    };
+
+    ModelVariantDefinition {
+        id,
+        name: format!("{label} reasoning"),
+        description: description.to_string(),
+        deprecated: false,
+        effort,
+    }
 }
 
 fn sanitize_model_fetch_error(error: &str) -> (String, String) {
@@ -982,19 +1285,15 @@ mod tests {
     }
 
     #[test]
-    fn openai_reasoning_variant_resolves_to_responses_api_params() {
+    fn openai_reasoning_variant_resolves_to_rig_effort() {
         let resolved =
             ModelRegistry::resolve_model_variant("openai", "gpt-5.2", Some("reasoning-high"));
 
         assert_eq!(resolved.variant.as_deref(), Some("reasoning-high"));
+        assert_eq!(resolved.effort, Some(Effort::High));
         assert_eq!(
             resolved.additional_params,
-            Some(json!({
-                "reasoning": {
-                    "effort": "high",
-                    "summary": "auto"
-                }
-            }))
+            Some(json!({ "reasoning": { "summary": "auto" } }))
         );
         assert!(resolved.warning.is_none());
     }
@@ -1016,29 +1315,83 @@ mod tests {
     }
 
     #[test]
-    fn chatgpt_reasoning_variants_decorate_all_models() {
-        for model in CHATGPT_DISCOVERABLE_MODELS {
-            let info = ModelRegistry::model_info("chatgpt", model);
+    fn variants_follow_rig_catalog_effort_levels() {
+        let chatgpt_model = ModelRegistry::model_info("chatgpt", "gpt-5.4-pro");
+        assert_eq!(
+            variant_ids(&chatgpt_model),
+            vec!["reasoning-medium", "reasoning-high", "reasoning-extra-high"]
+        );
 
-            if *model == "gpt-5.6-luna" {
-                assert!(
-                    variant_ids(&info).is_empty(),
-                    "gpt-5.6-luna should not expose reasoning variants"
-                );
-                continue;
-            }
+        let anthropic_model = ModelRegistry::model_info("anthropic", "claude-opus-4-6");
+        assert_eq!(
+            variant_ids(&anthropic_model),
+            vec![
+                "reasoning-low",
+                "reasoning-medium",
+                "reasoning-high",
+                "reasoning-max"
+            ]
+        );
 
-            assert_eq!(
-                variant_ids(&info),
-                expected_reasoning_variant_ids(),
-                "chatgpt model {} should expose reasoning variants",
-                info.model
-            );
-        }
+        let resolved = ModelRegistry::resolve_model_variant(
+            "anthropic",
+            "claude-opus-4-6",
+            Some("reasoning-max"),
+        );
+        assert_eq!(resolved.effort, Some(Effort::Max));
+        assert!(resolved.additional_params.is_none());
     }
 
     #[test]
-    fn chatgpt_reasoning_variant_resolves_to_params() {
+    fn live_models_dev_efforts_are_provider_scoped_and_ignore_other_option_types() {
+        let catalog = parse_live_model_effort_catalog(
+            r#"{
+                "opencode-go": { "models": {
+                    "gpt-6-luna": { "reasoning": true, "reasoning_options": [
+                        { "type": "effort", "values": ["none", "low", "medium", "high", "xhigh", "max"] }
+                    ] },
+                    "budget-model": { "reasoning": true, "reasoning_options": [
+                        { "type": "budget_tokens", "min": -1, "max": 32768 }
+                    ] }
+                } },
+                "xai": { "models": {
+                    "grok-3-mini": { "reasoning": true, "reasoning_options": [
+                        { "type": "effort", "values": ["low", "high"] }
+                    ] }
+                } }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            live_effort_levels_from(&catalog, "opencode_go", "gpt-6-luna"),
+            Some(vec![
+                Effort::Low,
+                Effort::Medium,
+                Effort::High,
+                Effort::XHigh,
+                Effort::Max
+            ])
+        );
+        assert_eq!(
+            live_effort_levels_from(&catalog, "grok", "grok-3-mini"),
+            Some(vec![Effort::Low, Effort::High])
+        );
+        assert_eq!(
+            live_effort_levels_from(&catalog, "opencode_go", "budget-model"),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn chatgpt_luna_keeps_its_existing_no_variant_override() {
+        assert!(ModelRegistry::model_info("chatgpt", "gpt-5.6-luna")
+            .variants
+            .is_empty());
+    }
+
+    #[test]
+    fn chatgpt_reasoning_variant_resolves_to_rig_effort() {
         let resolved = ModelRegistry::resolve_model_variant(
             "chatgpt",
             "gpt-5.4-pro",
@@ -1046,14 +1399,10 @@ mod tests {
         );
 
         assert_eq!(resolved.variant.as_deref(), Some("reasoning-extra-high"));
+        assert_eq!(resolved.effort, Some(Effort::XHigh));
         assert_eq!(
             resolved.additional_params,
-            Some(json!({
-                "reasoning": {
-                    "effort": "xhigh",
-                    "summary": "auto"
-                }
-            }))
+            Some(json!({ "reasoning": { "summary": "auto" } }))
         );
         assert!(resolved.warning.is_none());
     }
@@ -1075,11 +1424,47 @@ mod tests {
     }
 
     #[test]
+    fn opencode_go_gpt6_luna_exposes_and_resolves_reasoning_effort_variants() {
+        let expected = [
+            ("reasoning-low", Effort::Low),
+            ("reasoning-medium", Effort::Medium),
+            ("reasoning-high", Effort::High),
+            ("reasoning-extra-high", Effort::XHigh),
+            ("reasoning-max", Effort::Max),
+        ];
+        let model = ModelRegistry::model_info("opencode_go", "gpt-6-luna");
+
+        assert_eq!(
+            variant_ids(&model),
+            expected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+        );
+        for (variant, effort) in expected {
+            let resolved =
+                ModelRegistry::resolve_model_variant("opencode_go", "gpt-6-luna", Some(variant));
+            assert_eq!(resolved.variant.as_deref(), Some(variant));
+            assert_eq!(resolved.effort, Some(effort));
+            assert_eq!(
+                resolved.additional_params,
+                Some(json!({ "reasoning": { "summary": "auto" } }))
+            );
+            assert!(resolved.warning.is_none());
+        }
+
+        let default = ModelRegistry::resolve_model_variant("opencode_go", "gpt-6-luna", None);
+        assert_eq!(default.variant, None);
+        assert_eq!(
+            default.additional_params,
+            Some(json!({ "reasoning": { "summary": "auto" } }))
+        );
+    }
+
+    #[test]
     fn missing_model_variant_falls_back_to_default_with_warning() {
         let resolved =
             ModelRegistry::resolve_model_variant("openai", "gpt-5.2", Some("missing-variant"));
 
         assert_eq!(resolved.variant, None);
+        assert_eq!(resolved.effort, None);
         assert_eq!(
             resolved.additional_params,
             Some(json!({

@@ -36,6 +36,7 @@ fn request(model: &MockCompletionModel) -> RunRequest {
         tools: Vec::new(),
         guards,
         additional_params: None,
+        reasoning: None,
     }
 }
 
@@ -109,6 +110,18 @@ async fn streams_and_preserves_existing_history_and_variant_parameters() {
     assert_eq!(
         model.requests()[0].options.cache_key.as_deref(),
         Some("existing-session")
+    );
+}
+
+#[tokio::test]
+async fn applies_selected_reasoning_effort_to_model_requests() {
+    let model = MockCompletionModel::from_stream_turns([answer("Done")]);
+    let mut input = request(&model);
+    input.reasoning = Some(Effort::High);
+    run(input, |_| {}).await.unwrap();
+    assert_eq!(
+        model.requests()[0].options.reasoning,
+        Some(rig::completion::Reasoning::Effort(Effort::High))
     );
 }
 

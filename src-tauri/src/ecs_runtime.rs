@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use futures::future::poll_fn;
 use rig::catalog::{ModelSpec, ReasoningSupport};
-use rig::completion::Message;
+use rig::completion::{Effort, Message};
 use rig::effect::{family, EffectKind, HandlerDescriptor};
 use rig::providers::registry::ProviderId;
 use rig::serve::{adapters::ModelAdapter, Dispatch, ErasedHandler, Reply, Serve};
@@ -40,6 +40,7 @@ pub(crate) struct RunRequest {
     pub tools: Vec<RegisteredTool>,
     pub guards: HarnessRunGuards,
     pub additional_params: Option<serde_json::Value>,
+    pub reasoning: Option<Effort>,
 }
 
 /// Bevy polls handlers on its pools. Enter Tokio on every poll, including
@@ -131,6 +132,7 @@ struct RunState {
     guards: HarnessRunGuards,
     detector: LoopDetector,
     additional_params: Option<serde_json::Value>,
+    reasoning: Option<Effort>,
     calls: usize,
     tool_calls: usize,
     source_edit_succeeded: bool,
@@ -169,6 +171,9 @@ fn prepare_models(
     for mut model in &mut models {
         if let Some(params) = &state.additional_params {
             model.request_mut().additional_params = Some(params.clone());
+        }
+        if let Some(effort) = state.reasoning {
+            model.request_mut().options.reasoning = Some(effort.into());
         }
     }
 }
@@ -398,6 +403,7 @@ fn kernel(
         guards: request.guards,
         detector: LoopDetector::new(request.guards.loop_guard),
         additional_params: request.additional_params,
+        reasoning: request.reasoning,
         calls: 0,
         tool_calls: 0,
         source_edit_succeeded: false,

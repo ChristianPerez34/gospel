@@ -814,6 +814,7 @@ mod tests {
                 history: Vec::new(),
                 guards: profile.guards,
                 additional_params: None,
+                reasoning: None,
             },
             |_| {},
         )

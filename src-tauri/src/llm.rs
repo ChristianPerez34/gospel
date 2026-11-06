@@ -45,6 +45,7 @@ pub(crate) async fn generate_session_title(
             history: Vec::new(),
             guards,
             additional_params: None,
+            reasoning: None,
         },
         |_| {},
     )
@@ -612,6 +613,7 @@ async fn run_exploration_agent(
             history: Vec::new(),
             guards: profile.guards,
             additional_params: None,
+            reasoning: None,
         },
         |event| {
             if let StreamEvent::ToolCall { name, .. } = event {
@@ -727,6 +729,7 @@ where
             history: chat_history,
             guards: profile.guards,
             additional_params: variant_resolution.additional_params,
+            reasoning: variant_resolution.effort,
         },
         on_event,
     )
