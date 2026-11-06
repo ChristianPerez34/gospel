@@ -70,6 +70,11 @@ function getVisibleBounds(anchor: HTMLElement) {
   while (ancestor) {
     const style = window.getComputedStyle(ancestor);
     const rect = ancestor.getBoundingClientRect();
+    // display: contents ancestors generate no box, so their rect is meaningless.
+    if (style.display === "contents" || rect.width === 0 || rect.height === 0) {
+      ancestor = ancestor.parentElement;
+      continue;
+    }
     const clipsX = clipsOverflow(style.overflowX) || clipsOverflow(style.overflow);
     const clipsY = clipsOverflow(style.overflowY) || clipsOverflow(style.overflow);
 
@@ -95,7 +100,7 @@ function getVariantMenuLayout(anchor: HTMLElement): VariantMenuLayout {
   const width = Math.min(VARIANT_MENU_MAX_WIDTH, availableWidth);
   const minimumLeft = bounds.left + MENU_EDGE_INSET;
   const maximumLeft = Math.max(minimumLeft, bounds.right - MENU_EDGE_INSET - width);
-  const viewportLeft = Math.min(Math.max(anchorRect.right - width, minimumLeft), maximumLeft);
+  const viewportLeft = Math.min(Math.max(anchorRect.left, minimumLeft), maximumLeft);
   const spaceAbove = Math.max(0, anchorRect.top - MENU_GAP - (bounds.top + MENU_EDGE_INSET));
   const spaceBelow = Math.max(0, bounds.bottom - MENU_EDGE_INSET - anchorRect.bottom - MENU_GAP);
   const placement: VariantMenuPlacement =
