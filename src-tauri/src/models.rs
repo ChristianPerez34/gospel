@@ -643,6 +643,20 @@ impl ModelRegistry {
             } else {
                 None
             };
+
+            // Copilot's Chat Completions route rejects typed options ("unverified for copilot").
+            // Rig requires unverified gateway options to pass via additional_params.
+            if provider == "github_copilot" && !Self::copilot_model_routes_through_responses(model) {
+                let mut params = default_additional_params.unwrap_or_else(|| json!({}));
+                params["reasoning_effort"] = json!(definition.effort.as_str());
+                return ResolvedModelVariant {
+                    variant: Some(definition.id),
+                    effort: None,
+                    additional_params: Some(params),
+                    warning,
+                };
+            }
+
             return ResolvedModelVariant {
                 variant: Some(definition.id),
                 effort: Some(definition.effort),
@@ -752,6 +766,36 @@ impl ModelRegistry {
                 .find(|info| info.provider == "github_copilot" && info.model == model)
                 .and_then(|info| info.copilot_supported_endpoints.clone())
         })
+    }
+
+    pub(crate) fn copilot_supported_endpoints_sync(model: &str) -> Option<Vec<String>> {
+        let cache = MODEL_CACHE.try_read().ok()?;
+        cache.values().find_map(|entry| {
+            entry
+                .models
+                .iter()
+                .find(|info| info.provider == "github_copilot" && info.model == model)
+                .and_then(|info| info.copilot_supported_endpoints.clone())
+        })
+    }
+
+    pub(crate) fn copilot_model_routes_through_responses(model: &str) -> bool {
+        if let Some(endpoints) = Self::copilot_supported_endpoints_sync(model) {
+            if endpoints
+                .iter()
+                .any(|endpoint| endpoint.starts_with('/') && endpoint.ends_with("/responses"))
+            {
+                return true;
+            }
+            if endpoints
+                .iter()
+                .any(|endpoint| endpoint.starts_with('/') && endpoint.ends_with("/chat/completions"))
+            {
+                return false;
+            }
+        }
+        let id = model.to_ascii_lowercase();
+        id.contains("codex") || id.starts_with("gpt-6.1-")
     }
 
     #[allow(dead_code)]
@@ -1093,6 +1137,21 @@ fn catalog_model_spec(provider: &str, model: &str) -> Option<&'static ModelSpec>
 
     match provider {
         "chatgpt" => resolve(format!("openai/{model}")),
+        "github_copilot" => {
+            if let Some(spec) = resolve(format!("openai/{model}")) {
+                return Some(spec);
+            }
+
+            let mut matches = catalog.iter().filter(|spec| spec.id == model);
+            let first = matches.next()?;
+            let reasoning = &first.reasoning;
+            matches
+                .all(|spec| {
+                    spec.reasoning.supported() == reasoning.supported()
+                        && spec.reasoning.levels() == reasoning.levels()
+                })
+                .then_some(first)
+        }
         "opencode_go" => {
             if let Some(spec) = resolve(format!("openai/{model}")) {
                 return Some(spec);
@@ -1456,6 +1515,46 @@ mod tests {
             default.additional_params,
             Some(json!({ "reasoning": { "summary": "auto" } }))
         );
+    }
+
+    #[test]
+    fn github_copilot_chat_models_resolve_variants_to_reasoning_effort_param() {
+        let expected = [
+            ("reasoning-low", "low"),
+            ("reasoning-medium", "medium"),
+            ("reasoning-high", "high"),
+            ("reasoning-extra-high", "xhigh"),
+            ("reasoning-max", "max"),
+        ];
+        let model = ModelRegistry::model_info("github_copilot", "claude-fable-5.1");
+
+        assert_eq!(
+            variant_ids(&model),
+            expected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+        );
+        for (variant, effort_str) in expected {
+            let resolved =
+                ModelRegistry::resolve_model_variant("github_copilot", "claude-fable-5.1", Some(variant));
+            assert_eq!(resolved.variant.as_deref(), Some(variant));
+            // Rig rejects typed options on Copilot Chat; effort must be None so options.reasoning stays unset
+            assert_eq!(resolved.effort, None);
+            assert_eq!(
+                resolved.additional_params,
+                Some(json!({ "reasoning_effort": effort_str }))
+            );
+            assert!(resolved.warning.is_none());
+        }
+
+        let default = ModelRegistry::resolve_model_variant("github_copilot", "claude-fable-5.1", None);
+        assert_eq!(default.variant, None);
+        assert_eq!(default.effort, None);
+        assert_eq!(default.additional_params, None);
+    }
+
+    #[test]
+    fn github_copilot_responses_models_keep_typed_effort() {
+        assert!(ModelRegistry::copilot_model_routes_through_responses("gpt-5.3-codex"));
+        assert!(!ModelRegistry::copilot_model_routes_through_responses("claude-fable-5.1"));
     }
 
     #[test]
