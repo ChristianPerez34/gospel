@@ -286,12 +286,8 @@ async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
         return Err("GitHub Copilot OAuth session not found".to_string());
     }
 
-    let client = rig::providers::copilot::CopilotConfig::new("")
-        .client()
-        .authenticate(&crate::provider_client::copilot_authenticator(None))
-        .await
-        .map_err(|e| format!("failed to authenticate GitHub Copilot: {}", e))?;
-    crate::copilot_models::fetch_models(client.config(), &rig::rig_reqwest::shared()).await
+    let config = crate::provider_client::copilot_config().await?;
+    crate::copilot_models::fetch_models(&config, &rig::rig_reqwest::shared()).await
 }
 
 async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
@@ -441,11 +437,9 @@ async fn fetch_xai_developer_models(
         Ok(r) => {
             let status = r.status();
             let body_text = r.text().await.unwrap_or_default();
-            if let Some(kind) =
-                crate::credential_failure::classify_credential_failure(&format!(
-                    "HTTP {status} {body_text}"
-                ))
-            {
+            if let Some(kind) = crate::credential_failure::classify_credential_failure(&format!(
+                "HTTP {status} {body_text}"
+            )) {
                 return Err(match kind {
                     crate::credential_failure::CredentialFailureKind::ReauthRequired => {
                         format!("HTTP {status} unauthorized while listing {provider_id} models")
@@ -486,10 +480,15 @@ async fn fetch_xai_developer_models(
     }
 
     if models.is_empty() {
-        tracing::warn!("{provider_id} API returned no compatible models; using hardcoded base only");
+        tracing::warn!(
+            "{provider_id} API returned no compatible models; using hardcoded base only"
+        );
         return Ok(fallback_models);
     }
 
-    tracing::info!("Resolved {} compatible models for {provider_id}", models.len());
+    tracing::info!(
+        "Resolved {} compatible models for {provider_id}",
+        models.len()
+    );
     Ok(models)
 }

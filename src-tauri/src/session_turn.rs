@@ -836,6 +836,10 @@ pub fn build_display_transcript(messages: &[Message]) -> Vec<serde_json::Value> 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SessionTurnEvent {
+    RetryReset {
+        text: String,
+        reasoning_ids: Vec<String>,
+    },
     TextToken(String),
     ToolCall {
         id: String,
@@ -873,6 +877,13 @@ pub enum SessionTurnEvent {
 impl From<StreamEvent> for SessionTurnEvent {
     fn from(event: StreamEvent) -> Self {
         match event {
+            StreamEvent::RetryReset {
+                text,
+                reasoning_ids,
+            } => Self::RetryReset {
+                text,
+                reasoning_ids,
+            },
             StreamEvent::Text(token) => SessionTurnEvent::TextToken(token),
             StreamEvent::ToolCall {
                 id,
@@ -926,6 +937,13 @@ pub struct UiEventPayload {
 
 pub fn ui_event_payload(event: &SessionTurnEvent, run_id: &str) -> UiEventPayload {
     match event {
+        SessionTurnEvent::RetryReset {
+            text,
+            reasoning_ids,
+        } => UiEventPayload {
+            name: "llm-retry-reset",
+            payload: json!({ "runId": run_id, "text": text, "reasoningIds": reasoning_ids }),
+        },
         SessionTurnEvent::TextToken(token) => UiEventPayload {
             name: "llm-token",
             payload: json!({ "runId": run_id, "token": token }),
@@ -995,7 +1013,7 @@ pub fn trace_event_for_session_turn_event(
     timestamp: u64,
 ) -> Option<trace::TraceEvent> {
     match event {
-        SessionTurnEvent::TextToken(_) => None,
+        SessionTurnEvent::TextToken(_) | SessionTurnEvent::RetryReset { .. } => None,
         SessionTurnEvent::Reasoning { .. } => None,
         SessionTurnEvent::ToolCall {
             name, arguments, ..
@@ -2265,9 +2283,7 @@ mod tests {
         assert_eq!(invalid.workspace_id.as_deref(), Some("ws1"));
         assert!(invalid.tool_context.is_none());
 
-        let valid = resolve_active_workspace_context(ActiveWorkspaceProbe::Valid {
-            selection,
-        });
+        let valid = resolve_active_workspace_context(ActiveWorkspaceProbe::Valid { selection });
         assert_eq!(valid.workspace_id.as_deref(), Some("ws1"));
         let tool_context = valid.tool_context.unwrap();
         assert_eq!(tool_context.workspace_path, PathBuf::from("/tmp/workspace"));
@@ -2912,9 +2928,10 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_turn_recalls_and_schedules_memory_ingest() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(
-            successful_history_turn("inspect", "looks fine"),
-        ));
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "inspect",
+            "looks fine",
+        )));
 
         let result = run_streaming_turn(
             adapters.deps(),

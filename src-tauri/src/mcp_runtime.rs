@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rig::message::ToolName;
-use rig::tool::rmcp::McpTool;
 use rig::tool::{DynamicTool, RegisteredTool, ToolExecutionError};
 use rmcp::service::{Peer, RoleClient, RunningService, ServiceExt};
 use rmcp::transport::auth::{AuthClient, AuthorizationManager, OAuthState};
@@ -398,7 +397,7 @@ fn build_session_tool(
         .unwrap_or(false);
     let rule = format!("mcp://{server_id}/{}", tool.name);
     let reason = format!("The MCP server wants to run {}.", tool.name);
-    let mcp_tool = Arc::new(McpTool::from_mcp_server(tool, sink.clone()));
+    let original_name = tool.name.to_string();
     let liveness = sink.clone();
 
     let dynamic = DynamicTool::new(
@@ -406,7 +405,8 @@ fn build_session_tool(
         description,
         parameters,
         move |args: serde_json::Value| {
-            let mcp_tool = mcp_tool.clone();
+            let sink = sink.clone();
+            let original_name = original_name.clone();
             let broker = broker.clone();
             let rule = rule.clone();
             let reason = reason.clone();
@@ -428,13 +428,31 @@ fn build_session_tool(
                         ));
                     }
                 }
-                let result = mcp_tool.execute_mcp(args.to_string(), None).await?;
+                let arguments = match args {
+                    serde_json::Value::Object(arguments) => arguments,
+                    serde_json::Value::Null => serde_json::Map::new(),
+                    _ => {
+                        return Err(ToolExecutionError::invalid_args(
+                            "MCP tool arguments must be an object",
+                        ))
+                    }
+                };
+                let result = tokio::time::timeout(
+                    rig::tool::rmcp::DEFAULT_MCP_TOOL_TIMEOUT,
+                    sink.call_tool(
+                        rmcp::model::CallToolRequestParams::new(original_name.clone())
+                            .with_arguments(arguments),
+                    ),
+                )
+                .await
+                .map_err(|_| ToolExecutionError::timeout("MCP tool timed out"))?
+                .map_err(|error| ToolExecutionError::other(error.to_string()))?;
                 let is_error = result.is_error == Some(true);
                 let output = rig::tool::rmcp::mcp_result_output(&result)?;
                 if is_error {
                     Err(ToolExecutionError::other(format!(
                         "MCP tool '{}' reported an execution error",
-                        mcp_tool.definition().name
+                        original_name
                     ))
                     .with_model_output(output))
                 } else {
@@ -462,6 +480,11 @@ async fn oauth_manager(server_id: &str, url: &str) -> Result<AuthorizationManage
     if !restored {
         return Err(rmcp::transport::auth::AuthError::AuthorizationRequired.to_string());
     }
+    // A server configured for OAuth must have usable credentials before connecting.
+    manager
+        .get_access_token()
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(manager)
 }
 
@@ -496,8 +519,10 @@ pub async fn start_mcp_oauth(server: &McpServer) -> Result<McpOAuthFlow, String>
     let mut state = OAuthState::new(url, None)
         .await
         .map_err(|e| format!("OAuth discovery failed: {e}"))?;
+    let mut request = rmcp::transport::auth::AuthorizationRequest::new(redirect_uri);
+    request.client_name = Some("Gospel".into());
     state
-        .start_authorization(&[], &redirect_uri, Some("Gospel"))
+        .start_authorization(request)
         .await
         .map_err(|e| format!("OAuth setup failed: {e}"))?;
     let auth_url = state
@@ -649,6 +674,7 @@ mod tests {
                         (false, "/.well-known/oauth-authorization-server/mcp") => (
                             "200 OK",
                             serde_json::json!({
+                                "issuer": format!("{origin}/mcp"),
                                 "authorization_endpoint": format!("{origin}/authorize"),
                                 "token_endpoint": format!("{origin}/token"),
                                 "registration_endpoint": format!("{origin}/register"),
@@ -871,7 +897,11 @@ mod tests {
                 .connect_and_report(&store, &server.id)
                 .await
                 .unwrap();
-            assert_eq!(updated.health, MCP_HEALTH_AUTH_REQUIRED);
+            assert_eq!(
+                updated.health, MCP_HEALTH_AUTH_REQUIRED,
+                "{:?}",
+                updated.last_error_summary
+            );
             assert_eq!(updated.auth_status, mcp::MCP_AUTH_REQUIRED);
             assert!(crate::mcp_credentials::has_oauth_credentials(&server.id));
         });

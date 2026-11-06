@@ -1,13 +1,9 @@
-use futures::StreamExt;
-use rig::agent::MultiTurnStreamItem;
-use rig::streaming::{Item, StreamEvent};
-use rig::AgentBuilder;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
 use crate::harness_profile::{
-    resolve_harness_profile, tool_server_handle, ActiveWorkspaceContext, AgentRole, HarnessProfile,
-    HarnessProfileRequest, LoopDetector, LoopStatus,
+    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfile,
+    HarnessProfileRequest,
 };
 use crate::text_utils::wrap_untrusted;
 
@@ -123,67 +119,28 @@ async fn run_verification_agent(
     profile: HarnessProfile,
     prompt: &str,
 ) -> Result<String, String> {
-    let preamble = profile.preamble.unwrap_or_default();
-    let tools = profile.tools;
-    let guards = profile.guards;
-    let deadline = guards
-        .deadline
-        .expect("Verification Harness Profiles always have a deadline");
-
     let model = crate::provider_client::completion_model(provider, model, api_key, session_id)
         .await
         .map_err(|error| error.to_string())?;
-    let agent = AgentBuilder::new(model)
-        .preamble(preamble)
-        .default_max_turns(guards.max_turns)
-        .tool_server_handle(tool_server_handle(tools))
-        .build();
-    // Streaming instead of a unary prompt: the ChatGPT Codex backend's
-    // non-streaming path drops tool calls when response.completed has an
-    // empty output array. See https://github.com/0xPlaygrounds/rig/issues/2000.
-    let mut stream = agent.prompt(prompt).max_turns(guards.max_turns).stream();
-    let mut final_output = String::new();
-    let mut loop_detector = LoopDetector::new(guards.loop_guard);
-    loop {
-        match timeout(deadline, stream.next()).await {
-            Err(_) => break Err("verification agent timed out".to_string()),
-            Ok(None) => break Ok(final_output),
-            Ok(Some(item)) => match item {
-                Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
-                    final_output = final_response.output();
-                    break Ok(final_output);
-                }
-                Ok(MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {
-                    text,
-                    ..
-                }))) => {
-                    final_output.push_str(&text);
-                }
-                Ok(MultiTurnStreamItem::ToolCall { tool_call }) => {
-                    let tool_name = tool_call.function.name.as_str();
-                    let arguments = serde_json::Value::Object(tool_call.function.arguments.clone());
-                    match loop_detector.record_call(tool_name, &arguments) {
-                        LoopStatus::Stop => {
-                            break Err(format!(
-                                "verification agent stopped after a repeated '{}' tool-call loop",
-                                tool_name
-                            ))
-                        }
-                        LoopStatus::Warning(count) => tracing::warn!(
-                            role = "verification",
-                            count,
-                            tool_name,
-                            "repeated tool-call warning"
-                        ),
-                        LoopStatus::Ok => {}
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => break Err(error.to_string()),
-            },
-        }
-    }
+    crate::ecs_runtime::run(
+        crate::ecs_runtime::RunRequest {
+            session_id: session_id.map(str::to_owned),
+            model,
+            prompt: prompt.to_owned(),
+            preamble: profile.preamble,
+            tools: profile.tools,
+            history: Vec::new(),
+            guards: profile.guards,
+            additional_params: None,
+            reasoning: None,
+        },
+        |_| {},
+    )
+    .await
+    .map(|result| result.full_response)
+    .map_err(|error| error.to_string())
 }
+
 fn build_verification_prompt(
     workspace: &ActiveWorkspaceContext,
     response_to_verify: &str,
