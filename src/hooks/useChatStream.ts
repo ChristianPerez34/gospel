@@ -69,6 +69,12 @@ interface LlmReasoningPayload {
   phase: "delta" | "complete";
 }
 
+interface LlmRetryResetPayload {
+  runId?: string;
+  text: string;
+  reasoningIds: string[];
+}
+
 interface LlmToolCallPayload {
   runId?: string;
   id: string;
@@ -123,6 +129,7 @@ function appendApproval(turn: CurrentTurn, req: ApprovalRequest): CurrentTurn {
         reason: req.reason,
         risk: req.risk,
         workspaceScoped: req.workspace_scoped,
+        expiresAtMs: req.expires_at_ms,
         status: "pending",
       },
     ],
@@ -532,6 +539,27 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       // stale runIds via `isStale` instead of falling back to focused.
       try {
         await Promise.all([
+          track(
+            listen<LlmRetryResetPayload>("llm-retry-reset", ({ payload }) => {
+              if (isStale(payload.runId)) return;
+              const sessionId = sessionForRun(payload.runId);
+              flushPendingForSession(sessionId);
+              const reset = (turn: CurrentTurn): CurrentTurn => {
+                let remaining = payload.text.length;
+                const failedReasoning = new Set(payload.reasoningIds);
+                const blocks = turn.blocks.flatMap((block): TurnBlock[] => {
+                  if (block.kind === "reasoning" && failedReasoning.has(block.id)) return [];
+                  if (block.kind !== "text") return [block];
+                  const text = block.text.slice(0, remaining);
+                  remaining = Math.max(0, remaining - block.text.length);
+                  return text ? [{ ...block, text }] : [];
+                });
+                return { ...turn, blocks };
+              };
+              if (isBackground(payload.runId)) updateBackgroundTurn(sessionId, reset);
+              else updateCurrentTurn(reset);
+            })
+          ),
           track(
             listen<LlmTokenPayload>("llm-token", (event) => {
               const payload = event.payload;

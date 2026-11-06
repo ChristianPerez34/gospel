@@ -36,22 +36,24 @@ Gospel discovers user-authored skills from the workspace and global data directo
 
 Gospel exposes three agent-facing tools for workspace command execution:
 
-- `run_shell_command`: Run a non-shell program with arguments in the active workspace.
+- `run_shell_command`: Run a program directly with arguments in the active workspace (without implicit shell parsing).
 - `run_git_command`: Run a git command in the active workspace.
 - `run_github_cli_command`: Run a `gh` command in the active workspace.
 
 ### Safety model
 
 - Read-only commands run directly.
-- Mutating commands require one-time approval in Ask mode. Auto mode skips prompts for routine, workspace-scoped development operations (`mkdir`, `touch`, local `git add`/`commit`, `cargo fmt`/`check`/`test`/`build`/`clippy`, and the `bun run` build, check, format, lint, test, and typecheck scripts). These still execute workspace code. Git global options, `--amend`, `--no-verify`, watch modes, and inline config overrides always prompt, as do remote and unlisted commands unless explicitly always-allowed.
-- Destructive and sensitive commands are never auto-approved; hard-blocked commands continue to fail closed.
-- Hard-blocked commands always fail without approval:
+- In Ask mode, mutating and destructive commands require one-time approval, and restricted commands fail without a prompt. Restricted commands are:
   - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
-  - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
+  - Commands containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL) or secret-like path arguments
+  - Shell interpreters (`sh`, `bash`, `zsh`, `powershell`, etc.), `curl`, and low-level disk tools (`dd`, `mkfs`, `fdisk`, `parted`) invoked through `run_shell_command`
   - `git push --force`, `git reset --hard`, `git clean`
-  - `gh repo delete`
-  - Shell interpreters (`sh`, `bash`, `zsh`, `powershell`, etc.) invoked through `run_shell_command`
-- Workspace-escaping command paths and external-path requests require per-request approval; command allow rules never apply to external-path requests.
+  - `gh repo delete`, `gh auth token`
+- Ask mode can always-allow eligible workspace-scoped mutating commands. Workspace-escaping command calls require per-request approval.
+- Auto mode runs every command-tool and skill-script request without approval, including destructive, restricted, and workspace-escaping commands, and ignores the built-in reject patterns. Commands matching a user-saved deny rule ("Always deny") still prompt. See ADR-0014.
+- The mode is global. Switching to Auto approves every pending command request in every session except those matching a user deny rule; switching to Ask denies pending restricted commands.
+- External-path requests always require per-request approval, and MCP tools need explicit server/tool allow rules, in either mode.
+- Empty command invocations are blocked in either mode.
 
 ### Implementation notes
 

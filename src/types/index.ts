@@ -25,7 +25,7 @@ export type ReviewMode =
 
 export type ApprovalKind = "command" | "external_path" | "mcp_tool";
 
-export type ApprovalRisk = "mutating" | "destructive" | "external_access";
+export type ApprovalRisk = "mutating" | "destructive" | "restricted" | "external_access";
 
 export type ApprovalDecision = "approve" | "deny" | "always_allow" | "always_deny";
 
@@ -52,6 +52,7 @@ export interface ApprovalRequest {
    *  to the correct session's live turn. Absent/null falls back to the
    *  focused session. */
   run_id?: string | null;
+  expires_at_ms?: number | null;
 }
 
 export interface ApprovalResolution {
@@ -136,6 +137,7 @@ export type TurnBlock =
       reason: string;
       risk: ApprovalRisk;
       workspaceScoped?: boolean;
+      expiresAtMs?: number | null;
       status: "pending" | "approved" | "denied" | "timed_out" | "auto_approved" | "auto_denied";
     };
 

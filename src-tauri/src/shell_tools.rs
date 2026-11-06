@@ -1,5 +1,5 @@
 use crate::text_utils::truncate_text_bytes;
-use rig::tool::{PortableTool, ToolExecutionError};
+use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::ffi::OsStr;
@@ -16,25 +16,15 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 pub const SHELL_TOOLS_SYSTEM_PROMPT: &str = r#"
 ## Shell, Git, and GitHub CLI Tools
 
-You can run shell, git, and GitHub CLI commands in the active workspace.
-
-### Available Tools
-
-- `run_shell_command`: Run a non-shell program with arguments in the active workspace. Shell interpreters (`sh`, `bash`, `zsh`, etc.) and shell metacharacters are blocked.
-- `run_git_command`: Run a git command in the active workspace.
-- `run_github_cli_command`: Run a `gh` command in the active workspace.
+You can run commands in the active workspace with `run_shell_command`, `run_git_command`, and `run_github_cli_command`. `run_shell_command` starts a program directly with its arguments; it does not parse shell syntax itself.
 
 ### Safety Rules
 
-- Read-only commands run directly.
-- Mutating commands require approval in Ask mode. Auto mode skips prompts for routine, workspace-scoped development operations (such as builds, tests, and local `git add`/`commit`). Git global options, `--amend`, `--no-verify`, watch modes, and inline config overrides still prompt; other mutations remain interactive unless explicitly always-allowed.
-- Destructive and sensitive commands are never auto-approved; hard-blocked commands continue to fail closed.
-- Workspace-escaping command paths and external-path requests require per-request approval; command allow rules never apply to external-path requests.
-- The following are always blocked:
-  - Recursive root deletion (e.g., `rm -rf /`, `rm -rf /*`, or long-form `rm --recursive /`)
-  - Any command containing shell metacharacters (`;`, `|`, `&`, `$`, `` ` ``, `<`, `>`, newline, carriage return, NUL)
-  - `git push --force`, `git push -f`, `git reset --hard`, `git clean`
-  - `gh repo delete`
+- Read-only commands run directly in either mode.
+- In Ask mode, mutating and destructive commands require approval, and restricted commands are blocked. Restricted commands include shell interpreters, shell metacharacters, secret-like arguments, `gh auth token`, recursive root deletion, low-level disk tools, `curl`, force pushes, hard resets, `git clean`, and `gh repo delete`.
+- In Auto mode, every command runs without approval, including destructive and restricted commands and commands outside the workspace. Only commands matching a deny rule the user saved still require approval.
+- External-path requests always require per-request approval; MCP tools need explicit server/tool allow rules.
+- Empty command invocations are always blocked.
 - Do not attempt to bypass these rules with encoded characters or indirect invocation.
 
 ### Guidance
@@ -58,7 +48,20 @@ pub enum CommandSafety {
     ReadOnly,
     Mutating,
     Destructive,
+    /// Blocked in Ask mode, allowed in Auto mode.
+    Restricted(String),
     Blocked(String),
+}
+
+impl CommandSafety {
+    /// Wrapper classification (`env`, path-qualified `git`/`gh`) may promote
+    /// a result to Mutating but must never downgrade a guardrail.
+    fn is_guardrail(&self) -> bool {
+        matches!(
+            self,
+            CommandSafety::Blocked(_) | CommandSafety::Restricted(_)
+        )
+    }
 }
 
 /// Per-workspace policy used to classify commands before execution.
@@ -79,16 +82,15 @@ impl CommandPolicy {
     ) -> Option<CommandSafety> {
         let executable_lower = executable.to_ascii_lowercase();
 
-        // Block shell interpreters to prevent shell-injection attacks.
+        // Shell interpreters reintroduce the shell parsing that direct execution avoids.
         if is_shell_interpreter(&executable_lower) {
-            return Some(CommandSafety::Blocked("shell_interpreter".to_string()));
+            return Some(CommandSafety::Restricted("shell_interpreter".to_string()));
         }
 
-        // Block shell metacharacters and secret-like paths anywhere in the invocation.
         if contains_shell_metacharacter(program) {
-            return Some(CommandSafety::Blocked("shell_metacharacter".to_string()));
+            return Some(CommandSafety::Restricted("shell_metacharacter".to_string()));
         }
-        if let Some(safety) = blocked_argument_safety(args) {
+        if let Some(safety) = restricted_argument_safety(args) {
             return Some(safety);
         }
 
@@ -96,9 +98,8 @@ impl CommandPolicy {
             return Some(self.classify_env_shell_wrapper(args, workspace_root));
         }
 
-        // Hard-block known destructive patterns.
-        if is_blocked_shell_pattern(&executable_lower, args) {
-            return Some(CommandSafety::Blocked("dangerous_command".to_string()));
+        if is_restricted_shell_pattern(&executable_lower, args) {
+            return Some(CommandSafety::Restricted("dangerous_command".to_string()));
         }
 
         None
@@ -124,7 +125,7 @@ impl CommandPolicy {
         }
 
         let promote_git_gh_safety = |safety: CommandSafety| {
-            if program_is_bare_name || matches!(safety, CommandSafety::Blocked(_)) {
+            if program_is_bare_name || safety.is_guardrail() {
                 safety
             } else {
                 CommandSafety::Mutating
@@ -145,7 +146,7 @@ impl CommandPolicy {
             }
         }
 
-        // Workspace-escaping paths require approval.
+        // Workspace-escaping paths are never read-only.
         if has_shell_path_escape(&executable_lower, args, workspace_root).is_some() {
             return CommandSafety::Mutating;
         }
@@ -155,7 +156,6 @@ impl CommandPolicy {
             return CommandSafety::ReadOnly;
         }
 
-        // Everything else is treated as mutating and requires approval.
         CommandSafety::Mutating
     }
 
@@ -191,7 +191,7 @@ impl CommandPolicy {
             "gh" => self.classify_gh(args, workspace_root),
             _ => CommandSafety::Mutating,
         };
-        if matches!(wrapped_safety, CommandSafety::Blocked(_)) {
+        if wrapped_safety.is_guardrail() {
             wrapped_safety
         } else {
             CommandSafety::Mutating
@@ -203,7 +203,7 @@ impl CommandPolicy {
             return CommandSafety::Blocked("empty_git_command".to_string());
         }
 
-        if let Some(safety) = blocked_argument_safety(args) {
+        if let Some(safety) = restricted_argument_safety(args) {
             return safety;
         }
 
@@ -218,15 +218,14 @@ impl CommandPolicy {
         }
         let subcommand = args[0].to_ascii_lowercase();
 
-        // Hard-block destructive git options.
         if subcommand == "reset" && args.iter().any(|a| a == "--hard") {
-            return CommandSafety::Blocked("git_reset_hard".to_string());
+            return CommandSafety::Restricted("git_reset_hard".to_string());
         }
         if subcommand == "clean" {
-            return CommandSafety::Blocked("git_clean".to_string());
+            return CommandSafety::Restricted("git_clean".to_string());
         }
         if subcommand == "push" && args.iter().any(|a| a == "--force" || a == "-f") {
-            return CommandSafety::Blocked("git_push_force".to_string());
+            return CommandSafety::Restricted("git_push_force".to_string());
         }
         if subcommand == "checkout" && args.iter().any(|a| a == "-f" || a == "--force") {
             return CommandSafety::Destructive;
@@ -354,7 +353,7 @@ impl CommandPolicy {
             return CommandSafety::Blocked("empty_gh_command".to_string());
         }
 
-        if let Some(safety) = blocked_argument_safety(args) {
+        if let Some(safety) = restricted_argument_safety(args) {
             return safety;
         }
 
@@ -362,7 +361,7 @@ impl CommandPolicy {
         let second = args.get(1).map(|s| s.to_ascii_lowercase());
 
         if first == "repo" && second.as_deref() == Some("delete") {
-            return CommandSafety::Blocked("gh_repo_delete".to_string());
+            return CommandSafety::Restricted("gh_repo_delete".to_string());
         }
 
         if has_path_escape(args, workspace_root).is_some() {
@@ -377,7 +376,7 @@ impl CommandPolicy {
         if first == "auth" {
             return match second.as_deref() {
                 Some("status") => CommandSafety::ReadOnly,
-                Some("token") => CommandSafety::Blocked("gh_auth_token".to_string()),
+                Some("token") => CommandSafety::Restricted("gh_auth_token".to_string()),
                 _ => CommandSafety::Mutating,
             };
         }
@@ -646,14 +645,16 @@ fn is_path_like_extended(value: &str) -> bool {
     has_separator || starts_with_drive || starts_with_tilde || starts_with_dot_slash
 }
 
-fn blocked_argument_safety(args: &[String]) -> Option<CommandSafety> {
+fn restricted_argument_safety(args: &[String]) -> Option<CommandSafety> {
     for arg in args {
         if contains_shell_metacharacter(arg) {
-            return Some(CommandSafety::Blocked("shell_metacharacter".to_string()));
+            return Some(CommandSafety::Restricted("shell_metacharacter".to_string()));
         }
         if let Some(value) = argument_path_value(arg) {
             if crate::workspace_tools::is_secret_like(Path::new(value)) {
-                return Some(CommandSafety::Blocked("secret_like_argument".to_string()));
+                return Some(CommandSafety::Restricted(
+                    "secret_like_argument".to_string(),
+                ));
             }
         }
     }
@@ -714,11 +715,9 @@ fn parse_rm_flags(args: &[String]) -> RmFlags {
     flags
 }
 
-fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
-    // rm -rf / or rm -rf /*  — and the equivalent long-form invocations
-    // (`rm --recursive /`, with or without `--force`). The previous substring
-    // matcher flagged `--preserve-root` as recursive (false positive) and
-    // missed `rm --recursive /` without `--force` (false negative).
+fn is_restricted_shell_pattern(program: &str, args: &[String]) -> bool {
+    // rm -rf / or rm -rf /*, and the equivalent long-form invocations
+    // (`rm --recursive /`, with or without `--force`).
     if program == "rm" {
         let mut operands: Vec<&str> = Vec::new();
         let mut past_dashdash = false;
@@ -738,21 +737,19 @@ fn is_blocked_shell_pattern(program: &str, args: &[String]) -> bool {
         }
         let flags = parse_rm_flags(args);
         let root_target = operands.iter().any(|s| *s == "/" || *s == "/*");
-        // `--force` is not required for the destructive contract: `rm --recursive /`
-        // alone performs the same irreversible action. AGENTS.md hard-blocks
-        // `rm -rf /` / `rm -rf /*`; this reuses the parser to cover the long form.
+        // `--force` is not required: `rm --recursive /` alone performs the same
+        // irreversible action.
         if flags.recursive && root_target {
             return true;
         }
     }
 
-    // Block low-level disk/filesystem tools regardless of arguments.
     if matches!(program, "dd" | "mkfs" | "fdisk" | "parted") {
         return true;
     }
 
-    // curl piped to a shell is blocked via shell metacharacters, but also
-    // block curl itself from the shell tool to encourage direct program use.
+    // curl piped to a shell is caught via shell metacharacters; restricting curl
+    // itself encourages direct program use.
     if program == "curl" {
         return true;
     }
@@ -1072,6 +1069,7 @@ fn normalize_path_lexically(path: &Path) -> PathBuf {
 pub enum CommandRisk {
     Mutating,
     Destructive,
+    Restricted,
 }
 
 #[derive(Debug, Clone)]
@@ -1088,6 +1086,12 @@ pub(crate) type CommandApprovalFuture<'a> = Pin<Box<dyn Future<Output = bool> + 
 pub trait CommandApproval: Send + Sync {
     fn request_approval<'a>(&'a self, request: CommandApprovalRequest)
         -> CommandApprovalFuture<'a>;
+
+    /// Whether restricted commands may be sent for approval at all. Only Auto
+    /// mode grants this; otherwise they are blocked without a prompt.
+    fn permits_restricted(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1229,17 +1233,11 @@ impl CommandExecutor {
     ) -> Result<CommandOutput, ShellToolError> {
         match safety {
             CommandSafety::ReadOnly => self.execute(program, args, timeout).await,
-            CommandSafety::Blocked(reason) => Ok(CommandOutput {
-                success: false,
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: String::new(),
-                truncated: false,
-                needs_approval: Some(false),
-                reason: Some(reason.clone()),
-                message: format!("Blocked: {}", reason),
-            }),
-            CommandSafety::Mutating | CommandSafety::Destructive => {
+            CommandSafety::Blocked(reason) => Ok(blocked_output(reason)),
+            CommandSafety::Restricted(reason) if !self.permits_restricted() => {
+                Ok(blocked_output(reason))
+            }
+            CommandSafety::Mutating | CommandSafety::Destructive | CommandSafety::Restricted(_) => {
                 let label = command_label(program, args);
                 let approved = self
                     .request_approval(tool_name, &label, &safety, workspace_scoped)
@@ -1254,7 +1252,7 @@ impl CommandExecutor {
                         needs_approval: Some(true),
                         reason: Some("approval_denied".to_string()),
                         message: format!(
-                            "Approval denied for `{}`. The user did not authorize this mutating command.",
+                            "Approval denied for `{}`. The user did not authorize this command.",
                             label
                         ),
                     })
@@ -1373,6 +1371,12 @@ impl CommandExecutor {
         })
     }
 
+    fn permits_restricted(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_some_and(|approval| approval.permits_restricted())
+    }
+
     async fn request_approval(
         &self,
         tool_name: &'static str,
@@ -1388,6 +1392,10 @@ impl CommandExecutor {
             CommandSafety::Destructive => (
                 "This command may destroy or overwrite data.".to_string(),
                 CommandRisk::Destructive,
+            ),
+            CommandSafety::Restricted(reason) => (
+                format!("This command matched a safety restriction ({reason})."),
+                CommandRisk::Restricted,
             ),
             CommandSafety::Mutating => (
                 "This command may modify the workspace.".to_string(),
@@ -1405,6 +1413,19 @@ impl CommandExecutor {
                 workspace_scoped,
             })
             .await
+    }
+}
+
+fn blocked_output(reason: String) -> CommandOutput {
+    CommandOutput {
+        success: false,
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: String::new(),
+        truncated: false,
+        needs_approval: Some(false),
+        message: format!("Blocked: {}", reason),
+        reason: Some(reason),
     }
 }
 
@@ -1455,7 +1476,7 @@ impl std::fmt::Debug for RunShellCommandTool {
     }
 }
 
-impl PortableTool for RunShellCommandTool {
+impl Tool for RunShellCommandTool {
     const NAME: &'static str = "run_shell_command";
 
     type Error = ShellToolError;
@@ -1463,7 +1484,7 @@ impl PortableTool for RunShellCommandTool {
     type Output = CommandOutput;
 
     fn description(&self) -> String {
-        "Run a non-shell program with arguments in the active workspace. Read-only commands run directly; mutating or destructive commands require one-time user approval. Shell interpreters and shell metacharacters are blocked.".to_string()
+        "Run a program directly with arguments in the active workspace. Read-only commands run directly. In Ask mode, mutating and destructive commands require approval and restricted commands (shell interpreters, shell metacharacters, dangerous programs) are blocked. Auto mode runs all commands without approval.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1492,7 +1513,11 @@ impl PortableTool for RunShellCommandTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let executor = CommandExecutor::new(self.workspace_root.clone(), self.approval.clone());
         executor
             .run_shell(args.program, args.args, args.timeout_seconds)
@@ -1533,7 +1558,7 @@ impl std::fmt::Debug for RunGitCommandTool {
     }
 }
 
-impl PortableTool for RunGitCommandTool {
+impl Tool for RunGitCommandTool {
     const NAME: &'static str = "run_git_command";
 
     type Error = ShellToolError;
@@ -1541,7 +1566,7 @@ impl PortableTool for RunGitCommandTool {
     type Output = CommandOutput;
 
     fn description(&self) -> String {
-        "Run a git command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (push --force, reset --hard, clean) are blocked.".to_string()
+        "Run a git command in the active workspace. Read-only commands run directly. In Ask mode, mutating commands require approval and restricted commands (push --force, reset --hard, clean) are blocked. Auto mode runs all commands without approval.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1566,7 +1591,11 @@ impl PortableTool for RunGitCommandTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let executor = CommandExecutor::new(self.workspace_root.clone(), self.approval.clone());
         executor.run_git(args.args, args.timeout_seconds).await
     }
@@ -1605,7 +1634,7 @@ impl std::fmt::Debug for RunGithubCliCommandTool {
     }
 }
 
-impl PortableTool for RunGithubCliCommandTool {
+impl Tool for RunGithubCliCommandTool {
     const NAME: &'static str = "run_github_cli_command";
 
     type Error = ShellToolError;
@@ -1613,7 +1642,7 @@ impl PortableTool for RunGithubCliCommandTool {
     type Output = CommandOutput;
 
     fn description(&self) -> String {
-        "Run a GitHub CLI (gh) command in the active workspace. Read-only commands run directly; mutating commands require one-time user approval. Destructive commands (repo delete) are blocked.".to_string()
+        "Run a GitHub CLI (gh) command in the active workspace. Read-only commands run directly. In Ask mode, mutating commands require approval and restricted commands (repo delete, auth token) are blocked. Auto mode runs all commands without approval.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1638,7 +1667,11 @@ impl PortableTool for RunGithubCliCommandTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let executor = CommandExecutor::new(self.workspace_root.clone(), self.approval.clone());
         executor.run_gh(args.args, args.timeout_seconds).await
     }
@@ -1675,13 +1708,13 @@ mod tests {
     }
 
     #[test]
-    fn classify_shell_blocks_shell_interpreters() {
+    fn classify_shell_restricts_shell_interpreters() {
         let policy = CommandPolicy;
         for program in ["sh", "bash", "zsh", "fish", "powershell", "pwsh"] {
             let safety = policy.classify_shell(program, &[], &workspace());
             assert!(
-                matches!(safety, CommandSafety::Blocked(_)),
-                "{} should be blocked",
+                matches!(safety, CommandSafety::Restricted(_)),
+                "{} should be restricted",
                 program
             );
         }
@@ -1689,15 +1722,15 @@ mod tests {
             assert!(
                 matches!(
                     policy.classify_shell(program, &[], &workspace()),
-                    CommandSafety::Blocked(_)
+                    CommandSafety::Restricted(_)
                 ),
-                "{} should be blocked",
+                "{} should be restricted",
                 program
             );
         }
         assert!(matches!(
             policy.classify_shell("env", &["bash".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell(
@@ -1705,7 +1738,7 @@ mod tests {
                 &["PATH=/bin".to_string(), "/usr/bin/zsh".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell(
@@ -1713,7 +1746,7 @@ mod tests {
                 &["-S".to_string(), "bash -c echo hi".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell(
@@ -1721,43 +1754,43 @@ mod tests {
                 &["env".to_string(), "bash".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
     }
 
     #[test]
-    fn classify_shell_blocks_metacharacters() {
+    fn classify_shell_restricts_metacharacters() {
         let policy = CommandPolicy;
         let safety = policy.classify_shell("ls", &["-la;".to_string()], &workspace());
-        assert!(matches!(safety, CommandSafety::Blocked(_)));
+        assert!(matches!(safety, CommandSafety::Restricted(_)));
     }
 
     #[test]
-    fn classifiers_block_secret_like_argument_paths() {
+    fn classifiers_restrict_secret_like_argument_paths() {
         let policy = CommandPolicy;
-        let blocked = CommandSafety::Blocked("secret_like_argument".to_string());
+        let restricted = CommandSafety::Restricted("secret_like_argument".to_string());
 
         assert_eq!(
             policy.classify_shell("cat", &[".env".to_string()], &workspace()),
-            blocked
+            restricted
         );
         assert_eq!(
             policy.classify_shell("cat", &["--input=.env".to_string()], &workspace()),
-            blocked
+            restricted
         );
         assert_eq!(
             policy.classify_git(
                 &["status".to_string(), "--config=.npmrc".to_string()],
                 &workspace()
             ),
-            blocked
+            restricted
         );
         assert_eq!(
             policy.classify_gh(
                 &["status".to_string(), "--input=.env".to_string()],
                 &workspace()
             ),
-            blocked
+            restricted
         );
 
         // Allow free-form/whitespace-containing args that might contain secret keywords
@@ -1770,7 +1803,7 @@ mod tests {
                 ],
                 &workspace()
             ),
-            blocked
+            restricted
         );
         assert_ne!(
             policy.classify_shell(
@@ -1778,48 +1811,48 @@ mod tests {
                 &["this is my secret message".to_string()],
                 &workspace()
             ),
-            blocked
+            restricted
         );
     }
 
     #[test]
-    fn classify_shell_blocks_rm_rf_root() {
+    fn classify_shell_restricts_rm_rf_root() {
         let policy = CommandPolicy;
         let safety =
             policy.classify_shell("rm", &["-rf".to_string(), "/".to_string()], &workspace());
-        assert!(matches!(safety, CommandSafety::Blocked(_)));
+        assert!(matches!(safety, CommandSafety::Restricted(_)));
 
         let safety =
             policy.classify_shell("rm", &["-rf".to_string(), "/*".to_string()], &workspace());
-        assert!(matches!(safety, CommandSafety::Blocked(_)));
+        assert!(matches!(safety, CommandSafety::Restricted(_)));
 
         let safety = policy.classify_shell(
             "/bin/rm",
             &["-rf".to_string(), "/".to_string()],
             &workspace(),
         );
-        assert!(matches!(safety, CommandSafety::Blocked(_)));
+        assert!(matches!(safety, CommandSafety::Restricted(_)));
     }
 
     #[test]
-    fn rm_rf_root_blocked() {
-        assert!(is_blocked_shell_pattern(
+    fn rm_rf_root_restricted() {
+        assert!(is_restricted_shell_pattern(
             "rm",
             &["-rf".to_string(), "/".to_string()]
         ));
     }
 
     #[test]
-    fn rm_fr_root_blocked() {
-        assert!(is_blocked_shell_pattern(
+    fn rm_fr_root_restricted() {
+        assert!(is_restricted_shell_pattern(
             "rm",
             &["-fr".to_string(), "/".to_string()]
         ));
     }
 
     #[test]
-    fn rm_long_recursive_force_root_blocked() {
-        assert!(is_blocked_shell_pattern(
+    fn rm_long_recursive_force_root_restricted() {
+        assert!(is_restricted_shell_pattern(
             "rm",
             &[
                 "--recursive".to_string(),
@@ -1830,24 +1863,24 @@ mod tests {
     }
 
     #[test]
-    fn rm_long_recursive_root_blocked() {
-        assert!(is_blocked_shell_pattern(
+    fn rm_long_recursive_root_restricted() {
+        assert!(is_restricted_shell_pattern(
             "rm",
             &["--recursive".to_string(), "/".to_string()],
         ));
     }
 
     #[test]
-    fn rm_long_recursive_no_root_not_blocked_by_pattern() {
-        assert!(!is_blocked_shell_pattern(
+    fn rm_long_recursive_no_root_not_restricted_by_pattern() {
+        assert!(!is_restricted_shell_pattern(
             "rm",
             &["--recursive".to_string(), "subdir/".to_string()],
         ));
     }
 
     #[test]
-    fn rm_abbreviated_long_recursive_root_blocked() {
-        assert!(is_blocked_shell_pattern(
+    fn rm_abbreviated_long_recursive_root_restricted() {
+        assert!(is_restricted_shell_pattern(
             "rm",
             &[
                 "--rec".to_string(),
@@ -1855,7 +1888,7 @@ mod tests {
                 "/".to_string()
             ],
         ));
-        assert!(is_blocked_shell_pattern(
+        assert!(is_restricted_shell_pattern(
             "rm",
             &["--r".to_string(), "/".to_string()],
         ));
@@ -1863,7 +1896,7 @@ mod tests {
 
     #[test]
     fn rm_preserve_root_long_flag_does_not_set_recursive() {
-        assert!(!is_blocked_shell_pattern(
+        assert!(!is_restricted_shell_pattern(
             "rm",
             &[
                 "--preserve-root".to_string(),
@@ -1876,7 +1909,7 @@ mod tests {
 
     #[test]
     fn rm_dir_long_flag_does_not_set_recursive() {
-        assert!(!is_blocked_shell_pattern(
+        assert!(!is_restricted_shell_pattern(
             "rm",
             &["--dir".to_string(), "--force".to_string(), "/".to_string()],
         ));
@@ -1885,38 +1918,38 @@ mod tests {
 
     #[test]
     fn rm_dashdash_does_not_treat_operands_as_flags() {
-        assert!(!is_blocked_shell_pattern(
+        assert!(!is_restricted_shell_pattern(
             "rm",
             &["--".to_string(), "--recursive".to_string(), "/".to_string()],
         ));
     }
 
     #[test]
-    fn rm_glob_root_target_blocked() {
-        assert!(is_blocked_shell_pattern(
+    fn rm_glob_root_target_restricted() {
+        assert!(is_restricted_shell_pattern(
             "rm",
             &["-rf".to_string(), "/*".to_string()],
         ));
     }
 
     #[test]
-    fn rm_glob_subdir_target_not_blocked() {
-        assert!(!is_blocked_shell_pattern(
+    fn rm_glob_subdir_target_not_restricted() {
+        assert!(!is_restricted_shell_pattern(
             "rm",
             &["-rf".to_string(), "/tmp/*".to_string()],
         ));
     }
 
     #[test]
-    fn classify_shell_blocks_dangerous_programs() {
+    fn classify_shell_restricts_dangerous_programs() {
         let policy = CommandPolicy;
         assert!(matches!(
             policy.classify_shell("dd", &[], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell("curl", &["https://example.com".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
     }
 
@@ -2049,7 +2082,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_shell_preserves_git_and_gh_hard_blocks() {
+    fn classify_shell_preserves_git_and_gh_restrictions() {
         let policy = CommandPolicy;
         assert!(matches!(
             policy.classify_shell(
@@ -2057,7 +2090,7 @@ mod tests {
                 &["push".to_string(), "--force".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell(
@@ -2065,7 +2098,7 @@ mod tests {
                 &["reset".to_string(), "--hard".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell(
@@ -2073,7 +2106,7 @@ mod tests {
                 &["repo".to_string(), "delete".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell(
@@ -2081,7 +2114,7 @@ mod tests {
                 &["gh".to_string(), "repo".to_string(), "delete".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_shell(
@@ -2089,7 +2122,7 @@ mod tests {
                 &["--split-string=gh repo delete".to_string()],
                 &workspace()
             ),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
     }
 
@@ -2254,23 +2287,23 @@ mod tests {
     }
 
     #[test]
-    fn classify_git_blocks_destructive_options() {
+    fn classify_git_restricts_destructive_options() {
         let policy = CommandPolicy;
         assert!(matches!(
             policy.classify_git(&["push".to_string(), "--force".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_git(&["push".to_string(), "-f".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_git(&["reset".to_string(), "--hard".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert!(matches!(
             policy.classify_git(&["clean".to_string(), "-fd".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
     }
 
@@ -2535,11 +2568,11 @@ mod tests {
     }
 
     #[test]
-    fn classify_gh_blocks_repo_delete() {
+    fn classify_gh_restricts_repo_delete() {
         let policy = CommandPolicy;
         assert!(matches!(
             policy.classify_gh(&["repo".to_string(), "delete".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
     }
 
@@ -2569,7 +2602,7 @@ mod tests {
         );
         assert!(matches!(
             policy.classify_gh(&["auth".to_string(), "token".to_string()], &workspace()),
-            CommandSafety::Blocked(_)
+            CommandSafety::Restricted(_)
         ));
         assert_eq!(
             policy.classify_gh(&["auth".to_string(), "setup-git".to_string()], &workspace()),
@@ -2807,7 +2840,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn autonomy_guardrails_require_approval_for_spaced_external_paths() {
+    async fn auto_mode_executes_workspace_escaping_command_paths() {
         use crate::approval_broker::{ApprovalBroker, AutonomyMode};
 
         let fixture = tempfile::tempdir().unwrap();
@@ -2830,9 +2863,9 @@ mod tests {
                 run_id: None,
             });
             let executor = CommandExecutor::new(root.clone(), Some(approval));
-            let target = fixture.path().join(format!("outside {program}"));
+            let target = fixture.path().join(format!("outside {program} {relative}"));
             let operand = if relative {
-                format!("../outside {program}")
+                format!("../outside {program} {relative}")
             } else {
                 target.display().to_string()
             };
@@ -2842,8 +2875,8 @@ mod tests {
                 .unwrap();
 
             assert_eq!(emitter.requested.load(Ordering::SeqCst), 1, "{program}");
-            assert_eq!(output.reason.as_deref(), Some("approval_denied"));
-            assert!(!target.exists());
+            assert!(output.success, "{program}: {output:?}");
+            assert!(target.exists());
         }
     }
 
@@ -2893,15 +2926,15 @@ mod tests {
                 (vec!["tag", "marker"], CommandSafety::Mutating),
                 (
                     vec!["reset", "--hard"],
-                    CommandSafety::Blocked("git_reset_hard".to_string()),
+                    CommandSafety::Restricted("git_reset_hard".to_string()),
                 ),
                 (
                     vec!["push", "--force"],
-                    CommandSafety::Blocked("git_push_force".to_string()),
+                    CommandSafety::Restricted("git_push_force".to_string()),
                 ),
                 (
                     vec!["clean", "-fd"],
-                    CommandSafety::Blocked("git_clean".to_string()),
+                    CommandSafety::Restricted("git_clean".to_string()),
                 ),
             ] {
                 let args: Vec<String> = prefix
@@ -2909,7 +2942,11 @@ mod tests {
                     .chain(command.iter())
                     .map(|arg| arg.to_string())
                     .collect();
-                assert_eq!(policy.classify_git(&args, &workspace()), expected, "{args:?}");
+                assert_eq!(
+                    policy.classify_git(&args, &workspace()),
+                    expected,
+                    "{args:?}"
+                );
             }
         }
     }
@@ -2963,7 +3000,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocked_command_returns_blocked_reason() {
+    async fn restricted_command_returns_blocked_reason_without_approval() {
         let executor = CommandExecutor::new(workspace(), None);
         let output = executor
             .run_shell(
@@ -2975,6 +3012,136 @@ mod tests {
             .expect("tool should return output");
         assert!(!output.success);
         assert_eq!(output.reason.as_deref(), Some("shell_interpreter"));
+        assert_eq!(output.needs_approval, Some(false));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn approval_that_does_not_permit_restricted_commands_cannot_run_them() {
+        let root = tempfile::tempdir().unwrap();
+        let executor = CommandExecutor::new(
+            root.path().to_path_buf(),
+            Some(Arc::new(AlwaysApproval {
+                approved: Arc::new(AtomicBool::new(true)),
+            })),
+        );
+        let output = executor
+            .run_shell(
+                "sh".to_string(),
+                vec!["-c".to_string(), "touch ask-approved".to_string()],
+                Some(5),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(output.reason.as_deref(), Some("shell_interpreter"));
+        assert!(!root.path().join("ask-approved").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ask_mode_blocks_restricted_commands_without_prompting() {
+        use crate::approval_broker::ApprovalBroker;
+
+        let root = tempfile::tempdir().unwrap();
+        let emitter = Arc::new(GuardrailEmitter::default());
+        let broker = Arc::new(ApprovalBroker::with_timeout(
+            emitter.clone(),
+            Duration::from_millis(1),
+        ));
+        let executor = CommandExecutor::new(
+            root.path().to_path_buf(),
+            Some(Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            })),
+        );
+
+        for (tool, output) in [
+            (
+                "shell",
+                executor
+                    .run_shell(
+                        "sh".to_string(),
+                        vec!["-c".to_string(), "touch ask-ran".to_string()],
+                        Some(5),
+                    )
+                    .await
+                    .unwrap(),
+            ),
+            (
+                "git",
+                executor
+                    .run_git(vec!["clean".to_string(), "-fd".to_string()], Some(5))
+                    .await
+                    .unwrap(),
+            ),
+        ] {
+            assert!(!output.success, "{tool}: {output:?}");
+            assert_eq!(output.needs_approval, Some(false), "{tool}");
+        }
+        assert!(!root.path().join("ask-ran").exists());
+        assert_eq!(emitter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn auto_mode_still_blocks_empty_commands() {
+        use crate::approval_broker::{ApprovalBroker, AutonomyMode};
+
+        let emitter = Arc::new(GuardrailEmitter::default());
+        let broker = Arc::new(ApprovalBroker::with_timeout(
+            emitter.clone(),
+            Duration::from_millis(1),
+        ));
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        let executor = CommandExecutor::new(
+            workspace(),
+            Some(Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            })),
+        );
+
+        let output = executor
+            .run_shell("  ".to_string(), Vec::new(), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(output.reason.as_deref(), Some("empty_program"));
+        assert_eq!(emitter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auto_mode_executes_restricted_shell_interpreters() {
+        use crate::approval_broker::{ApprovalBroker, AutonomyMode};
+
+        let root = tempfile::tempdir().unwrap();
+        let emitter = Arc::new(GuardrailEmitter::default());
+        let broker = Arc::new(ApprovalBroker::with_timeout(
+            emitter.clone(),
+            Duration::from_millis(1),
+        ));
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        let executor = CommandExecutor::new(
+            root.path().to_path_buf(),
+            Some(Arc::new(crate::BrokerCommandApproval {
+                broker,
+                run_id: None,
+            })),
+        );
+
+        let output = executor
+            .run_shell(
+                "sh".to_string(),
+                vec!["-c".to_string(), "touch auto-ran".to_string()],
+                Some(5),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.success, "{output:?}");
+        assert!(root.path().join("auto-ran").exists());
+        assert_eq!(emitter.requested.load(Ordering::SeqCst), 1);
     }
 
     struct AlwaysApproval {

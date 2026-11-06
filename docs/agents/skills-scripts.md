@@ -13,6 +13,10 @@ The interpreter is determined by reading the first line of the script:
 3. **No shebang, `.sh` extension**: Default to `bash`.
 4. **No shebang, unrecognized extension**: Return an error string ("no executor"). The LLM can recover from this.
 
+## Approval
+
+`run_skill_script` goes through the same command approval as `run_shell_command`, as a mutating request outside the workspace. Ask mode prompts for every script run and never offers Always Allow. Auto mode runs scripts without a prompt unless the script command matches a user-saved deny rule.
+
 ## Timeout
 
 - **Default**: 30 seconds.

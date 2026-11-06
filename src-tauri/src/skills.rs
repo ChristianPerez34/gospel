@@ -1,5 +1,5 @@
 use crate::shell_tools::{CommandApproval, CommandApprovalRequest, CommandRisk};
-use rig::tool::{PortableTool, ToolExecutionError};
+use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -121,7 +121,7 @@ impl std::fmt::Display for RunSkillScriptError {
 
 impl std::error::Error for RunSkillScriptError {}
 
-impl PortableTool for RunSkillScriptTool {
+impl Tool for RunSkillScriptTool {
     const NAME: &'static str = "run_skill_script";
 
     type Error = RunSkillScriptError;
@@ -175,7 +175,11 @@ impl PortableTool for RunSkillScriptTool {
         ToolExecutionError::other(error.to_string())
     }
 
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
         let skill = match self.available_skills.iter().find(|s| s.name == args.skill) {
             Some(s) => s,
             None => {
@@ -1844,10 +1848,13 @@ mod tests {
             command_approval: None,
         };
         let out = tool
-            .call(RunSkillScriptArgs {
-                skill: "nope".into(),
-                script: "foo.sh".into(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "nope".into(),
+                    script: "foo.sh".into(),
+                },
+            )
             .await
             .unwrap();
         assert!(!out.success);
@@ -1894,10 +1901,13 @@ mod tests {
         };
 
         let output = tool
-            .call(RunSkillScriptArgs {
-                skill: "test-skill".to_string(),
-                script: "hello".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "test-skill".to_string(),
+                    script: "hello".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -1937,10 +1947,13 @@ mod tests {
         };
 
         let output = tool
-            .call(RunSkillScriptArgs {
-                skill: "test-skill".to_string(),
-                script: "hello".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "test-skill".to_string(),
+                    script: "hello".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -1981,10 +1994,13 @@ mod tests {
         };
 
         let output = tool
-            .call(RunSkillScriptArgs {
-                skill: "test-skill".to_string(),
-                script: "write-marker".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "test-skill".to_string(),
+                    script: "write-marker".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -2021,10 +2037,13 @@ mod tests {
         };
 
         let output = tool
-            .call(RunSkillScriptArgs {
-                skill: "test-skill".to_string(),
-                script: "write-marker".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "test-skill".to_string(),
+                    script: "write-marker".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -2066,10 +2085,13 @@ mod tests {
         };
 
         let output = tool
-            .call(RunSkillScriptArgs {
-                skill: "interp-skill".to_string(),
-                script: "runner".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "interp-skill".to_string(),
+                    script: "runner".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -2122,10 +2144,13 @@ mod tests {
         };
 
         let output = tool
-            .call(RunSkillScriptArgs {
-                skill: "test-skill".to_string(),
-                script: "weird".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "test-skill".to_string(),
+                    script: "weird".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -2167,10 +2192,13 @@ mod tests {
         };
 
         let output = tool
-            .call(RunSkillScriptArgs {
-                skill: "test-skill".to_string(),
-                script: "big.sh".to_string(),
-            })
+            .call(
+                &mut ToolContext::default(),
+                RunSkillScriptArgs {
+                    skill: "test-skill".to_string(),
+                    script: "big.sh".to_string(),
+                },
+            )
             .await
             .unwrap();
 

@@ -7,6 +7,7 @@ pub mod approval_broker;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
+mod ecs_runtime;
 mod git_context;
 mod grok_oauth;
 mod harness_plan;
@@ -22,6 +23,7 @@ mod models;
 mod oauth;
 mod provider_client;
 mod provider_credentials;
+mod provider_token_store;
 mod providers;
 mod review;
 mod session_actions;
@@ -75,7 +77,7 @@ use session_store::{
     ArchiveMaintenanceResult, ArchivePolicy, ArchiveStats, ArchivedSessionRecord, SessionDetail,
     SessionRecord, SessionStore, SessionStoreState,
 };
-use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest, CommandRisk};
+use shell_tools::{CommandApproval, CommandApprovalFuture, CommandApprovalRequest};
 use skills::SkillSummary;
 use std::sync::LazyLock;
 use std::{
@@ -301,7 +303,6 @@ impl CommandApproval for BrokerCommandApproval {
         let broker = self.broker.clone();
         let run_id = self.run_id.clone();
         Box::pin(async move {
-            let destructive = matches!(request.risk, CommandRisk::Destructive);
             let workspace_scoped = request.workspace_scoped;
             broker
                 .request(
@@ -309,13 +310,17 @@ impl CommandApproval for BrokerCommandApproval {
                         request.tool_name,
                         request.command_label,
                         request.reason,
-                        destructive,
+                        request.risk,
                         run_id.as_deref(),
                     )
                     .with_workspace_scope(workspace_scoped),
                 )
                 .await
         })
+    }
+
+    fn permits_restricted(&self) -> bool {
+        self.broker.autonomy_mode() == AutonomyMode::Auto
     }
 }
 
@@ -947,7 +952,23 @@ mod availability_tests {
                 "grok-4-0709"
             ]
         );
-        assert!(grok_models.iter().all(|model| model.variants.is_empty()));
+        for model in &grok_models {
+            match model.model.as_str() {
+                "grok-3-mini" | "grok-3-mini-fast" => assert_eq!(
+                    model
+                        .variants
+                        .iter()
+                        .map(|variant| variant.id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["reasoning-low", "reasoning-high"]
+                ),
+                _ => assert!(
+                    model.variants.is_empty(),
+                    "{} has no effort levels",
+                    model.model
+                ),
+            }
+        }
     }
 
     #[tokio::test]

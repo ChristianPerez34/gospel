@@ -1,3 +1,5 @@
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::models::{ModelInfo, ModelInfoWithFreshness, ModelRegistry};
@@ -40,36 +42,44 @@ pub async fn fetch_models_for_provider(
         .unwrap_or_else(|| api_key.unwrap_or("").to_string());
     let cache_key = format!("{}:{}", provider_id, cache_scope);
 
-    ModelRegistry::get_or_fetch(&cache_key, provider_id, force_refresh, || async {
-        let fetch_kind = entry.map(|entry| entry.model_fetch);
-        match fetch_kind {
-            Some(ModelFetchKind::RigOpenAI) => {
-                fetch_openai_models_impl(api_key.unwrap_or("")).await
+    let fetch_models =
+        ModelRegistry::get_or_fetch(&cache_key, provider_id, force_refresh, || async {
+            let fetch_kind = entry.map(|entry| entry.model_fetch);
+            match fetch_kind {
+                Some(ModelFetchKind::RigOpenAI) => {
+                    fetch_openai_models_impl(api_key.unwrap_or("")).await
+                }
+                Some(ModelFetchKind::CustomChatGpt) => fetch_chatgpt_models_impl().await,
+                Some(ModelFetchKind::RigOauthCopilot) => fetch_github_copilot_models_impl().await,
+                Some(ModelFetchKind::CustomGrok) => fetch_grok_models_impl(api_key).await,
+                Some(ModelFetchKind::CustomXai) => {
+                    fetch_xai_models_impl(api_key.unwrap_or("")).await
+                }
+                Some(ModelFetchKind::RigAnthropic) => {
+                    fetch_anthropic_models_impl(api_key.unwrap_or("")).await
+                }
+                Some(ModelFetchKind::RigGemini) => {
+                    fetch_gemini_models_impl(api_key.unwrap_or("")).await
+                }
+                Some(ModelFetchKind::RigMistral) => {
+                    fetch_mistral_models_impl(api_key.unwrap_or("")).await
+                }
+                Some(ModelFetchKind::CustomOpenCodeGo) => {
+                    fetch_opencode_go_models_impl(api_key.unwrap_or("")).await
+                }
+                Some(ModelFetchKind::StaticHardcoded) | None => {
+                    Ok(ModelRegistry::hardcoded_models_for(provider_id))
+                }
             }
-            Some(ModelFetchKind::CustomChatGpt) => fetch_chatgpt_models_impl().await,
-            Some(ModelFetchKind::RigOauthCopilot) => fetch_github_copilot_models_impl().await,
-            Some(ModelFetchKind::CustomGrok) => fetch_grok_models_impl(api_key).await,
-            Some(ModelFetchKind::CustomXai) => {
-                fetch_xai_models_impl(api_key.unwrap_or("")).await
-            }
-            Some(ModelFetchKind::RigAnthropic) => {
-                fetch_anthropic_models_impl(api_key.unwrap_or("")).await
-            }
-            Some(ModelFetchKind::RigGemini) => {
-                fetch_gemini_models_impl(api_key.unwrap_or("")).await
-            }
-            Some(ModelFetchKind::RigMistral) => {
-                fetch_mistral_models_impl(api_key.unwrap_or("")).await
-            }
-            Some(ModelFetchKind::CustomOpenCodeGo) => {
-                fetch_opencode_go_models_impl(api_key.unwrap_or("")).await
-            }
-            Some(ModelFetchKind::StaticHardcoded) | None => {
-                Ok(ModelRegistry::hardcoded_models_for(provider_id))
-            }
-        }
-    })
-    .await
+        });
+    let (_, mut result) = tokio::join!(
+        ModelRegistry::refresh_live_model_catalog(force_refresh),
+        fetch_models
+    );
+    for model in &mut result.models {
+        model.variants = ModelRegistry::variants_for_model(&model.provider, &model.model);
+    }
+    result
 }
 
 async fn fetch_openai_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
@@ -146,30 +156,100 @@ async fn fetch_mistral_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, Stri
     Ok(models)
 }
 
-/// OpenCode Go publishes an OpenAI-format model list at
-/// `GET https://opencode.ai/zen/go/v1/models`. Falls back to the documented
-/// model list so a flaky listing endpoint does not hide the provider.
+#[derive(Deserialize)]
+struct OpenCodeGoModelList {
+    #[serde(default)]
+    data: Vec<OpenCodeGoModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenCodeGoModel {
+    id: String,
+    #[serde(default)]
+    capabilities: Option<OpenCodeGoCapabilities>,
+}
+
+#[derive(Deserialize)]
+struct OpenCodeGoCapabilities {
+    #[serde(default)]
+    reasoning: Option<OpenCodeGoReasoning>,
+}
+
+#[derive(Deserialize)]
+struct OpenCodeGoReasoning {
+    #[serde(default)]
+    supported: Option<bool>,
+    #[serde(default)]
+    effort: Option<Vec<String>>,
+}
+
+/// Read OpenCode Go's live capability metadata; Rig's `ModelInfo` drops it.
 async fn fetch_opencode_go_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {
     let fallback_models = ModelRegistry::hardcoded_models_for("opencode_go");
 
-    let client = crate::provider_client::opencode_go_openai_config(api_key)
-        .connect(crate::provider_client::opencode_go_http(None));
-
-    let list = match client.list_models().await {
-        Ok(list) => list,
-        Err(e) => {
+    let (list, from_live_endpoint) = match fetch_opencode_go_model_list(api_key).await {
+        Ok(list) => (list, true),
+        Err(error) => {
             tracing::warn!(
-                "Failed to fetch OpenCode Go models: {}; using hardcoded base only",
-                e
+                "Failed to fetch OpenCode Go model capabilities ({error}); falling back to Rig model listing"
             );
-            return Ok(fallback_models);
+            let client = crate::provider_client::opencode_go_openai_config(api_key)
+                .connect(crate::provider_client::opencode_go_http(None));
+            match client.list_models().await {
+                Ok(list) => (
+                    OpenCodeGoModelList {
+                        data: list
+                            .data
+                            .into_iter()
+                            .map(|model| OpenCodeGoModel {
+                                id: model.id,
+                                capabilities: None,
+                            })
+                            .collect(),
+                    },
+                    false,
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        "Failed to fetch OpenCode Go models: {}; using hardcoded base only",
+                        error
+                    );
+                    return Ok(fallback_models);
+                }
+            }
         }
     };
+
+    let live_efforts = list
+        .data
+        .iter()
+        .filter_map(|model| {
+            let reasoning = model.capabilities.as_ref()?.reasoning.as_ref()?;
+            Some((
+                model.id.clone(),
+                if reasoning.supported == Some(false) {
+                    Vec::new()
+                } else {
+                    reasoning.effort.clone().unwrap_or_default()
+                },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+    if from_live_endpoint
+        && list.data.iter().any(|model| {
+            model
+                .capabilities
+                .as_ref()
+                .is_some_and(|capabilities| capabilities.reasoning.is_some())
+        })
+    {
+        ModelRegistry::replace_live_model_effort_provider("opencode_go", live_efforts);
+    }
 
     let models: Vec<ModelInfo> = list
         .data
         .into_iter()
-        .map(|m| ModelRegistry::model_info("opencode_go", &m.id))
+        .map(|model| ModelRegistry::model_info("opencode_go", &model.id))
         .collect();
 
     if models.is_empty() {
@@ -181,17 +261,33 @@ async fn fetch_opencode_go_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, 
     Ok(models)
 }
 
+async fn fetch_opencode_go_model_list(api_key: &str) -> Result<OpenCodeGoModelList, String> {
+    let url = format!(
+        "{}/models",
+        crate::provider_client::OPENCODE_GO_OPENAI_BASE_URL
+    );
+    reqwest::Client::new()
+        .get(url)
+        .headers(crate::provider_client::opencode_go_headers(None))
+        .bearer_auth(api_key)
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())
+}
+
 async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
     if !crate::keychain::has_github_copilot_oauth_session() {
         return Err("GitHub Copilot OAuth session not found".to_string());
     }
 
-    let client = rig::providers::copilot::CopilotConfig::new("")
-        .client()
-        .authenticate(&crate::provider_client::copilot_authenticator(None))
-        .await
-        .map_err(|e| format!("failed to authenticate GitHub Copilot: {}", e))?;
-    crate::copilot_models::fetch_models(client.config(), &rig::rig_reqwest::shared()).await
+    let config = crate::provider_client::copilot_config().await?;
+    crate::copilot_models::fetch_models(&config, &rig::rig_reqwest::shared()).await
 }
 
 async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
@@ -341,11 +437,9 @@ async fn fetch_xai_developer_models(
         Ok(r) => {
             let status = r.status();
             let body_text = r.text().await.unwrap_or_default();
-            if let Some(kind) =
-                crate::credential_failure::classify_credential_failure(&format!(
-                    "HTTP {status} {body_text}"
-                ))
-            {
+            if let Some(kind) = crate::credential_failure::classify_credential_failure(&format!(
+                "HTTP {status} {body_text}"
+            )) {
                 return Err(match kind {
                     crate::credential_failure::CredentialFailureKind::ReauthRequired => {
                         format!("HTTP {status} unauthorized while listing {provider_id} models")
@@ -386,10 +480,15 @@ async fn fetch_xai_developer_models(
     }
 
     if models.is_empty() {
-        tracing::warn!("{provider_id} API returned no compatible models; using hardcoded base only");
+        tracing::warn!(
+            "{provider_id} API returned no compatible models; using hardcoded base only"
+        );
         return Ok(fallback_models);
     }
 
-    tracing::info!("Resolved {} compatible models for {provider_id}", models.len());
+    tracing::info!(
+        "Resolved {} compatible models for {provider_id}",
+        models.len()
+    );
     Ok(models)
 }

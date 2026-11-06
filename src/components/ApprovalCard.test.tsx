@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TurnBlock } from "../types";
 import { ApprovalCard } from "./ApprovalCard";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 function pendingApproval(
@@ -25,6 +26,83 @@ function pendingApproval(
 }
 
 describe("ApprovalCard", () => {
+  it("counts down from the broker deadline and disables decisions at zero", () => {
+    vi.useFakeTimers();
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ expiresAtMs: Date.now() + 60_000 })}
+          onResolve={onResolve}
+        />
+      </ol>
+    );
+
+    expect(screen.getByRole("timer").textContent).toBe("Auto-denies in 60s");
+    expect(screen.getByRole("timer").getAttribute("aria-live")).toBe("off");
+    act(() => vi.advanceTimersByTime(1000));
+    expect(screen.getByRole("timer").textContent).toBe("Auto-denies in 59s");
+    act(() => vi.advanceTimersByTime(58_000));
+    expect(screen.getByRole("timer").textContent).toBe("Auto-denies in 1s");
+    act(() => vi.advanceTimersByTime(1000));
+    expect(screen.getByRole("timer").textContent).toBe("Approval window expired");
+    for (const name of ["Allow", "Always Allow", "Deny"]) {
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+    expect(onResolve).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("preserves the remaining time when a card is remounted", () => {
+    vi.useFakeTimers();
+    const block = pendingApproval({ expiresAtMs: Date.now() + 60_000, risk: "destructive" });
+    const { unmount } = render(<ApprovalCard block={block} />);
+    act(() => vi.advanceTimersByTime(12_000));
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+
+    act(() => vi.advanceTimersByTime(8000));
+    render(<ApprovalCard block={block} />);
+    expect(screen.getByRole("timer").textContent).toBe("Guarded · Auto-denies in 40s");
+  });
+
+  it.each([
+    "focus",
+    "visibilitychange",
+  ])("catches up after %s without relying on timer ticks", (event) => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    render(<ApprovalCard block={pendingApproval({ expiresAtMs: now + 60_000 })} />);
+
+    vi.setSystemTime(now + 45_100);
+    fireEvent(event === "focus" ? window : document, new Event(event));
+    expect(screen.getByRole("timer").textContent).toBe("Auto-denies in 15s");
+
+    vi.setSystemTime(now + 90_000);
+    fireEvent(event === "focus" ? window : document, new Event(event));
+    expect(screen.getByRole("timer").textContent).toBe("Approval window expired");
+  });
+
+  it("stops the countdown once the backend resolves the request", () => {
+    vi.useFakeTimers();
+    const block = pendingApproval({ expiresAtMs: Date.now() + 60_000 });
+    const { rerender } = render(<ApprovalCard block={block} />);
+    expect(vi.getTimerCount()).toBe(1);
+
+    rerender(<ApprovalCard block={{ ...block, status: "denied" }} />);
+    expect(screen.queryByRole("timer")).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(screen.getByText("Denied")).toBeTruthy();
+  });
+
+  it("does not invent a deadline for older approval cards", () => {
+    vi.useFakeTimers();
+    render(<ApprovalCard block={pendingApproval()} />);
+    expect(screen.getByRole("timer").textContent).toBe("Auto-denies if unanswered");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("renders summary, reason, and Allow / Deny actions when pending", () => {
     render(
       <ol>
@@ -88,6 +166,21 @@ describe("ApprovalCard", () => {
     expect(screen.getByTestId("approval-allow-dest-1")).toBeTruthy();
     expect(screen.getByTestId("approval-deny-dest-1")).toBeTruthy();
     expect(screen.queryByTestId("approval-always-allow-dest-1")).toBeNull();
+    expect(screen.getByText(/Guarded/)).toBeTruthy();
+  });
+
+  it("does not render Always Allow for restricted commands", () => {
+    render(
+      <ol>
+        <ApprovalCard
+          block={pendingApproval({ risk: "restricted", id: "restricted-1" })}
+          onResolve={vi.fn().mockResolvedValue(undefined)}
+        />
+      </ol>
+    );
+
+    expect(screen.getByText("Restricted")).toBeTruthy();
+    expect(screen.queryByTestId("approval-always-allow-restricted-1")).toBeNull();
     expect(screen.getByText(/Guarded/)).toBeTruthy();
   });
 

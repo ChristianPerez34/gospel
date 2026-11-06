@@ -76,6 +76,7 @@ const BASE_APPROVAL_REQUEST: ApprovalRequest = {
   reason: "Mutating shell command",
   risk: "mutating",
   workspace_scoped: true,
+  expires_at_ms: 1_800_000_060_000,
 };
 
 function turnText(turn: { blocks?: TurnBlock[] } | null | undefined): string {
@@ -125,6 +126,60 @@ describe("useChatStream", () => {
   });
 
   describe("token and done listeners", () => {
+    it("discards a failed attempt's text and reasoning while preserving completed tools", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+      await act(async () => {
+        triggerEvent("llm-token", "Kept 🧪");
+        triggerEvent("llm-tool-call", { id: "call-1", name: "read_file", arguments: {} });
+        triggerEvent("llm-tool-result", { id: "call-1", name: "read_file", result: "Done" });
+        triggerEvent("llm-reasoning", { id: "failed-r1", text: "Discard", phase: "delta" });
+        triggerEvent("llm-token", "Broken partial");
+        triggerEvent("llm-retry-reset", { text: "Kept 🧪", reasoningIds: ["failed-r1"] });
+        triggerEvent("llm-token", "Recovered");
+      });
+      expect(turnText(result.current.currentTurn)).toBe("Kept 🧪Recovered");
+      expect(result.current.currentTurn!.blocks.some((block) => block.kind === "reasoning")).toBe(
+        false
+      );
+      expect(
+        result.current.currentTurn!.blocks.some(
+          (block) => block.kind === "tool" && block.id === "call-1"
+        )
+      ).toBe(true);
+    });
+
+    it("ignores stale retry resets", async () => {
+      const { result } = renderChatStream();
+      await act(async () => {});
+      await act(async () => {
+        triggerEvent("llm-token", "Current output");
+        triggerEvent("llm-retry-reset", { runId: "old-run", text: "", reasoningIds: [] });
+      });
+      expect(turnText(result.current.currentTurn)).toBe("Current output");
+    });
+
+    it("resets a background attempt without changing the focused session", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({ sessionId: "session-a", onLiveTurnForSession });
+      await act(async () => {});
+      const runId = await startBgRun(result);
+      await act(async () => {
+        triggerEvent("llm-tool-call", { id: "focused-tool", name: "read_file", arguments: {} });
+        triggerEvent("llm-token", { runId, token: "Kept partial" });
+        triggerEvent("llm-retry-reset", { runId, text: "Kept ", reasoningIds: [] });
+        triggerEvent("llm-token", { runId, token: "recovered" });
+        triggerEvent("llm-tool-call", { runId, id: "bg-tool", name: "read_file", arguments: {} });
+      });
+      expect(turnText(lastLiveTurn(onLiveTurnForSession, "session-b"))).toBe("Kept recovered");
+      expect(
+        result.current.currentTurn?.blocks.some(
+          (block) => block.kind === "tool" && block.id === "focused-tool"
+        )
+      ).toBe(true);
+      expect(turnText(result.current.currentTurn)).toBe("");
+    });
+
     it("llm-token appends a token to currentTurn.blocks", async () => {
       const { result } = renderChatStream();
       await act(async () => {});
@@ -405,6 +460,7 @@ describe("useChatStream", () => {
         status: "pending",
         toolName: "shell",
         approvalKind: "command",
+        expiresAtMs: BASE_APPROVAL_REQUEST.expires_at_ms,
       });
 
       await act(async () => {
@@ -687,7 +743,7 @@ describe("useChatStream", () => {
       await act(async () => {});
 
       const registeredCount = registeredUnlisteners.length;
-      expect(registeredCount).toBe(9);
+      expect(registeredCount).toBe(10);
 
       act(() => {
         unmount();

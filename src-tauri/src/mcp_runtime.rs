@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rig::message::ToolName;
-use rig::tool::rmcp::McpTool;
 use rig::tool::{DynamicTool, RegisteredTool, ToolExecutionError};
 use rmcp::service::{Peer, RoleClient, RunningService, ServiceExt};
 use rmcp::transport::auth::{AuthClient, AuthorizationManager, OAuthState};
@@ -398,7 +397,7 @@ fn build_session_tool(
         .unwrap_or(false);
     let rule = format!("mcp://{server_id}/{}", tool.name);
     let reason = format!("The MCP server wants to run {}.", tool.name);
-    let mcp_tool = Arc::new(McpTool::from_mcp_server(tool, sink.clone()));
+    let original_name = tool.name.to_string();
     let liveness = sink.clone();
 
     let dynamic = DynamicTool::new(
@@ -406,7 +405,8 @@ fn build_session_tool(
         description,
         parameters,
         move |args: serde_json::Value| {
-            let mcp_tool = mcp_tool.clone();
+            let sink = sink.clone();
+            let original_name = original_name.clone();
             let broker = broker.clone();
             let rule = rule.clone();
             let reason = reason.clone();
@@ -428,13 +428,31 @@ fn build_session_tool(
                         ));
                     }
                 }
-                let result = mcp_tool.execute_mcp(args.to_string(), None).await?;
+                let arguments = match args {
+                    serde_json::Value::Object(arguments) => arguments,
+                    serde_json::Value::Null => serde_json::Map::new(),
+                    _ => {
+                        return Err(ToolExecutionError::invalid_args(
+                            "MCP tool arguments must be an object",
+                        ))
+                    }
+                };
+                let result = tokio::time::timeout(
+                    rig::tool::rmcp::DEFAULT_MCP_TOOL_TIMEOUT,
+                    sink.call_tool(
+                        rmcp::model::CallToolRequestParams::new(original_name.clone())
+                            .with_arguments(arguments),
+                    ),
+                )
+                .await
+                .map_err(|_| ToolExecutionError::timeout("MCP tool timed out"))?
+                .map_err(|error| ToolExecutionError::other(error.to_string()))?;
                 let is_error = result.is_error == Some(true);
                 let output = rig::tool::rmcp::mcp_result_output(&result)?;
                 if is_error {
                     Err(ToolExecutionError::other(format!(
                         "MCP tool '{}' reported an execution error",
-                        mcp_tool.definition().name
+                        original_name
                     ))
                     .with_model_output(output))
                 } else {
@@ -462,6 +480,11 @@ async fn oauth_manager(server_id: &str, url: &str) -> Result<AuthorizationManage
     if !restored {
         return Err(rmcp::transport::auth::AuthError::AuthorizationRequired.to_string());
     }
+    // A server configured for OAuth must have usable credentials before connecting.
+    manager
+        .get_access_token()
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(manager)
 }
 
@@ -496,8 +519,10 @@ pub async fn start_mcp_oauth(server: &McpServer) -> Result<McpOAuthFlow, String>
     let mut state = OAuthState::new(url, None)
         .await
         .map_err(|e| format!("OAuth discovery failed: {e}"))?;
+    let mut request = rmcp::transport::auth::AuthorizationRequest::new(redirect_uri);
+    request.client_name = Some("Gospel".into());
     state
-        .start_authorization(&[], &redirect_uri, Some("Gospel"))
+        .start_authorization(request)
         .await
         .map_err(|e| format!("OAuth setup failed: {e}"))?;
     let auth_url = state
@@ -521,14 +546,11 @@ impl McpOAuthFlow {
         )
         .await
         .map_err(|_| "Sign-in timed out.".to_string())??;
+        // rmcp completes the state transition inside handle_callback_url.
         self.state
             .handle_callback_url(&callback_url)
             .await
             .map_err(|e| format!("OAuth callback was rejected: {e}"))?;
-        self.state
-            .complete_authorization()
-            .await
-            .map_err(|e| format!("OAuth completion failed: {e}"))?;
         let (client_id, token_response) = self
             .state
             .get_credentials()
@@ -606,7 +628,8 @@ mod tests {
     impl TestServer {
         async fn start() -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let url = format!("{origin}/mcp");
             let listing = Arc::new(Notify::new());
             let release = Arc::new(Notify::new());
             let (started, resume) = (listing.clone(), release.clone());
@@ -633,44 +656,79 @@ mod tests {
                         })
                         .unwrap_or(0);
                     let is_post = headers.starts_with("POST ");
+                    let path = headers
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .split('?')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
                     while request.len() < body_start + length {
                         let mut buffer = [0; 4096];
                         let count = stream.read(&mut buffer).await.unwrap();
                         assert_ne!(count, 0);
                         request.extend_from_slice(&buffer[..count]);
                     }
-                    let (status, body) = if !is_post {
-                        ("404 Not Found", String::new())
-                    } else {
-                        let message: serde_json::Value =
-                            serde_json::from_slice(&request[body_start..body_start + length])
-                                .unwrap();
-                        let result = match message["method"].as_str().unwrap() {
-                            "initialize" => Some(serde_json::json!({
-                                "protocolVersion": message["params"]["protocolVersion"],
-                                "capabilities": {"tools": {}},
-                                "serverInfo": {"name": "test", "version": "1"},
-                            })),
-                            "tools/list" => {
-                                started.notify_one();
-                                resume.notified().await;
-                                Some(serde_json::json!({"tools": [{
-                                    "name": "search", "inputSchema": {"type": "object"},
-                                    "annotations": {"readOnlyHint": true},
-                                }]}))
-                            }
-                            "notifications/initialized" => None,
-                            other => panic!("unexpected MCP request: {other}"),
-                        };
-                        match result {
-                            Some(result) => (
-                                "200 OK",
-                                serde_json::json!({
-                                    "jsonrpc": "2.0", "id": message["id"], "result": result,
-                                })
+                    let (status, body) = match (is_post, path.as_str()) {
+                        (false, "/.well-known/oauth-authorization-server/mcp") => (
+                            "200 OK",
+                            serde_json::json!({
+                                "issuer": format!("{origin}/mcp"),
+                                "authorization_endpoint": format!("{origin}/authorize"),
+                                "token_endpoint": format!("{origin}/token"),
+                                "registration_endpoint": format!("{origin}/register"),
+                                "response_types_supported": ["code"],
+                                "code_challenge_methods_supported": ["S256"],
+                            })
+                            .to_string(),
+                        ),
+                        (true, "/register") => (
+                            "201 Created",
+                            serde_json::json!({"client_id": "test-client", "redirect_uris": []})
                                 .to_string(),
-                            ),
-                            None => ("202 Accepted", String::new()),
+                        ),
+                        (true, "/token") => (
+                            "200 OK",
+                            serde_json::json!({
+                                "access_token": "test-access-token",
+                                "token_type": "Bearer",
+                                "expires_in": 3600,
+                            })
+                            .to_string(),
+                        ),
+                        (false, _) => ("404 Not Found", String::new()),
+                        (true, _) => {
+                            let message: serde_json::Value =
+                                serde_json::from_slice(&request[body_start..body_start + length])
+                                    .unwrap();
+                            let result = match message["method"].as_str().unwrap() {
+                                "initialize" => Some(serde_json::json!({
+                                    "protocolVersion": message["params"]["protocolVersion"],
+                                    "capabilities": {"tools": {}},
+                                    "serverInfo": {"name": "test", "version": "1"},
+                                })),
+                                "tools/list" => {
+                                    started.notify_one();
+                                    resume.notified().await;
+                                    Some(serde_json::json!({"tools": [{
+                                        "name": "search", "inputSchema": {"type": "object"},
+                                        "annotations": {"readOnlyHint": true},
+                                    }]}))
+                                }
+                                "notifications/initialized" => None,
+                                other => panic!("unexpected MCP request: {other}"),
+                            };
+                            match result {
+                                Some(result) => (
+                                    "200 OK",
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0", "id": message["id"], "result": result,
+                                    })
+                                    .to_string(),
+                                ),
+                                None => ("202 Accepted", String::new()),
+                            }
                         }
                     };
                     let response = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
@@ -700,6 +758,41 @@ mod tests {
         store
             .set_mcp_server_enabled(mcp::MCP_KIND_CUSTOM, &server.id, true)
             .unwrap()
+    }
+
+    #[test]
+    fn mcp_oauth_callback_completes_and_stores_credentials() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let oauth_server = TestServer::start().await;
+            let store = AppConfigStore::in_memory_for_test().unwrap();
+            let server = enabled_server(&store, &oauth_server.url);
+            let flow = start_mcp_oauth(&server).await.unwrap();
+            let callback_addr = flow.listener.local_addr().unwrap();
+            let state = flow
+                .auth_url
+                .split('&')
+                .find_map(|parameter| parameter.strip_prefix("state="))
+                .unwrap()
+                .to_string();
+            let waiting = tokio::spawn(async move { flow.wait_for_callback("test-server").await });
+            let mut callback = tokio::net::TcpStream::connect(callback_addr).await.unwrap();
+            callback
+                .write_all(
+                    format!(
+                        "GET /callback?code=test-code&state={state} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+
+            let result = waiting.await.unwrap();
+            assert!(result.is_ok(), "OAuth callback failed: {result:?}");
+            assert!(crate::mcp_credentials::has_oauth_credentials("test-server"));
+        });
     }
 
     #[test]
@@ -804,7 +897,11 @@ mod tests {
                 .connect_and_report(&store, &server.id)
                 .await
                 .unwrap();
-            assert_eq!(updated.health, MCP_HEALTH_AUTH_REQUIRED);
+            assert_eq!(
+                updated.health, MCP_HEALTH_AUTH_REQUIRED,
+                "{:?}",
+                updated.last_error_summary
+            );
             assert_eq!(updated.auth_status, mcp::MCP_AUTH_REQUIRED);
             assert!(crate::mcp_credentials::has_oauth_credentials(&server.id));
         });
