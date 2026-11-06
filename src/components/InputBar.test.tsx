@@ -276,6 +276,20 @@ describe("InputBar", () => {
     expect(menu.style.bottom).toBe("calc(100% + 0.5rem)");
   });
 
+  it("ignores overflow ancestors that generate no box (e.g. display: contents)", () => {
+    renderInputBar();
+    const boundary = screen.getByTestId("input-boundary");
+    boundary.style.overflow = "hidden";
+    vi.spyOn(boundary, "getBoundingClientRect").mockReturnValue(
+      domRect({ left: 0, top: 0, width: 0, height: 0 })
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Select variant" }));
+
+    const menu = screen.getByRole("listbox");
+    expect(Number.parseInt(menu.style.width, 10)).toBeGreaterThan(0);
+  });
+
   it("renders Stop control when isStreaming is true and calls onCancelStream on click", () => {
     const onCancelStream = vi.fn();
     renderInputBar({ isStreaming: true, onCancelStream });
