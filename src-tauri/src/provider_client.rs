@@ -115,9 +115,7 @@ fn copilot_completion_model(
     model: &str,
     supported_endpoints: Option<&[String]>,
 ) -> CompletionModel {
-    let route = supported_endpoints
-        .and_then(copilot_route_from_supported_endpoints)
-        .or_else(|| copilot_response_fallback(model));
+    let route = copilot_route_for_model(model, supported_endpoints);
     if let Some(route) = route {
         openai::OpenAIConfig::with_key(&copilot::wire::DIALECT, config.api_key.clone())
             .with_base_url(config.base_url.clone())
@@ -129,6 +127,15 @@ fn copilot_completion_model(
         // ponytail: endpoint-less catalogs fall back to Rig; endpoint metadata removes this ceiling.
         config.connect(http).completion(model).into()
     }
+}
+
+pub(crate) fn copilot_route_for_model(
+    model: &str,
+    supported_endpoints: Option<&[String]>,
+) -> Option<openai::Route> {
+    supported_endpoints
+        .and_then(copilot_route_from_supported_endpoints)
+        .or_else(|| copilot_response_fallback(model))
 }
 
 fn copilot_route_from_supported_endpoints(endpoints: &[String]) -> Option<openai::Route> {
@@ -432,6 +439,15 @@ mod tests {
             copilot_response_fallback("gpt-6.1-sol"),
             Some(openai::Route::Responses)
         );
+        assert_eq!(
+            copilot_route_for_model("future-model", Some(&["/responses".to_string()])),
+            Some(openai::Route::Responses)
+        );
+        assert_eq!(
+            copilot_route_for_model("gpt-6.1-sol", None),
+            Some(openai::Route::Responses)
+        );
+        assert_eq!(copilot_route_for_model("future-model", None), None);
     }
 
     #[test]
