@@ -198,14 +198,15 @@ fn gate_calls(
             .get(of.0)
             .is_ok_and(|recovery| recovery.retries > 0);
         if !retry {
-            if state.calls >= state.guards.max_turns {
-                let max_turns = state.guards.max_turns;
-                state.stop(
-                    &mut commands,
-                    agent.0,
-                    format!("Agent reached its {max_turns} model-call limit"),
-                );
-                return;
+            if let Some(max_turns) = state.guards.max_turns {
+                if max_turns > 0 && state.calls >= max_turns {
+                    state.stop(
+                        &mut commands,
+                        agent.0,
+                        format!("Agent reached its {max_turns} model-call limit"),
+                    );
+                    return;
+                }
             }
             state.calls += 1;
         }
