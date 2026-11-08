@@ -1,8 +1,21 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { codePlugin } from "@/lib/markdown";
-import { summarizeLiveToolActivity, toolActivitiesToTimelineSteps } from "../toolActivityCards";
-import type { ApprovalDecision, CurrentTurn, Message, ToolCallActivity, TurnBlock } from "../types";
+import {
+  subagentCardView,
+  summarizeLiveToolActivity,
+  toolActivitiesToTimelineSteps,
+} from "../toolActivityCards";
+import type {
+  ActionCard,
+  ActionCardSection,
+  ApprovalDecision,
+  CurrentTurn,
+  Message,
+  ToolCallActivity,
+  TurnBlock,
+  VerificationActivity,
+} from "../types";
 import { ActivityStep } from "./ActivityStep";
 import { ApprovalCard } from "./ApprovalCard";
 import { type MessageActionCallbacks, MessageActions } from "./MessageActions";
@@ -43,6 +56,7 @@ function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
     arguments: block.arguments,
     result: block.result,
     status: block.status,
+    subagent: block.subagent,
   };
 }
 
@@ -141,6 +155,56 @@ function ToolTimeline({
         {approvalBlocks.map((block) => (
           <ApprovalCard key={block.id} block={block} onResolve={onResolveApproval} />
         ))}
+      </ol>
+    </div>
+  );
+}
+
+const VERIFICATION_LABELS: Record<VerificationActivity["status"], string> = {
+  running: "Checking…",
+  pass: "Passed",
+  concerns: "Concerns found",
+  fail: "Problems found",
+  unavailable: "Unavailable",
+};
+
+function verificationCard(messageId: string, verification: VerificationActivity): ActionCard {
+  const sections: ActionCardSection[] = [];
+  if (verification.summary) {
+    sections.push({ type: "text", title: "Summary", content: verification.summary });
+  }
+  if (verification.concerns.length > 0) {
+    sections.push({
+      type: "text",
+      title: "Concerns",
+      content: verification.concerns.map((concern) => `• ${concern}`).join("\n"),
+    });
+  }
+  return {
+    id: `verification-${messageId}`,
+    type: "search",
+    summary: "Verify response",
+    target: VERIFICATION_LABELS[verification.status],
+    status: verification.status === "running" ? "calling" : "completed",
+    sections,
+    subagent: subagentCardView(verification.activity),
+  };
+}
+
+/** The background check of a finished reply, live while it runs. */
+function VerificationRow({ message }: { message: Message }) {
+  const card = useMemo(
+    () => (message.verification ? verificationCard(message.id, message.verification) : null),
+    [message.id, message.verification]
+  );
+  if (!card) return null;
+  return (
+    <div
+      className="tool-timeline ml-16 w-[calc(100%-3.25rem)] max-w-[960px]"
+      data-testid="verification-activity"
+    >
+      <ol className="m-0 flex list-none flex-col gap-2 p-0">
+        <ActivityStep card={card} />
       </ol>
     </div>
   );
@@ -250,6 +314,7 @@ function AgentTurnBlock({
           />
         )
       )}
+      {message && !currentTurn && <VerificationRow message={message} />}
       {message?.error && <ErrorBlock message={message.error} />}
       {showActions && message && (
         <MessageActions

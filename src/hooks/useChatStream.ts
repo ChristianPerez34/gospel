@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  applySubagentStepToTurn,
+  applyVerificationStep,
+  completeVerification,
+  updateMessageById,
+} from "../subagentActivity";
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -8,7 +14,10 @@ import type {
   ApprovalResolution,
   CurrentTurn,
   Message,
+  SubagentKind,
+  SubagentStep,
   TurnBlock,
+  VerificationOutcome,
 } from "../types";
 
 interface UseChatStreamOptions {
@@ -19,6 +28,13 @@ interface UseChatStreamOptions {
   onMessagesForSession?: (
     sessionId: string | null,
     updater: (prev: Message[]) => Message[]
+  ) => void;
+  /** Updates one finalized message in place, without the unread and
+   * recency side effects of appending a reply. */
+  onMessageUpdateForSession?: (
+    sessionId: string | null,
+    messageId: string,
+    update: (message: Message) => Message
   ) => void;
   /** Live turn updates for background (non-focused) sessions. */
   onLiveTurnForSession?: (sessionId: string | null, turn: CurrentTurn | null) => void;
@@ -93,6 +109,54 @@ interface LlmErrorPayload {
   runId?: string;
   code: string;
   message: string;
+}
+
+interface LlmSubagentPayload {
+  runId?: string;
+  /** Parent tool call; null for verification, which runs after the turn. */
+  parentId: string | null;
+  agent: SubagentKind;
+  step: SubagentStep;
+}
+
+interface LlmVerificationPayload {
+  runId?: string;
+  status: VerificationOutcome;
+  summary?: string;
+  concerns?: string[];
+}
+
+/** Buffered sub-agent report text for one session, by parent tool call. */
+type PendingSubagentText = Map<string, { agent: SubagentKind; text: string }>;
+
+/** Verification arrives after its run finishes; remember enough recent runs
+ * to route it to the reply it checks. */
+const MAX_COMPLETED_RUNS = 50;
+
+function appendTextToTurn(turn: CurrentTurn, text: string): CurrentTurn {
+  const blocks = [...turn.blocks];
+  const last = blocks[blocks.length - 1];
+  if (last && last.kind === "text") {
+    blocks[blocks.length - 1] = { ...last, text: last.text + text };
+  } else {
+    blocks.push({ kind: "text", id: `text-${blocks.length}`, text });
+  }
+  return { ...turn, blocks };
+}
+
+function foldPendingIntoTurn(
+  turn: CurrentTurn,
+  text: string,
+  subagentText: PendingSubagentText | undefined
+): CurrentTurn {
+  let next = text ? appendTextToTurn(turn, text) : turn;
+  for (const [parentId, pending] of subagentText ?? []) {
+    next = applySubagentStepToTurn(next, parentId, pending.agent, {
+      type: "text",
+      text: pending.text,
+    });
+  }
+  return next;
 }
 
 function joinTextBlocks(blocks: TurnBlock[]): string {
@@ -220,6 +284,13 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   // guarantees text can never be attributed to the wrong session.
   const pendingBySessionRef = useRef<Map<string | null, string>>(new Map());
   const pendingFrameBySessionRef = useRef<Map<string | null, FrameHandle>>(new Map());
+  // Sub-agent report text streams token by token too; it is buffered and
+  // flushed alongside the session's main text.
+  const pendingSubagentTextRef = useRef<Map<string | null, PendingSubagentText>>(new Map());
+  /** runId -> finalized reply, kept after the run ends for verification. */
+  const completedRunsRef = useRef<Map<string, { sessionId: string | null; messageId: string }>>(
+    new Map()
+  );
   const prevFocusedSessionRef = useRef<string | null | undefined>(undefined);
   const turnSequenceRef = useRef(0);
   const optionsRef = useRef(options);
@@ -260,6 +331,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       pendingFrameBySessionRef.current.delete(focused);
     }
     pendingBySessionRef.current.delete(focused);
+    pendingSubagentTextRef.current.delete(focused);
     currentTurnRef.current = null;
     activeRunIdRef.current = null;
     setCurrentTurn(null);
@@ -317,28 +389,17 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         pendingFrameBySessionRef.current.delete(sessionId);
       }
       const buffered = pendingBySessionRef.current.get(sessionId) ?? "";
-      if (!buffered) return;
-      // Clear the buffer before applying so a reentrant event cannot
+      const subagentText = pendingSubagentTextRef.current.get(sessionId);
+      if (!buffered && !subagentText) return;
+      // Clear the buffers before applying so a reentrant event cannot
       // duplicate text.
       pendingBySessionRef.current.delete(sessionId);
-      const appendText = (turn: CurrentTurn): CurrentTurn => {
-        const blocks = [...turn.blocks];
-        const last = blocks[blocks.length - 1];
-        if (last && last.kind === "text") {
-          blocks[blocks.length - 1] = { ...last, text: last.text + buffered };
-        } else {
-          blocks.push({
-            kind: "text",
-            id: `text-${blocks.length}`,
-            text: buffered,
-          });
-        }
-        return { ...turn, blocks };
-      };
+      pendingSubagentTextRef.current.delete(sessionId);
+      const apply = (turn: CurrentTurn) => foldPendingIntoTurn(turn, buffered, subagentText);
       if (sessionId === getFocusedSession()) {
-        updateCurrentTurn(appendText);
+        updateCurrentTurn(apply);
       } else {
-        updateBackgroundTurn(sessionId, appendText);
+        updateBackgroundTurn(sessionId, apply);
       }
     },
     [getFocusedSession, updateCurrentTurn, updateBackgroundTurn]
@@ -386,17 +447,16 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     }
     const outgoingText = pendingBySessionRef.current.get(prev) ?? "";
     pendingBySessionRef.current.delete(prev);
+    const outgoingSubagentText = pendingSubagentTextRef.current.get(prev);
+    pendingSubagentTextRef.current.delete(prev);
+    const hasOutgoing = Boolean(outgoingText || outgoingSubagentText);
     if (prevHasActiveRun && prev != null) {
-      if (outgoingText && currentTurnRef.current) {
-        const turn = currentTurnRef.current;
-        const blocks = [...turn.blocks];
-        const last = blocks[blocks.length - 1];
-        if (last && last.kind === "text") {
-          blocks[blocks.length - 1] = { ...last, text: last.text + outgoingText };
-        } else {
-          blocks.push({ kind: "text", id: `text-${blocks.length}`, text: outgoingText });
-        }
-        const stashed = { ...turn, blocks };
+      if (hasOutgoing && currentTurnRef.current) {
+        const stashed = foldPendingIntoTurn(
+          currentTurnRef.current,
+          outgoingText,
+          outgoingSubagentText
+        );
         backgroundTurnsRef.current.set(prev, stashed);
         optionsRef.current.onLiveTurnForSession?.(prev, stashed);
       } else if (currentTurnRef.current) {
@@ -410,18 +470,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       currentTurnRef.current = incoming;
       setCurrentTurn(incoming);
       flushPendingForSession(focused);
-    } else if (outgoingText && currentTurnRef.current) {
+    } else if (hasOutgoing && currentTurnRef.current) {
       // No active run for prev (e.g. new-task interim with pending text):
       // fold it into the visible turn without swapping views.
-      const turn = currentTurnRef.current;
-      const blocks = [...turn.blocks];
-      const last = blocks[blocks.length - 1];
-      if (last && last.kind === "text") {
-        blocks[blocks.length - 1] = { ...last, text: last.text + outgoingText };
-      } else {
-        blocks.push({ kind: "text", id: `text-${blocks.length}`, text: outgoingText });
-      }
-      const next = { ...turn, blocks };
+      const next = foldPendingIntoTurn(currentTurnRef.current, outgoingText, outgoingSubagentText);
       currentTurnRef.current = next;
       setCurrentTurn(next);
     }
@@ -533,6 +585,39 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           : currentTurnRef.current;
         return { session, fallbackSingle, finalTurn };
       };
+      const scheduleSessionFlush = (sessionId: string | null) => {
+        if (pendingFrameBySessionRef.current.has(sessionId)) return;
+        const handle = scheduleFlush(() => {
+          pendingFrameBySessionRef.current.delete(sessionId);
+          flushPendingForSession(sessionId);
+        });
+        pendingFrameBySessionRef.current.set(sessionId, handle);
+      };
+      const rememberCompletedRun = (
+        runId: unknown,
+        sessionId: string | null,
+        messageId: string
+      ) => {
+        if (typeof runId !== "string") return;
+        const runs = completedRunsRef.current;
+        runs.set(runId, { sessionId, messageId });
+        while (runs.size > MAX_COMPLETED_RUNS) {
+          const oldest = runs.keys().next().value;
+          if (oldest === undefined) break;
+          runs.delete(oldest);
+        }
+      };
+      const updateCompletedRunMessage = (runId: unknown, update: (message: Message) => Message) => {
+        if (typeof runId !== "string") return;
+        const target = completedRunsRef.current.get(runId);
+        if (!target) return;
+        const options = optionsRef.current;
+        if (options.onMessageUpdateForSession) {
+          options.onMessageUpdateForSession(target.sessionId, target.messageId, update);
+        } else {
+          options.onMessages?.((prev) => updateMessageById(prev, target.messageId, update));
+        }
+      };
       // NOTE: approval handlers below branch on `isBackground(runId)` (not
       // `sid === focused`) so the draft case (`focused == null` renders
       // foreground, matching `llm-token`) stays consistent, and they drop
@@ -574,13 +659,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const sessionId = sessionForRun(runId);
               const prev = pendingBySessionRef.current.get(sessionId) ?? "";
               pendingBySessionRef.current.set(sessionId, prev + token);
-              if (!pendingFrameBySessionRef.current.has(sessionId)) {
-                const handle = scheduleFlush(() => {
-                  pendingFrameBySessionRef.current.delete(sessionId);
-                  flushPendingForSession(sessionId);
-                });
-                pendingFrameBySessionRef.current.set(sessionId, handle);
-              }
+              scheduleSessionFlush(sessionId);
               if (sessionId !== getFocusedSession()) {
                 emitStatus(sessionId, "thinking");
               }
@@ -618,6 +697,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                   } else {
                     optionsRef.current.onMessages?.((prev) => [...prev, message]);
                   }
+                  rememberCompletedRun(runId, sessionId, messageId);
                 }
                 backgroundTurnsRef.current.delete(sessionId);
                 pendingBySessionRef.current.delete(sessionId);
@@ -660,6 +740,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 } else {
                   optionsRef.current.onMessages?.((prev) => [...prev, message]);
                 }
+                rememberCompletedRun(runId, completionSession, messageId);
               }
 
               // Clear the visible turn only when the completion belongs to
@@ -1001,6 +1082,56 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
             })
           ),
           track(
+            listen<LlmSubagentPayload>("llm-subagent-event", ({ payload }) => {
+              const step = payload?.step;
+              if (!step) return;
+              const { agent, parentId, runId } = payload;
+              if (parentId == null) {
+                if (agent === "verification") {
+                  updateCompletedRunMessage(runId, (message) => ({
+                    ...message,
+                    verification: applyVerificationStep(message.verification, step),
+                  }));
+                }
+                return;
+              }
+              if (isStale(runId)) return;
+              const sessionId = sessionForRun(runId);
+              if (step.type === "text") {
+                const bySession: PendingSubagentText =
+                  pendingSubagentTextRef.current.get(sessionId) ?? new Map();
+                const prev = bySession.get(parentId)?.text ?? "";
+                bySession.set(parentId, { agent, text: prev + step.text });
+                pendingSubagentTextRef.current.set(sessionId, bySession);
+                scheduleSessionFlush(sessionId);
+                return;
+              }
+              // Buffered report text must land before a reset or a later step.
+              flushPendingForSession(sessionId);
+              const apply = (turn: CurrentTurn) =>
+                applySubagentStepToTurn(turn, parentId, agent, step);
+              if (isBackground(runId)) {
+                if (!backgroundTurnsRef.current.has(sessionId)) return;
+                updateBackgroundTurn(sessionId, apply);
+                return;
+              }
+              if (!currentTurnRef.current) return;
+              updateCurrentTurn(apply);
+            })
+          ),
+          track(
+            listen<LlmVerificationPayload>("llm-verification", ({ payload }) => {
+              if (!payload?.status) return;
+              updateCompletedRunMessage(payload.runId, (message) => ({
+                ...message,
+                verification: completeVerification(message.verification, payload),
+              }));
+              if (typeof payload.runId === "string") {
+                completedRunsRef.current.delete(payload.runId);
+              }
+            })
+          ),
+          track(
             listen<ModelVariantWarningPayload>("llm-model-variant-warning", (event) => {
               optionsRef.current.onErrorToast?.(
                 event.payload.message || "Model variant was not available; using Default."
@@ -1085,6 +1216,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       }
       pendingFrameBySessionRef.current.clear();
       pendingBySessionRef.current.clear();
+      pendingSubagentTextRef.current.clear();
       cleanup?.();
     };
   }, [
@@ -1113,6 +1245,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       if (runSessionId === getFocusedSession()) {
         backgroundTurnsRef.current.delete(runSessionId);
         pendingBySessionRef.current.delete(runSessionId);
+        pendingSubagentTextRef.current.delete(runSessionId);
         const frame = pendingFrameBySessionRef.current.get(runSessionId);
         if (frame != null) {
           cancelFrameHandle(frame);
@@ -1205,6 +1338,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       }
       backgroundTurnsRef.current.delete(sid);
       pendingBySessionRef.current.delete(sid);
+      pendingSubagentTextRef.current.delete(sid);
       optionsRef.current.onLiveTurnForSession?.(sid, null);
       if (targetRun) clearRun(targetRun);
       emitStatus(sid, "connected");
@@ -1242,6 +1376,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       pendingFrameBySessionRef.current.delete(focused);
     }
     pendingBySessionRef.current.delete(focused);
+    pendingSubagentTextRef.current.delete(focused);
     currentTurnRef.current = null;
     setCurrentTurn(null);
     backgroundTurnsRef.current.delete(focused);

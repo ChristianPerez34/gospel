@@ -5,6 +5,7 @@ use crate::llm::{
 use crate::models::ModelRegistry;
 use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
+use crate::subagent::{SubagentKind, SubagentStep};
 use crate::trace;
 use crate::verification::{VerificationResult, VerificationStatus};
 use rig::completion::message::{AssistantContent, Message, ToolResultContent, UserContent};
@@ -509,6 +510,7 @@ pub async fn run_streaming_turn(
                 &response_for_verify,
                 &prompt_preparation.effective_prompt,
                 request.session_id.as_deref(),
+                &run_id,
                 stream_result.source_edit_succeeded,
             ) {
                 deps.verification.schedule_verification(job);
@@ -872,6 +874,11 @@ pub enum SessionTurnEvent {
         variant: String,
         message: String,
     },
+    Subagent {
+        parent_id: String,
+        agent: SubagentKind,
+        step: SubagentStep,
+    },
 }
 
 impl From<StreamEvent> for SessionTurnEvent {
@@ -924,6 +931,15 @@ impl From<StreamEvent> for SessionTurnEvent {
                 model,
                 variant,
                 message,
+            },
+            StreamEvent::Subagent {
+                parent_id,
+                agent,
+                step,
+            } => SessionTurnEvent::Subagent {
+                parent_id,
+                agent,
+                step,
             },
         }
     }
@@ -1003,6 +1019,42 @@ pub fn ui_event_payload(event: &SessionTurnEvent, run_id: &str) -> UiEventPayloa
                 "message": message
             }),
         },
+        SessionTurnEvent::Subagent {
+            parent_id,
+            agent,
+            step,
+        } => subagent_ui_event_payload(run_id, Some(parent_id), *agent, step),
+    }
+}
+
+/// Live sub-agent step for the frontend. `parent_id` names the parent tool
+/// call; verification has none because it runs after the turn.
+pub fn subagent_ui_event_payload(
+    run_id: &str,
+    parent_id: Option<&str>,
+    agent: SubagentKind,
+    step: &SubagentStep,
+) -> UiEventPayload {
+    let step = match step {
+        SubagentStep::ToolCall {
+            id,
+            name,
+            arguments,
+        } => SubagentStep::ToolCall {
+            id: id.clone(),
+            name: name.clone(),
+            arguments: observable_tool_arguments(name, arguments),
+        },
+        step => step.clone(),
+    };
+    UiEventPayload {
+        name: "llm-subagent-event",
+        payload: json!({
+            "runId": run_id,
+            "parentId": parent_id,
+            "agent": agent,
+            "step": step,
+        }),
     }
 }
 
@@ -1014,7 +1066,7 @@ pub fn trace_event_for_session_turn_event(
 ) -> Option<trace::TraceEvent> {
     match event {
         SessionTurnEvent::TextToken(_) | SessionTurnEvent::RetryReset { .. } => None,
-        SessionTurnEvent::Reasoning { .. } => None,
+        SessionTurnEvent::Reasoning { .. } | SessionTurnEvent::Subagent { .. } => None,
         SessionTurnEvent::ToolCall {
             name, arguments, ..
         } => Some(trace::TraceEvent::ToolCall {
@@ -1072,6 +1124,7 @@ pub struct VerificationJobRequest {
     pub response_to_verify: String,
     pub user_prompt: String,
     pub session_id: Option<String>,
+    pub run_id: String,
 }
 
 pub fn response_requires_verification(response: &str) -> bool {
@@ -1094,6 +1147,7 @@ pub fn verification_job_request(
     response_to_verify: &str,
     user_prompt: &str,
     session_id: Option<&str>,
+    run_id: &str,
     source_edit_succeeded: bool,
 ) -> Option<VerificationJobRequest> {
     if !turn_requires_verification(response_to_verify, source_edit_succeeded) {
@@ -1108,6 +1162,7 @@ pub fn verification_job_request(
         response_to_verify: response_to_verify.to_string(),
         user_prompt: user_prompt.to_string(),
         session_id: session_id.map(str::to_string),
+        run_id: run_id.to_string(),
     })
 }
 
@@ -2014,6 +2069,36 @@ mod tests {
     }
 
     #[test]
+    fn subagent_event_payload_names_its_parent_and_redacts_edit_arguments() {
+        let event = SessionTurnEvent::from(StreamEvent::Subagent {
+            parent_id: "call-7".into(),
+            agent: SubagentKind::Exploration,
+            step: SubagentStep::ToolCall {
+                id: "inner-1".into(),
+                name: "source_edit".into(),
+                arguments: json!({"path": "a.rs", "old_text": "secret", "new_text": "x"}),
+            },
+        });
+        let payload = ui_event_payload(&event, "run-1");
+        assert_eq!(payload.name, "llm-subagent-event");
+        assert_eq!(
+            payload.payload,
+            json!({
+                "runId": "run-1",
+                "parentId": "call-7",
+                "agent": "exploration",
+                "step": {
+                    "type": "toolCall",
+                    "id": "inner-1",
+                    "name": "source_edit",
+                    "arguments": {"path": "a.rs", "old_text": "[REDACTED]", "new_text": "[REDACTED]"}
+                }
+            })
+        );
+        assert!(trace_event_for_session_turn_event(&event, "s", "main", 0).is_none());
+    }
+
+    #[test]
     fn reasoning_event_emits_ephemeral_payload_and_no_trace() {
         let run_id = "run-1";
         let delta = ui_event_payload(
@@ -2173,6 +2258,7 @@ mod tests {
             "plain response",
             "prompt",
             Some("session-1"),
+            "run-1",
             false,
         )
         .is_none());
@@ -2185,6 +2271,7 @@ mod tests {
             "```rust\nfn main() {}\n```",
             "prompt",
             Some("session-1"),
+            "run-1",
             false,
         )
         .unwrap();
@@ -2200,6 +2287,7 @@ mod tests {
             "done",
             "prompt",
             Some("session-1"),
+            "run-1",
             true,
         )
         .unwrap();
@@ -2430,7 +2518,10 @@ mod tests {
         assert_eq!(verifications[0].model, "gpt-test");
         assert_eq!(verifications[0].api_key, "api-key");
         assert_eq!(verifications[0].session_id.as_deref(), Some("session-1"));
-        assert_eq!(verifications[0].workspace.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert_eq!(
+            verifications[0].workspace.workspace_path,
+            PathBuf::from("/tmp/workspace")
+        );
     }
 
     #[tokio::test]

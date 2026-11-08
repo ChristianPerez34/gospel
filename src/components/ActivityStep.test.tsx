@@ -217,4 +217,38 @@ describe("ActivityStep", () => {
     expect(screen.queryByText(/Context:/)).toBeNull();
     expect(screen.getByText("file contents")).not.toBeNull();
   });
+  it("shows a sub-agent's current action and nests its steps", () => {
+    const nested = { ...readFileCard("calling"), id: "nested-read" };
+    renderStep({
+      ...readFileCard("calling"),
+      id: "tool-explore",
+      summary: "Delegate exploration",
+      target: undefined,
+      sections: [],
+      subagent: {
+        steps: [nested],
+        liveLabel: "Read file src/lib.rs",
+        text: "Found it",
+        stepCount: 1,
+      },
+    });
+
+    expect(screen.getByTestId("subagent-live-label").textContent).toContain("Read file src/lib.rs");
+    expect(screen.getByText("1 step")).not.toBeNull();
+    const parent = screen.getByRole("button", { name: /delegate exploration.*1 agent step/i });
+    fireEvent.click(parent);
+    const steps = screen.getByTestId("subagent-steps");
+    expect(steps.querySelectorAll("li")).toHaveLength(1);
+    expect(screen.getByText("Report so far")).not.toBeNull();
+    expect(screen.getByText("Found it")).not.toBeNull();
+  });
+
+  it("hides the live label and report once the parent call completes", () => {
+    renderStep({
+      ...readFileCard("completed"),
+      subagent: { steps: [], liveLabel: "Writing report", text: "Final", stepCount: 0 },
+    });
+    expect(screen.queryByTestId("subagent-live-label")).toBeNull();
+    expect(screen.queryByText("Report so far")).toBeNull();
+  });
 });

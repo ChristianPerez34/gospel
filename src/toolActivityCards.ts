@@ -6,6 +6,8 @@ import type {
   ActionCardType,
   ReviewComment,
   ReviewResult,
+  SubagentActivity,
+  SubagentCardView,
   ToolCallActivity,
 } from "./types";
 
@@ -17,6 +19,7 @@ const TOOL_LABELS: Record<string, string> = {
   delegate_exploration: "Delegate exploration",
   write_harness_file: "Update plan",
   run_review: "Code review",
+  run_multi_review: "Multi-focus review",
   run_security_review: "Security review",
   record_review_outcome: "Record review outcome",
   source_edit: "Edit file",
@@ -627,13 +630,51 @@ export function formatToolActivityLabel(
   return live && activity.status === "calling" ? `${label}...` : label;
 }
 
+function subagentStepLabel(step: ToolCallActivity, withTarget: boolean) {
+  const label = formatToolActivityLabel(step);
+  const target = withTarget ? toolTarget(step) : undefined;
+  return target ? `${label} ${target}` : label;
+}
+
+/** What a sub-agent is doing right now, e.g. "Read file src/llm.rs". Targets
+ * are omitted where raw arguments must stay hidden, such as task previews. */
+export function subagentCurrentLabel(activity: SubagentActivity, withTarget = true): string | null {
+  const calling = [...activity.steps].reverse().find((step) => step.status === "calling");
+  if (calling) return subagentStepLabel(calling, withTarget);
+  if (activity.latest === "text" && activity.text.trim()) return "Writing report";
+  if (activity.phase) return activity.phase;
+  const last = activity.steps[activity.steps.length - 1];
+  return last ? subagentStepLabel(last, withTarget) : null;
+}
+
+/** Live label for a running tool, extended with its sub-agent's current
+ * action: "Delegate exploration: Read file src/llm.rs". */
+export function formatLiveToolActivity(activity: ToolCallActivity, withTarget = true) {
+  const current =
+    activity.status === "calling" && activity.subagent
+      ? subagentCurrentLabel(activity.subagent, withTarget)
+      : null;
+  return current
+    ? `${formatToolActivityLabel(activity)}: ${current}`
+    : formatToolActivityLabel(activity, true);
+}
+
+export function subagentCardView(activity: SubagentActivity): SubagentCardView {
+  return {
+    steps: toolActivitiesToTimelineSteps(activity.steps),
+    liveLabel: subagentCurrentLabel(activity),
+    text: activity.text,
+    stepCount: activity.steps.length,
+  };
+}
+
 export function summarizeLiveToolActivity(activities: ToolCallActivity[], isThinking: boolean) {
   const activeActivity = [...activities]
     .reverse()
     .find((activity) => activity.status === "calling");
 
   if (activeActivity) {
-    return formatToolActivityLabel(activeActivity, true);
+    return formatLiveToolActivity(activeActivity);
   }
 
   if (activities.length > 0) {
@@ -657,6 +698,7 @@ export function toolActivitiesToActionCards(activities: ToolCallActivity[]): Act
       expanded: false,
       status: activity.status,
       ...formatted,
+      subagent: activity.subagent ? subagentCardView(activity.subagent) : undefined,
     };
   });
 }
