@@ -525,4 +525,77 @@ describe("InputBar", () => {
     fireEvent.change(textarea, { target: { value: "/code-review please check this" } });
     expect(screen.queryByRole("button", { name: /\/code-review/ })).toBeNull();
   });
+
+  describe("agents", () => {
+    const testAgents = [
+      {
+        name: "bug-bounty",
+        description: "Black-box bounty researcher",
+        source: "Workspace" as const,
+        tools: [],
+        skills: [],
+        network: true,
+      },
+      {
+        name: "review",
+        description: "Code reviewer",
+        source: "Workspace" as const,
+        tools: [],
+        skills: [],
+        network: false,
+      },
+    ];
+
+    it("renders the agent picker and reports selection changes", () => {
+      const onAgentChange = vi.fn();
+      renderInputBar({ agents: testAgents, onAgentChange });
+
+      const select = screen.getByRole("combobox", { name: "Select agent" });
+      fireEvent.change(select, { target: { value: "bug-bounty" } });
+      expect(onAgentChange).toHaveBeenCalledWith("bug-bounty");
+
+      fireEvent.change(select, { target: { value: "" } });
+      expect(onAgentChange).toHaveBeenCalledWith(null);
+    });
+
+    it("shows mention autocomplete for a leading @ and inserts the selection", () => {
+      renderInputBar({ agents: testAgents });
+
+      const textarea = screen.getByRole("textbox", {
+        name: "Message input",
+      }) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "@bug" } });
+
+      fireEvent.click(screen.getByRole("button", { name: /@bug-bounty/ }));
+      expect(textarea.value).toBe("@bug-bounty ");
+    });
+
+    it("sends a leading @mention as a delegated agent task", () => {
+      const onSend = vi.fn();
+      renderInputBar({ agents: testAgents, onSend });
+
+      const textarea = screen.getByRole("textbox", { name: "Message input" });
+      fireEvent.change(textarea, {
+        target: { value: "@bug-bounty enumerate the login endpoints" },
+      });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+
+      expect(onSend).toHaveBeenCalledWith(
+        "@bug-bounty enumerate the login endpoints",
+        undefined,
+        { name: "bug-bounty", task: "enumerate the login endpoints" }
+      );
+    });
+
+    it("sends a normal message when the @mention matches no agent", () => {
+      const onSend = vi.fn();
+      renderInputBar({ agents: testAgents, onSend });
+
+      const textarea = screen.getByRole("textbox", { name: "Message input" });
+      fireEvent.change(textarea, { target: { value: "@nobody do a thing" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+
+      expect(onSend).toHaveBeenCalledWith("@nobody do a thing");
+    });
+  });
 });

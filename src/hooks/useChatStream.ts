@@ -159,6 +159,8 @@ interface StartStreamOptions {
    * sessionId for local-only sessions. */
   runSessionId?: string | null;
   invokedSkill?: { name: string; args?: string } | null;
+  agentId?: string | null;
+  delegatedAgent?: { name: string; task: string } | null;
 }
 
 /** Schedules a single frame flush of buffered streamed text. Defaults to the
@@ -1127,6 +1129,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         variant: opts.variant ?? null,
         sessionId: opts.sessionId ?? null,
         invokedSkill: opts.invokedSkill ?? null,
+        agentId: opts.agentId ?? null,
+        delegatedAgent: opts.delegatedAgent ?? null,
         runId,
       });
       return runId;

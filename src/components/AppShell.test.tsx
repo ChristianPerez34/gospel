@@ -209,6 +209,7 @@ describe("AppShell task flow", () => {
       provider: "openai",
       model: "gpt-4o",
       variant: null,
+      agentId: null,
     });
     expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "complete_streaming")).toBe(false);

@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 mod app_config;
+mod agents;
 pub mod approval_broker;
+mod bounty;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
@@ -103,6 +105,18 @@ impl SkillCache {
     fn new() -> Self {
         Self {
             loader: skills::SkillLoader::new(),
+        }
+    }
+}
+
+pub struct AgentCache {
+    pub loader: agents::AgentLoader,
+}
+
+impl AgentCache {
+    fn new() -> Self {
+        Self {
+            loader: agents::AgentLoader::new(),
         }
     }
 }
@@ -1067,6 +1081,7 @@ struct TauriSessionTurnAdapters<'a> {
     session_store_state: &'a SessionStoreState,
     trace_state: &'a TraceState,
     skill_cache: &'a SkillCache,
+    agent_cache: &'a AgentCache,
 }
 
 impl session_turn::SessionTurnWorkspace for TauriSessionTurnAdapters<'_> {
@@ -1269,6 +1284,12 @@ impl session_turn::SessionTurnSkills for TauriSessionTurnAdapters<'_> {
     }
 }
 
+impl session_turn::SessionTurnAgents for TauriSessionTurnAdapters<'_> {
+    fn load_agents(&self, workspace_path: Option<&Path>) -> Vec<agents::AgentDefinition> {
+        self.agent_cache.loader.load(workspace_path)
+    }
+}
+
 impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
     fn stream_completion<'b>(
         &'b self,
@@ -1318,6 +1339,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.invoked_skill_section,
                 request.memory_section,
                 skill_script_tool,
+                request.custom_profile,
                 request.session_id,
                 mcp_tools,
                 move |event| on_event(session_turn::SessionTurnEvent::from(event)),
@@ -1464,6 +1486,7 @@ async fn complete_streaming(
     session_store_state: tauri::State<'_, SessionStoreState>,
     trace_state: tauri::State<'_, TraceState>,
     skill_cache: tauri::State<'_, SkillCache>,
+    agent_cache: tauri::State<'_, AgentCache>,
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     provider: String,
     prompt: String,
@@ -1471,6 +1494,8 @@ async fn complete_streaming(
     variant: Option<String>,
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
+    agent_id: Option<String>,
+    delegated_agent: Option<session_turn::DelegatedAgentRequest>,
     run_id: String,
 ) -> Result<String, llm::LlmErrorDto> {
     let (delegate_provider, delegate_model, delegate_api_key) =
@@ -1483,6 +1508,7 @@ async fn complete_streaming(
         session_store_state: session_store_state.inner(),
         trace_state: trace_state.inner(),
         skill_cache: skill_cache.inner(),
+        agent_cache: agent_cache.inner(),
     };
 
     // Cancellation is provided by the `Abortable`/`AbortHandle` pair. When a
@@ -1500,6 +1526,7 @@ async fn complete_streaming(
             sessions: &adapters,
             conversation: &adapters,
             skills: &adapters,
+            agents: &adapters,
             llm: &adapters,
             events: &adapters,
             verification: &adapters,
@@ -1516,6 +1543,8 @@ async fn complete_streaming(
             delegate_api_key,
             session_id,
             invoked_skill,
+            agent_id,
+            delegated_agent,
         },
     );
 
@@ -1951,6 +1980,129 @@ fn reload_skills(
     Ok(skills.iter().map(skills::SkillSummary::from).collect())
 }
 
+#[tauri::command]
+fn list_agents(
+    app_config: tauri::State<'_, AppConfigState>,
+    agent_cache: tauri::State<'_, AgentCache>,
+) -> Result<Vec<agents::AgentSummary>, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        None => None,
+    };
+
+    let agents = agent_cache.loader.load(workspace_path.as_deref());
+    Ok(agents.iter().map(agents::AgentSummary::from).collect())
+}
+
+#[tauri::command]
+fn list_bounty_findings(
+    app_config: tauri::State<'_, AppConfigState>,
+    run_id: Option<String>,
+) -> Result<bounty::findings::BountyFindings, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
+        None => None,
+    };
+    let Some(workspace_path) = workspace_path else {
+        return Ok(bounty::findings::BountyFindings {
+            run_id: None,
+            runs: Vec::new(),
+            checkpoint_pending: false,
+            signals: Vec::new(),
+            verdicts: Vec::new(),
+            report: None,
+        });
+    };
+    Ok(bounty::findings::load_findings(
+        &workspace_path,
+        run_id.as_deref(),
+    ))
+}
+
+#[tauri::command]
+fn set_bounty_verdict(
+    app_config: tauri::State<'_, AppConfigState>,
+    run_id: String,
+    signal_id: String,
+    status: String,
+    severity: Option<String>,
+    rationale: Option<String>,
+) -> Result<(), String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
+        None => None,
+    };
+    let Some(workspace_path) = workspace_path else {
+        return Err("no active workspace".to_string());
+    };
+    bounty::findings::record_user_verdict(
+        &workspace_path,
+        &run_id,
+        &signal_id,
+        &status,
+        severity.as_deref(),
+        rationale.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn approve_bounty_checkpoint(
+    app_config: tauri::State<'_, AppConfigState>,
+    run_id: String,
+) -> Result<(), String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
+        None => None,
+    };
+    let Some(workspace_path) = workspace_path else {
+        return Err("no active workspace".to_string());
+    };
+    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(
+        &workspace_path,
+        &run_id,
+    ))
+}
+
+#[tauri::command]
+fn store_bounty_secret(name: String, secret: String) -> Result<(), String> {
+    keychain::store_bounty_secret(&name, &secret).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn delete_bounty_secret(name: String) -> Result<(), String> {
+    keychain::delete_bounty_secret(&name).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reload_agents(
+    app_config: tauri::State<'_, AppConfigState>,
+    agent_cache: tauri::State<'_, AgentCache>,
+) -> Result<Vec<agents::AgentSummary>, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        None => None,
+    };
+
+    if let Some(ref path) = workspace_path {
+        agent_cache.loader.invalidate(path);
+    }
+
+    let agents = agent_cache.loader.load(workspace_path.as_deref());
+    Ok(agents.iter().map(agents::AgentSummary::from).collect())
+}
+
 const SKILL_OPT_SESSION_CAP: usize = 50;
 
 #[derive(Serialize)]
@@ -2348,6 +2500,7 @@ fn create_session(
     model: String,
     variant: Option<String>,
     workspace_id: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<SessionRecord, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
@@ -2358,6 +2511,7 @@ fn create_session(
                 &model,
                 variant.as_deref(),
                 workspace_id.as_deref(),
+                agent_id.as_deref(),
             )
             .map_err(|e| e.to_string()),
         None => Err(session_store
@@ -2402,6 +2556,47 @@ fn update_session_title(
             validate_session_access(store, &session_id, app_config.inner())?;
             store
                 .update_session_title(&session_id, &title)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn get_session_agent(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    match &session_store.store {
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .get_session_agent(&session_id)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn set_session_agent(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+    agent_id: Option<String>,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .set_session_agent(&session_id, agent_id.as_deref())
                 .map_err(|e| e.to_string())
         }
         None => Err(session_store
@@ -3395,6 +3590,7 @@ pub fn run() {
         .manage(session_store_state)
         .manage(trace_state)
         .manage(SkillCache::new())
+        .manage(AgentCache::new())
         .manage(ApprovalBrokerState::new())
         .manage(StreamingRunHandles::new())
         .manage(mcp_runtime::McpRuntime::new())
@@ -3439,6 +3635,13 @@ pub fn run() {
             get_workspace_git_context,
             list_skills,
             reload_skills,
+            list_agents,
+            list_bounty_findings,
+            set_bounty_verdict,
+            approve_bounty_checkpoint,
+            store_bounty_secret,
+            delete_bounty_secret,
+            reload_agents,
             harvest_skill_optimization_tasks,
             run_skill_selection_replay,
             optimize_skill_from_sessions,
@@ -3454,6 +3657,8 @@ pub fn run() {
             create_session,
             update_session_model_selection,
             update_session_title,
+            get_session_agent,
+            set_session_agent,
             generate_session_title,
             get_session,
             run_session_message_action,

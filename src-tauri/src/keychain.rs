@@ -97,6 +97,53 @@ pub fn has_key(provider: &str) -> bool {
     retrieve(provider).is_ok()
 }
 
+const BOUNTY_SECRET_PREFIX: &str = "bounty.";
+
+fn bounty_secret_key(name: &str) -> Result<String, KeychainError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || !trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err(KeychainError::UnsupportedProvider(format!(
+            "bounty secret name '{name}'"
+        )));
+    }
+    Ok(format!("{BOUNTY_SECRET_PREFIX}{trimmed}"))
+}
+
+/// Bounty auth-profile secrets live in the same credentials store under a
+/// `bounty.` namespace so provider keys and target secrets never collide.
+pub fn store_bounty_secret(name: &str, secret: &str) -> Result<(), KeychainError> {
+    let key = bounty_secret_key(name)?;
+    if secret.is_empty() {
+        return Err(KeychainError::EmptyApiKey(name.to_string()));
+    }
+    let mut credentials = read_credentials()?;
+    credentials.insert(key, secret.to_string());
+    write_credentials(&credentials)
+}
+
+pub fn retrieve_bounty_secret(name: &str) -> Result<String, KeychainError> {
+    let key = bounty_secret_key(name)?;
+    if let Ok(credentials) = read_credentials() {
+        if let Some(secret) = credentials.get(&key).filter(|secret| !secret.is_empty()) {
+            return Ok(secret.clone());
+        }
+    }
+    Err(KeychainError::NotFound(key))
+}
+
+pub fn delete_bounty_secret(name: &str) -> Result<(), KeychainError> {
+    let key = bounty_secret_key(name)?;
+    let mut credentials = read_credentials()?;
+    if credentials.remove(&key).is_some() {
+        write_credentials(&credentials)?;
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct AuthRecord {
     access_token: Option<String>,

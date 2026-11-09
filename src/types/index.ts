@@ -215,12 +215,23 @@ export interface Session {
   provider: string;
   model: string;
   variant?: string | null;
+  agentId?: string | null;
   timestamp: Date;
   messages: Message[];
   status: "idle" | "active" | "error" | "archived";
   workspaceId?: string;
   backendCreated?: boolean;
   archivedAt?: Date;
+}
+
+export interface AgentSummary {
+  name: string;
+  description: string;
+  source: "Workspace" | "Global";
+  tools: string[];
+  skills: string[];
+  network: boolean;
+  orchestration?: "sweep" | null;
 }
 
 export interface ArchivePolicy {

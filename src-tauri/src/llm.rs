@@ -10,9 +10,11 @@ use thiserror::Error;
 
 #[cfg(test)]
 use crate::harness_profile::guards_for_role;
+use crate::agents::AgentDefinition;
 use crate::harness_profile::{
-    resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfileRequest,
-    LoopDetector, LoopStatus, MainToolContribution, MainToolInputs,
+    resolve_custom_agent_profile, resolve_harness_profile, ActiveWorkspaceContext, AgentRole,
+    CustomAgentProfileRequest, HarnessProfile, HarnessProfileRequest, LoopDetector, LoopStatus,
+    MainToolContribution, MainToolInputs,
 };
 
 use crate::models::ModelRegistry;
@@ -664,6 +666,7 @@ pub async fn stream_completion<F>(
     invoked_skill_section: Option<String>,
     memory_section: Option<String>,
     skill_script_tool: Option<crate::skills::RunSkillScriptTool>,
+    custom_profile: Option<HarnessProfile>,
     session_id: Option<&str>,
     mcp_tools: Vec<RegisteredTool>,
     mut on_event: F,
@@ -683,42 +686,48 @@ where
         });
     }
 
-    let mut contributions = Vec::new();
-    if let Some(workspace_context) = workspace.as_ref() {
-        contributions.push(MainToolContribution::DelegateExploration(
-            RegisteredTool::from_tool(DelegateExplorationTool {
-                workspace: workspace_context.clone(),
-                provider: delegate_provider.to_string(),
-                model: delegate_model.to_string(),
-                api_key: delegate_api_key.to_string(),
-                session_id: session_id.map(str::to_string),
+    let profile = if let Some(profile) = custom_profile {
+        tracing::debug!(profile = ?profile.summary(), "resolved Custom Harness Profile");
+        profile
+    } else {
+        let mut contributions = Vec::new();
+        if let Some(workspace_context) = workspace.as_ref() {
+            contributions.push(MainToolContribution::DelegateExploration(
+                RegisteredTool::from_tool(DelegateExplorationTool {
+                    workspace: workspace_context.clone(),
+                    provider: delegate_provider.to_string(),
+                    model: delegate_model.to_string(),
+                    api_key: delegate_api_key.to_string(),
+                    session_id: session_id.map(str::to_string),
+                }),
+            ));
+        }
+        if let Some(tool) = skill_script_tool {
+            contributions.push(MainToolContribution::RunSkillScript(
+                RegisteredTool::from_tool(tool),
+            ));
+        }
+        let profile = resolve_harness_profile(HarnessProfileRequest {
+            role: AgentRole::Main,
+            workspace,
+            role_guidance: None,
+            matched_skills_section,
+            invoked_skill_section,
+            memory_section,
+            main_tool_inputs: Some(MainToolInputs {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                api_key: api_key.to_string(),
+                external_path_approval,
+                command_approval,
+                contributions,
+                mcp_tools,
             }),
-        ));
-    }
-    if let Some(tool) = skill_script_tool {
-        contributions.push(MainToolContribution::RunSkillScript(
-            RegisteredTool::from_tool(tool),
-        ));
-    }
-    let profile = resolve_harness_profile(HarnessProfileRequest {
-        role: AgentRole::Main,
-        workspace,
-        role_guidance: None,
-        matched_skills_section,
-        invoked_skill_section,
-        memory_section,
-        main_tool_inputs: Some(MainToolInputs {
-            provider: provider.to_string(),
-            model: model.to_string(),
-            api_key: api_key.to_string(),
-            external_path_approval,
-            command_approval,
-            contributions,
-            mcp_tools,
-        }),
-    })
-    .map_err(|error| LlmError::ProviderError(error.to_string()))?;
-    tracing::debug!(profile = ?profile.summary(), "resolved Main Harness Profile");
+        })
+        .map_err(|error| LlmError::ProviderError(error.to_string()))?;
+        tracing::debug!(profile = ?profile.summary(), "resolved Main Harness Profile");
+        profile
+    };
     crate::ecs_runtime::run(
         crate::ecs_runtime::RunRequest {
             session_id: session_id.map(str::to_owned),
@@ -736,10 +745,68 @@ where
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn run_delegated_agent(
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    workspace: &ActiveWorkspaceContext,
+    agent: &AgentDefinition,
+    task: &str,
+    run_id: &str,
+    session_id: Option<&str>,
+) -> Result<String, LlmError> {
+    validate_api_key(provider, api_key)?;
+    let skills = crate::skills::discover_skills(
+        Some(&workspace.workspace_path),
+        crate::skills::global_skills_dir().as_deref(),
+    );
+    let attached_skills_section = {
+        let attached: Vec<&crate::skills::Skill> = skills
+            .iter()
+            .filter(|skill| agent.skills.iter().any(|name| name == &skill.name))
+            .collect();
+        if attached.is_empty() {
+            None
+        } else {
+            let mut section = String::from("## Attached Skills\n\n");
+            for skill in attached {
+                section.push_str(&format!("### {}\n\n{}\n\n", skill.name, skill.body));
+            }
+            Some(section)
+        }
+    };
+    let profile = resolve_custom_agent_profile(CustomAgentProfileRequest {
+        agent: agent.clone(),
+        workspace_path: workspace.workspace_path.clone(),
+        run_id: run_id.to_string(),
+        attached_skills_section,
+    });
+    tracing::debug!(
+        profile = ?profile.summary(),
+        "resolved delegated Custom Harness Profile"
+    );
+    let result = crate::ecs_runtime::run(
+        crate::ecs_runtime::RunRequest {
+            session_id: session_id.map(str::to_owned),
+            model: completion_model(provider, model, api_key, session_id).await?,
+            prompt: task.to_string(),
+            preamble: profile.preamble,
+            tools: profile.tools,
+            history: Vec::new(),
+            guards: profile.guards,
+            additional_params: None,
+            reasoning: None,
+        },
+        |_| {},
+    )
+    .await?;
+    Ok(result.full_response)
+}
+
 pub(crate) fn estimate_tokens(text: &str) -> usize {
     text.split_whitespace().count()
 }
-
 pub(crate) fn estimate_message_tokens(message: &Message) -> usize {
     match message {
         Message::User { content } => estimate_tokens(
@@ -902,6 +969,7 @@ mod tests {
             None,
             None,
             vec![],
+            None,
             None,
             None,
             None,
