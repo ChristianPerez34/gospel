@@ -156,7 +156,7 @@ async fn retry_discards_partial_output_without_reexecuting_completed_tools() {
     ]);
     let executions = Arc::new(AtomicUsize::new(0));
     let mut input = request(&model);
-    input.guards.max_turns = 2;
+    input.guards.max_turns = Some(2);
     input.tools.push(RegisteredTool::from_tool(CountingTool {
         executions: executions.clone(),
         approval: None,
@@ -453,4 +453,69 @@ async fn subagent_steps_reach_their_parent_call_between_call_and_result() {
             "{log:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn max_turns_limit_stops_agent_with_controlled_stop() {
+    let model = MockCompletionModel::from_stream_turns([
+        tool_turn("call-1"),
+        tool_turn("call-2"),
+        answer("Should not reach"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.guards.max_turns = Some(2);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let result = run(input, |_| {}).await;
+    assert!(
+        matches!(result, Err(LlmError::ControlledStop(ref reason)) if reason == "Agent reached its 2 model-call limit"),
+        "{result:?}"
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn unlimited_max_turns_allows_more_than_two_calls() {
+    let model = MockCompletionModel::from_stream_turns([
+        tool_turn("call-1"),
+        tool_turn("call-2"),
+        answer("Done"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.guards.max_turns = None;
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let result = run(input, |_| {}).await.unwrap();
+    assert_eq!(result.full_response, "Done");
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert_eq!(model.request_count(), 3);
+}
+
+#[tokio::test]
+async fn zero_max_turns_is_treated_as_unlimited() {
+    let model = MockCompletionModel::from_stream_turns([
+        tool_turn("call-1"),
+        tool_turn("call-2"),
+        answer("Done"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.guards.max_turns = Some(0);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let result = run(input, |_| {}).await.unwrap();
+    assert_eq!(result.full_response, "Done");
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert_eq!(model.request_count(), 3);
 }
