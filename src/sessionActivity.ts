@@ -55,10 +55,11 @@ export function sessionActivityPreview(session: Session, turn?: CurrentTurn | nu
     (block) => block.kind === "approval" && block.status === "pending"
   );
   if (approval?.kind === "approval") return approval.title.trim().replace(/\s+/g, " ");
-  const latest = turn ? [...turn.blocks].reverse() : [];
-  const tool = latest.find((block) => block.kind === "tool" && block.status === "calling");
+  const tool = turn?.blocks.findLast(
+    (block) => block.kind === "tool" && block.status === "calling"
+  );
   if (tool?.kind === "tool") return formatLiveToolActivity(tool, false).trim().replace(/\s+/g, " ");
-  const text = latest.find((block) => block.kind === "text" && block.text.trim());
+  const text = turn?.blocks.findLast((block) => block.kind === "text" && block.text.trim());
   if (text?.kind === "text") return text.text.trim().replace(/\s+/g, " ");
   if (turn) return "Working on your task…";
   return (

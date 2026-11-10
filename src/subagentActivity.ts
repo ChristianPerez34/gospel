@@ -27,19 +27,17 @@ export function applySubagentStep(
         ],
       };
     case "toolResult": {
-      const index = base.steps.findIndex((existing) => existing.id === step.id);
-      if (index < 0) {
-        return {
-          ...base,
-          latest: "tool",
-          steps: [
+      const hasCall = base.steps.some((existing) => existing.id === step.id);
+      const steps = hasCall
+        ? base.steps.map((existing) =>
+            existing.id === step.id
+              ? { ...existing, result: step.result, status: "completed" as const }
+              : existing
+          )
+        : [
             ...base.steps,
-            { id: step.id, name: step.name, result: step.result, status: "completed" },
-          ],
-        };
-      }
-      const steps = [...base.steps];
-      steps[index] = { ...steps[index], result: step.result, status: "completed" };
+            { id: step.id, name: step.name, result: step.result, status: "completed" as const },
+          ];
       return { ...base, latest: "tool", steps };
     }
     case "text":
@@ -103,11 +101,7 @@ export function updateMessageById(
   messageId: string,
   update: (message: Message) => Message
 ): Message[] {
-  let changed = false;
-  const next = messages.map((message) => {
-    if (message.id !== messageId) return message;
-    changed = true;
-    return update(message);
-  });
-  return changed ? next : messages;
+  return messages.some((message) => message.id === messageId)
+    ? messages.map((message) => (message.id === messageId ? update(message) : message))
+    : messages;
 }

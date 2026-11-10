@@ -601,10 +601,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         if (typeof runId !== "string") return;
         const runs = completedRunsRef.current;
         runs.set(runId, { sessionId, messageId });
-        while (runs.size > MAX_COMPLETED_RUNS) {
-          const oldest = runs.keys().next().value;
-          if (oldest === undefined) break;
-          runs.delete(oldest);
+        if (runs.size > MAX_COMPLETED_RUNS) {
+          runs.delete(runs.keys().next().value!);
         }
       };
       const updateCompletedRunMessage = (runId: unknown, update: (message: Message) => Message) => {

@@ -64,13 +64,6 @@ pub struct RunReviewTool {
     subagents: Option<Arc<SubagentRelay>>,
 }
 
-impl RunReviewTool {
-    pub fn with_subagents(mut self, subagents: Option<Arc<SubagentRelay>>) -> Self {
-        self.subagents = subagents;
-        self
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RunSecurityReviewTool {
     workspace_root: PathBuf,
@@ -82,13 +75,6 @@ pub struct RunSecurityReviewTool {
     subagents: Option<Arc<SubagentRelay>>,
 }
 
-impl RunSecurityReviewTool {
-    pub fn with_subagents(mut self, subagents: Option<Arc<SubagentRelay>>) -> Self {
-        self.subagents = subagents;
-        self
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RunMultiReviewTool {
     workspace_root: PathBuf,
@@ -98,13 +84,6 @@ pub struct RunMultiReviewTool {
     api_key: String,
     #[serde(skip)]
     subagents: Option<Arc<SubagentRelay>>,
-}
-
-impl RunMultiReviewTool {
-    pub fn with_subagents(mut self, subagents: Option<Arc<SubagentRelay>>) -> Self {
-        self.subagents = subagents;
-        self
-    }
 }
 
 impl fmt::Debug for RunReviewTool {
@@ -504,13 +483,14 @@ pub fn create_run_security_review_tool(
     provider: String,
     model: String,
     api_key: String,
+    subagents: Option<Arc<SubagentRelay>>,
 ) -> RunSecurityReviewTool {
     RunSecurityReviewTool {
         workspace_root,
         provider,
         model,
         api_key,
-        subagents: None,
+        subagents,
     }
 }
 
@@ -519,13 +499,14 @@ pub fn create_run_review_tool(
     provider: String,
     model: String,
     api_key: String,
+    subagents: Option<Arc<SubagentRelay>>,
 ) -> RunReviewTool {
     RunReviewTool {
         workspace_root,
         provider,
         model,
         api_key,
-        subagents: None,
+        subagents,
     }
 }
 
@@ -534,13 +515,14 @@ pub fn create_run_multi_review_tool(
     provider: String,
     model: String,
     api_key: String,
+    subagents: Option<Arc<SubagentRelay>>,
 ) -> RunMultiReviewTool {
     RunMultiReviewTool {
         workspace_root,
         provider,
         model,
         api_key,
-        subagents: None,
+        subagents,
     }
 }
 
@@ -624,7 +606,6 @@ fn review_progress_step(event: &ReviewProgressEvent) -> Option<SubagentStep> {
             status: ChunkStatus::Failed { .. },
             ..
         } => phase(scoped(format!("chunk {chunk} failed"))),
-        ReviewPhase::Detector { .. } => None,
         ReviewPhase::Validator {
             candidate_count,
             status: PhaseStatus::Running,
@@ -632,7 +613,6 @@ fn review_progress_step(event: &ReviewProgressEvent) -> Option<SubagentStep> {
             "validating {candidate_count} candidate{}",
             if *candidate_count == 1 { "" } else { "s" }
         ))),
-        ReviewPhase::Validator { .. } => None,
         ReviewPhase::DetectorTool {
             chunk,
             tool_name,
@@ -644,7 +624,6 @@ fn review_progress_step(event: &ReviewProgressEvent) -> Option<SubagentStep> {
         ReviewPhase::Finalize {
             status: PhaseStatus::Running,
         } => phase(scoped("finalizing findings".to_string())),
-        ReviewPhase::Finalize { .. } => None,
         ReviewPhase::Done { findings, .. } => phase(scoped(format!(
             "{findings} finding{}",
             if *findings == 1 { "" } else { "s" }
@@ -655,8 +634,8 @@ fn review_progress_step(event: &ReviewProgressEvent) -> Option<SubagentStep> {
             status: MultiFocusStatus::Failed { .. },
             ..
         } => phase(format!("{}: review failed", focus_label(*focus))),
-        ReviewPhase::MultiFocus { .. } => None,
         ReviewPhase::Failed { .. } => phase(scoped("review failed".to_string())),
+        _ => None,
     }
 }
 
@@ -731,6 +710,7 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let debug = format!("{:?}", tool);
@@ -749,6 +729,7 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let debug = format!("{:?}", tool);
@@ -777,12 +758,14 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
         let alias = create_run_security_review_tool(
             PathBuf::from("/workspace"),
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let canonical_parameters = Tool::parameters(&canonical);
@@ -809,6 +792,7 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let parameters = Tool::parameters(&tool);

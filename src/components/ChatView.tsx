@@ -193,11 +193,8 @@ function verificationCard(messageId: string, verification: VerificationActivity)
 
 /** The background check of a finished reply, live while it runs. */
 function VerificationRow({ message }: { message: Message }) {
-  const card = useMemo(
-    () => (message.verification ? verificationCard(message.id, message.verification) : null),
-    [message.id, message.verification]
-  );
-  if (!card) return null;
+  if (!message.verification) return null;
+  const card = verificationCard(message.id, message.verification);
   return (
     <div
       className="tool-timeline ml-16 w-[calc(100%-3.25rem)] max-w-[960px]"

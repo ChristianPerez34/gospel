@@ -639,7 +639,7 @@ function subagentStepLabel(step: ToolCallActivity, withTarget: boolean) {
 /** What a sub-agent is doing right now, e.g. "Read file src/llm.rs". Targets
  * are omitted where raw arguments must stay hidden, such as task previews. */
 export function subagentCurrentLabel(activity: SubagentActivity, withTarget = true): string | null {
-  const calling = [...activity.steps].reverse().find((step) => step.status === "calling");
+  const calling = activity.steps.findLast((step) => step.status === "calling");
   if (calling) return subagentStepLabel(calling, withTarget);
   if (activity.latest === "text" && activity.text.trim()) return "Writing report";
   if (activity.phase) return activity.phase;
@@ -669,9 +669,7 @@ export function subagentCardView(activity: SubagentActivity): SubagentCardView {
 }
 
 export function summarizeLiveToolActivity(activities: ToolCallActivity[], isThinking: boolean) {
-  const activeActivity = [...activities]
-    .reverse()
-    .find((activity) => activity.status === "calling");
+  const activeActivity = activities.findLast((activity) => activity.status === "calling");
 
   if (activeActivity) {
     return formatLiveToolActivity(activeActivity);

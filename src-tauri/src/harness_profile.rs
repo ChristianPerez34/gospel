@@ -345,28 +345,27 @@ pub fn resolve_harness_profile(
     tools.push(RegisteredTool::from_tool(create_write_harness_file_tool(
         workspace_path.clone(),
     )));
-    tools.push(RegisteredTool::from_tool(
-        create_run_review_tool(
-            workspace_path.clone(),
-            provider.clone(),
-            model.clone(),
-            api_key.clone(),
-        )
-        .with_subagents(subagents.clone()),
-    ));
-    tools.push(RegisteredTool::from_tool(
-        create_run_multi_review_tool(
-            workspace_path.clone(),
-            provider.clone(),
-            model.clone(),
-            api_key.clone(),
-        )
-        .with_subagents(subagents.clone()),
-    ));
-    tools.push(RegisteredTool::from_tool(
-        create_run_security_review_tool(workspace_path.clone(), provider, model, api_key)
-            .with_subagents(subagents),
-    ));
+    tools.push(RegisteredTool::from_tool(create_run_review_tool(
+        workspace_path.clone(),
+        provider.clone(),
+        model.clone(),
+        api_key.clone(),
+        subagents.clone(),
+    )));
+    tools.push(RegisteredTool::from_tool(create_run_multi_review_tool(
+        workspace_path.clone(),
+        provider.clone(),
+        model.clone(),
+        api_key.clone(),
+        subagents.clone(),
+    )));
+    tools.push(RegisteredTool::from_tool(create_run_security_review_tool(
+        workspace_path.clone(),
+        provider,
+        model,
+        api_key,
+        subagents,
+    )));
     tools.push(RegisteredTool::from_tool(
         create_record_review_outcome_tool(workspace_path.clone()),
     ));

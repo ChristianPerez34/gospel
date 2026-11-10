@@ -166,7 +166,7 @@ fn arguments_match(recorded: &serde_json::Value, claimed: &serde_json::Value) ->
 
 /// Sends one parent call's sub-agent steps. Without a relay or a recorded
 /// call, steps are dropped.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SubagentEmitter {
     target: Option<(Arc<SubagentRelay>, String)>,
     kind: SubagentKind,
@@ -195,15 +195,6 @@ impl SubagentEmitter {
                 step,
             });
         }
-    }
-}
-
-impl std::fmt::Debug for SubagentEmitter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SubagentEmitter")
-            .field("parent_id", &self.target.as_ref().map(|(_, id)| id))
-            .field("kind", &self.kind)
-            .finish()
     }
 }
 
