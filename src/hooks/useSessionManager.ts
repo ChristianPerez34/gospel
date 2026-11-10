@@ -788,13 +788,7 @@ export function useSessionManager({
       setStatus("connected");
       return task;
     },
-    [
-      activeWorkspaceId,
-      onSessionsChange,
-      onSwitchWorkspace,
-      selectedModel,
-      selectedModelAvailable,
-    ]
+    [activeWorkspaceId, onSessionsChange, onSwitchWorkspace, selectedModel, selectedModelAvailable]
   );
 
   return {
