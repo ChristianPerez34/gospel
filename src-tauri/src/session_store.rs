@@ -203,7 +203,7 @@ CREATE INDEX IF NOT EXISTS idx_archived_sessions_archived_at ON archived_session
 CREATE TABLE IF NOT EXISTS session_archive_policies (
     workspace_id TEXT PRIMARY KEY NOT NULL,
     retention_days INTEGER NOT NULL DEFAULT 90,
-    auto_archive_hours INTEGER NOT NULL DEFAULT 1,
+    auto_archive_hours INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -504,7 +504,7 @@ impl SessionStore {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()?
-            .unwrap_or((90, 1));
+            .unwrap_or((90, 0));
 
         Ok(ArchivePolicy {
             workspace_id: workspace_id.map(str::to_string),
@@ -1984,7 +1984,7 @@ mod tests {
 
         let default_policy = store.get_archive_policy(Some("ws1")).unwrap();
         assert_eq!(default_policy.retention_days, 90);
-        assert_eq!(default_policy.auto_archive_hours, 1);
+        assert_eq!(default_policy.auto_archive_hours, 0);
         assert!(!default_policy.uses_workspace_override);
 
         store.set_archive_policy(None, 30, 24).unwrap();
@@ -2002,6 +2002,37 @@ mod tests {
         let cleared = store.clear_workspace_archive_policy("ws1").unwrap();
         assert_eq!(cleared.retention_days, 30);
         assert!(!cleared.uses_workspace_override);
+    }
+
+    #[test]
+    fn idle_sessions_remain_visible_after_restart_with_default_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("sessions.sqlite3");
+        let store = SessionStore::from_connection(Connection::open(&db_path).unwrap()).unwrap();
+        let session = store
+            .create_session("Previous chat", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        let transcript = r#"[{"role":"user","content":"Keep this conversation"}]"#;
+        let history = r#"[{"role":"user","content":"Prior context"}]"#;
+        store
+            .persist_turn(&session.id, transcript, Some(history))
+            .unwrap();
+        set_session_updated_at(&store, &session.id, "-7 days");
+        drop(store);
+
+        let reopened = SessionStore::from_connection(Connection::open(&db_path).unwrap()).unwrap();
+        reopened.clean_stale_drafts(&HashSet::new()).unwrap();
+        let maintenance = reopened
+            .run_archive_maintenance(Some("ws1"), &HashSet::new())
+            .unwrap();
+
+        assert_eq!(maintenance.archived_count, 0);
+        let listed = reopened.list_sessions_for_workspace(Some("ws1")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, session.id);
+        let detail = reopened.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(detail.display_transcript, transcript);
+        assert_eq!(detail.model_history.as_deref(), Some(history));
     }
 
     #[test]

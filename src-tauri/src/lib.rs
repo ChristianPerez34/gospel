@@ -2793,7 +2793,7 @@ fn list_sessions(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
-    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
+    validate_session_list_access(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -2829,7 +2829,7 @@ fn list_archived_sessions(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
-    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
+    validate_session_list_access(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -3455,6 +3455,28 @@ fn validate_archive_policy_values(
         return Err("auto_archive_hours must be one of 0, 1, 24, 168, or 720".to_string());
     }
     Ok(())
+}
+
+fn validate_session_list_access(
+    workspace_id: Option<&str>,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    let Some(id) = workspace_id else {
+        return Ok(());
+    };
+    // App-wide lists expose summaries; transcript access and mutations still require the active workspace.
+    let store = app_config.store.as_ref().ok_or_else(|| {
+        app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())
+    })?;
+    let workspaces = store.list_workspaces().map_err(|e| e.to_string())?;
+    if workspaces.iter().any(|workspace| workspace.id == id) {
+        Ok(())
+    } else {
+        Err(format!("Workspace not found: {id}"))
+    }
 }
 
 fn validate_workspace_id_access(
@@ -4337,6 +4359,60 @@ mod session_access {
         assert!(validate_optional_workspace_id_access(Some(&second_id), &app_state).is_err());
         assert!(validate_optional_workspace_id_access(Some(&first_id), &app_state).is_ok());
         assert!(validate_optional_workspace_id_access(None, &app_state).is_ok());
+    }
+
+    #[test]
+    fn session_lists_include_registered_inactive_workspaces() {
+        let (_root, app_state, store, first_id, second_id) = setup();
+        let live = store
+            .create_session("Live", "openai", "gpt-4", Some(&first_id))
+            .unwrap();
+        store.persist_turn(&live.id, "[]", None).unwrap();
+        let archived = store
+            .create_session("Archived", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+        store.persist_turn(&archived.id, "[]", None).unwrap();
+        store.archive_session(&archived.id).unwrap();
+
+        let mut live_ids = Vec::new();
+        let mut archived_ids = Vec::new();
+        for workspace in app_state.store.as_ref().unwrap().list_workspaces().unwrap() {
+            validate_session_list_access(Some(&workspace.id), &app_state).unwrap();
+            live_ids.extend(
+                store
+                    .list_sessions_for_workspace(Some(&workspace.id))
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),
+            );
+            archived_ids.extend(
+                store
+                    .list_archived_sessions_for_workspace(Some(&workspace.id))
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),
+            );
+        }
+        assert_eq!(live_ids, vec![live.id]);
+        assert_eq!(archived_ids, vec![archived.id.clone()]);
+        assert_eq!(
+            active_workspace_id(&app_state).as_deref(),
+            Some(first_id.as_str())
+        );
+        assert!(validate_archived_session_access(&store, &archived.id, &app_state).is_err());
+    }
+
+    #[test]
+    fn session_lists_reject_unknown_workspaces_and_unavailable_config() {
+        let (_root, app_state, _store, first_id, _) = setup();
+        assert!(validate_session_list_access(Some("unknown"), &app_state).is_err());
+        assert!(validate_session_list_access(None, &app_state).is_ok());
+
+        let unavailable = AppConfigState {
+            store: None,
+            init_warning: Some("App config store is unavailable".to_string()),
+        };
+        assert!(validate_session_list_access(Some(&first_id), &unavailable).is_err());
     }
 
     #[test]

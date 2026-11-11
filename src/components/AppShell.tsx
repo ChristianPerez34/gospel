@@ -421,7 +421,9 @@ export function AppShell() {
       }
     };
 
-    void loadWorkspaceSessions();
+    void loadWorkspaceSessions().catch((error) => {
+      if (!cancelled) showError(`Failed to load session history: ${error}`);
+    });
 
     return () => {
       cancelled = true;
@@ -431,6 +433,7 @@ export function AppShell() {
     loadArchiveMeta,
     mapBackendArchivedSessions,
     mapBackendSessions,
+    showError,
     workspaces,
   ]);
 
