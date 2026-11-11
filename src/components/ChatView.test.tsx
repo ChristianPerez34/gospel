@@ -57,6 +57,58 @@ function defineScrollMetrics(
 }
 
 describe("ChatView block timeline rendering", () => {
+  it("shows a reply's background verification with its steps and verdict", () => {
+    const reply: Message = {
+      id: "answer",
+      role: "agent",
+      content: "Done",
+      timestamp: new Date(),
+      blocks: [{ kind: "text", id: "text-1", text: "Done" }],
+      verification: {
+        status: "running",
+        activity: {
+          agent: "verification",
+          steps: [
+            { id: "v1", name: "read_file", arguments: { path: "src/lib.rs" }, status: "calling" },
+          ],
+          text: "",
+        },
+        concerns: [],
+      },
+    };
+    const { rerender } = renderChat({ messages: [userMessage, reply] });
+    const row = screen.getByTestId("verification-activity");
+    expect(row.textContent).toContain("Verify response");
+    expect(row.textContent).toContain("Checking…");
+    expect(screen.getByTestId("subagent-live-label").textContent).toContain("Read file src/lib.rs");
+
+    rerender(
+      <ChatView
+        messages={[
+          userMessage,
+          {
+            ...reply,
+            verification: {
+              status: "concerns",
+              summary: "One gap",
+              concerns: ["No test for the empty case"],
+              activity: {
+                ...reply.verification!.activity,
+                steps: [{ ...reply.verification!.activity.steps[0], status: "completed" }],
+              },
+            },
+          },
+        ]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        currentTurn={null}
+      />
+    );
+    expect(screen.getByTestId("verification-activity").textContent).toContain("Concerns found");
+    expect(screen.queryByTestId("subagent-live-label")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /verify response/i }));
+    expect(screen.getByText(/No test for the empty case/)).not.toBeNull();
+  });
   it("copies assistant text without including reasoning or tool payloads", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });

@@ -6,9 +6,8 @@
 //! `SessionTurnEvent` pattern used by chat streaming.
 //!
 //! The [`ReviewProgressEmitter`] trait abstracts emission so unit tests in
-//! `review/mod.rs` can use a no-op emitter and stay unchanged, while the real
-//! `AppHandle`-backed emitter lives in `lib.rs` (kept out of this module so
-//! `review/` stays decoupled from Tauri, exactly like `SessionTurnWorkspace`).
+//! `review/mod.rs` can use a no-op emitter, while the review tools in
+//! `review/tools.rs` forward events to the chat as live sub-agent steps.
 
 use super::ReviewFocus;
 use serde::Serialize;
@@ -183,18 +182,18 @@ pub enum ToolEventKind {
 
 /// Abstracts emission of review progress events so the review pipeline can
 /// stream progress without depending on Tauri directly. The real
-/// `AppHandle`-backed implementation lives in `lib.rs`; tests use
-/// [`NoopReviewProgressEmitter`].
+/// review tools forward events to the chat as sub-agent steps; tests use
+/// `NoopReviewProgressEmitter`.
 pub trait ReviewProgressEmitter: Send + Sync {
     fn emit_progress(&self, event: ReviewProgressEvent);
 }
 
-/// Emitter that discards every event. Used by the `run_review` *tool* path
-/// (agent-initiated reviews render text-only in the chat transcript for now)
-/// and by unit tests.
+/// Emitter that discards every event, for unit tests.
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopReviewProgressEmitter;
 
+#[cfg(test)]
 impl ReviewProgressEmitter for NoopReviewProgressEmitter {
     fn emit_progress(&self, _event: ReviewProgressEvent) {}
 }

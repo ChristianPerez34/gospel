@@ -27,6 +27,7 @@ use crate::llm::{
     self, LlmError, ReasoningPayload, ReasoningPhase, StreamCompletionResult, StreamEvent,
 };
 use crate::provider_client::CompletionModel;
+use crate::subagent::SubagentRelay;
 
 #[cfg(test)]
 mod tests;
@@ -41,6 +42,8 @@ pub(crate) struct RunRequest {
     pub guards: HarnessRunGuards,
     pub additional_params: Option<serde_json::Value>,
     pub reasoning: Option<Effort>,
+    /// Lets sub-agent tools in this run report live steps on its channel.
+    pub subagents: Option<Arc<SubagentRelay>>,
 }
 
 /// Bevy polls handlers on its pools. Enter Tokio on every poll, including
@@ -97,6 +100,9 @@ where
     let deadline = request.guards.deadline;
     let work = async {
         let (sender, mut received) = unbounded_channel();
+        if let Some(relay) = &request.subagents {
+            relay.attach(&sender);
+        }
         let (wake, wakes) = mpsc::sync_channel(1);
         let cancellation = Cancellation {
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -129,6 +135,7 @@ where
 #[derive(Resource)]
 struct RunState {
     sender: UnboundedSender<StreamEvent>,
+    subagents: Option<Arc<SubagentRelay>>,
     guards: HarnessRunGuards,
     detector: LoopDetector,
     additional_params: Option<serde_json::Value>,
@@ -239,6 +246,9 @@ fn gate_calls(
             LoopStatus::Ok => {}
         }
         state.tool_calls += 1;
+        if let Some(relay) = &state.subagents {
+            relay.record_call(&request.call.id.to_string(), &name, &arguments);
+        }
         state.emit(StreamEvent::ToolCall {
             id: request.call.id.to_string(),
             name,
@@ -357,6 +367,9 @@ fn settled(
         if name == "source_edit" && llm::source_edit_result_changed(&result) {
             state.source_edit_succeeded = true;
         }
+        if let Some(relay) = &state.subagents {
+            relay.forget(&request.call.id.to_string());
+        }
         state.emit(StreamEvent::ToolResult {
             id: request.call.id.to_string(),
             name: name.clone(),
@@ -401,6 +414,7 @@ fn kernel(
     }));
     app.insert_resource(RunState {
         sender,
+        subagents: request.subagents,
         guards: request.guards,
         detector: LoopDetector::new(request.guards.loop_guard),
         additional_params: request.additional_params,

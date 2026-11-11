@@ -103,6 +103,37 @@ export interface ToolCallActivity {
   arguments?: unknown;
   result?: string;
   status: "calling" | "completed";
+  subagent?: SubagentActivity;
+}
+
+export type SubagentKind = "exploration" | "review" | "verification";
+
+/** One live step from a sub-agent, as sent on `llm-subagent-event`. */
+export type SubagentStep =
+  | { type: "toolCall"; id: string; name: string; arguments?: unknown }
+  | { type: "toolResult"; id: string; name: string; result: string }
+  | { type: "text"; text: string }
+  | { type: "textReset"; text: string }
+  | { type: "phase"; label: string };
+
+/** Live-only record of what a sub-agent did. Never persisted: transcripts
+ * are rebuilt from model history, which has no sub-agent steps. */
+export interface SubagentActivity {
+  agent: SubagentKind;
+  steps: ToolCallActivity[];
+  text: string;
+  phase?: string;
+  /** Which kind of step arrived last; picks the live label. */
+  latest?: "tool" | "text" | "phase";
+}
+
+export type VerificationOutcome = "pass" | "concerns" | "fail" | "unavailable";
+
+export interface VerificationActivity {
+  status: "running" | VerificationOutcome;
+  activity: SubagentActivity;
+  summary?: string;
+  concerns: string[];
 }
 
 export type TurnBlock =
@@ -114,6 +145,7 @@ export type TurnBlock =
       arguments?: unknown;
       result?: string;
       status: "calling" | "completed";
+      subagent?: SubagentActivity;
     }
   | {
       /** Ephemeral, live-only model reasoning block. Stripped from the
@@ -159,6 +191,8 @@ export interface Message {
   timestamp: Date;
   error?: string;
   blocks?: TurnBlock[];
+  /** Live-only background check of this reply. */
+  verification?: VerificationActivity;
 }
 
 export interface ActionCard {
@@ -177,6 +211,16 @@ export interface ActionCard {
   groupCount?: number;
   /** Per-call cards when consecutive identical calls are grouped into one step. */
   passes?: ActionCard[];
+  subagent?: SubagentCardView;
+}
+
+export interface SubagentCardView {
+  steps: ActionCard[];
+  /** What the sub-agent is doing now, shown on the collapsed row. */
+  liveLabel: string | null;
+  /** Streamed report text, shown while the parent call runs. */
+  text: string;
+  stepCount: number;
 }
 
 export interface ActionCardField {

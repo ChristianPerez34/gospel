@@ -5,6 +5,7 @@ use crate::harness_profile::{
     resolve_harness_profile, ActiveWorkspaceContext, AgentRole, HarnessProfile,
     HarnessProfileRequest,
 };
+use crate::subagent::SubagentStep;
 use crate::text_utils::wrap_untrusted;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +56,7 @@ Return your assessment as JSON with exactly these fields:
 If you cannot verify something, set status to "unavailable" and explain why in the summary.
 Be concise and focused on concrete issues, not stylistic preferences."#;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_verification(
     provider: &str,
     model: &str,
@@ -63,6 +65,7 @@ pub async fn run_verification(
     response_to_verify: &str,
     user_prompt: &str,
     session_id: Option<&str>,
+    on_step: impl FnMut(SubagentStep) + Send,
 ) -> VerificationResult {
     if let Err(error) = crate::provider_credentials::ensure_inference_ready(provider, api_key) {
         return match error {
@@ -93,7 +96,9 @@ pub async fn run_verification(
         .expect("Verification Harness Profiles always have a deadline");
     let output = match timeout(
         deadline,
-        run_verification_agent(provider, model, api_key, session_id, profile, &prompt),
+        run_verification_agent(
+            provider, model, api_key, session_id, profile, &prompt, on_step,
+        ),
     )
     .await
     {
@@ -118,6 +123,7 @@ async fn run_verification_agent(
     session_id: Option<&str>,
     profile: HarnessProfile,
     prompt: &str,
+    mut on_step: impl FnMut(SubagentStep) + Send,
 ) -> Result<String, String> {
     let model = crate::provider_client::completion_model(provider, model, api_key, session_id)
         .await
@@ -133,8 +139,20 @@ async fn run_verification_agent(
             guards: profile.guards,
             additional_params: None,
             reasoning: None,
+            subagents: None,
         },
-        |_| {},
+        |event| {
+            // The verdict is a JSON contract, not prose worth streaming.
+            if matches!(
+                event,
+                crate::llm::StreamEvent::ToolCall { .. }
+                    | crate::llm::StreamEvent::ToolResult { .. }
+            ) {
+                if let Some(step) = SubagentStep::from_stream_event(event) {
+                    on_step(step);
+                }
+            }
+        },
     )
     .await
     .map(|result| result.full_response)
@@ -234,6 +252,7 @@ mod tests {
             "response",
             "prompt",
             None,
+            |_| {},
         )
         .await;
 

@@ -743,7 +743,7 @@ describe("useChatStream", () => {
       await act(async () => {});
 
       const registeredCount = registeredUnlisteners.length;
-      expect(registeredCount).toBe(10);
+      expect(registeredCount).toBe(12);
 
       act(() => {
         unmount();
@@ -1430,6 +1430,215 @@ describe("useChatStream", () => {
       const message = updater([])[0];
       expect(message.content).toBe("single run reply");
       expect(turnText(message)).toBe("partial ");
+    });
+  });
+  describe("sub-agent activity", () => {
+    let frames: Array<() => void> = [];
+
+    beforeEach(() => {
+      frames = [];
+      setFrameSchedulerForTest({
+        schedule: (cb) => {
+          frames.push(() => cb());
+          return frames.length;
+        },
+        cancel: () => {},
+      });
+    });
+
+    afterEach(() => {
+      setFrameSchedulerForTest(null);
+    });
+
+    function flushFrames() {
+      const pending = frames;
+      frames = [];
+      for (const cb of pending) cb();
+    }
+
+    function toolBlock(turn: CurrentTurn | null | undefined, id: string) {
+      const block = turn?.blocks.find((b) => b.kind === "tool" && b.id === id);
+      if (block?.kind !== "tool") throw new Error(`no tool block ${id}`);
+      return block;
+    }
+
+    async function startFocusedRun(
+      result: { current: ReturnType<typeof useChatStream> },
+      sessionId: string
+    ) {
+      await act(async () => {
+        await result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId,
+        } as never);
+      });
+      return latestCompleteStreamingRunId();
+    }
+
+    it("nests sub-agent steps and streamed report text under the parent tool", async () => {
+      const { result } = renderChatStream({ sessionId: "s-1" });
+      await act(async () => {});
+      const runId = await startFocusedRun(result, "s-1");
+
+      await act(async () => {
+        triggerEvent("llm-tool-call", {
+          runId,
+          id: "explore-1",
+          name: "delegate_exploration",
+          arguments: { task: "Find callers" },
+        });
+        flushFrames();
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: "explore-1",
+          agent: "exploration",
+          step: { type: "toolCall", id: "c1", name: "read_file", arguments: { path: "a.rs" } },
+        });
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: "explore-1",
+          agent: "exploration",
+          step: { type: "text", text: "Found " },
+        });
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: "explore-1",
+          agent: "exploration",
+          step: { type: "text", text: "two" },
+        });
+        flushFrames();
+      });
+
+      let parent = toolBlock(result.current.currentTurn, "explore-1");
+      expect(parent.subagent?.steps).toEqual([
+        { id: "c1", name: "read_file", arguments: { path: "a.rs" }, status: "calling" },
+      ]);
+      expect(parent.subagent?.text).toBe("Found two");
+
+      // Buffered text lands before a later step, with no frame in between.
+      await act(async () => {
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: "explore-1",
+          agent: "exploration",
+          step: { type: "text", text: " callers" },
+        });
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: "explore-1",
+          agent: "exploration",
+          step: { type: "textReset", text: "Reset" },
+        });
+      });
+      parent = toolBlock(result.current.currentTurn, "explore-1");
+      expect(parent.subagent?.text).toBe("Reset");
+    });
+
+    it("drops steps for an unknown parent or another run", async () => {
+      const { result } = renderChatStream({ sessionId: "s-1" });
+      await act(async () => {});
+      const runId = await startFocusedRun(result, "s-1");
+      await act(async () => {
+        triggerEvent("llm-tool-call", { runId, id: "p", name: "run_review", arguments: {} });
+        flushFrames();
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: "missing",
+          agent: "review",
+          step: { type: "phase", label: "Reviewing" },
+        });
+        triggerEvent("llm-subagent-event", {
+          runId: "run-unknown",
+          parentId: "p",
+          agent: "review",
+          step: { type: "phase", label: "Reviewing" },
+        });
+        flushFrames();
+      });
+      expect(toolBlock(result.current.currentTurn, "p").subagent).toBeUndefined();
+      expect(result.current.currentTurn?.blocks).toHaveLength(1);
+    });
+
+    it("streams sub-agent steps into a background session's live turn", async () => {
+      const onLiveTurnForSession = vi.fn();
+      const { result } = renderChatStream({ sessionId: "session-a", onLiveTurnForSession });
+      await act(async () => {});
+      const runId = await startBgRun(result as never);
+      await act(async () => {
+        triggerEvent("llm-tool-call", {
+          runId,
+          id: "bg-review",
+          name: "run_review",
+          arguments: {},
+        });
+        flushFrames();
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: "bg-review",
+          agent: "review",
+          step: { type: "phase", label: "Reviewing the diff" },
+        });
+        flushFrames();
+      });
+      const live = lastLiveTurn(onLiveTurnForSession, "session-b");
+      expect(toolBlock(live, "bg-review").subagent?.phase).toBe("Reviewing the diff");
+      expect(result.current.currentTurn).toBeNull();
+    });
+
+    it("attaches verification steps and the verdict to the finished reply", async () => {
+      let messages: Message[] = [];
+      const onMessages = vi.fn((update: React.SetStateAction<Message[]>) => {
+        messages = typeof update === "function" ? update(messages) : update;
+      });
+      const { result } = renderChatStream({ sessionId: "s-1", onMessages });
+      await act(async () => {});
+      const runId = await startFocusedRun(result, "s-1");
+
+      await act(async () => {
+        triggerEvent("llm-done", { runId, response: "Done" });
+      });
+      expect(messages).toHaveLength(1);
+
+      await act(async () => {
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: null,
+          agent: "verification",
+          step: { type: "toolCall", id: "v1", name: "read_file", arguments: { path: "a.rs" } },
+        });
+      });
+      expect(messages[0].verification).toMatchObject({
+        status: "running",
+        activity: { steps: [{ id: "v1", status: "calling" }] },
+      });
+
+      await act(async () => {
+        triggerEvent("llm-verification", {
+          runId,
+          status: "pass",
+          summary: "Looks right",
+          concerns: [],
+        });
+      });
+      expect(messages[0].verification).toMatchObject({
+        status: "pass",
+        summary: "Looks right",
+        activity: { steps: [{ id: "v1", status: "completed" }] },
+      });
+
+      // The run is forgotten after its verdict, so stray steps are ignored.
+      const settled = messages;
+      await act(async () => {
+        triggerEvent("llm-subagent-event", {
+          runId,
+          parentId: null,
+          agent: "verification",
+          step: { type: "phase", label: "late" },
+        });
+      });
+      expect(messages).toBe(settled);
     });
   });
 });

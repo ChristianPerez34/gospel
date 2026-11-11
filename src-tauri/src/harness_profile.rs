@@ -7,6 +7,7 @@ use crate::shell_tools::{
     create_run_git_command_tool, create_run_github_cli_command_tool, create_run_shell_command_tool,
     SHELL_TOOLS_SYSTEM_PROMPT,
 };
+use crate::subagent::SubagentRelay;
 use crate::workspace_tools::{
     build_base_workspace_tools, build_base_workspace_tools_with_external_approval,
     create_source_edit_tool, create_write_harness_file_tool, ExternalPathApproval,
@@ -205,6 +206,7 @@ pub struct MainToolInputs {
     /// Dynamic tools from connected MCP servers, already namespaced and
     /// approval-wired for this run.
     pub mcp_tools: Vec<RegisteredTool>,
+    pub subagents: Option<Arc<SubagentRelay>>,
 }
 
 pub struct HarnessProfileRequest {
@@ -330,6 +332,7 @@ pub fn resolve_harness_profile(
         command_approval,
         contributions,
         mcp_tools,
+        subagents,
     } = request
         .main_tool_inputs
         .ok_or(HarnessProfileError::MainToolInputsRequired)?;
@@ -347,18 +350,21 @@ pub fn resolve_harness_profile(
         provider.clone(),
         model.clone(),
         api_key.clone(),
+        subagents.clone(),
     )));
     tools.push(RegisteredTool::from_tool(create_run_multi_review_tool(
         workspace_path.clone(),
         provider.clone(),
         model.clone(),
         api_key.clone(),
+        subagents.clone(),
     )));
     tools.push(RegisteredTool::from_tool(create_run_security_review_tool(
         workspace_path.clone(),
         provider,
         model,
         api_key,
+        subagents,
     )));
     tools.push(RegisteredTool::from_tool(
         create_record_review_outcome_tool(workspace_path.clone()),
@@ -555,6 +561,7 @@ mod tests {
             command_approval: None,
             contributions: vec![],
             mcp_tools: vec![],
+            subagents: None,
         }
     }
 
@@ -863,6 +870,7 @@ mod tests {
                 guards: profile.guards,
                 additional_params: None,
                 reasoning: None,
+                subagents: None,
             },
             |_| {},
         )
