@@ -163,6 +163,11 @@ pub struct SessionStoreState {
     pub init_warning: Option<String>,
 }
 
+/// Archive policy used when neither a workspace nor a global policy is saved.
+/// Auto-archive is off so idle conversations stay in Recent.
+const DEFAULT_RETENTION_DAYS: i64 = 90;
+const DEFAULT_AUTO_ARCHIVE_HOURS: i64 = 0;
+
 const SESSION_STORE_SCHEMA: &str = "PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -267,6 +272,16 @@ impl SessionStore {
     #[cfg(test)]
     pub(crate) fn in_memory_for_test() -> Result<Self, SessionStoreError> {
         Self::from_connection(Connection::open_in_memory()?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_updated_at_for_test(&self, session_id: &str, modifier: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET updated_at = datetime('now', ?2) WHERE id = ?1",
+            params![session_id, modifier],
+        )
+        .unwrap();
     }
 
     pub fn create_session(
@@ -504,7 +519,7 @@ impl SessionStore {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()?
-            .unwrap_or((90, 0));
+            .unwrap_or((DEFAULT_RETENTION_DAYS, DEFAULT_AUTO_ARCHIVE_HOURS));
 
         Ok(ArchivePolicy {
             workspace_id: workspace_id.map(str::to_string),

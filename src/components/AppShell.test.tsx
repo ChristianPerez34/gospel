@@ -125,6 +125,7 @@ describe("AppShell task flow", () => {
   it("loads archived history across workspaces and refreshes it after restoring a session", async () => {
     let activeWorkspace = sampleWorkspace;
     let restored = false;
+    let restoreWorkspaceId: string | undefined;
     const record = {
       id: "previous-session",
       title: "Previous conversation",
@@ -142,7 +143,7 @@ describe("AppShell task flow", () => {
       if (cmd === "list_sessions")
         return workspaceId === otherWorkspace.id && restored ? [record] : [];
       if (cmd === "restore_archived_sessions") {
-        expect(activeWorkspace.id).toBe(otherWorkspace.id);
+        restoreWorkspaceId = activeWorkspace.id;
         restored = true;
         return [record];
       }
@@ -168,6 +169,7 @@ describe("AppShell task flow", () => {
         sessionIds: [record.id],
       })
     );
+    expect(restoreWorkspaceId).toBe(otherWorkspace.id);
     await waitFor(() => expect(drawer.queryByText(record.title)).toBeNull());
     fireEvent.click(drawer.getByRole("button", { name: "Recent" }));
     expect(await drawer.findByText(record.title)).toBeDefined();
@@ -184,9 +186,35 @@ describe("AppShell task flow", () => {
       </WorkspacesProvider>
     );
 
-    expect(
-      await screen.findByText("Failed to load session history: Error: session database unavailable")
-    ).toBeDefined();
+    expect(await screen.findByText(/Failed to load session history/)).toBeDefined();
+  });
+
+  it("shows history from other workspaces when one workspace fails to load", async () => {
+    const record = {
+      id: "loaded-session",
+      title: "Loaded conversation",
+      provider: "openai",
+      model: "gpt-4o",
+      status: "active",
+      workspace_id: sampleWorkspace.id,
+      updated_at: "2026-11-01 15:18:26",
+    };
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      const workspaceId = (args as { workspaceId?: string } | undefined)?.workspaceId;
+      if (cmd === "list_sessions") {
+        if (workspaceId === otherWorkspace.id) throw new Error("workspace unavailable");
+        return workspaceId === sampleWorkspace.id ? [record] : [];
+      }
+      return handleCommonInvoke(cmd, args, { workspaces: [sampleWorkspace, otherWorkspace] });
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+
+    expect(await screen.findByText(/Failed to load session history/)).toBeDefined();
+    expect((await screen.findAllByText(record.title)).length).toBeGreaterThan(0);
   });
 
   it("keeps variant commands for the active model after hiding it", async () => {

@@ -83,6 +83,51 @@ function mergeLoadedSessions(loadedSessions: Session[], existingSessions: Sessio
   return sortSessionsByTimestamp(Array.from(byId.values()));
 }
 
+type SessionHistory = {
+  sessions: BackendSessionRecord[];
+  archivedSessions: BackendArchivedSessionRecord[];
+  failedWorkspaceIds: Set<string>;
+  firstError: unknown;
+};
+
+async function fetchSessionHistory(workspaceIds: string[]): Promise<SessionHistory> {
+  const results = await Promise.all(
+    workspaceIds.map(async (workspaceId) => {
+      const [live, archived] = await Promise.allSettled([
+        invoke<BackendSessionRecord[]>("list_sessions", { workspaceId }),
+        invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId }),
+      ]);
+      return { workspaceId, live, archived };
+    })
+  );
+  const history: SessionHistory = {
+    sessions: [],
+    archivedSessions: [],
+    failedWorkspaceIds: new Set(),
+    firstError: undefined,
+  };
+  for (const { workspaceId, live, archived } of results) {
+    if (live.status === "fulfilled" && archived.status === "fulfilled") {
+      history.sessions.push(...live.value);
+      history.archivedSessions.push(...archived.value);
+      continue;
+    }
+    history.failedWorkspaceIds.add(workspaceId);
+    history.firstError ??=
+      live.status === "rejected"
+        ? live.reason
+        : archived.status === "rejected"
+          ? archived.reason
+          : undefined;
+  }
+  return history;
+}
+
+// A workspace whose history failed to load keeps what was already shown.
+function retainFailedWorkspaces(items: Session[], failedWorkspaceIds: Set<string>): Session[] {
+  return items.filter((item) => item.workspaceId && failedWorkspaceIds.has(item.workspaceId));
+}
+
 function groupSessionsByWorkspace(items: Session[]): Session[][] {
   const groups = new Map<string, Session[]>();
   for (const item of items) {
@@ -373,6 +418,32 @@ export function AppShell() {
     setArchiveStats(stats);
   }, []);
 
+  const applySessionHistory = useCallback(
+    (history: SessionHistory, canMergeSessions: () => boolean = () => true) => {
+      const { failedWorkspaceIds } = history;
+      const loaded = mapBackendSessions(history.sessions);
+      const loadedArchived = mapBackendArchivedSessions(history.archivedSessions);
+      setSessions((prev) =>
+        canMergeSessions()
+          ? mergeLoadedSessions(
+              [...loaded, ...retainFailedWorkspaces(prev, failedWorkspaceIds)],
+              prev
+            )
+          : prev
+      );
+      setArchivedSessions((prev) =>
+        sortSessionsByTimestamp([
+          ...loadedArchived,
+          ...retainFailedWorkspaces(prev, failedWorkspaceIds),
+        ])
+      );
+      if (failedWorkspaceIds.size > 0) {
+        showError(`Failed to load session history: ${history.firstError}`);
+      }
+    },
+    [mapBackendArchivedSessions, mapBackendSessions, showError]
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -388,32 +459,15 @@ export function AppShell() {
         return;
       }
 
-      const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
-        Promise.all(
-          ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id }))
-        ),
-        Promise.all(
-          ids.map((id) =>
-            invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id })
-          )
-        ),
-      ]);
+      const history = await fetchSessionHistory(ids);
 
       if (cancelled) return;
 
-      const flattened = workspaceSessions.flatMap((backendSessions) =>
-        mapBackendSessions(backendSessions)
-      );
-      const flattenedArchived = workspaceArchivedSessions.flatMap((backendSessions) =>
-        mapBackendArchivedSessions(backendSessions)
-      );
       // A refresh started before chat creation must not remove the new draft.
-      setSessions((prev) =>
-        !creatingTaskRef.current && generation === sessionLoadGenerationRef.current
-          ? mergeLoadedSessions(flattened, prev)
-          : prev
+      applySessionHistory(
+        history,
+        () => !creatingTaskRef.current && generation === sessionLoadGenerationRef.current
       );
-      setArchivedSessions(sortSessionsByTimestamp(flattenedArchived));
       if (activeWorkspace?.id) {
         await loadArchiveMeta(activeWorkspace.id);
       } else {
@@ -428,14 +482,7 @@ export function AppShell() {
     return () => {
       cancelled = true;
     };
-  }, [
-    activeWorkspace?.id,
-    loadArchiveMeta,
-    mapBackendArchivedSessions,
-    mapBackendSessions,
-    showError,
-    workspaces,
-  ]);
+  }, [activeWorkspace?.id, applySessionHistory, loadArchiveMeta, showError, workspaces]);
 
   const reloadArchiveData = useCallback(async () => {
     const ids = workspaces.map((item) => item.id);
@@ -445,28 +492,9 @@ export function AppShell() {
       return;
     }
 
-    const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
-      Promise.all(
-        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id }))
-      ),
-      Promise.all(
-        ids.map((id) =>
-          invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id })
-        )
-      ),
-    ]);
-    setSessions((prev) => mergeLoadedSessions(workspaceSessions.flatMap(mapBackendSessions), prev));
-    setArchivedSessions(
-      sortSessionsByTimestamp(workspaceArchivedSessions.flatMap(mapBackendArchivedSessions))
-    );
+    applySessionHistory(await fetchSessionHistory(ids));
     await loadArchiveMeta(activeWorkspace?.id);
-  }, [
-    activeWorkspace?.id,
-    loadArchiveMeta,
-    mapBackendArchivedSessions,
-    mapBackendSessions,
-    workspaces,
-  ]);
+  }, [activeWorkspace?.id, applySessionHistory, loadArchiveMeta, workspaces]);
 
   const allSessions = useMemo(() => {
     return sortSessionsByTimestamp(session.sessions);
