@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useState } from "react";
 
 export interface BountySignal {
   id: string;
@@ -69,7 +69,7 @@ export function useBountyFindings(enabled: boolean, runId: string | null = null)
       });
       await reload();
     },
-    [findings?.runId, reload],
+    [findings?.runId, reload]
   );
 
   useEffect(() => {

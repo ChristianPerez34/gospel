@@ -9,6 +9,7 @@ use crate::shell_tools::{
     create_run_git_command_tool, create_run_github_cli_command_tool, create_run_shell_command_tool,
     SHELL_TOOLS_SYSTEM_PROMPT,
 };
+use crate::subagent::SubagentRelay;
 use crate::workspace_tools::{
     build_base_workspace_tools, build_base_workspace_tools_with_external_approval,
     create_find_files_tool, create_list_directory_tool, create_read_file_tool,
@@ -65,7 +66,7 @@ pub struct LoopGuardPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct HarnessRunGuards {
-    pub max_turns: usize,
+    pub max_turns: Option<usize>,
     #[serde(serialize_with = "serialize_optional_duration_seconds")]
     pub deadline: Option<Duration>,
     pub loop_guard: LoopGuardPolicy,
@@ -216,6 +217,7 @@ pub struct MainToolInputs {
     /// Dynamic tools from connected MCP servers, already namespaced and
     /// approval-wired for this run.
     pub mcp_tools: Vec<RegisteredTool>,
+    pub subagents: Option<Arc<SubagentRelay>>,
 }
 
 pub struct HarnessProfileRequest {
@@ -341,6 +343,7 @@ pub fn resolve_harness_profile(
         command_approval,
         contributions,
         mcp_tools,
+        subagents,
     } = request
         .main_tool_inputs
         .ok_or(HarnessProfileError::MainToolInputsRequired)?;
@@ -358,18 +361,21 @@ pub fn resolve_harness_profile(
         provider.clone(),
         model.clone(),
         api_key.clone(),
+        subagents.clone(),
     )));
     tools.push(RegisteredTool::from_tool(create_run_multi_review_tool(
         workspace_path.clone(),
         provider.clone(),
         model.clone(),
         api_key.clone(),
+        subagents.clone(),
     )));
     tools.push(RegisteredTool::from_tool(create_run_security_review_tool(
         workspace_path.clone(),
         provider,
         model,
         api_key,
+        subagents,
     )));
     tools.push(RegisteredTool::from_tool(
         create_record_review_outcome_tool(workspace_path.clone()),
@@ -429,7 +435,7 @@ pub struct CustomAgentProfileRequest {
 pub fn resolve_custom_agent_profile(request: CustomAgentProfileRequest) -> HarnessProfile {
     let tools = build_custom_agent_tools(&request.agent, &request.workspace_path, &request.run_id);
     let guards = HarnessRunGuards {
-        max_turns: request.agent.max_turns,
+        max_turns: Some(request.agent.max_turns),
         deadline: request.agent.deadline,
         loop_guard: LoopGuardPolicy {
             warning_threshold: 3,
@@ -601,10 +607,44 @@ fn push_section(sections: &mut Vec<String>, section: Option<String>) {
     }
 }
 
+fn configured_max_turns() -> Option<Option<usize>> {
+    let raw = std::env::var("GOSPEL_MAX_TURNS")
+        .or_else(|_| std::env::var("GOSPEL_AGENT_MAX_TURNS"))
+        .ok()?;
+    parse_max_turns_env(&raw)
+}
+
+fn parse_max_turns_env(raw: &str) -> Option<Option<usize>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case("unlimited")
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed.eq_ignore_ascii_case("inf")
+        || trimmed.eq_ignore_ascii_case("infinity")
+        || trimmed == "0"
+    {
+        return Some(None);
+    }
+    match trimmed.parse::<usize>() {
+        Ok(val) => Some(Some(val)),
+        Err(error) => {
+            tracing::warn!(
+                raw = %raw,
+                error = %error,
+                "invalid GOSPEL_MAX_TURNS; ignoring override"
+            );
+            None
+        }
+    }
+}
+
 pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
+    let override_turns = configured_max_turns();
     match role {
         AgentRole::Main => HarnessRunGuards {
-            max_turns: 50,
+            max_turns: override_turns.unwrap_or(None),
             deadline: None,
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -612,7 +652,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Exploration => HarnessRunGuards {
-            max_turns: 50,
+            max_turns: override_turns.unwrap_or(None),
             deadline: Some(Duration::from_secs(90)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -620,7 +660,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Verification => HarnessRunGuards {
-            max_turns: 6,
+            max_turns: override_turns.unwrap_or(Some(6)),
             deadline: Some(Duration::from_secs(90)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -628,7 +668,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::ReviewDetector => HarnessRunGuards {
-            max_turns: 50,
+            max_turns: override_turns.unwrap_or(None),
             deadline: Some(Duration::from_secs(60)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -636,7 +676,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::ReviewValidator => HarnessRunGuards {
-            max_turns: 50,
+            max_turns: override_turns.unwrap_or(None),
             deadline: Some(Duration::from_secs(30)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -644,7 +684,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Custom => HarnessRunGuards {
-            max_turns: 50,
+            max_turns: override_turns.unwrap_or(Some(50)),
             deadline: None,
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -669,6 +709,7 @@ mod tests {
             command_approval: None,
             contributions: vec![],
             mcp_tools: vec![],
+            subagents: None,
         }
     }
 
@@ -937,7 +978,7 @@ mod tests {
         });
 
         assert_eq!(profile.role, AgentRole::Custom);
-        assert_eq!(profile.guards.max_turns, 12);
+        assert_eq!(profile.guards.max_turns, Some(12));
         assert_eq!(profile.guards.deadline, Some(Duration::from_secs(90)));
         let names = profile.tool_names();
         assert!(names.contains(&"read_file".to_string()));
@@ -954,11 +995,11 @@ mod tests {
     #[test]
     fn role_guards_are_resolved_with_the_profile() {
         let expected = [
-            (AgentRole::Main, 50, None, 3, 5),
-            (AgentRole::Exploration, 50, Some(90), 3, 5),
-            (AgentRole::Verification, 6, Some(90), 2, 3),
-            (AgentRole::ReviewDetector, 50, Some(60), 2, 3),
-            (AgentRole::ReviewValidator, 50, Some(30), 2, 3),
+            (AgentRole::Main, None, None, 3, 5),
+            (AgentRole::Exploration, None, Some(90), 3, 5),
+            (AgentRole::Verification, Some(6), Some(90), 2, 3),
+            (AgentRole::ReviewDetector, None, Some(60), 2, 3),
+            (AgentRole::ReviewValidator, None, Some(30), 2, 3),
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
@@ -972,6 +1013,20 @@ mod tests {
             assert_eq!(guards.loop_guard.warning_threshold, warning);
             assert_eq!(guards.loop_guard.stop_threshold, stop);
         }
+    }
+
+    #[test]
+    fn max_turns_env_parsing_supports_limits_and_unlimited_variants() {
+        assert_eq!(parse_max_turns_env(""), None);
+        assert_eq!(parse_max_turns_env("   "), None);
+        assert_eq!(parse_max_turns_env("100"), Some(Some(100)));
+        assert_eq!(parse_max_turns_env(" 250 "), Some(Some(250)));
+        assert_eq!(parse_max_turns_env("0"), Some(None));
+        assert_eq!(parse_max_turns_env("unlimited"), Some(None));
+        assert_eq!(parse_max_turns_env("UNLIMITED"), Some(None));
+        assert_eq!(parse_max_turns_env("none"), Some(None));
+        assert_eq!(parse_max_turns_env("inf"), Some(None));
+        assert_eq!(parse_max_turns_env("invalid_number"), None);
     }
 
     #[tokio::test]
@@ -1006,6 +1061,7 @@ mod tests {
                 guards: profile.guards,
                 additional_params: None,
                 reasoning: None,
+                subagents: None,
             },
             |_| {},
         )

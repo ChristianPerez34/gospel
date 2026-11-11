@@ -1,7 +1,7 @@
 import { RefreshCw, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { useBountyFindings, type BountyVerdict } from "../hooks/useBountyFindings";
+import { type BountyVerdict, useBountyFindings } from "../hooks/useBountyFindings";
 
 interface BountyFindingsPanelProps {
   onClose?: () => void;
@@ -16,8 +16,10 @@ function verdictFor(verdicts: BountyVerdict[], id: string) {
 
 export function BountyFindingsPanel({ onClose }: BountyFindingsPanelProps) {
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
-  const { findings, loading, error, reload, setVerdict, approveCheckpoint } =
-    useBountyFindings(true, selectedRun);
+  const { findings, loading, error, reload, setVerdict, approveCheckpoint } = useBountyFindings(
+    true,
+    selectedRun
+  );
 
   const rows = useMemo(() => {
     const signals = findings?.signals ?? [];
@@ -56,9 +58,7 @@ export function BountyFindingsPanel({ onClose }: BountyFindingsPanelProps) {
             </select>
           ) : (
             <p className="truncate text-xs text-muted-foreground">
-              {findings?.runId
-                ? `.gospel/bounty/runs/${findings.runId}`
-                : ".gospel/bounty/runs"}
+              {findings?.runId ? `.gospel/bounty/runs/${findings.runId}` : ".gospel/bounty/runs"}
             </p>
           )}
         </div>
@@ -74,12 +74,7 @@ export function BountyFindingsPanel({ onClose }: BountyFindingsPanelProps) {
             Refresh
           </Button>
           {onClose && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onClose}
-              aria-label="Close findings panel"
-            >
+            <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close findings panel">
               <X size={16} />
             </Button>
           )}
@@ -98,8 +93,8 @@ export function BountyFindingsPanel({ onClose }: BountyFindingsPanelProps) {
               Threat-model checkpoint pending
             </p>
             <p className="mb-2 text-xs text-muted-foreground">
-              Broad testing is frozen: http_request is refused until you approve
-              the checkpoint. Review threat-model.md, then approve.
+              Broad testing is frozen: http_request is refused until you approve the checkpoint.
+              Review threat-model.md, then approve.
             </p>
             <Button
               size="sm"
@@ -128,10 +123,7 @@ export function BountyFindingsPanel({ onClose }: BountyFindingsPanelProps) {
             const verdict = verdictFor(findings?.verdicts ?? [], signal.id);
             const effectiveStatus = verdict?.status ?? signal.status;
             return (
-              <li
-                key={signal.id}
-                className="rounded-md border border-border bg-background p-3"
-              >
+              <li key={signal.id} className="rounded-md border border-border bg-background p-3">
                 <div className="mb-1 flex flex-wrap items-center gap-2 text-xs">
                   <span className="font-mono text-muted-foreground">{signal.kind}</span>
                   <span
@@ -151,18 +143,14 @@ export function BountyFindingsPanel({ onClose }: BountyFindingsPanelProps) {
                   {verdict?.severity && (
                     <span className="text-muted-foreground">{verdict.severity}</span>
                   )}
-                  <span className="ml-auto text-muted-foreground">
-                    {signal.confidence}
-                  </span>
+                  <span className="ml-auto text-muted-foreground">{signal.confidence}</span>
                 </div>
                 <div className="mb-1 font-mono text-xs break-all">
                   {signal.method} {signal.endpoint}
                 </div>
                 <p className="text-sm">{signal.summary}</p>
                 {verdict?.rationale && (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    triage: {verdict.rationale}
-                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">triage: {verdict.rationale}</p>
                 )}
                 <div className="mt-2 flex items-center justify-between gap-2">
                   <p className="text-xs text-muted-foreground">

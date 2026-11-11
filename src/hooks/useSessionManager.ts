@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { updateMessageById } from "../subagentActivity";
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -206,6 +207,23 @@ export function useSessionManager({
     [onSessionsChange]
   );
 
+  const handleMessageUpdateForSession = useCallback(
+    (sessionId: string | null, messageId: string, update: (message: Message) => Message) => {
+      if (!sessionId || sessionId === activeSessionIdRef.current) {
+        setMessages((prev) => updateMessageById(prev, messageId, update));
+        return;
+      }
+      onSessionsChange((prev) =>
+        prev.map((session) =>
+          session.id === sessionId
+            ? { ...session, messages: updateMessageById(session.messages, messageId, update) }
+            : session
+        )
+      );
+    },
+    [onSessionsChange]
+  );
+
   const handleLiveTurnForSession = useCallback(
     (sessionId: string | null, turn: CurrentTurn | null) => {
       if (!sessionId) return;
@@ -251,6 +269,7 @@ export function useSessionManager({
   } = useChatStream({
     onMessages: setMessages,
     onMessagesForSession: handleMessagesForSession,
+    onMessageUpdateForSession: handleMessageUpdateForSession,
     onLiveTurnForSession: handleLiveTurnForSession,
     onStatusForSession: handleStatusForSession,
     onStatusChange: setStatus,

@@ -580,11 +580,10 @@ describe("InputBar", () => {
       });
       fireEvent.keyDown(textarea, { key: "Enter" });
 
-      expect(onSend).toHaveBeenCalledWith(
-        "@bug-bounty enumerate the login endpoints",
-        undefined,
-        { name: "bug-bounty", task: "enumerate the login endpoints" }
-      );
+      expect(onSend).toHaveBeenCalledWith("@bug-bounty enumerate the login endpoints", undefined, {
+        name: "bug-bounty",
+        task: "enumerate the login endpoints",
+      });
     });
 
     it("sends a normal message when the @mention matches no agent", () => {

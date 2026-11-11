@@ -12,9 +12,11 @@ pub mod tools;
 pub mod validator;
 
 pub use engine::{ReviewEngine, ReviewRequest};
+#[cfg(test)]
+pub use progress::NoopReviewProgressEmitter;
 pub use progress::{
-    ChunkStatus, MultiFocusStatus, NoopReviewProgressEmitter, PhaseStatus, ReviewPhase,
-    ReviewProgressEmitter, ReviewProgressEvent, ToolEventKind,
+    ChunkStatus, MultiFocusStatus, PhaseStatus, ReviewPhase, ReviewProgressEmitter,
+    ReviewProgressEvent, ToolEventKind,
 };
 
 use crate::harness_profile::{
@@ -2267,6 +2269,7 @@ pub(crate) async fn run_workspace_agent(
             guards,
             additional_params: None,
             reasoning: None,
+            subagents: None,
         },
         |event| {
             if let Some(observer) = config.on_tool_event {

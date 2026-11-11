@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import { useAgents } from "../hooks/useAgents";
+import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useModelPreferences } from "../hooks/useModelPreferences";
@@ -19,6 +19,7 @@ import {
   type Session,
   type Workspace,
 } from "../types";
+import { BountyFindingsPanel } from "./BountyFindingsPanel";
 import { ChatView } from "./ChatView";
 import { CommandCenter, LiveTaskMonitor } from "./CommandCenter";
 import { CommandPalette } from "./CommandPalette";
@@ -27,7 +28,6 @@ import { NewTaskForm } from "./NewTaskForm";
 import { SessionDrawer } from "./SessionDrawer";
 import { SettingsModal } from "./SettingsModal";
 import { SkillOptPanel } from "./SkillOptPanel";
-import { BountyFindingsPanel } from "./BountyFindingsPanel";
 import { TaskRail } from "./TaskRail";
 import { ToastContainer, useToasts } from "./Toast";
 import { TopBar } from "./TopBar";

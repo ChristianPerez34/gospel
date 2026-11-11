@@ -238,6 +238,16 @@ function renderSection(section: ActionCardSection, keyPrefix = "") {
   );
 }
 
+/** The newest lines of a streaming report; the start scrolls out of view. */
+function LiveReportTail({ text }: { text: string }) {
+  const tail = text.trimEnd().split("\n").slice(-MAX_PREVIEW_LINES).join("\n");
+  return (
+    <pre className="m-0 max-h-[160px] overflow-hidden whitespace-pre-wrap break-words rounded-sm bg-surface-base p-2 font-body text-body-sm text-text-secondary">
+      {tail}
+    </pre>
+  );
+}
+
 function RawPayload({ payload }: { payload: string }) {
   const [showRaw, setShowRaw] = useState(false);
 
@@ -273,12 +283,22 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
   const accentClass = TYPE_ACCENT[card.type] || TYPE_ACCENT.file;
   const isRunning = card.status === "calling";
   const groupCount = card.groupCount ?? 0;
+  const subagent = card.subagent;
+  const subagentStepCount = subagent?.stepCount ?? 0;
+  const liveReport = isRunning && subagent?.text.trim() ? subagent.text : "";
   const hasBody =
-    (card.passes?.length ?? 0) > 0 || (card.sections?.length ?? 0) > 0 || Boolean(card.rawPayload);
+    (card.passes?.length ?? 0) > 0 ||
+    (card.sections?.length ?? 0) > 0 ||
+    Boolean(card.rawPayload) ||
+    subagentStepCount > 0 ||
+    Boolean(liveReport);
   const chevronClass = expanded ? "rotate-180" : "";
   const ariaLabelParts = [card.summary, card.target].filter(Boolean);
   if (groupCount > 1) {
     ariaLabelParts.push(expanded ? `${groupCount} passes - expanded` : `${groupCount} passes`);
+  }
+  if (subagentStepCount > 0) {
+    ariaLabelParts.push(`${subagentStepCount} agent ${subagentStepCount === 1 ? "step" : "steps"}`);
   }
   ariaLabelParts.push(isRunning ? "Running" : "Done");
   const ariaLabel = ariaLabelParts.join(" ");
@@ -332,6 +352,11 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
               {groupCount}×
             </span>
           )}
+          {subagentStepCount > 0 && (
+            <span className="shrink-0 font-mono text-caption text-text-muted">
+              {subagentStepCount} {subagentStepCount === 1 ? "step" : "steps"}
+            </span>
+          )}
         </span>
         {hasBody && (
           <svg
@@ -352,6 +377,16 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
           </svg>
         )}
       </button>
+      {isRunning && subagent?.liveLabel && (
+        <p
+          className="activity-step-live m-0 truncate pb-1 pl-[52px] pr-2 font-mono text-caption text-text-secondary"
+          data-testid="subagent-live-label"
+          title={subagent.liveLabel}
+        >
+          <span aria-hidden="true">↳ </span>
+          {subagent.liveLabel}
+        </p>
+      )}
       {hasBody && (
         <div
           ref={bodyRef}
@@ -361,6 +396,26 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
         >
           <div className="activity-step-disclosure-clip">
             <div className="activity-step-body ml-6 grid max-h-[520px] gap-3 overflow-y-auto rounded-sm p-3">
+              {subagent && subagent.steps.length > 0 && (
+                <section className="grid gap-2" data-testid="subagent-steps">
+                  <h4 className="font-mono text-caption font-semibold uppercase tracking-[0.04em] text-text-muted">
+                    Agent activity
+                  </h4>
+                  <ol className="m-0 flex list-none flex-col gap-1 p-0">
+                    {subagent.steps.map((step) => (
+                      <ActivityStep card={step} key={step.id} />
+                    ))}
+                  </ol>
+                </section>
+              )}
+              {liveReport && (
+                <section className="grid gap-2">
+                  <h4 className="font-mono text-caption font-semibold uppercase tracking-[0.04em] text-text-muted">
+                    Report so far
+                  </h4>
+                  <LiveReportTail text={liveReport} />
+                </section>
+              )}
               {card.passes
                 ? card.passes.map((pass, index) => (
                     <div className="grid gap-2 border-l border-surface-overlay pl-3" key={pass.id}>

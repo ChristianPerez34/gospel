@@ -36,6 +36,7 @@ mod shell_environment;
 mod shell_tools;
 mod skill_opt;
 pub mod skills;
+mod subagent;
 pub mod subprocess_output;
 pub(crate) mod symlink_guard;
 mod text_utils;
@@ -1433,6 +1434,19 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
     fn schedule_verification(&self, job: session_turn::VerificationJobRequest) {
         let app = self.app.clone();
         tauri::async_runtime::spawn(async move {
+            let emit_step = |step: subagent::SubagentStep| {
+                let mut ui_event = session_turn::subagent_ui_event_payload(
+                    &job.run_id,
+                    None,
+                    subagent::SubagentKind::Verification,
+                    &step,
+                );
+                ui_event.payload["sessionId"] = serde_json::json!(job.session_id);
+                let _ = app.emit(ui_event.name, ui_event.payload);
+            };
+            emit_step(subagent::SubagentStep::Phase {
+                label: "Checking the response".to_string(),
+            });
             let result = verification::run_verification(
                 &job.provider,
                 &job.model,
@@ -1441,6 +1455,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
                 &job.response_to_verify,
                 &job.user_prompt,
                 job.session_id.as_deref(),
+                emit_step,
             )
             .await;
 
@@ -1468,6 +1483,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
                 "llm-verification",
                 serde_json::json!({
                     "sessionId": job.session_id,
+                    "runId": job.run_id,
                     "status": result.status,
                     "concerns": result.concerns,
                     "summary": result.summary,

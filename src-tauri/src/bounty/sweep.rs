@@ -140,7 +140,7 @@ fn signals_path(workspace_path: &Path, run_id: &str) -> PathBuf {
 
 fn phase_guards() -> HarnessRunGuards {
     HarnessRunGuards {
-        max_turns: 4,
+        max_turns: Some(4),
         deadline: Some(PHASE_DEADLINE),
         loop_guard: LoopGuardPolicy {
             warning_threshold: 2,
@@ -290,6 +290,7 @@ async fn run_phase(
             guards: phase_guards(),
             additional_params: None,
             reasoning: None,
+            subagents: None,
         },
         |_| {},
     )
@@ -358,6 +359,7 @@ async fn run_worker(
                 guards: profile.guards,
                 additional_params: None,
                 reasoning: None,
+                subagents: None,
             },
             |_| {},
         )

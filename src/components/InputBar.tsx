@@ -521,9 +521,7 @@ export function InputBar({
                     className="flex flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-surface-overlay/60"
                     onClick={() => handleMentionSelect(agent.name)}
                   >
-                    <span className="font-mono text-caption text-text-primary">
-                      @{agent.name}
-                    </span>
+                    <span className="font-mono text-caption text-text-primary">@{agent.name}</span>
                     <span className="text-caption text-text-muted">{agent.description}</span>
                   </button>
                 ))

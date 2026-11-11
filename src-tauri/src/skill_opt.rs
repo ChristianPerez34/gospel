@@ -515,6 +515,7 @@ impl SkillReplayVerifier for VerificationAgentVerifier {
             response,
             prompt,
             None,
+            |_| {},
         )
         .await
         .status
