@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAgents } from "../hooks/useAgents";
 import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
@@ -18,6 +19,7 @@ import {
   type Session,
   type Workspace,
 } from "../types";
+import { BountyFindingsPanel } from "./BountyFindingsPanel";
 import { ChatView } from "./ChatView";
 import { CommandCenter, LiveTaskMonitor } from "./CommandCenter";
 import { CommandPalette } from "./CommandPalette";
@@ -46,6 +48,7 @@ interface BackendSessionRecord {
   variant?: string | null;
   status: string;
   workspace_id: string | null;
+  agent_id?: string | null;
   updated_at: string;
 }
 
@@ -120,6 +123,7 @@ export function AppShell() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [skillOptOpen, setSkillOptOpen] = useState(isSkillOptPanelRequest);
+  const [findingsOpen, setFindingsOpen] = useState(false);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   // The task rail reports its displayed order here so session shortcuts and
   // the palette's needs-you jump target exactly what the user sees.
@@ -160,6 +164,8 @@ export function AppShell() {
     loading: workspacesLoading,
   } = useWorkspaces();
   const { toasts, dismissToast, showError, showSuccess } = useToasts();
+  const { agents } = useAgents(activeWorkspace?.path);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const {
     models,
     providers,
@@ -214,12 +220,36 @@ export function AppShell() {
     sessions,
     onSessionsChange: setSessions,
     activeWorkspaceId: activeWorkspace?.id,
+    agentId: selectedAgentId,
     onSwitchWorkspace: switchWorkspace,
     onError: showError,
     onSuccess: showSuccess,
     onOpenSettings: openSettings,
     onModelVariantFallback: handleModelVariantFallback,
   });
+
+  useEffect(() => {
+    const active = sessions.find((item) => item.id === session.activeSessionId);
+    setSelectedAgentId(active?.agentId ?? null);
+  }, [session.activeSessionId, sessions]);
+
+  const handleAgentChange = useCallback(
+    (agentId: string | null) => {
+      setSelectedAgentId(agentId);
+      const sessionId = session.activeSessionId;
+      if (!sessionId) return;
+      const active = sessions.find((item) => item.id === sessionId);
+      setSessions((previous) =>
+        previous.map((item) => (item.id === sessionId ? { ...item, agentId } : item))
+      );
+      if (active?.backendCreated !== false) {
+        void invoke("set_session_agent", { sessionId, agentId }).catch((error) => {
+          showError(`Failed to save agent selection: ${error}`);
+        });
+      }
+    },
+    [session.activeSessionId, sessions, showError]
+  );
   const gitContext = useWorkspaceGitContext(
     overviewOpen || !session.activeSessionId ? undefined : activeWorkspace?.id
   );
@@ -307,6 +337,7 @@ export function AppShell() {
       status: (session.status === "active" ? "idle" : "error") as Session["status"],
       backendCreated: true,
       workspaceId: session.workspace_id ?? undefined,
+      agentId: session.agent_id ?? null,
     }));
   }, []);
 
@@ -1111,9 +1142,12 @@ export function AppShell() {
                 modelPreferences={modelPreferences}
                 onModelChange={applyModelSelection}
                 onVariantChange={applyVariantSelection}
-                onSend={(message, skill) => {
+                agents={agents}
+                selectedAgentId={selectedAgentId}
+                onAgentChange={handleAgentChange}
+                onSend={(message, skill, delegatedAgent) => {
                   setOverviewOpen(false);
-                  session.handleSend(message, skill);
+                  session.handleSend(message, skill, delegatedAgent);
                 }}
                 onCancelStream={() => void session.cancelStream()}
                 isStreaming={session.isStreaming}
@@ -1249,6 +1283,7 @@ export function AppShell() {
         recentWorkspaces={workspaces}
         onSelectWorkspace={handleSwitchWorkspace}
         onOpenSkillOpt={() => setSkillOptOpen(true)}
+        onOpenBountyFindings={() => setFindingsOpen(true)}
         restoreFocusRef={commandPaletteRestoreRef}
         activityBySession={activityBySession}
         needsYouCount={needsYouCount}
@@ -1269,6 +1304,7 @@ export function AppShell() {
           onClose={() => setSkillOptOpen(false)}
         />
       )}
+      {findingsOpen && <BountyFindingsPanel onClose={() => setFindingsOpen(false)} />}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

@@ -244,6 +244,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
             None,
             None,
             None,
+            None,
             Vec::new(),
             |_| {},
         )
@@ -464,6 +465,7 @@ impl SkillOptimizer for StreamCompletionSkillOptimizer {
                 "## Skill optimizer\n\nReturn only a JSON array of bounded skill edits."
                     .to_string(),
             ),
+            None,
             None,
             None,
             None,

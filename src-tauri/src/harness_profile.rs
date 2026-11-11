@@ -1,3 +1,5 @@
+use crate::agents::AgentDefinition;
+use crate::bounty::{BountyHttpTool, BountySignalTool};
 use crate::review::tools::{
     create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
     create_run_security_review_tool, REVIEW_TOOLS_SYSTEM_PROMPT,
@@ -10,14 +12,16 @@ use crate::shell_tools::{
 use crate::subagent::SubagentRelay;
 use crate::workspace_tools::{
     build_base_workspace_tools, build_base_workspace_tools_with_external_approval,
-    create_source_edit_tool, create_write_harness_file_tool, ExternalPathApproval,
-    HARNESS_CONTROL_AREA_SYSTEM_PROMPT, READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT,
-    WORKSPACE_TOOLS_SYSTEM_PROMPT,
+    create_find_files_tool, create_list_directory_tool, create_read_file_tool,
+    create_search_code_tool, create_source_edit_tool, create_write_harness_file_tool,
+    ExternalPathApproval, HARNESS_CONTROL_AREA_SYSTEM_PROMPT,
+    READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT, WORKSPACE_TOOLS_SYSTEM_PROMPT,
 };
 use rig::tool::RegisteredTool;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -25,6 +29,12 @@ use thiserror::Error;
 const DELEGATION_SYSTEM_PROMPT: &str = r#"
 Use `delegate_exploration` only for broad multi-file, architectural, or investigative tasks that would benefit from a focused report before you answer the user.
 Prefer direct file reads and targeted search for small or obvious tasks.
+"#;
+
+const BOUNTY_NETWORK_SYSTEM_PROMPT: &str = r#"
+You have a scoped `http_request` tool. Every request is checked against `.gospel/bounty/scope.yaml` before it is sent. Out-of-scope requests are refused; do not attempt to work around the scope, and do not run shell commands to reach the network.
+
+Use named `auth_profile` entries instead of handling raw credentials. Evidence and logs redact secrets. Prefer read-only methods; mutating requests require explicit scope opt-in. Record hypotheses and signals under `.gospel/bounty/` so a later run can resume.
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -35,6 +45,7 @@ pub enum AgentRole {
     Verification,
     ReviewDetector,
     ReviewValidator,
+    Custom,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,6 +425,135 @@ pub fn resolve_harness_profile(
     })
 }
 
+pub struct CustomAgentProfileRequest {
+    pub agent: AgentDefinition,
+    pub workspace_path: PathBuf,
+    pub run_id: String,
+    pub attached_skills_section: Option<String>,
+}
+
+pub fn resolve_custom_agent_profile(request: CustomAgentProfileRequest) -> HarnessProfile {
+    let tools = build_custom_agent_tools(&request.agent, &request.workspace_path, &request.run_id);
+    let guards = HarnessRunGuards {
+        max_turns: Some(request.agent.max_turns),
+        deadline: request.agent.deadline,
+        loop_guard: LoopGuardPolicy {
+            warning_threshold: 3,
+            stop_threshold: 5,
+        },
+    };
+
+    let mut sections = Vec::new();
+    push_section(
+        &mut sections,
+        Some(READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT.to_string()),
+    );
+    push_section(
+        &mut sections,
+        Some(HARNESS_CONTROL_AREA_SYSTEM_PROMPT.to_string()),
+    );
+    if request.agent.network {
+        push_section(
+            &mut sections,
+            Some(BOUNTY_NETWORK_SYSTEM_PROMPT.to_string()),
+        );
+    }
+    push_section(&mut sections, Some(request.agent.body));
+    push_section(&mut sections, request.attached_skills_section);
+
+    HarnessProfile {
+        role: AgentRole::Custom,
+        preamble: (!sections.is_empty()).then(|| sections.join("\n\n")),
+        tools,
+        guards,
+        workspace_available: true,
+    }
+}
+
+fn build_custom_agent_tools(
+    agent: &AgentDefinition,
+    workspace_path: &Path,
+    run_id: &str,
+) -> Vec<RegisteredTool> {
+    let mut tools = Vec::new();
+    for name in &agent.tools {
+        match name.as_str() {
+            "read_file" => tools.push(RegisteredTool::from_tool(create_read_file_tool(
+                workspace_path.to_path_buf(),
+            ))),
+            "search_code" => tools.push(RegisteredTool::from_tool(create_search_code_tool(
+                workspace_path.to_path_buf(),
+            ))),
+            "find_files" => tools.push(RegisteredTool::from_tool(create_find_files_tool(
+                workspace_path.to_path_buf(),
+            ))),
+            "list_directory" => tools.push(RegisteredTool::from_tool(
+                create_list_directory_tool(workspace_path.to_path_buf()),
+            )),
+            "write_harness_file" => tools.push(RegisteredTool::from_tool(
+                create_write_harness_file_tool(workspace_path.to_path_buf()),
+            )),
+            "http_request" if agent.network => {
+                match BountyHttpTool::new(workspace_path, run_id) {
+                    Ok(tool) => tools.push(RegisteredTool::from_tool(tool)),
+                    Err(error) => tracing::warn!(
+                        "Failed to register http_request for agent '{}': {}",
+                        agent.name,
+                        error
+                    ),
+                }
+            }
+            "record_bounty_signal" if agent.network => {
+                match BountySignalTool::new(workspace_path, run_id) {
+                    Ok(tool) => tools.push(RegisteredTool::from_tool(tool)),
+                    Err(error) => tracing::warn!(
+                        "Failed to register record_bounty_signal for agent '{}': {}",
+                        agent.name,
+                        error
+                    ),
+                }
+            }
+            "bounty_checkpoint" if agent.network => tools.push(
+                RegisteredTool::from_tool(crate::bounty::BountyCheckpointTool::new(
+                    crate::bounty::http_tool::run_dir(workspace_path, run_id),
+                )),
+            ),
+            "bounty_surface" if agent.network => {
+                match crate::bounty::surface::BountySurfaceTool::new(workspace_path, run_id) {
+                    Ok(tool) => tools.push(RegisteredTool::from_tool(tool)),
+                    Err(error) => tracing::warn!(
+                        "Failed to register bounty_surface for agent '{}': {}",
+                        agent.name,
+                        error
+                    ),
+                }
+            }
+            "http_request" => tracing::warn!(
+                "Agent '{}' lists http_request but network is false; skipping",
+                agent.name
+            ),
+            "record_bounty_signal" => tracing::warn!(
+                "Agent '{}' lists record_bounty_signal but network is false; skipping",
+                agent.name
+            ),
+            "bounty_checkpoint" => tracing::warn!(
+                "Agent '{}' lists bounty_checkpoint but network is false; skipping",
+                agent.name
+            ),
+            "bounty_surface" => tracing::warn!(
+                "Agent '{}' lists bounty_surface but network is false; skipping",
+                agent.name
+            ),
+            other => tracing::warn!(
+                "Agent '{}' lists unknown tool '{}'; skipping",
+                agent.name,
+                other
+            ),
+        }
+    }
+    tools
+}
+
 fn compose_preamble(
     role: AgentRole,
     workspace: Option<&ActiveWorkspaceContext>,
@@ -541,6 +681,14 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
                 stop_threshold: 3,
+            },
+        },
+        AgentRole::Custom => HarnessRunGuards {
+            max_turns: override_turns.unwrap_or(Some(50)),
+            deadline: None,
+            loop_guard: LoopGuardPolicy {
+                warning_threshold: 3,
+                stop_threshold: 5,
             },
         },
     }
@@ -799,6 +947,49 @@ mod tests {
                 actual: "source_edit".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn custom_agent_profile_uses_definition_tools_and_guards() {
+        let workspace = tempfile::tempdir().unwrap();
+        let agent = AgentDefinition {
+            name: "bug-bounty".to_string(),
+            description: "test".to_string(),
+            source: crate::agents::AgentSource::Workspace,
+            body: "You are the bounty agent.".to_string(),
+            tools: vec![
+                "read_file".to_string(),
+                "http_request".to_string(),
+                "unknown".to_string(),
+            ],
+            skills: Vec::new(),
+            model: None,
+            worker_model: None,
+            orchestration: None,
+            max_turns: 12,
+            deadline: Some(Duration::from_secs(90)),
+            network: true,
+        };
+        let profile = resolve_custom_agent_profile(CustomAgentProfileRequest {
+            agent,
+            workspace_path: workspace.path().to_path_buf(),
+            run_id: "test".to_string(),
+            attached_skills_section: Some("## Attached Skills\n\n- recon".to_string()),
+        });
+
+        assert_eq!(profile.role, AgentRole::Custom);
+        assert_eq!(profile.guards.max_turns, Some(12));
+        assert_eq!(profile.guards.deadline, Some(Duration::from_secs(90)));
+        let names = profile.tool_names();
+        assert!(names.contains(&"read_file".to_string()));
+        assert!(names.contains(&"http_request".to_string()));
+        assert!(!names.contains(&"unknown".to_string()));
+        assert!(!names.contains(&"source_edit".to_string()));
+        assert!(!names.contains(&"run_shell_command".to_string()));
+        let preamble = profile.preamble.unwrap_or_default();
+        assert!(preamble.contains("You are the bounty agent."));
+        assert!(preamble.contains("Attached Skills"));
+        assert!(preamble.contains("http_request"));
     }
 
     #[test]

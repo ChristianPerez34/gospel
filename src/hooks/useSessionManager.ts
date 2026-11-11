@@ -30,6 +30,8 @@ export interface SessionManagerStreamOptions {
    * backend sessionId for local-only sessions. */
   runSessionId?: string | null;
   invokedSkill?: { name: string; args?: string } | null;
+  agentId?: string | null;
+  delegatedAgent?: { name: string; task: string } | null;
 }
 
 export interface SessionManagerErrorAction {
@@ -43,6 +45,7 @@ export interface UseSessionManagerParams {
   sessions: Session[];
   onSessionsChange: Dispatch<SetStateAction<Session[]>>;
   activeWorkspaceId?: string;
+  agentId?: string | null;
   onSwitchWorkspace?: (workspaceId: string) => Promise<boolean>;
   onError?: (message: string, action?: SessionManagerErrorAction) => void;
   onSuccess?: (message: string) => void;
@@ -72,7 +75,11 @@ export interface UseSessionManagerResult {
   messageActionsPending: boolean;
   retryMessage: (messageId: string) => Promise<void>;
   forkMessage: (messageId: string) => Promise<void>;
-  handleSend: (message: string, invokedSkill?: { name: string; args?: string }) => Promise<void>;
+  handleSend: (
+    message: string,
+    invokedSkill?: { name: string; args?: string },
+    delegatedAgent?: { name: string; task: string }
+  ) => Promise<void>;
   handleSessionSelect: (session: Session) => Promise<void>;
   handleNewSession: () => void;
   resolveApproval: (id: string, decision: ApprovalDecision) => Promise<void>;
@@ -96,6 +103,7 @@ export function useSessionManager({
   sessions,
   onSessionsChange,
   activeWorkspaceId,
+  agentId,
   onSwitchWorkspace,
   onError,
   onSuccess,
@@ -329,7 +337,11 @@ export function useSessionManager({
   }, [activeSessionId, messages, onSessionsChange]);
 
   const handleSend = useCallback(
-    async (message: string, invokedSkill?: { name: string; args?: string }) => {
+    async (
+      message: string,
+      invokedSkill?: { name: string; args?: string },
+      delegatedAgent?: { name: string; task: string }
+    ) => {
       if (messageActionPendingRef.current) return;
       if (!selectedModel || !selectedModelAvailable) {
         onError?.("Select an available model before sending.", {
@@ -403,6 +415,7 @@ export function useSessionManager({
             model: selectedModel.model,
             variant: selectedModel.variant ?? null,
             workspaceId: activeWorkspaceId ?? null,
+            agentId: agentId ?? null,
           });
         } catch (e) {
           console.warn("Backend session creation failed, using local session:", e);
@@ -416,6 +429,7 @@ export function useSessionManager({
           provider: selectedModel.provider,
           model: selectedModel.model,
           variant: selectedModel.variant ?? null,
+          agentId,
           timestamp: new Date(),
           messages: [userMsg],
           status: "active",
@@ -446,6 +460,8 @@ export function useSessionManager({
           // sessions (backend sessionId null) still get their own stream.
           runSessionId: effectiveSessionId,
           invokedSkill: invokedSkill ?? null,
+          agentId: agentId ?? null,
+          delegatedAgent: delegatedAgent ?? null,
         });
       } catch (e) {
         setStatus("error");
@@ -460,6 +476,7 @@ export function useSessionManager({
     [
       activeSessionId,
       activeWorkspaceId,
+      agentId,
       markSessionStatus,
       onError,
       onOpenSettings,
@@ -621,6 +638,7 @@ export function useSessionManager({
           model: string;
           variant?: string | null;
           workspace_id?: string;
+          agent_id?: string | null;
         }>("run_session_message_action", {
           request: {
             sessionId: source.id,
@@ -643,6 +661,7 @@ export function useSessionManager({
             model: detail.model,
             variant: detail.variant,
             workspaceId: detail.workspace_id ?? source.workspaceId,
+            agentId: detail.agent_id ?? source.agentId ?? null,
             messages: messages.slice(0, index + 1),
             timestamp: new Date(),
             status: "active",
@@ -678,6 +697,7 @@ export function useSessionManager({
           prompt: userMessage.content,
           sessionId: source.id,
           runSessionId: source.id,
+          agentId: source.agentId ?? agentId ?? null,
         }).catch((error) => {
           handleStatusForSession(source.id, "error");
           handleMessagesForSession(source.id, (previous) => {
@@ -706,6 +726,7 @@ export function useSessionManager({
     },
     [
       activeSessionId,
+      agentId,
       handleStatusForSession,
       handleMessagesForSession,
       markSessionStatus,
@@ -766,6 +787,7 @@ export function useSessionManager({
         provider: selectedModel.provider,
         model: selectedModel.model,
         variant: selectedModel.variant ?? null,
+        agentId: agentId ?? null,
       });
       if (!record?.id) throw new Error("The task could not be saved. Try again.");
       const task: Session = {
@@ -775,6 +797,7 @@ export function useSessionManager({
         provider: selectedModel.provider,
         model: selectedModel.model,
         variant: selectedModel.variant ?? null,
+        agentId,
         messages: [],
         timestamp: new Date(),
         status: "idle",
@@ -788,7 +811,14 @@ export function useSessionManager({
       setStatus("connected");
       return task;
     },
-    [activeWorkspaceId, onSessionsChange, onSwitchWorkspace, selectedModel, selectedModelAvailable]
+    [
+      activeWorkspaceId,
+      agentId,
+      onSessionsChange,
+      onSwitchWorkspace,
+      selectedModel,
+      selectedModelAvailable,
+    ]
   );
 
   return {

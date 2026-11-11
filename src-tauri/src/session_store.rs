@@ -29,6 +29,7 @@ pub struct SessionRecord {
     pub variant: Option<String>,
     pub status: String,
     pub workspace_id: Option<String>,
+    pub agent_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -42,6 +43,7 @@ pub struct SessionDetail {
     pub variant: Option<String>,
     pub status: String,
     pub workspace_id: Option<String>,
+    pub agent_id: Option<String>,
     pub display_transcript: String,
     #[serde(skip_serializing)]
     pub model_history: Option<String>,
@@ -218,6 +220,13 @@ CREATE TABLE IF NOT EXISTS session_notes (
 CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);
 CREATE INDEX IF NOT EXISTS idx_notes_unresolved ON session_notes(session_id, resolved);
 
+CREATE TABLE IF NOT EXISTS session_agents (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    agent_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS archived_session_notes (
     id TEXT PRIMARY KEY NOT NULL,
     session_id TEXT NOT NULL,
@@ -228,7 +237,14 @@ CREATE TABLE IF NOT EXISTS archived_session_notes (
     created_at TEXT NOT NULL,
     FOREIGN KEY (session_id) REFERENCES archived_sessions(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_archived_notes_session ON archived_session_notes(session_id);";
+CREATE INDEX IF NOT EXISTS idx_archived_notes_session ON archived_session_notes(session_id);
+
+CREATE TABLE IF NOT EXISTS archived_session_agents (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    agent_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES archived_sessions(id) ON DELETE CASCADE
+);";
 
 impl SessionStore {
     pub fn new() -> Result<Self, SessionStoreError> {
@@ -260,7 +276,7 @@ impl SessionStore {
         model: &str,
         workspace_id: Option<&str>,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, None, workspace_id)
+        self.insert_session(title, provider, model, None, workspace_id, None)
     }
 
     pub fn create_session_with_selection(
@@ -270,8 +286,9 @@ impl SessionStore {
         model: &str,
         variant: Option<&str>,
         workspace_id: Option<&str>,
+        agent_id: Option<&str>,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, variant, workspace_id)
+        self.insert_session(title, provider, model, variant, workspace_id, agent_id)
     }
 
     fn insert_session(
@@ -281,6 +298,7 @@ impl SessionStore {
         model: &str,
         variant: Option<&str>,
         workspace_id: Option<&str>,
+        agent_id: Option<&str>,
     ) -> Result<SessionRecord, SessionStoreError> {
         let id = Uuid::new_v4().to_string();
         let conn = self.conn.lock().unwrap();
@@ -289,6 +307,12 @@ impl SessionStore {
              VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6)",
             params![id, title, provider, model, variant, workspace_id],
         )?;
+        if let Some(agent_id) = agent_id {
+            conn.execute(
+                "INSERT INTO session_agents (session_id, agent_id) VALUES (?1, ?2)",
+                params![id, agent_id],
+            )?;
+        }
         Ok(SessionRecord {
             id,
             title: title.to_string(),
@@ -297,6 +321,7 @@ impl SessionStore {
             variant: variant.map(|s| s.to_string()),
             status: "draft".to_string(),
             workspace_id: workspace_id.map(|s| s.to_string()),
+            agent_id: agent_id.map(|s| s.to_string()),
             created_at: String::new(),
             updated_at: String::new(),
         })
@@ -309,16 +334,19 @@ impl SessionStore {
         provider: &str,
         model: &str,
     ) -> Result<SessionRecord, SessionStoreError> {
-        self.insert_session(title, provider, model, None, None)
+        self.insert_session(title, provider, model, None, None, None)
     }
 
     pub fn get_session(&self, id: &str) -> Result<Option<SessionDetail>, SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(
-                "SELECT id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, created_at, updated_at
-                 FROM sessions WHERE id = ?1",
+                "SELECT s.id, s.title, s.provider, s.model, s.variant, s.status, s.workspace_id,
+                        s.display_transcript, s.model_history, s.created_at, s.updated_at,
+                        sa.agent_id
+                 FROM sessions s
+                 LEFT JOIN session_agents sa ON sa.session_id = s.id
+                 WHERE s.id = ?1",
                 params![id],
                 |row| {
                     Ok(SessionDetail {
@@ -333,6 +361,7 @@ impl SessionStore {
                         model_history: row.get(8)?,
                         created_at: row.get(9)?,
                         updated_at: row.get(10)?,
+                        agent_id: row.get(11)?,
                     })
                 },
             )
@@ -344,8 +373,11 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(
-                "SELECT id, title, provider, model, variant, status, workspace_id, created_at, updated_at
-                 FROM sessions WHERE id = ?1",
+                "SELECT s.id, s.title, s.provider, s.model, s.variant, s.status, s.workspace_id,
+                        s.created_at, s.updated_at, sa.agent_id
+                 FROM sessions s
+                 LEFT JOIN session_agents sa ON sa.session_id = s.id
+                 WHERE s.id = ?1",
                 params![id],
                 |row| {
                     Ok(SessionRecord {
@@ -358,6 +390,7 @@ impl SessionStore {
                         workspace_id: row.get(6)?,
                         created_at: row.get(7)?,
                         updated_at: row.get(8)?,
+                        agent_id: row.get(9)?,
                     })
                 },
             )
@@ -371,11 +404,13 @@ impl SessionStore {
     ) -> Result<Vec<SessionRecord>, SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, provider, model, variant, status, workspace_id, created_at, updated_at
-             FROM sessions
-             WHERE ((?1 IS NULL AND workspace_id IS NULL) OR workspace_id = ?1)
-                AND status != 'draft'
-             ORDER BY updated_at DESC",
+            "SELECT s.id, s.title, s.provider, s.model, s.variant, s.status, s.workspace_id,
+                    s.created_at, s.updated_at, sa.agent_id
+             FROM sessions s
+             LEFT JOIN session_agents sa ON sa.session_id = s.id
+             WHERE ((?1 IS NULL AND s.workspace_id IS NULL) OR s.workspace_id = ?1)
+                AND s.status != 'draft'
+             ORDER BY s.updated_at DESC",
         )?;
         let rows = stmt.query_map(params![workspace_id], |row| {
             Ok(SessionRecord {
@@ -388,6 +423,7 @@ impl SessionStore {
                 workspace_id: row.get(6)?,
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
+                agent_id: row.get(9)?,
             })
         })?;
         let mut sessions = Vec::new();
@@ -586,6 +622,44 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn get_session_agent(&self, session_id: &str) -> Result<Option<String>, SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT agent_id FROM session_agents WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(SessionStoreError::from)
+    }
+
+    pub fn set_session_agent(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<(), SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        match agent_id {
+            Some(agent_id) => {
+                conn.execute(
+                    "INSERT INTO session_agents (session_id, agent_id, updated_at)
+                     VALUES (?1, ?2, datetime('now'))
+                     ON CONFLICT(session_id) DO UPDATE SET
+                        agent_id = excluded.agent_id,
+                        updated_at = datetime('now')",
+                    params![session_id, agent_id],
+                )?;
+            }
+            None => {
+                conn.execute(
+                    "DELETE FROM session_agents WHERE session_id = ?1",
+                    params![session_id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn persist_turn(
         &self,
         id: &str,
@@ -623,6 +697,11 @@ impl SessionStore {
         if rows == 0 {
             return Err(SessionStoreError::NotFound(source_id.to_string()));
         }
+        conn.execute(
+            "INSERT INTO session_agents (session_id, agent_id, updated_at)
+             SELECT ?1, agent_id, updated_at FROM session_agents WHERE session_id = ?2",
+            params![id, source_id],
+        )?;
         drop(conn);
         self.get_session(&id)?.ok_or(SessionStoreError::NotFound(id))
     }
@@ -685,6 +764,13 @@ impl SessionStore {
                  WHERE session_id = ?1",
                 params![id],
             )?;
+            tx.execute(
+                "INSERT INTO archived_session_agents (session_id, agent_id, updated_at)
+                 SELECT session_id, agent_id, updated_at
+                 FROM session_agents
+                 WHERE session_id = ?1",
+                params![id],
+            )?;
             tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
             tx.commit()?;
         }
@@ -725,6 +811,13 @@ impl SessionStore {
                  )
                  SELECT id, session_id, note_type, content, source_message_id, resolved, created_at
                  FROM archived_session_notes
+                 WHERE session_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO session_agents (session_id, agent_id, updated_at)
+                 SELECT session_id, agent_id, updated_at
+                 FROM archived_session_agents
                  WHERE session_id = ?1",
                 params![id],
             )?;
@@ -1406,7 +1499,7 @@ mod tests {
         let store = test_store();
         let source = store
             .create_session_with_selection(
-                "Original", "openai", "test", Some("high"), Some("ws1"),
+                "Original", "openai", "test", Some("high"), Some("ws1"), None,
             )
             .unwrap();
         store
@@ -1510,6 +1603,7 @@ mod tests {
                 "gpt-5.2",
                 Some("reasoning-high"),
                 Some("ws1"),
+                None,
             )
             .unwrap();
         store.update_status(&session.id, "active").unwrap();
@@ -2072,6 +2166,7 @@ mod tests {
                 "gpt-5.2",
                 Some("reasoning-high"),
                 Some("ws1"),
+                None,
             )
             .unwrap();
         store
@@ -2125,6 +2220,72 @@ mod tests {
             Some("[{\"role\":\"user\"}]".to_string())
         );
         assert_eq!(detail.status, "active");
+    }
+
+    #[test]
+    fn session_agent_round_trips_and_clears() {
+        let store = test_store();
+        let s = store
+            .create_session("Agent", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+
+        assert_eq!(store.get_session_agent(&s.id).unwrap(), None);
+        store.set_session_agent(&s.id, Some("bug-bounty")).unwrap();
+        assert_eq!(
+            store.get_session_agent(&s.id).unwrap(),
+            Some("bug-bounty".to_string())
+        );
+        store.set_session_agent(&s.id, Some("review")).unwrap();
+        assert_eq!(
+            store.get_session_agent(&s.id).unwrap(),
+            Some("review".to_string())
+        );
+        store.set_session_agent(&s.id, None).unwrap();
+        assert_eq!(store.get_session_agent(&s.id).unwrap(), None);
+    }
+
+    #[test]
+    fn agent_id_surfaces_in_record_detail_and_list() {
+        let store = test_store();
+        let s = store
+            .create_session_with_selection(
+                "Agent", "openai", "gpt-4", None, Some("ws1"), Some("bug-bounty"),
+            )
+            .unwrap();
+        assert_eq!(s.agent_id.as_deref(), Some("bug-bounty"));
+        store.update_status(&s.id, "active").unwrap();
+
+        let detail = store.get_session(&s.id).unwrap().unwrap();
+        assert_eq!(detail.agent_id.as_deref(), Some("bug-bounty"));
+
+        let listed = store.list_sessions_for_workspace(Some("ws1")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].agent_id.as_deref(), Some("bug-bounty"));
+    }
+
+    #[test]
+    fn agent_id_copies_on_fork_and_survives_archive_restore() {
+        let store = test_store();
+        let s = store
+            .create_session("Agent", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        store.set_session_agent(&s.id, Some("bug-bounty")).unwrap();
+        store
+            .persist_turn(&s.id, "[{\"role\":\"user\"}]", Some("[1]"))
+            .unwrap();
+
+        let fork = store.fork_session(&s.id, "[{\"role\":\"user\"}]", "[1]").unwrap();
+        assert_eq!(fork.agent_id.as_deref(), Some("bug-bounty"));
+
+        store.archive_session(&s.id).unwrap();
+        assert!(store.get_session(&s.id).unwrap().is_none());
+
+        let restored = store.restore_archived_session(&s.id).unwrap();
+        assert_eq!(restored.agent_id.as_deref(), Some("bug-bounty"));
+        assert_eq!(
+            store.get_session_agent(&s.id).unwrap(),
+            Some("bug-bounty".to_string())
+        );
     }
 
     #[test]

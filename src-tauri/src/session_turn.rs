@@ -1,4 +1,7 @@
-use crate::harness_profile::ActiveWorkspaceContext;
+use crate::agents::{AgentDefinition, AgentOrchestration};
+use crate::harness_profile::{
+    resolve_custom_agent_profile, ActiveWorkspaceContext, CustomAgentProfileRequest, HarnessProfile,
+};
 use crate::llm::{
     self, LlmError, ReasoningPayload, ReasoningPhase, StreamCompletionResult, StreamEvent,
 };
@@ -24,6 +27,12 @@ pub struct InvokedSkillRequest {
     pub args: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DelegatedAgentRequest {
+    pub name: String,
+    pub task: String,
+}
+
 pub struct StreamingTurnRequest {
     pub run_id: String,
     pub provider: String,
@@ -32,6 +41,8 @@ pub struct StreamingTurnRequest {
     pub variant: Option<String>,
     pub session_id: Option<String>,
     pub invoked_skill: Option<InvokedSkillRequest>,
+    pub agent_id: Option<String>,
+    pub delegated_agent: Option<DelegatedAgentRequest>,
     pub delegate_provider: String,
     pub delegate_model: String,
     pub delegate_api_key: String,
@@ -45,6 +56,7 @@ pub struct StreamingTurnDependencies<'a> {
     pub sessions: &'a dyn SessionTurnSessions,
     pub conversation: &'a dyn SessionTurnConversation,
     pub skills: &'a dyn SessionTurnSkills,
+    pub agents: &'a dyn SessionTurnAgents,
     pub llm: &'a dyn SessionTurnLlm,
     pub events: &'a dyn SessionTurnEvents,
     pub verification: &'a dyn SessionTurnVerification,
@@ -105,6 +117,10 @@ pub trait SessionTurnSkills: Send + Sync {
     fn load_skills(&self, workspace_path: Option<&Path>) -> Vec<Skill>;
 }
 
+pub trait SessionTurnAgents: Send + Sync {
+    fn load_agents(&self, workspace_path: Option<&Path>) -> Vec<AgentDefinition>;
+}
+
 pub struct SessionTurnStreamRequest<'a> {
     pub provider: &'a str,
     pub prompt: &'a str,
@@ -120,6 +136,7 @@ pub struct SessionTurnStreamRequest<'a> {
     pub invoked_skill_section: Option<String>,
     pub memory_section: Option<String>,
     pub skill_script_tool: Option<RunSkillScriptTool>,
+    pub custom_profile: Option<HarnessProfile>,
     /// Conversation id forwarded to providers that accept a session header
     /// (OpenCode Go) for routing and prompt-cache optimization.
     pub session_id: Option<&'a str>,
@@ -395,13 +412,210 @@ pub async fn run_streaming_turn(
         .chat_history(request.session_id.as_deref());
 
     let all_skills = deps.skills.load_skills(workspace_path.as_deref());
+    let session_agent = match request.agent_id.as_deref() {
+        Some(name) => {
+            if workspace_path.is_none() {
+                return Err(LlmError::ProviderError(
+                    "custom agents require an active workspace".to_string(),
+                )
+                .to_dto());
+            }
+            let agents = deps.agents.load_agents(workspace_path.as_deref());
+            Some(
+                agents
+                    .into_iter()
+                    .find(|agent| agent.name == name)
+                    .ok_or_else(|| {
+                        LlmError::ProviderError(format!(
+                            "agent '{name}' was not found in .agents/agents"
+                        ))
+                        .to_dto()
+                    })?,
+            )
+        }
+        None => None,
+    };
+    let custom_profile = match session_agent
+        .as_ref()
+        .filter(|agent| agent.orchestration.is_none())
+    {
+        Some(agent) => {
+            let workspace_path = workspace_path.as_ref().expect("checked above");
+            let attached_skills_section = {
+                let attached: Vec<&Skill> = all_skills
+                    .iter()
+                    .filter(|skill| agent.skills.iter().any(|name| name == &skill.name))
+                    .collect();
+                if attached.is_empty() {
+                    None
+                } else {
+                    let mut section = String::from("## Attached Skills\n\n");
+                    for skill in attached {
+                        section.push_str(&format!("### {}\n\n{}\n\n", skill.name, skill.body));
+                    }
+                    Some(section)
+                }
+            };
+            Some(resolve_custom_agent_profile(CustomAgentProfileRequest {
+                agent: agent.clone(),
+                workspace_path: workspace_path.clone(),
+                run_id: request.run_id.clone(),
+                attached_skills_section,
+            }))
+        }
+        None => None,
+    };
+    // An orchestrated session agent is a pipeline, not a conversational
+    // profile: every prompt becomes an implicit @agent delegation.
+    let effective_delegation = request.delegated_agent.clone().or_else(|| {
+        session_agent
+            .as_ref()
+            .filter(|agent| agent.orchestration.is_some())
+            .map(|agent| DelegatedAgentRequest {
+                name: agent.name.clone(),
+                task: request.prompt.clone(),
+            })
+    });
+    let effective_prompt = match effective_delegation.as_ref() {
+        Some(delegation) => {
+            let agents = deps.agents.load_agents(workspace_path.as_deref());
+            match agents
+                .into_iter()
+                .find(|agent| agent.name == delegation.name)
+            {
+                Some(agent) => {
+                    let (agent_provider, agent_model) = match agent.model.as_ref() {
+                        Some(model) => (
+                            model.provider(&request.provider).to_string(),
+                            model.model_name().to_string(),
+                        ),
+                        None => (request.provider.clone(), request.model.clone()),
+                    };
+                    let agent_api_key = if agent_provider == request.provider {
+                        api_key.clone()
+                    } else {
+                        deps.credentials
+                            .api_key(&agent_provider)
+                            .map_err(|error| error.to_dto())?
+                    };
+                    let Some(workspace_path) = workspace_path.as_ref() else {
+                        return Err(LlmError::ProviderError(
+                            "delegated agents require an active workspace".to_string(),
+                        )
+                        .to_dto());
+                    };
+                    let workspace = ActiveWorkspaceContext {
+                        workspace_path: workspace_path.clone(),
+                        source_edit_allowed: false,
+                    };
+                    let delegation_run_id =
+                        format!("{}-delegated-{}", request.run_id, delegation.name);
+                    let delegation_tool_id = format!("delegate-{}", request.run_id);
+                    let trace_sid = request.session_id.as_deref().unwrap_or("").to_string();
+                    deps.events.emit_stream_event(
+                        &trace_sid,
+                        "main",
+                        &request.run_id,
+                        &SessionTurnEvent::ToolCall {
+                            id: delegation_tool_id.clone(),
+                            name: "delegate_agent".to_string(),
+                            arguments: json!({
+                                "agent": delegation.name,
+                                "task": delegation.task,
+                            }),
+                        },
+                    );
+                    let report = match agent.orchestration {
+                        Some(AgentOrchestration::Sweep) => {
+                            let (worker_provider, worker_model) = match agent
+                                .worker_model
+                                .as_ref()
+                            {
+                                Some(model) => (
+                                    model.provider(&agent_provider).to_string(),
+                                    model.model_name().to_string(),
+                                ),
+                                None => (agent_provider.clone(), agent_model.clone()),
+                            };
+                            let worker_api_key = if worker_provider == request.provider {
+                                api_key.clone()
+                            } else if worker_provider == agent_provider {
+                                agent_api_key.clone()
+                            } else {
+                                deps.credentials
+                                    .api_key(&worker_provider)
+                                    .map_err(|error| error.to_dto())?
+                            };
+                            let on_event = |event: SessionTurnEvent| {
+                                deps.events.emit_stream_event(
+                                    &trace_sid,
+                                    "main",
+                                    &request.run_id,
+                                    &event,
+                                );
+                            };
+                            crate::bounty::sweep::run_sweep(
+                                &crate::bounty::sweep::SweepRequest {
+                                    agent: &agent,
+                                    task: &delegation.task,
+                                    lead_provider: &agent_provider,
+                                    lead_model: &agent_model,
+                                    lead_api_key: &agent_api_key,
+                                    worker_provider: &worker_provider,
+                                    worker_model: &worker_model,
+                                    worker_api_key: &worker_api_key,
+                                    workspace: &workspace,
+                                    run_id: &delegation_run_id,
+                                    session_id: request.session_id.as_deref(),
+                                },
+                                &on_event,
+                            )
+                            .await
+                            .unwrap_or_else(|error| format!("Sweep failed: {error}"))
+                        }
+                        None => llm::run_delegated_agent(
+                            &agent_provider,
+                            &agent_model,
+                            &agent_api_key,
+                            &workspace,
+                            &agent,
+                            &delegation.task,
+                            &delegation_run_id,
+                            request.session_id.as_deref(),
+                        )
+                        .await
+                        .unwrap_or_else(|error| format!("Delegation failed: {error}")),
+                    };
+                    deps.events.emit_stream_event(
+                        &trace_sid,
+                        "main",
+                        &request.run_id,
+                        &SessionTurnEvent::ToolResult {
+                            id: delegation_tool_id,
+                            name: "delegate_agent".to_string(),
+                            result: report.clone(),
+                        },
+                    );
+                    format!(
+                        "## Delegated report from @{}\n\n{}\n\n---\n\n{}",
+                        delegation.name, report, request.prompt
+                    )
+                }
+                None => format!(
+                    "## Delegated report from @{}\n\nDelegation failed: agent not found.\n\n---\n\n{}",
+                    delegation.name, request.prompt
+                ),
+            }
+        }
+        None => request.prompt.clone(),
+    };
     let unresolved_notes = if let Some(sid) = request.session_id.as_deref() {
         deps.sessions.unresolved_notes(sid)
     } else {
         Vec::new()
     };
     let prompt_preparation = prepare_prompt(
-        &request.prompt,
+        &effective_prompt,
         &all_skills,
         request.invoked_skill.as_ref(),
         &unresolved_notes,
@@ -427,7 +641,11 @@ pub async fn run_streaming_turn(
     };
 
     let trace_sid = request.session_id.clone().unwrap_or_default();
-    let trace_role = "main";
+    let trace_role = request
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| "main".to_string());
+    let trace_role_for_closure = trace_role.clone();
     let events = deps.events;
     let workspace_for_verify = workspace_context.clone();
     let run_id = request.run_id;
@@ -450,11 +668,17 @@ pub async fn run_streaming_turn(
                 invoked_skill_section: prompt_preparation.invoked_skill_section.clone(),
                 memory_section,
                 skill_script_tool,
+                custom_profile,
                 session_id: request.session_id.as_deref(),
                 run_id: Some(run_id.as_str()),
             },
             Box::new(move |event| {
-                events.emit_stream_event(&trace_sid, trace_role, &run_id_for_closure, &event);
+                events.emit_stream_event(
+                    &trace_sid,
+                    &trace_role_for_closure,
+                    &run_id_for_closure,
+                    &event,
+                );
             }),
         )
         .await;
@@ -463,7 +687,7 @@ pub async fn run_streaming_turn(
         Ok(stream_result) => {
             deps.events.trace_done(
                 request.session_id.as_deref().unwrap_or(""),
-                "main",
+                &trace_role,
                 stream_result.full_response.len(),
                 stream_result.prompt_tokens,
                 stream_result.response_tokens,
@@ -520,7 +744,7 @@ pub async fn run_streaming_turn(
         }
         Err(e) => {
             deps.events
-                .trace_error(request.session_id.as_deref().unwrap_or(""), "main", &e);
+                .trace_error(request.session_id.as_deref().unwrap_or(""), &trace_role, &e);
             if let Some(sid) = &request.session_id {
                 if let Some(snapshot) = deps.sessions.failure_snapshot(sid) {
                     let persistence = failure_turn_persistence(
@@ -1430,6 +1654,7 @@ mod tests {
         chat_history: Vec<Message>,
         stored_histories: Mutex<Vec<(String, Vec<Message>)>>,
         skills: Vec<Skill>,
+        agents: Vec<AgentDefinition>,
         stream_result: Mutex<Option<Result<StreamCompletionResult, LlmError>>>,
         stream_requests: Mutex<Vec<CapturedStreamRequest>>,
         model_updates: Mutex<Vec<(String, String, String, Option<String>)>>,
@@ -1463,6 +1688,7 @@ mod tests {
                 chat_history: Vec::new(),
                 stored_histories: Mutex::new(Vec::new()),
                 skills: Vec::new(),
+                agents: Vec::new(),
                 stream_result: Mutex::new(Some(result)),
                 stream_requests: Mutex::new(Vec::new()),
                 model_updates: Mutex::new(Vec::new()),
@@ -1487,6 +1713,7 @@ mod tests {
                 sessions: self,
                 conversation: self,
                 skills: self,
+                agents: self,
                 llm: self,
                 events: self,
                 verification: self,
@@ -1588,6 +1815,12 @@ mod tests {
     impl SessionTurnSkills for FakeSessionTurnAdapters {
         fn load_skills(&self, _workspace_path: Option<&Path>) -> Vec<Skill> {
             self.skills.clone()
+        }
+    }
+
+    impl SessionTurnAgents for FakeSessionTurnAdapters {
+        fn load_agents(&self, _workspace_path: Option<&Path>) -> Vec<AgentDefinition> {
+            self.agents.clone()
         }
     }
 
@@ -2403,6 +2636,8 @@ mod tests {
                 variant: Some("reasoning-high".to_string()),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2545,6 +2780,8 @@ mod tests {
                 variant: Some("missing-variant".to_string()),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2595,6 +2832,8 @@ mod tests {
                 variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2635,6 +2874,8 @@ mod tests {
                 variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2668,6 +2909,8 @@ mod tests {
                 variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2740,6 +2983,29 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unknown_delegated_agent_injects_failure_note_and_proceeds() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "original prompt",
+            "handled",
+        )));
+        let mut request = streaming_request("run-delegation", "original prompt", Some("session-1"));
+        request.delegated_agent = Some(DelegatedAgentRequest {
+            name: "missing".to_string(),
+            task: "do the thing".to_string(),
+        });
+
+        let result = run_streaming_turn(adapters.deps(), request).await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let streams = adapters.stream_requests.lock().unwrap();
+        assert!(streams[0].prompt.contains("Delegated report from @missing"));
+        assert!(streams[0].prompt.contains("agent not found"));
+        assert!(streams[0].prompt.contains("original prompt"));
+    }
+
     fn streaming_request(
         run_id: &str,
         prompt: &str,
@@ -2753,6 +3019,8 @@ mod tests {
             variant: None,
             session_id: session_id.map(str::to_string),
             invoked_skill: None,
+            agent_id: None,
+            delegated_agent: None,
             delegate_provider: "openai".to_string(),
             delegate_model: "gpt-4o-mini".to_string(),
             delegate_api_key: "api-key".to_string(),

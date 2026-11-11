@@ -52,6 +52,7 @@ interface CommandPaletteProps {
   recentWorkspaces?: Workspace[];
   onSelectWorkspace?: (workspace: Workspace) => boolean | undefined;
   onOpenSkillOpt?: () => void;
+  onOpenBountyFindings?: () => void;
   /** Ranks sessions that need you and running sessions first, with their state. */
   activityBySession?: SessionActivityMap;
   needsYouCount?: number;
@@ -103,6 +104,7 @@ export function CommandPalette({
   recentWorkspaces = [],
   onSelectWorkspace,
   onOpenSkillOpt,
+  onOpenBountyFindings,
   activityBySession,
   needsYouCount = 0,
   onJumpToNextNeedsYou,
@@ -304,6 +306,19 @@ export function CommandPalette({
             },
           ]
         : []),
+      ...(onOpenBountyFindings
+        ? [
+            {
+              id: "bounty-findings",
+              group: "Commands" as const,
+              icon: "B",
+              label: "Bounty findings",
+              detail: "Signals and triage from the latest bounty sweep",
+              keywords: "bounty findings signals triage sweep security",
+              action: closeAfter(onOpenBountyFindings),
+            },
+          ]
+        : []),
       ...modelResults,
     ];
 
@@ -332,6 +347,7 @@ export function CommandPalette({
     onVariantChange,
     onToggleSessions,
     onOpenSkillOpt,
+    onOpenBountyFindings,
     query,
     recentWorkspaces,
     selectedModelId,
