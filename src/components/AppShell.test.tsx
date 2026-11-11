@@ -122,6 +122,101 @@ describe("AppShell task flow", () => {
     vi.clearAllMocks();
   });
 
+  it("loads archived history across workspaces and refreshes it after restoring a session", async () => {
+    let activeWorkspace = sampleWorkspace;
+    let restored = false;
+    let restoreWorkspaceId: string | undefined;
+    const record = {
+      id: "previous-session",
+      title: "Previous conversation",
+      provider: "openai",
+      model: "gpt-4o",
+      status: "active",
+      workspace_id: otherWorkspace.id,
+      updated_at: "2026-11-01 15:18:26",
+      archived_at: "2026-11-01 16:18:26",
+    };
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      const workspaceId = (args as { workspaceId?: string } | undefined)?.workspaceId;
+      if (cmd === "list_archived_sessions")
+        return workspaceId === otherWorkspace.id && !restored ? [record] : [];
+      if (cmd === "list_sessions")
+        return workspaceId === otherWorkspace.id && restored ? [record] : [];
+      if (cmd === "restore_archived_sessions") {
+        restoreWorkspaceId = activeWorkspace.id;
+        restored = true;
+        return [record];
+      }
+      return handleCommonInvoke(cmd, args, {
+        workspaces: [sampleWorkspace, otherWorkspace],
+        getActiveWorkspace: () => activeWorkspace,
+        setActiveWorkspace: (id) => {
+          activeWorkspace = id === otherWorkspace.id ? otherWorkspace : sampleWorkspace;
+        },
+      });
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "History & archive" }));
+    const drawer = within(screen.getByRole("dialog", { name: "Session history" }));
+    fireEvent.click(await drawer.findByRole("button", { name: "Restore Previous conversation" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("restore_archived_sessions", {
+        sessionIds: [record.id],
+      })
+    );
+    expect(restoreWorkspaceId).toBe(otherWorkspace.id);
+    await waitFor(() => expect(drawer.queryByText(record.title)).toBeNull());
+    fireEvent.click(drawer.getByRole("button", { name: "Recent" }));
+    expect(await drawer.findByText(record.title)).toBeDefined();
+  });
+
+  it("reports history load failures instead of silently leaving an empty drawer", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "list_archived_sessions") throw new Error("session database unavailable");
+      return handleCommonInvoke(cmd, args);
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+
+    expect(await screen.findByText(/Failed to load session history/)).toBeDefined();
+  });
+
+  it("shows history from other workspaces when one workspace fails to load", async () => {
+    const record = {
+      id: "loaded-session",
+      title: "Loaded conversation",
+      provider: "openai",
+      model: "gpt-4o",
+      status: "active",
+      workspace_id: sampleWorkspace.id,
+      updated_at: "2026-11-01 15:18:26",
+    };
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      const workspaceId = (args as { workspaceId?: string } | undefined)?.workspaceId;
+      if (cmd === "list_sessions") {
+        if (workspaceId === otherWorkspace.id) throw new Error("workspace unavailable");
+        return workspaceId === sampleWorkspace.id ? [record] : [];
+      }
+      return handleCommonInvoke(cmd, args, { workspaces: [sampleWorkspace, otherWorkspace] });
+    });
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+
+    expect(await screen.findByText(/Failed to load session history/)).toBeDefined();
+    expect((await screen.findAllByText(record.title)).length).toBeGreaterThan(0);
+  });
+
   it("keeps variant commands for the active model after hiding it", async () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
       if (cmd === "get_model_availability")

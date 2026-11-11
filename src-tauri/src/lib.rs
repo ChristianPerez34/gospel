@@ -2793,7 +2793,7 @@ fn list_sessions(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
-    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
+    validate_registered_workspace_id(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -2809,7 +2809,12 @@ fn list_sessions(
             // still streaming so the completed turn can persist.
             streaming_handles.mutate_excluding_in_flight(|in_flight| {
                 let _ = store.clean_stale_drafts(in_flight);
-                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+                run_list_archive_maintenance(
+                    store,
+                    workspace_id.as_deref(),
+                    app_config.inner(),
+                    in_flight,
+                );
             });
             store
                 .list_sessions_for_workspace(workspace_id.as_deref())
@@ -2829,7 +2834,7 @@ fn list_archived_sessions(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
-    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
+    validate_registered_workspace_id(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -2842,7 +2847,12 @@ fn list_archived_sessions(
     match &session_store.store {
         Some(store) => {
             streaming_handles.mutate_excluding_in_flight(|in_flight| {
-                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+                run_list_archive_maintenance(
+                    store,
+                    workspace_id.as_deref(),
+                    app_config.inner(),
+                    in_flight,
+                );
             });
             store
                 .list_archived_sessions_for_workspace(workspace_id.as_deref())
@@ -3455,6 +3465,48 @@ fn validate_archive_policy_values(
         return Err("auto_archive_hours must be one of 0, 1, 24, 168, or 720".to_string());
     }
     Ok(())
+}
+
+/// Validate an explicit optional workspace ID for app-wide session summary
+/// lists. Unlike `validate_optional_workspace_id_access`, any registered
+/// workspace is accepted; transcript access and mutations still require the
+/// active workspace.
+fn validate_registered_workspace_id(
+    workspace_id: Option<&str>,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    let Some(id) = workspace_id else {
+        return Ok(());
+    };
+    let store = app_config.store.as_ref().ok_or_else(|| {
+        app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())
+    })?;
+    let workspaces = store.list_workspaces().map_err(|e| e.to_string())?;
+    if workspaces.iter().any(|workspace| workspace.id == id) {
+        Ok(())
+    } else {
+        Err(format!("Workspace not found: {id}"))
+    }
+}
+
+/// Archive maintenance archives and permanently deletes sessions, so listing
+/// only runs it for the active workspace (or the unscoped list). Other
+/// registered workspaces are listed without being modified.
+fn run_list_archive_maintenance(
+    store: &SessionStore,
+    workspace_id: Option<&str>,
+    app_config: &AppConfigState,
+    in_flight: &HashSet<String>,
+) -> Option<ArchiveMaintenanceResult> {
+    let is_active =
+        workspace_id.is_none_or(|id| active_workspace_id(app_config).as_deref() == Some(id));
+    if !is_active {
+        return None;
+    }
+    store.run_archive_maintenance(workspace_id, in_flight).ok()
 }
 
 fn validate_workspace_id_access(
@@ -4337,6 +4389,91 @@ mod session_access {
         assert!(validate_optional_workspace_id_access(Some(&second_id), &app_state).is_err());
         assert!(validate_optional_workspace_id_access(Some(&first_id), &app_state).is_ok());
         assert!(validate_optional_workspace_id_access(None, &app_state).is_ok());
+    }
+
+    #[test]
+    fn session_lists_include_registered_inactive_workspaces() {
+        let (_root, app_state, store, first_id, second_id) = setup();
+        let live = store
+            .create_session("Live", "openai", "gpt-4", Some(&first_id))
+            .unwrap();
+        store.persist_turn(&live.id, "[]", None).unwrap();
+        let archived = store
+            .create_session("Archived", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+        store.persist_turn(&archived.id, "[]", None).unwrap();
+        store.archive_session(&archived.id).unwrap();
+
+        let mut live_ids = Vec::new();
+        let mut archived_ids = Vec::new();
+        for workspace in app_state.store.as_ref().unwrap().list_workspaces().unwrap() {
+            validate_registered_workspace_id(Some(&workspace.id), &app_state).unwrap();
+            live_ids.extend(
+                store
+                    .list_sessions_for_workspace(Some(&workspace.id))
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),
+            );
+            archived_ids.extend(
+                store
+                    .list_archived_sessions_for_workspace(Some(&workspace.id))
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),
+            );
+        }
+        assert_eq!(live_ids, vec![live.id]);
+        assert_eq!(archived_ids, vec![archived.id.clone()]);
+        assert_eq!(
+            active_workspace_id(&app_state).as_deref(),
+            Some(first_id.as_str())
+        );
+        assert!(validate_archived_session_access(&store, &archived.id, &app_state).is_err());
+    }
+
+    #[test]
+    fn listing_runs_archive_maintenance_only_for_active_workspace() {
+        let (_root, app_state, store, first_id, second_id) = setup();
+        store.set_archive_policy(None, 90, 1).unwrap();
+        let mut idle_ids = Vec::new();
+        for workspace_id in [&first_id, &second_id] {
+            let session = store
+                .create_session("Idle", "openai", "gpt-4", Some(workspace_id))
+                .unwrap();
+            store.persist_turn(&session.id, "[]", None).unwrap();
+            store.set_updated_at_for_test(&session.id, "-2 days");
+            idle_ids.push(session.id);
+        }
+
+        let inactive =
+            run_list_archive_maintenance(&store, Some(&second_id), &app_state, &HashSet::new());
+        assert!(inactive.is_none());
+        let inactive_live = store.list_sessions_for_workspace(Some(&second_id)).unwrap();
+        assert_eq!(inactive_live.len(), 1);
+        assert_eq!(inactive_live[0].id, idle_ids[1]);
+
+        let active =
+            run_list_archive_maintenance(&store, Some(&first_id), &app_state, &HashSet::new())
+                .unwrap();
+        assert_eq!(active.archived_count, 1);
+        assert!(store
+            .list_sessions_for_workspace(Some(&first_id))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn session_lists_reject_unknown_workspaces_and_unavailable_config() {
+        let (_root, app_state, _store, first_id, _) = setup();
+        assert!(validate_registered_workspace_id(Some("unknown"), &app_state).is_err());
+        assert!(validate_registered_workspace_id(None, &app_state).is_ok());
+
+        let unavailable = AppConfigState {
+            store: None,
+            init_warning: Some("App config store is unavailable".to_string()),
+        };
+        assert!(validate_registered_workspace_id(Some(&first_id), &unavailable).is_err());
     }
 
     #[test]
