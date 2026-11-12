@@ -102,6 +102,51 @@ pub fn transcript_through_prompt(
         .map_err(|error| format!("Unable to save conversation transcript: {error}"))
 }
 
+/// Transcript prefix through the assistant response to the `prompt_index`-th
+/// user entry (0-based). A fork ends at the selected response, so its
+/// transcript keeps everything the user saw before it — including turns
+/// pruned from Model History — and nothing after it.
+pub fn transcript_through_response(
+    raw_transcript: &str,
+    prompt_index: usize,
+    response: &str,
+) -> Result<String, String> {
+    let mut entries: Vec<serde_json::Value> = serde_json::from_str(raw_transcript)
+        .map_err(|error| format!("Unable to read conversation transcript: {error}"))?;
+    let turn_start = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.get("role").and_then(|role| role.as_str()) == Some("user"))
+        .map(|(index, _)| index)
+        .nth(prompt_index)
+        .ok_or("This response is no longer available in the saved conversation.")?;
+    let turn_end = entries[turn_start + 1..]
+        .iter()
+        .position(|entry| entry.get("role").and_then(|role| role.as_str()) == Some("user"))
+        .map(|offset| turn_start + 1 + offset)
+        .unwrap_or(entries.len());
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let target = normalize(response);
+    let mut accumulated = String::new();
+    for index in turn_start + 1..turn_end {
+        let entry = &entries[index];
+        if entry.get("role").and_then(|role| role.as_str()) != Some("assistant") {
+            continue;
+        }
+        let text = entry.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        accumulated.push_str(text);
+        if normalize(text) == target || normalize(&accumulated) == target {
+            entries.truncate(index + 1);
+            return serde_json::to_string(&entries)
+                .map_err(|error| format!("Unable to save conversation transcript: {error}"));
+        }
+    }
+    Err(
+        "This response does not match the saved conversation. Reopen the task and try again."
+            .into(),
+    )
+}
+
 pub fn history_through_response(
     raw_history: Option<&str>,
     turn_index: usize,
@@ -274,5 +319,35 @@ mod tests {
         assert_eq!(kept.len(), 5);
         assert_eq!(kept[4]["content"], "third");
         assert!(transcript_through_prompt("not json", 0, "x").is_err());
+    }
+
+    #[test]
+    fn transcript_through_response_truncates_at_matching_reply() {
+        let transcript = json!([
+            {"role":"user","content":"old"},
+            {"role":"assistant","content":"older answer","blocks":[]},
+            {"role":"user","content":"first"},
+            {"role":"assistant","content":"Before tools.","blocks":[]},
+            {"role":"assistant","content":"After tools.","blocks":[]},
+            {"role":"user","content":"second"},
+            {"role":"assistant","content":"later","blocks":[]}
+        ])
+        .to_string();
+        // Forking at turn 1 keeps earlier turns even when they are gone from
+        // Model History, and drops later turns.
+        let kept: Vec<serde_json::Value> = serde_json::from_str(
+            &transcript_through_response(&transcript, 1, "Before tools.After tools.").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 5);
+        assert_eq!(kept[4]["content"], "After tools.");
+        let kept: Vec<serde_json::Value> = serde_json::from_str(
+            &transcript_through_response(&transcript, 1, "Before tools.").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 4);
+        assert!(transcript_through_response(&transcript, 1, "later").is_err());
+        assert!(transcript_through_response(&transcript, 2, "later").is_ok());
+        assert!(transcript_through_response("not json", 0, "x").is_err());
     }
 }

@@ -1143,7 +1143,7 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
             .as_ref()
             .ok_or_else(|| "session store unavailable".to_string())?;
         if let Some(snapshot) =
-            session_turn::SessionTurnSessions::failure_snapshot(self, session_id)
+            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
         {
             let persistence = session_turn::failure_turn_persistence(
                 &snapshot.display_transcript,
@@ -1168,7 +1168,7 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
             .as_ref()
             .ok_or_else(|| "session store unavailable".to_string())?;
         if let Some(snapshot) =
-            session_turn::SessionTurnSessions::failure_snapshot(self, session_id)
+            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
         {
             let persistence = session_turn::failure_turn_persistence(
                 &snapshot.display_transcript,
@@ -1214,10 +1214,10 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn failure_snapshot(&self, session_id: &str) -> Option<session_turn::SessionFailureSnapshot> {
+    fn persisted_snapshot(&self, session_id: &str) -> Option<session_turn::SessionSnapshot> {
         let store = self.session_store_state.store.as_ref()?;
         let detail = store.get_session(session_id).ok().flatten()?;
-        Some(session_turn::SessionFailureSnapshot {
+        Some(session_turn::SessionSnapshot {
             display_transcript: detail.display_transcript,
             model_history: detail.model_history,
         })
@@ -2726,11 +2726,16 @@ fn run_session_message_action(
             request.expected_user_turns,
             (!request.fork && request.failed_response).then_some(request.turn_count),
         )?;
-        let history = if request.fork {
-            let turn_index = request
-                .turn_count
-                .checked_sub(1)
-                .ok_or("No user turn to fork")?;
+        let fork_turn_index = match request.fork {
+            true => Some(
+                request
+                    .turn_count
+                    .checked_sub(1)
+                    .ok_or("No user turn to fork")?,
+            ),
+            false => None,
+        };
+        let history = if let Some(turn_index) = fork_turn_index {
             session_actions::history_through_response(
                 source.model_history.as_deref(),
                 turn_index,
@@ -2751,8 +2756,13 @@ fn run_session_message_action(
         // A retried prompt stays in the saved transcript (unlike model
         // history, which the new turn re-extends itself) so a failed or
         // abandoned retry cannot silently drop it from the user's record.
-        let display_transcript = if request.fork {
-            persistence.display_transcript.clone()
+        // Both transcript slices preserve turns pruned from Model History.
+        let display_transcript = if let Some(turn_index) = fork_turn_index {
+            session_actions::transcript_through_response(
+                &source.display_transcript,
+                turn_index,
+                &request.response_text,
+            )?
         } else {
             session_actions::transcript_through_prompt(
                 &source.display_transcript,

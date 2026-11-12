@@ -7,8 +7,8 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 /// How long a pending approval request waits for a frontend decision before
-/// auto-denying. Matches the prior Tauri dialog behavior.
-pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// auto-denying. Configured to 180 seconds to allow thoughtful user review.
+pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// How long the broker waits for a frontend decision before auto-denying.
 /// Configurable on `ApprovalBroker::with_timeout` so tests can drive the
@@ -284,6 +284,11 @@ pub fn matches_command_pattern(command: &str, pattern: &str) -> bool {
     if cmd.eq_ignore_ascii_case(pat) {
         return true;
     }
+    if let Some(prefix) = pat.strip_suffix('*').map(str::trim_end) {
+        if !prefix.is_empty() && cmd.eq_ignore_ascii_case(prefix) {
+            return true;
+        }
+    }
     if pat.contains('*') {
         let segments: Vec<&str> = pat.split('*').collect();
         let mut remaining = cmd;
@@ -348,6 +353,45 @@ pub fn matches_sensitive_target(command: &str) -> bool {
         }
     }
     false
+}
+
+/// Splits a compound command into its constituent subcommands on `&&`, `||`, `;`, and `|`.
+/// Respects single and double quotes so operators inside quotes are not treated as delimiters.
+pub fn split_compound_commands(command: &str) -> Vec<&str> {
+    let mut subcommands = Vec::new();
+    let mut current_start = 0;
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i < len {
+        let b = bytes[i];
+        if b == b'\'' && !in_double_quote {
+            in_single_quote = !in_single_quote;
+        } else if b == b'"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+        } else if !in_single_quote && !in_double_quote {
+            if b == b';' || b == b'|' || b == b'&' {
+                let end = i;
+                let segment = command[current_start..end].trim();
+                if !segment.is_empty() {
+                    subcommands.push(segment);
+                }
+                if i + 1 < len && (bytes[i + 1] == b'&' || bytes[i + 1] == b'|') {
+                    i += 1;
+                }
+                current_start = i + 1;
+            }
+        }
+        i += 1;
+    }
+    let tail = command[current_start..].trim();
+    if !tail.is_empty() {
+        subcommands.push(tail);
+    }
+    subcommands
 }
 
 struct PendingEntry {
@@ -458,6 +502,16 @@ impl ApprovalBroker {
     /// Whether a command matches a built-in guardrail or a user deny rule.
     /// Ask mode never auto-approves or saves allow rules for these commands.
     pub fn is_command_rejected(&self, command: &str) -> bool {
+        let subcommands = split_compound_commands(command);
+        if subcommands.len() > 1 {
+            return subcommands
+                .iter()
+                .any(|sub| self.is_single_command_rejected(sub));
+        }
+        self.is_single_command_rejected(command)
+    }
+
+    fn is_single_command_rejected(&self, command: &str) -> bool {
         let normalized = normalize_command_for_policy(command);
         if matches_sensitive_target(command) || matches_sensitive_target(&normalized) {
             return true;
@@ -470,19 +524,36 @@ impl ApprovalBroker {
     }
 
     /// Whether a command matches a deny rule the user saved. Unlike built-in
-    /// guardrails, these still prompt in Auto mode.
+    /// guardrails, these still prompt in Auto mode. Chained commands
+    /// (`&&`, `||`, `;`, `|`) are checked per subcommand so a denied
+    /// subcommand cannot hide behind an allowed one.
     fn matches_user_reject(&self, command: &str) -> bool {
-        let normalized = normalize_command_for_policy(command);
         let reject = self
             .reject_patterns
             .lock()
             .expect("approval broker poisoned");
-        reject.iter().any(|pat| {
-            matches_command_pattern(command, pat) || matches_command_pattern(&normalized, pat)
+        split_compound_commands(command).iter().any(|subcommand| {
+            let normalized = normalize_command_for_policy(subcommand);
+            reject.iter().any(|pat| {
+                matches_command_pattern(subcommand, pat)
+                    || matches_command_pattern(&normalized, pat)
+            })
         })
     }
 
     pub fn matches_allow(&self, command: &str) -> bool {
+        let subcommands = split_compound_commands(command);
+        if subcommands.len() > 1 {
+            // Every subcommand in a chained command (&&, ||, ;, |) must individually
+            // match an allow rule and none may be rejected.
+            return subcommands.iter().all(|sub| {
+                self.matches_allow_single(sub) && !self.is_single_command_rejected(sub)
+            });
+        }
+        self.matches_allow_single(command)
+    }
+
+    fn matches_allow_single(&self, command: &str) -> bool {
         let normalized = normalize_command_for_policy(command);
         let allowed = self
             .allowed_patterns
@@ -1384,6 +1455,26 @@ mod tests {
     }
 
     #[test]
+    fn auto_mode_still_prompts_when_a_compound_subcommand_matches_user_deny() {
+        let (broker, _) = test_broker();
+        broker.add_reject_rule("python *");
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        let request = ApprovalRequest::command(
+            "run_shell_command",
+            "cargo fmt && python deploy.py",
+            "Format then deploy.",
+            CommandRisk::Restricted,
+            None,
+        )
+        .with_workspace_scope(true);
+
+        // The denied subcommand must surface through the compound wrapper.
+        assert!(!broker.should_auto_approve(&request));
+        assert!(broker.is_command_rejected("cargo fmt && python deploy.py"));
+        assert!(!broker.is_command_rejected("cargo fmt && git status"));
+    }
+
+    #[test]
     fn auto_mode_approves_skill_script_requests() {
         let (broker, _) = test_broker();
         let request = ApprovalRequest::command(
@@ -1579,6 +1670,51 @@ mod tests {
             "git push origin main",
             "git push *--force*"
         ));
+
+        // Wildcard with trailing star matches exact command as well as arguments
+        assert!(matches_command_pattern("cargo fmt", "cargo fmt *"));
+        assert!(matches_command_pattern("cargo fmt --all", "cargo fmt *"));
+        assert!(matches_command_pattern(
+            "cargo fmt --all -- --check",
+            "cargo fmt *"
+        ));
+        assert!(!matches_command_pattern("cargo check", "cargo fmt *"));
+    }
+
+    #[test]
+    fn compound_command_security_and_splitting() {
+        assert_eq!(
+            split_compound_commands("cargo fmt --all && cargo check"),
+            vec!["cargo fmt --all", "cargo check"]
+        );
+        assert_eq!(
+            split_compound_commands("echo 'hello && world' ; ls -la"),
+            vec!["echo 'hello && world'", "ls -la"]
+        );
+        assert_eq!(
+            split_compound_commands("cmd1 | cmd2 || cmd3"),
+            vec!["cmd1", "cmd2", "cmd3"]
+        );
+
+        let (broker, _) = test_broker();
+        broker.add_allow_rule("cargo fmt *");
+
+        // Single allowed command matches
+        assert!(broker.matches_allow("cargo fmt --all"));
+
+        // Compound command where one subcommand is allowed but the other is not:
+        assert!(!broker.matches_allow("cargo fmt --all && cargo check"));
+        assert!(!broker.matches_allow("cargo fmt --all ; rm -rf /"));
+        assert!(!broker.matches_allow("cargo fmt --all | sh"));
+
+        // Compound command where a subcommand matches built-in reject is rejected
+        assert!(broker.is_command_rejected("cargo fmt --all && rm -rf /"));
+        assert!(broker.is_command_rejected("cargo fmt ; git clean -fd"));
+
+        // Adding second allow rule allows compound command when all subcommands match
+        broker.add_allow_rule("cargo check *");
+        assert!(broker.matches_allow("cargo fmt --all && cargo check"));
+        assert!(!broker.matches_allow("cargo fmt --all && cargo check && rm -rf /"));
     }
 
     #[test]
