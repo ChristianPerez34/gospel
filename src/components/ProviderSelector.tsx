@@ -441,20 +441,19 @@ export function ProviderSelector({
                     {providerChallenge && (
                       <div className="flex basis-full flex-col items-start gap-1 pt-2">
                         {providerChallenge.method === "browser" ? (
-                          providerChallenge.browser_launched ? (
+                          <>
                             <span className="text-caption text-text-muted font-body">
-                              Complete sign-in in your browser; you’ll return here automatically.
+                              {providerChallenge.browser_launched
+                                ? "Complete sign-in in your browser; you’ll return here automatically."
+                                : "The browser did not open."}
                             </span>
-                          ) : (
-                            <>
-                              <span className="text-caption text-text-muted font-body">
-                                The browser did not open. Copy this URL to continue:
-                              </span>
-                              <code className="break-all select-all font-mono text-caption text-accent-structure">
-                                {providerChallenge.authorize_url}
-                              </code>
-                            </>
-                          )
+                            <span className="text-caption text-text-muted font-body">
+                              Copy this URL to continue sign-in:
+                            </span>
+                            <code className="break-all select-all font-mono text-caption text-accent-structure">
+                              {providerChallenge.authorize_url}
+                            </code>
+                          </>
                         ) : (
                           <div className="flex items-center gap-2">
                             <span className="text-caption text-text-muted font-body">

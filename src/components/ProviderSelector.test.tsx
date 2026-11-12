@@ -257,13 +257,16 @@ describe("ProviderSelector", () => {
     });
   });
 
-  it("shows the browser callback status for ChatGPT OAuth", async () => {
+  it.each([
+    true,
+    false,
+  ])("keeps the ChatGPT sign-in URL available when browser_launched=%s", async (browserLaunched) => {
     const onProvidersChange = vi.fn();
     const onRefreshAvailability = vi.fn().mockResolvedValue(undefined);
     mockInvoke.mockResolvedValueOnce({ configured: false }).mockResolvedValueOnce({
       method: "browser",
       authorize_url: "https://auth.openai.com/oauth/authorize?state=test",
-      browser_launched: true,
+      browser_launched: browserLaunched,
     });
 
     render(
@@ -293,7 +296,13 @@ describe("ProviderSelector", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(
-      await screen.findByText("Complete sign-in in your browser; you’ll return here automatically.")
+      await screen.findByText(
+        browserLaunched
+          ? "Complete sign-in in your browser; you’ll return here automatically."
+          : "The browser did not open."
+      )
     ).toBeTruthy();
+    expect(screen.getByText("Copy this URL to continue sign-in:")).toBeTruthy();
+    expect(screen.getByText("https://auth.openai.com/oauth/authorize?state=test")).toBeTruthy();
   });
 });
