@@ -524,15 +524,20 @@ impl ApprovalBroker {
     }
 
     /// Whether a command matches a deny rule the user saved. Unlike built-in
-    /// guardrails, these still prompt in Auto mode.
+    /// guardrails, these still prompt in Auto mode. Chained commands
+    /// (`&&`, `||`, `;`, `|`) are checked per subcommand so a denied
+    /// subcommand cannot hide behind an allowed one.
     fn matches_user_reject(&self, command: &str) -> bool {
-        let normalized = normalize_command_for_policy(command);
         let reject = self
             .reject_patterns
             .lock()
             .expect("approval broker poisoned");
-        reject.iter().any(|pat| {
-            matches_command_pattern(command, pat) || matches_command_pattern(&normalized, pat)
+        split_compound_commands(command).iter().any(|subcommand| {
+            let normalized = normalize_command_for_policy(subcommand);
+            reject.iter().any(|pat| {
+                matches_command_pattern(subcommand, pat)
+                    || matches_command_pattern(&normalized, pat)
+            })
         })
     }
 
@@ -1447,6 +1452,26 @@ mod tests {
         }
         assert!(broker.is_command_rejected("env"));
         assert!(broker.is_command_rejected("/usr/bin/rm -rf build"));
+    }
+
+    #[test]
+    fn auto_mode_still_prompts_when_a_compound_subcommand_matches_user_deny() {
+        let (broker, _) = test_broker();
+        broker.add_reject_rule("python *");
+        broker.set_autonomy_mode(AutonomyMode::Auto);
+        let request = ApprovalRequest::command(
+            "run_shell_command",
+            "cargo fmt && python deploy.py",
+            "Format then deploy.",
+            CommandRisk::Restricted,
+            None,
+        )
+        .with_workspace_scope(true);
+
+        // The denied subcommand must surface through the compound wrapper.
+        assert!(!broker.should_auto_approve(&request));
+        assert!(broker.is_command_rejected("cargo fmt && python deploy.py"));
+        assert!(!broker.is_command_rejected("cargo fmt && git status"));
     }
 
     #[test]

