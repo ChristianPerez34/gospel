@@ -256,4 +256,44 @@ describe("ProviderSelector", () => {
       );
     });
   });
+
+  it("shows the browser callback status for ChatGPT OAuth", async () => {
+    const onProvidersChange = vi.fn();
+    const onRefreshAvailability = vi.fn().mockResolvedValue(undefined);
+    mockInvoke.mockResolvedValueOnce({ configured: false }).mockResolvedValueOnce({
+      method: "browser",
+      authorize_url: "https://auth.openai.com/oauth/authorize?state=test",
+      browser_launched: true,
+    });
+
+    render(
+      <ProviderSelector
+        providers={[
+          {
+            id: "chatgpt",
+            name: "ChatGPT Plus/Pro",
+            authType: "oauth",
+            credentialed: false,
+            visible: false,
+            modelFetchStatus: "not_credentialed",
+            modelCount: 0,
+            apiKey: "",
+            enabled: false,
+            status: "idle",
+            testMessage: "",
+            isOAuth: true,
+            isAuthenticated: false,
+          },
+        ]}
+        onProvidersChange={onProvidersChange}
+        onRefreshAvailability={onRefreshAvailability}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with OpenAI" }));
+
+    expect(
+      await screen.findByText("Complete sign-in in your browser; you’ll return here automatically.")
+    ).toBeTruthy();
+  });
 });

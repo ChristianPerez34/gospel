@@ -44,7 +44,7 @@ pub(crate) async fn completion_model(
     let model = match provider {
         "openai" => openai::OpenAI::new(api_key).completion(model).into(),
         "chatgpt" => {
-            let auth = chatgpt_authenticator(None)
+            let auth = chatgpt_authenticator()
                 .auth_context(&rig::rig_reqwest::shared())
                 .await
                 .map_err(|e| client_err(e.to_string()))?;
@@ -159,18 +159,14 @@ fn copilot_response_fallback(model: &str) -> Option<openai::Route> {
     (id.contains("codex") || id.starts_with("gpt-6.1-")).then_some(openai::Route::Responses)
 }
 
-/// The ChatGPT subscription authenticator over Gospel's auth cache. A device
-/// code handler enables the interactive login; without one only the cached
-/// session (refreshed when needed) is used.
-pub(crate) fn chatgpt_authenticator(
-    device_code_handler: Option<chatgpt::auth::DeviceCodeHandler>,
-) -> chatgpt::auth::Authenticator {
-    let allow_device_flow = device_code_handler.is_some();
+/// The ChatGPT subscription authenticator over Gospel's auth cache. Requests
+/// use only the cached session; interactive browser sign-in is started explicitly.
+pub(crate) fn chatgpt_authenticator() -> chatgpt::auth::Authenticator {
     chatgpt::auth::Authenticator::new(
         chatgpt::auth::AuthSource::OAuth,
         crate::provider_token_store::ProviderTokenStore,
-        device_code_handler.unwrap_or_default(),
-        allow_device_flow,
+        chatgpt::auth::DeviceCodeHandler::default(),
+        false,
     )
 }
 

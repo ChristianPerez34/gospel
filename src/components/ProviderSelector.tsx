@@ -30,11 +30,11 @@ interface ProviderSelectorProps {
   onRefreshAvailability: (forceRefresh?: boolean) => Promise<void>;
 }
 
-interface OAuthChallenge {
-  provider: ProviderId;
-  verification_url: string;
-  user_code: string;
-}
+type OAuthPrompt =
+  | { method: "browser"; authorize_url: string; browser_launched: boolean }
+  | { method: "device_code"; verification_url: string; user_code: string };
+
+type OAuthChallenge = OAuthPrompt & { provider: ProviderId };
 
 interface OAuthCompletion {
   provider: ProviderId;
@@ -295,14 +295,16 @@ export function ProviderSelector({
       isOperationInProgress.current = true;
       updateProvider(provider.id, { status: "testing", testMessage: "Starting authentication..." });
       try {
-        const challenge = await invoke<{ verification_url: string; user_code: string }>(
-          "start_provider_oauth",
-          { provider: provider.id }
-        );
+        const challenge = await invoke<OAuthPrompt>("start_provider_oauth", {
+          provider: provider.id,
+        });
         setOauthChallenge({ ...challenge, provider: provider.id });
         updateProvider(provider.id, {
           status: "testing",
-          testMessage: `Enter code: ${challenge.user_code}`,
+          testMessage:
+            challenge.method === "browser"
+              ? "Complete sign-in in your browser"
+              : `Enter code: ${challenge.user_code}`,
         });
       } catch (e) {
         updateProvider(provider.id, { status: "error", testMessage: `OAuth failed: ${e}` });
@@ -407,7 +409,7 @@ export function ProviderSelector({
             {(isVisible || !isConfigured) && (
               <div className="px-4 pb-3 flex flex-col gap-2">
                 {provider.isOAuth ? (
-                  <div className="flex items-center justify-between gap-2 py-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2 py-1">
                     {provider.isAuthenticated ? (
                       <>
                         <span className="text-caption text-status-success font-body font-medium">
@@ -437,11 +439,32 @@ export function ProviderSelector({
                       </>
                     )}
                     {providerChallenge && (
-                      <div className="flex items-center gap-2 pt-2">
-                        <span className="text-caption text-text-muted font-body">Your code:</span>
-                        <code className="font-mono text-body-sm text-accent-structure bg-surface-base py-0.5 px-2 rounded-sm tracking-[0.15em]">
-                          {providerChallenge.user_code}
-                        </code>
+                      <div className="flex basis-full flex-col items-start gap-1 pt-2">
+                        {providerChallenge.method === "browser" ? (
+                          providerChallenge.browser_launched ? (
+                            <span className="text-caption text-text-muted font-body">
+                              Complete sign-in in your browser; you’ll return here automatically.
+                            </span>
+                          ) : (
+                            <>
+                              <span className="text-caption text-text-muted font-body">
+                                The browser did not open. Copy this URL to continue:
+                              </span>
+                              <code className="break-all select-all font-mono text-caption text-accent-structure">
+                                {providerChallenge.authorize_url}
+                              </code>
+                            </>
+                          )
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <span className="text-caption text-text-muted font-body">
+                              Your code:
+                            </span>
+                            <code className="font-mono text-body-sm text-accent-structure bg-surface-base py-0.5 px-2 rounded-sm tracking-[0.15em]">
+                              {providerChallenge.user_code}
+                            </code>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
