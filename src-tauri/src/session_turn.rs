@@ -934,7 +934,7 @@ fn is_orphan_transcript_block(entry: &serde_json::Value) -> bool {
 
 /// Drop everything before the first user entry — a transcript's initiating
 /// user message is always item 0 — and remove orphan tool-result residue.
-fn sanitize_transcript_prefix(mut entries: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+fn sanitize_transcript_entries(mut entries: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
     if let Some(first_user) = entries
         .iter()
         .position(|entry| transcript_entry_role(entry) == Some("user"))
@@ -954,9 +954,9 @@ fn sanitize_transcript_prefix(mut entries: Vec<serde_json::Value>) -> Vec<serde_
 /// just completed, so its earlier user entries re-cover exactly the last
 /// `new_users - 1` persisted turns. Identical repeated prompts therefore
 /// cannot merge wrongly. Turns that never reached Model History (their
-/// response rows carry `error`/`controlled_stop`) are not overlap candidates
-/// and survive in the kept prefix or, when they trail the last persisted
-/// turn, are re-inserted before the current prompt.
+/// response rows carry `error`/`controlled_stop`) are not overlap candidates;
+/// they survive in the kept prefix or are re-inserted after the persisted
+/// turn they originally followed.
 pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String {
     let existing: Vec<serde_json::Value> =
         serde_json::from_str(existing_json).unwrap_or_default();
@@ -969,7 +969,7 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
     else {
         // The rebuild produced no user entry; keep history and append any
         // non-orphan assistant entries it did produce.
-        let mut merged = sanitize_transcript_prefix(existing);
+        let mut merged = sanitize_transcript_entries(existing);
         merged.extend(new_entries.into_iter().filter(|entry| {
             transcript_entry_role(entry) == Some("assistant")
                 && !is_orphan_transcript_block(entry)
@@ -977,7 +977,7 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
         return serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string());
     };
     if existing.is_empty() {
-        return serde_json::to_string(&sanitize_transcript_prefix(new_entries))
+        return serde_json::to_string(&sanitize_transcript_entries(new_entries))
             .unwrap_or_else(|_| "[]".to_string());
     }
 
@@ -1014,44 +1014,52 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
         persisted_users[persisted_users.len() - overlap]
     };
 
-    let mut merged = sanitize_transcript_prefix(existing[..cut].to_vec());
+    let mut merged = sanitize_transcript_entries(existing[..cut].to_vec());
 
-    // Display-only turns after the last persisted turn (a prompt whose turn
-    // failed and was never retried) still precede the current prompt, so they
-    // are re-inserted before the rebuild's final user entry.
-    let trailing_failures: Vec<serde_json::Value> = match persisted_users.last() {
-        Some(&last_persisted) => {
-            let last_pos = existing_users
-                .iter()
-                .position(|&index| index == last_persisted)
-                .unwrap_or(existing_users.len());
-            (last_pos + 1..existing_users.len())
-                .filter(|&pos| existing_users[pos] >= cut)
-                .map(|pos| {
-                    let start = existing_users[pos];
-                    let end = existing_users.get(pos + 1).copied().unwrap_or(existing.len());
-                    &existing[start..end]
-                })
-                .filter(|turn| turn.iter().any(is_terminal_failure_entry))
-                .flatten()
-                .cloned()
-                .collect()
-        }
-        None => Vec::new(),
-    };
-    let last_new_user = new_entries
-        .iter()
-        .rposition(|entry| transcript_entry_role(entry) == Some("user"))
-        .unwrap_or(new_user_idx);
-    let keep = |entry: &&serde_json::Value| !is_orphan_transcript_block(entry);
-    merged.extend(
-        new_entries[new_user_idx..last_new_user]
+    // Display-only turns in the dropped region (a prompt whose turn failed
+    // and was never retried) are re-inserted after the persisted turn they
+    // originally followed, so pruning cannot erase them. `failure_groups[i]`
+    // holds the failures that sat after the i-th dropped persisted turn.
+    let mut failure_groups: Vec<Vec<serde_json::Value>> = vec![Vec::new(); overlap];
+    if overlap > 0 {
+        let pos_cut = existing_users
             .iter()
-            .filter(keep)
-            .cloned(),
-    );
-    merged.extend(trailing_failures);
-    merged.extend(new_entries[last_new_user..].iter().filter(keep).cloned());
+            .position(|&index| index == cut)
+            .unwrap_or(existing_users.len());
+        let mut dropped_persisted = 0usize;
+        for pos in pos_cut..existing_users.len() {
+            let start = existing_users[pos];
+            let end = existing_users.get(pos + 1).copied().unwrap_or(existing.len());
+            let turn = &existing[start..end];
+            if turn.iter().any(is_terminal_failure_entry) {
+                if dropped_persisted > 0 {
+                    failure_groups[dropped_persisted - 1].extend(turn.iter().cloned());
+                }
+            } else {
+                dropped_persisted += 1;
+            }
+        }
+    }
+
+    // The i-th dropped persisted turn re-covers `new_users[rebuilt - overlap
+    // + i]`; its failures slot in before the next user entry, which for the
+    // last one is the current prompt.
+    let new_users: Vec<usize> = new_entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (transcript_entry_role(entry) == Some("user")).then_some(index)
+        })
+        .collect();
+    let keep = |entry: &&serde_json::Value| !is_orphan_transcript_block(entry);
+    let mut cursor = new_user_idx;
+    for (i, group) in failure_groups.iter().enumerate() {
+        let boundary = new_users[rebuilt_user_turns - overlap + i + 1];
+        merged.extend(new_entries[cursor..boundary].iter().filter(keep).cloned());
+        merged.extend_from_slice(group);
+        cursor = boundary;
+    }
+    merged.extend(new_entries[cursor..].iter().filter(keep).cloned());
     serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string())
 }
 
@@ -2398,6 +2406,102 @@ mod tests {
         assert_eq!(display[0]["role"], "user");
         assert_eq!(display[0]["content"], "first");
         assert_eq!(display.len(), 4);
+    }
+
+    #[test]
+    fn merge_preserves_failed_turn_between_persisted_turns() {
+        // Turn 2 failed; turns 1 and 3 reached Model History and are both
+        // re-covered by the rebuild. The failed turn must be spliced back
+        // after the turn it followed, not dropped with the rebuilt suffix.
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "one", "blocks": [] },
+            { "role": "user", "content": "second" },
+            { "role": "assistant", "content": "Error: down", "blocks": [], "error": true },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "three", "blocks": [] }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "one", "blocks": [] },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "three", "blocks": [] },
+            { "role": "user", "content": "fourth" },
+            { "role": "assistant", "content": "four", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        let contents: Vec<&str> = display
+            .iter()
+            .map(|entry| entry["content"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            contents,
+            vec![
+                "first", "one", "second", "Error: down", "third", "three", "fourth", "four"
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_preserves_controlled_stop_rows() {
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "second" },
+            { "role": "assistant", "content": "Stopped", "blocks": [], "controlled_stop": true }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "ok", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        let contents: Vec<&str> = display
+            .iter()
+            .map(|entry| entry["content"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            contents,
+            vec!["first", "answer", "second", "Stopped", "third", "ok"]
+        );
+    }
+
+    #[test]
+    fn merge_filters_orphans_when_rebuild_has_no_user() {
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            {
+                "role": "assistant",
+                "content": "",
+                "blocks": [{ "kind": "tool", "id": "orphan", "name": "", "result": "x" }]
+            },
+            { "role": "assistant", "content": "note", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        let contents: Vec<&str> = display
+            .iter()
+            .map(|entry| entry["content"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(contents, vec!["first", "answer", "note"]);
     }
 
     #[test]
