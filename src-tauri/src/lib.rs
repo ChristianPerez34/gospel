@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-mod app_config;
 mod agents;
+mod app_config;
 pub mod approval_broker;
 mod bounty;
 mod conversation;
@@ -2016,11 +2016,7 @@ fn list_bounty_findings(
     run_id: Option<String>,
 ) -> Result<bounty::findings::BountyFindings, String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(PathBuf::from),
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
@@ -2049,11 +2045,7 @@ fn set_bounty_verdict(
     rationale: Option<String>,
 ) -> Result<(), String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(PathBuf::from),
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
@@ -2075,20 +2067,13 @@ fn approve_bounty_checkpoint(
     run_id: String,
 ) -> Result<(), String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(PathBuf::from),
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
         return Err("no active workspace".to_string());
     };
-    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(
-        &workspace_path,
-        &run_id,
-    ))
+    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(&workspace_path, &run_id))
 }
 
 #[tauri::command]
@@ -2742,7 +2727,7 @@ fn run_session_message_action(
                 request.turn_count,
             )?
         };
-        let persistence = session_turn::successful_turn_persistence(Some(&history))
+        let persistence = session_turn::successful_turn_persistence(Some(&history), None)
             .ok_or("Unable to prepare conversation history")?;
         let model_history = persistence
             .model_history

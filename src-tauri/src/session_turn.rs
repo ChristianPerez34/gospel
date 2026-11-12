@@ -693,27 +693,33 @@ pub async fn run_streaming_turn(
                 stream_result.response_tokens,
                 stream_result.tool_calls,
             );
-            if let (Some(sid), Some(persistence)) = (
-                &request.session_id,
-                successful_turn_persistence(stream_result.history.as_deref()),
-            ) {
-                if let Err(e) = deps.sessions.persist_turn(
-                    sid,
-                    &persistence.display_transcript,
-                    persistence.model_history.as_deref(),
+            if let Some(sid) = &request.session_id {
+                let existing_snapshot = deps.sessions.failure_snapshot(sid);
+                let existing_transcript = existing_snapshot
+                    .as_ref()
+                    .map(|s| s.display_transcript.as_str());
+                if let Some(persistence) = successful_turn_persistence(
+                    stream_result.history.as_deref(),
+                    existing_transcript,
                 ) {
-                    tracing::warn!("Failed to persist session {}: {}", sid, e);
-                } else {
-                    if let Err(e) = deps.sessions.update_status(sid, "active") {
-                        tracing::warn!("Failed to update session {} status: {}", sid, e);
+                    if let Err(e) = deps.sessions.persist_turn(
+                        sid,
+                        &persistence.display_transcript,
+                        persistence.model_history.as_deref(),
+                    ) {
+                        tracing::warn!("Failed to persist session {}: {}", sid, e);
+                    } else {
+                        if let Err(e) = deps.sessions.update_status(sid, "active") {
+                            tracing::warn!("Failed to update session {} status: {}", sid, e);
+                        }
+                        deps.conversation
+                            .store_history(sid, persistence.history.clone());
+                        deps.memory.schedule_ingest(MemoryIngestJobRequest {
+                            display_transcript: persistence.display_transcript.clone(),
+                            session_id: sid.clone(),
+                            workspace_id: workspace_resolution.workspace_id.clone(),
+                        });
                     }
-                    deps.conversation
-                        .store_history(sid, persistence.history.clone());
-                    deps.memory.schedule_ingest(MemoryIngestJobRequest {
-                        display_transcript: persistence.display_transcript.clone(),
-                        session_id: sid.clone(),
-                        workspace_id: workspace_resolution.workspace_id.clone(),
-                    });
                 }
             }
 
@@ -885,12 +891,100 @@ pub struct FailureTurnPersistence {
     pub model_history: Option<String>,
 }
 
+pub fn merge_display_transcripts(
+    existing_json: &str,
+    new_entries: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let existing_entries: Vec<serde_json::Value> =
+        serde_json::from_str(existing_json).unwrap_or_default();
+    if existing_entries.is_empty() {
+        return new_entries;
+    }
+
+    // Find the first user message in new_entries.
+    let first_user_idx_in_new = new_entries
+        .iter()
+        .position(|entry| entry.get("role").and_then(|r| r.as_str()) == Some("user"));
+
+    let Some(new_user_idx) = first_user_idx_in_new else {
+        // If new_entries has no user message (e.g. only orphaned tool blocks or assistant
+        // messages), preserve historical turns and append new assistant entries.
+        let mut merged = existing_entries;
+        for entry in new_entries {
+            if entry.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                merged.push(entry);
+            }
+        }
+        return merged;
+    };
+
+    let first_user_content = new_entries[new_user_idx]
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default();
+
+    // Look for this user message in existing_entries (search backwards for the last match).
+    let existing_match_idx = existing_entries.iter().rposition(|entry| {
+        entry.get("role").and_then(|r| r.as_str()) == Some("user")
+            && entry.get("content").and_then(|c| c.as_str()) == Some(first_user_content)
+    });
+
+    let is_orphan_block = |entry: &serde_json::Value| -> bool {
+        if entry.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            return false;
+        }
+        let content = entry.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        if !content.is_empty() {
+            return false;
+        }
+        if let Some(blocks) = entry.get("blocks").and_then(|b| b.as_array()) {
+            if blocks.len() == 1 {
+                let name = blocks[0].get("name").and_then(|n| n.as_str()).unwrap_or("");
+                return name.is_empty();
+            }
+        }
+        false
+    };
+
+    if let Some(idx) = existing_match_idx {
+        // History contains a turn that was already recorded in existing_entries at `idx`.
+        // Retain the prefix from existing_entries before `idx` (which was pruned from model history),
+        // and take everything from `new_entries` starting at `new_user_idx`.
+        let mut merged = existing_entries[..idx].to_vec();
+        merged.extend(
+            new_entries
+                .into_iter()
+                .skip(new_user_idx)
+                .filter(|entry| !is_orphan_block(entry)),
+        );
+        merged
+    } else {
+        // The user message in new_entries is brand new and not yet in existing_entries.
+        // Keep all of existing_entries, and append new_entries (skipping any leading or trailing orphaned blocks).
+        let mut merged = existing_entries;
+        merged.extend(
+            new_entries
+                .into_iter()
+                .skip(new_user_idx)
+                .filter(|entry| !is_orphan_block(entry)),
+        );
+        merged
+    }
+}
+
 pub fn successful_turn_persistence(
     history: Option<&[Message]>,
+    existing_display_transcript: Option<&str>,
 ) -> Option<SuccessfulTurnPersistence> {
     let history = history?;
-    let display_transcript = serde_json::to_string(&build_display_transcript(history))
-        .unwrap_or_else(|_| "[]".to_string());
+    let new_transcript = build_display_transcript(history);
+    let merged_transcript = if let Some(existing_json) = existing_display_transcript {
+        merge_display_transcripts(existing_json, new_transcript)
+    } else {
+        new_transcript
+    };
+    let display_transcript =
+        serde_json::to_string(&merged_transcript).unwrap_or_else(|_| "[]".to_string());
     let model_history = serde_json::to_string(history).ok();
 
     Some(SuccessfulTurnPersistence {
@@ -2043,7 +2137,7 @@ mod tests {
     fn successful_turn_with_model_history_persists_transcript_and_history() {
         let history = vec![user_message("hello"), assistant_message("hi")];
 
-        let decision = successful_turn_persistence(Some(&history)).unwrap();
+        let decision = successful_turn_persistence(Some(&history), None).unwrap();
 
         let display: serde_json::Value =
             serde_json::from_str(&decision.display_transcript).unwrap();
@@ -2067,7 +2161,41 @@ mod tests {
 
     #[test]
     fn successful_turn_without_model_history_still_does_not_persist() {
-        assert!(successful_turn_persistence(None).is_none());
+        assert!(successful_turn_persistence(None, None).is_none());
+    }
+
+    #[test]
+    fn successful_turn_preserves_historical_turns_when_context_is_pruned() {
+        let existing = json!([
+            { "role": "user", "content": "Assess what is needed" },
+            {
+                "role": "assistant",
+                "content": "Short answer: app is wired up",
+                "blocks": [{ "kind": "text", "id": "text-0", "text": "Short answer: app is wired up" }]
+            }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+
+        // Simulate Turn 2 where earlier context was pruned, leaving an orphaned tool result before the turn prompt
+        let history = vec![
+            tool_result_message("call-orphan", "orphan tool result from turn 1"),
+            user_message("proceed"),
+            assistant_message("Done. I fixed everything."),
+        ];
+
+        let persistence = successful_turn_persistence(Some(&history), Some(&existing_str)).unwrap();
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&persistence.display_transcript).unwrap();
+
+        assert_eq!(display.len(), 4);
+        assert_eq!(display[0]["role"], "user");
+        assert_eq!(display[0]["content"], "Assess what is needed");
+        assert_eq!(display[1]["role"], "assistant");
+        assert_eq!(display[1]["content"], "Short answer: app is wired up");
+        assert_eq!(display[2]["role"], "user");
+        assert_eq!(display[2]["content"], "proceed");
+        assert_eq!(display[3]["role"], "assistant");
+        assert_eq!(display[3]["content"], "Done. I fixed everything.");
     }
 
     #[test]
