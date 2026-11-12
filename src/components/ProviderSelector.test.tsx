@@ -256,4 +256,53 @@ describe("ProviderSelector", () => {
       );
     });
   });
+
+  it.each([
+    true,
+    false,
+  ])("keeps the ChatGPT sign-in URL available when browser_launched=%s", async (browserLaunched) => {
+    const onProvidersChange = vi.fn();
+    const onRefreshAvailability = vi.fn().mockResolvedValue(undefined);
+    mockInvoke.mockResolvedValueOnce({ configured: false }).mockResolvedValueOnce({
+      method: "browser",
+      authorize_url: "https://auth.openai.com/oauth/authorize?state=test",
+      browser_launched: browserLaunched,
+    });
+
+    render(
+      <ProviderSelector
+        providers={[
+          {
+            id: "chatgpt",
+            name: "ChatGPT Plus/Pro",
+            authType: "oauth",
+            credentialed: false,
+            visible: false,
+            modelFetchStatus: "not_credentialed",
+            modelCount: 0,
+            apiKey: "",
+            enabled: false,
+            status: "idle",
+            testMessage: "",
+            isOAuth: true,
+            isAuthenticated: false,
+          },
+        ]}
+        onProvidersChange={onProvidersChange}
+        onRefreshAvailability={onRefreshAvailability}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with OpenAI" }));
+
+    expect(
+      await screen.findByText(
+        browserLaunched
+          ? "Complete sign-in in your browser; you’ll return here automatically."
+          : "The browser did not open."
+      )
+    ).toBeTruthy();
+    expect(screen.getByText("Copy this URL to continue sign-in:")).toBeTruthy();
+    expect(screen.getByText("https://auth.openai.com/oauth/authorize?state=test")).toBeTruthy();
+  });
 });
