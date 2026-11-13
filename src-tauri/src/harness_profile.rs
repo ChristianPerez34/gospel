@@ -1,4 +1,4 @@
-use crate::agents::AgentDefinition;
+use crate::agents::{AgentDefinition, DEFAULT_MAX_TURNS};
 use crate::bounty::{BountyHttpTool, BountySignalTool};
 use crate::review::tools::{
     create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
@@ -607,44 +607,10 @@ fn push_section(sections: &mut Vec<String>, section: Option<String>) {
     }
 }
 
-fn configured_max_turns() -> Option<Option<usize>> {
-    let raw = std::env::var("GOSPEL_MAX_TURNS")
-        .or_else(|_| std::env::var("GOSPEL_AGENT_MAX_TURNS"))
-        .ok()?;
-    parse_max_turns_env(&raw)
-}
-
-fn parse_max_turns_env(raw: &str) -> Option<Option<usize>> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.eq_ignore_ascii_case("unlimited")
-        || trimmed.eq_ignore_ascii_case("none")
-        || trimmed.eq_ignore_ascii_case("inf")
-        || trimmed.eq_ignore_ascii_case("infinity")
-        || trimmed == "0"
-    {
-        return Some(None);
-    }
-    match trimmed.parse::<usize>() {
-        Ok(val) => Some(Some(val)),
-        Err(error) => {
-            tracing::warn!(
-                raw = %raw,
-                error = %error,
-                "invalid GOSPEL_MAX_TURNS; ignoring override"
-            );
-            None
-        }
-    }
-}
-
 pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
-    let override_turns = configured_max_turns();
     match role {
         AgentRole::Main => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: None,
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -652,7 +618,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Exploration => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: Some(Duration::from_secs(90)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -660,7 +626,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Verification => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(Some(6)),
+            max_turns: None,
             deadline: Some(Duration::from_secs(90)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -668,7 +634,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::ReviewDetector => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: Some(Duration::from_secs(60)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -676,7 +642,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::ReviewValidator => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: Some(Duration::from_secs(30)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -684,7 +650,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Custom => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(Some(50)),
+            max_turns: Some(DEFAULT_MAX_TURNS),
             deadline: None,
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -997,9 +963,10 @@ mod tests {
         let expected = [
             (AgentRole::Main, None, None, 3, 5),
             (AgentRole::Exploration, None, Some(90), 3, 5),
-            (AgentRole::Verification, Some(6), Some(90), 2, 3),
+            (AgentRole::Verification, None, Some(90), 2, 3),
             (AgentRole::ReviewDetector, None, Some(60), 2, 3),
             (AgentRole::ReviewValidator, None, Some(30), 2, 3),
+            (AgentRole::Custom, Some(DEFAULT_MAX_TURNS), None, 3, 5),
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
@@ -1013,20 +980,6 @@ mod tests {
             assert_eq!(guards.loop_guard.warning_threshold, warning);
             assert_eq!(guards.loop_guard.stop_threshold, stop);
         }
-    }
-
-    #[test]
-    fn max_turns_env_parsing_supports_limits_and_unlimited_variants() {
-        assert_eq!(parse_max_turns_env(""), None);
-        assert_eq!(parse_max_turns_env("   "), None);
-        assert_eq!(parse_max_turns_env("100"), Some(Some(100)));
-        assert_eq!(parse_max_turns_env(" 250 "), Some(Some(250)));
-        assert_eq!(parse_max_turns_env("0"), Some(None));
-        assert_eq!(parse_max_turns_env("unlimited"), Some(None));
-        assert_eq!(parse_max_turns_env("UNLIMITED"), Some(None));
-        assert_eq!(parse_max_turns_env("none"), Some(None));
-        assert_eq!(parse_max_turns_env("inf"), Some(None));
-        assert_eq!(parse_max_turns_env("invalid_number"), None);
     }
 
     #[tokio::test]

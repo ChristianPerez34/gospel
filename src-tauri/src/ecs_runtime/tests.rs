@@ -500,6 +500,37 @@ async fn unlimited_max_turns_allows_more_than_two_calls() {
 }
 
 #[tokio::test]
+async fn verification_guards_allow_more_than_six_model_calls() {
+    let mut turns: Vec<Vec<MockStreamEvent>> = (1..=8)
+        .map(|attempt| {
+            vec![
+                MockStreamEvent::tool_call(
+                    format!("call-{attempt}"),
+                    "count",
+                    json!({"attempt": attempt}),
+                ),
+                MockStreamEvent::final_response_with_default_usage(),
+            ]
+        })
+        .collect();
+    turns.push(answer("Verdict"));
+    let model = MockCompletionModel::from_stream_turns(turns);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.guards =
+        crate::harness_profile::guards_for_role(crate::harness_profile::AgentRole::Verification);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let result = run(input, |_| {}).await.unwrap();
+    assert_eq!(result.full_response, "Verdict");
+    assert_eq!(executions.load(Ordering::SeqCst), 8);
+    assert_eq!(model.request_count(), 9);
+}
+
+#[tokio::test]
 async fn zero_max_turns_is_treated_as_unlimited() {
     let model = MockCompletionModel::from_stream_turns([
         tool_turn("call-1"),
