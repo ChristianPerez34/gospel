@@ -1,8 +1,10 @@
 use super::outcome::{record_review_outcome, ReviewOutcome};
 use super::{
-    multi, NoopReviewProgressEmitter, ReviewComment, ReviewEngine, ReviewFocus, ReviewMode,
-    ReviewRequest, ReviewResult,
+    multi, ChunkStatus, MultiFocusStatus, PhaseStatus, ReviewComment, ReviewEngine, ReviewFocus,
+    ReviewMode, ReviewPhase, ReviewProgressEmitter, ReviewProgressEvent, ReviewRequest,
+    ReviewResult, ToolEventKind,
 };
+use crate::subagent::{SubagentEmitter, SubagentKind, SubagentRelay, SubagentStep};
 use crate::workspace_tools::WorkspaceToolError;
 use crate::REJECTION_STORE_LOCK;
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
@@ -58,6 +60,8 @@ pub struct RunReviewTool {
     model: String,
     #[serde(skip_serializing, skip_deserializing)]
     api_key: String,
+    #[serde(skip)]
+    subagents: Option<Arc<SubagentRelay>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -67,6 +71,8 @@ pub struct RunSecurityReviewTool {
     model: String,
     #[serde(skip_serializing, skip_deserializing)]
     api_key: String,
+    #[serde(skip)]
+    subagents: Option<Arc<SubagentRelay>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -76,6 +82,8 @@ pub struct RunMultiReviewTool {
     model: String,
     #[serde(skip_serializing, skip_deserializing)]
     api_key: String,
+    #[serde(skip)]
+    subagents: Option<Arc<SubagentRelay>>,
 }
 
 impl fmt::Debug for RunReviewTool {
@@ -154,6 +162,12 @@ impl Tool for RunReviewTool {
         _context: &mut ToolContext,
         args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
+        let progress = review_subagent_progress(
+            self.subagents.as_ref(),
+            Self::NAME,
+            &args.mode,
+            args.pr_number,
+        );
         run_review_tool(
             self.workspace_root.clone(),
             self.provider.clone(),
@@ -162,6 +176,7 @@ impl Tool for RunReviewTool {
             args.mode,
             args.pr_number,
             args.focus,
+            progress,
         )
         .await
     }
@@ -214,6 +229,12 @@ impl Tool for RunMultiReviewTool {
         _context: &mut ToolContext,
         args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
+        let progress = review_subagent_progress(
+            self.subagents.as_ref(),
+            Self::NAME,
+            &args.mode,
+            args.pr_number,
+        );
         let focuses = args.focuses.unwrap_or_else(|| multi::ALL_FOCUSES.to_vec());
         let mode_enum =
             ReviewMode::parse(&args.mode, args.pr_number).map_err(WorkspaceToolError::Internal)?;
@@ -229,7 +250,7 @@ impl Tool for RunMultiReviewTool {
 
         let engine = ReviewEngine::new();
         engine
-            .execute_multi(request, Arc::new(NoopReviewProgressEmitter))
+            .execute_multi(request, progress)
             .await
             .map_err(WorkspaceToolError::Internal)
     }
@@ -259,6 +280,12 @@ impl Tool for RunSecurityReviewTool {
         _context: &mut ToolContext,
         args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
+        let progress = review_subagent_progress(
+            self.subagents.as_ref(),
+            Self::NAME,
+            &args.mode,
+            args.pr_number,
+        );
         run_review_tool(
             self.workspace_root.clone(),
             self.provider.clone(),
@@ -267,6 +294,7 @@ impl Tool for RunSecurityReviewTool {
             args.mode,
             args.pr_number,
             ReviewFocus::Security,
+            progress,
         )
         .await
     }
@@ -307,6 +335,7 @@ fn review_tool_parameters(include_focus: bool) -> serde_json::Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_review_tool(
     workspace_root: PathBuf,
     provider: String,
@@ -315,6 +344,7 @@ async fn run_review_tool(
     mode: String,
     pr_number: Option<u64>,
     focus: ReviewFocus,
+    progress: Arc<dyn ReviewProgressEmitter>,
 ) -> Result<RunReviewOutput, WorkspaceToolError> {
     let mode_enum = ReviewMode::parse(&mode, pr_number).map_err(WorkspaceToolError::Internal)?;
 
@@ -328,10 +358,7 @@ async fn run_review_tool(
     );
 
     let engine = ReviewEngine::new();
-    match engine
-        .execute(request, Arc::new(NoopReviewProgressEmitter))
-        .await
-    {
+    match engine.execute(request, progress).await {
         Ok(review) => {
             let findings = review
                 .comments
@@ -456,12 +483,14 @@ pub fn create_run_security_review_tool(
     provider: String,
     model: String,
     api_key: String,
+    subagents: Option<Arc<SubagentRelay>>,
 ) -> RunSecurityReviewTool {
     RunSecurityReviewTool {
         workspace_root,
         provider,
         model,
         api_key,
+        subagents,
     }
 }
 
@@ -470,12 +499,14 @@ pub fn create_run_review_tool(
     provider: String,
     model: String,
     api_key: String,
+    subagents: Option<Arc<SubagentRelay>>,
 ) -> RunReviewTool {
     RunReviewTool {
         workspace_root,
         provider,
         model,
         api_key,
+        subagents,
     }
 }
 
@@ -484,12 +515,14 @@ pub fn create_run_multi_review_tool(
     provider: String,
     model: String,
     api_key: String,
+    subagents: Option<Arc<SubagentRelay>>,
 ) -> RunMultiReviewTool {
     RunMultiReviewTool {
         workspace_root,
         provider,
         model,
         api_key,
+        subagents,
     }
 }
 
@@ -497,6 +530,175 @@ pub fn create_record_review_outcome_tool(workspace_root: PathBuf) -> RecordRevie
     RecordReviewOutcomeTool { workspace_root }
 }
 
+fn review_subagent_progress(
+    subagents: Option<&Arc<SubagentRelay>>,
+    tool_name: &str,
+    mode: &str,
+    pr_number: Option<u64>,
+) -> Arc<dyn ReviewProgressEmitter> {
+    Arc::new(SubagentReviewProgress(SubagentEmitter::claim(
+        subagents,
+        tool_name,
+        &json!({ "mode": mode, "pr_number": pr_number }),
+        SubagentKind::Review,
+    )))
+}
+
+/// Presents review pipeline progress as live sub-agent steps on the parent
+/// review tool call.
+struct SubagentReviewProgress(SubagentEmitter);
+
+impl ReviewProgressEmitter for SubagentReviewProgress {
+    fn emit_progress(&self, event: ReviewProgressEvent) {
+        if let Some(step) = review_progress_step(&event) {
+            self.0.emit(step);
+        }
+    }
+}
+
+fn focus_label(focus: ReviewFocus) -> &'static str {
+    match focus {
+        ReviewFocus::Security => "Security",
+        ReviewFocus::BugHunt => "Bug hunt",
+        ReviewFocus::Architecture => "Architecture",
+        ReviewFocus::Performance => "Performance",
+        ReviewFocus::Style => "Style",
+    }
+}
+
+fn review_progress_step(event: &ReviewProgressEvent) -> Option<SubagentStep> {
+    let focus = event.focus.map(focus_label);
+    let scoped = |label: String| match focus {
+        Some(focus) => format!("{focus}: {label}"),
+        None => label,
+    };
+    let phase = |label: String| Some(SubagentStep::Phase { label });
+    let focus_key = event
+        .focus
+        .map(|focus| focus.to_string())
+        .unwrap_or_default();
+    let tool_step = |scope: String, tool_name: &str, kind: &ToolEventKind| match kind {
+        ToolEventKind::Call { id, arguments } => SubagentStep::ToolCall {
+            id: format!("{focus_key}:{scope}:{id}"),
+            name: tool_name.to_string(),
+            arguments: arguments.clone(),
+        },
+        ToolEventKind::Result { id, summary } => SubagentStep::ToolResult {
+            id: format!("{focus_key}:{scope}:{id}"),
+            name: tool_name.to_string(),
+            result: crate::subagent::capped_result(summary),
+        },
+    };
+    match &event.phase {
+        ReviewPhase::Detector {
+            chunk: 0,
+            status: ChunkStatus::Starting,
+            ..
+        } => phase(scoped("starting review".to_string())),
+        ReviewPhase::Detector {
+            chunk,
+            total_chunks,
+            status: ChunkStatus::Running,
+            ..
+        } => phase(scoped(format!("analyzing chunk {chunk} of {total_chunks}"))),
+        ReviewPhase::Detector {
+            chunk,
+            status: ChunkStatus::Failed { .. },
+            ..
+        } => phase(scoped(format!("chunk {chunk} failed"))),
+        ReviewPhase::Validator {
+            candidate_count,
+            status: PhaseStatus::Running,
+        } => phase(scoped(format!(
+            "validating {candidate_count} candidate{}",
+            if *candidate_count == 1 { "" } else { "s" }
+        ))),
+        ReviewPhase::DetectorTool {
+            chunk,
+            tool_name,
+            event,
+        } => Some(tool_step(format!("d{chunk}"), tool_name, event)),
+        ReviewPhase::ValidatorTool { tool_name, event } => {
+            Some(tool_step("v".to_string(), tool_name, event))
+        }
+        ReviewPhase::Finalize {
+            status: PhaseStatus::Running,
+        } => phase(scoped("finalizing findings".to_string())),
+        ReviewPhase::Done { findings, .. } => phase(scoped(format!(
+            "{findings} finding{}",
+            if *findings == 1 { "" } else { "s" }
+        ))),
+        ReviewPhase::MultiFocusStart { total } => phase(format!("Reviewing {total} focus areas")),
+        ReviewPhase::MultiFocus {
+            focus,
+            status: MultiFocusStatus::Failed { .. },
+            ..
+        } => phase(format!("{}: review failed", focus_label(*focus))),
+        ReviewPhase::Failed { .. } => phase(scoped("review failed".to_string())),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod subagent_progress_tests {
+    use super::*;
+
+    #[test]
+    fn detector_tool_events_become_scoped_tool_steps() {
+        let call = ReviewProgressEvent::new_with_focus(
+            "run",
+            ReviewFocus::BugHunt,
+            ReviewPhase::DetectorTool {
+                chunk: 2,
+                tool_name: "read_file".into(),
+                event: ToolEventKind::Call {
+                    id: "c1".into(),
+                    arguments: json!({"path": "src/lib.rs"}),
+                },
+            },
+        );
+        assert_eq!(
+            review_progress_step(&call),
+            Some(SubagentStep::ToolCall {
+                id: "BugHunt:d2:c1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "src/lib.rs"}),
+            })
+        );
+    }
+
+    #[test]
+    fn stage_events_become_readable_phases() {
+        let running = ReviewProgressEvent::new_with_focus(
+            "run",
+            ReviewFocus::Security,
+            ReviewPhase::Detector {
+                chunk: 1,
+                total_chunks: 3,
+                files: vec![],
+                candidate_count: 0,
+                status: ChunkStatus::Running,
+            },
+        );
+        assert_eq!(
+            review_progress_step(&running),
+            Some(SubagentStep::Phase {
+                label: "Security: analyzing chunk 1 of 3".into()
+            })
+        );
+        let done_chunk = ReviewProgressEvent::new(
+            "run",
+            ReviewPhase::Detector {
+                chunk: 1,
+                total_chunks: 3,
+                files: vec![],
+                candidate_count: 2,
+                status: ChunkStatus::Done,
+            },
+        );
+        assert_eq!(review_progress_step(&done_chunk), None);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,6 +710,7 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let debug = format!("{:?}", tool);
@@ -526,6 +729,7 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let debug = format!("{:?}", tool);
@@ -554,12 +758,14 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
         let alias = create_run_security_review_tool(
             PathBuf::from("/workspace"),
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let canonical_parameters = Tool::parameters(&canonical);
@@ -586,6 +792,7 @@ mod tests {
             "openai".to_string(),
             "gpt-test".to_string(),
             "sk-secret-value".to_string(),
+            None,
         );
 
         let parameters = Tool::parameters(&tool);

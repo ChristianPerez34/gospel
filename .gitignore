@@ -21,6 +21,11 @@ pnpm-workspace.yaml
 .gospel/corpus/
 .gospel/skill-opt/
 
+# Bounty scope is private authorization state; run evidence is regenerated per run.
+.gospel/bounty/scope.yaml
+.gospel/bounty/scope.yml
+.gospel/bounty/runs/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

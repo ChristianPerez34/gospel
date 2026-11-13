@@ -37,6 +37,7 @@ fn request(model: &MockCompletionModel) -> RunRequest {
         guards,
         additional_params: None,
         reasoning: None,
+        subagents: None,
     }
 }
 
@@ -155,7 +156,7 @@ async fn retry_discards_partial_output_without_reexecuting_completed_tools() {
     ]);
     let executions = Arc::new(AtomicUsize::new(0));
     let mut input = request(&model);
-    input.guards.max_turns = 2;
+    input.guards.max_turns = Some(2);
     input.tools.push(RegisteredTool::from_tool(CountingTool {
         executions: executions.clone(),
         approval: None,
@@ -366,4 +367,155 @@ async fn role_deadline_cancels_pending_work() {
     );
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert_eq!(model.request_count(), 1);
+}
+
+struct FakeSubagentTool {
+    relay: Arc<crate::subagent::SubagentRelay>,
+}
+
+impl Tool for FakeSubagentTool {
+    const NAME: &'static str = "delegate_exploration";
+    type Args = Value;
+    type Output = Value;
+    type Error = ToolExecutionError;
+    fn description(&self) -> String {
+        "Delegates".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object", "properties":{"task":{"type":"string"}}})
+    }
+    async fn call(&self, _: &mut ToolContext, args: Value) -> Result<Value, ToolExecutionError> {
+        let emitter = crate::subagent::SubagentEmitter::claim(
+            Some(&self.relay),
+            Self::NAME,
+            &args,
+            crate::subagent::SubagentKind::Exploration,
+        );
+        let task = args["task"].as_str().unwrap_or_default().to_string();
+        emitter.emit(crate::subagent::SubagentStep::Phase {
+            label: format!("{task} started"),
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        emitter.emit(crate::subagent::SubagentStep::Text {
+            text: format!("{task} report"),
+        });
+        Ok(json!({"report": task}))
+    }
+}
+
+#[tokio::test]
+async fn subagent_steps_reach_their_parent_call_between_call_and_result() {
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("call-a", "delegate_exploration", json!({"task": "alpha"})),
+            MockStreamEvent::tool_call("call-b", "delegate_exploration", json!({"task": "beta"})),
+            MockStreamEvent::final_response_with_default_usage(),
+        ],
+        answer("Done"),
+    ]);
+    let relay = crate::subagent::SubagentRelay::new();
+    let mut input = request(&model);
+    input.subagents = Some(relay.clone());
+    input
+        .tools
+        .push(RegisteredTool::from_tool(FakeSubagentTool { relay }));
+    let mut log: Vec<String> = Vec::new();
+    run(input, |event| match event {
+        StreamEvent::ToolCall { id, .. } => log.push(format!("call {id}")),
+        StreamEvent::ToolResult { id, .. } => log.push(format!("result {id}")),
+        StreamEvent::Subagent {
+            parent_id, step, ..
+        } => {
+            let label = match step {
+                crate::subagent::SubagentStep::Phase { label } => label,
+                crate::subagent::SubagentStep::Text { text } => text,
+                other => format!("{other:?}"),
+            };
+            log.push(format!("step {parent_id} {label}"));
+        }
+        _ => {}
+    })
+    .await
+    .unwrap();
+
+    let position = |entry: &str| {
+        log.iter()
+            .position(|item| item == entry)
+            .unwrap_or_else(|| panic!("missing {entry:?} in {log:?}"))
+    };
+    for (id, task) in [("call-a", "alpha"), ("call-b", "beta")] {
+        let call = position(&format!("call {id}"));
+        let started = position(&format!("step {id} {task} started"));
+        let report = position(&format!("step {id} {task} report"));
+        let result = position(&format!("result {id}"));
+        assert!(
+            call < started && started < report && report < result,
+            "{log:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn max_turns_limit_stops_agent_with_controlled_stop() {
+    let model = MockCompletionModel::from_stream_turns([
+        tool_turn("call-1"),
+        tool_turn("call-2"),
+        answer("Should not reach"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.guards.max_turns = Some(2);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let result = run(input, |_| {}).await;
+    assert!(
+        matches!(result, Err(LlmError::ControlledStop(ref reason)) if reason == "Agent reached its 2 model-call limit"),
+        "{result:?}"
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn unlimited_max_turns_allows_more_than_two_calls() {
+    let model = MockCompletionModel::from_stream_turns([
+        tool_turn("call-1"),
+        tool_turn("call-2"),
+        answer("Done"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.guards.max_turns = None;
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let result = run(input, |_| {}).await.unwrap();
+    assert_eq!(result.full_response, "Done");
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert_eq!(model.request_count(), 3);
+}
+
+#[tokio::test]
+async fn zero_max_turns_is_treated_as_unlimited() {
+    let model = MockCompletionModel::from_stream_turns([
+        tool_turn("call-1"),
+        tool_turn("call-2"),
+        answer("Done"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.guards.max_turns = Some(0);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let result = run(input, |_| {}).await.unwrap();
+    assert_eq!(result.full_response, "Done");
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert_eq!(model.request_count(), 3);
 }

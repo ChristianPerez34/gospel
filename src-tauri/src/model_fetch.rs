@@ -290,27 +290,36 @@ async fn fetch_github_copilot_models_impl() -> Result<Vec<ModelInfo>, String> {
     crate::copilot_models::fetch_models(&config, &rig::rig_reqwest::shared()).await
 }
 
+const CHATGPT_CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
+// The backend omits models whose `minimal_client_version` is newer than the
+// caller's and rejects requests without one. Gospel talks to the same Codex
+// Responses contract through Rig rather than shipping as a Codex CLI release,
+// so it claims a version above every current gate.
+const CHATGPT_CODEX_CLIENT_VERSION: &str = "1.0.0";
+
 async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
-    let auth_path = crate::keychain::chatgpt_auth_file_path();
-    if !auth_path.exists() {
+    if !crate::keychain::has_chatgpt_oauth_session() {
         return Err("ChatGPT OAuth session not found".to_string());
     }
 
-    let auth_data: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&auth_path)
-            .map_err(|e| format!("failed to read auth file: {}", e))?,
-    )
-    .map_err(|e| format!("failed to parse auth file: {}", e))?;
-
-    let access_token = auth_data["access_token"]
-        .as_str()
-        .ok_or_else(|| "access_token not found in auth file".to_string())?;
-
-    // There is no public ChatGPT subscription model-list API equivalent to
-    // OpenAI's API-key /models endpoint. Use the private ChatGPT model
-    // endpoint when available so account-tier-specific models only appear
-    // when the signed-in account can see them.
     let fallback_models = ModelRegistry::hardcoded_models_for("chatgpt");
+
+    let auth = match crate::provider_client::chatgpt_authenticator()
+        .auth_context(&rig::rig_reqwest::shared())
+        .await
+    {
+        Ok(auth) => auth,
+        Err(e) => {
+            let e = e.to_string();
+            if crate::credential_failure::refresh_error_requires_reauth(&e) {
+                return Err(format!(
+                    "ChatGPT OAuth session expired or invalid; sign in again ({e})"
+                ));
+            }
+            tracing::warn!("ChatGPT sign-in unavailable ({e}); using bundled model list");
+            return Ok(fallback_models);
+        }
+    };
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -318,50 +327,53 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
         .build()
         .map_err(|e| format!("failed to create HTTP client: {}", e))?;
 
-    let resp = client
-        .get("https://chatgpt.com/backend-api/models")
-        .header("Authorization", format!("Bearer {}", access_token))
-        .header("User-Agent", concat!("gospel/", env!("CARGO_PKG_VERSION")))
-        .send()
-        .await;
+    let mut request = client
+        .get(CHATGPT_CODEX_MODELS_URL)
+        .query(&[("client_version", CHATGPT_CODEX_CLIENT_VERSION)])
+        .bearer_auth(auth.api_key.expose())
+        .header("User-Agent", concat!("gospel/", env!("CARGO_PKG_VERSION")));
+    if let Some(account) = auth.account_id.as_deref() {
+        request = request.header("ChatGPT-Account-Id", account);
+    }
 
-    let body: serde_json::Value = match resp {
-        Ok(r) if r.status().is_success() => r.json().await.unwrap_or(serde_json::Value::Null),
-        Ok(r) => {
-            tracing::warn!(
-                "ChatGPT API returned status {}; using hardcoded base only",
-                r.status()
-            );
-            return Ok(fallback_models);
-        }
+    let body: serde_json::Value = match async {
+        request
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await
+    }
+    .await
+    {
+        Ok(body) => body,
         Err(e) => {
-            tracing::warn!(
-                "Failed to fetch ChatGPT models: {}; using hardcoded base only",
-                e
-            );
+            tracing::warn!("Failed to fetch ChatGPT models: {e}; using bundled model list");
             return Ok(fallback_models);
         }
     };
 
-    let mut models: Vec<ModelInfo> = Vec::new();
-    if let Some(arr) = body["models"].as_array() {
-        for m in arr {
-            if let Some(slug) = m["slug"].as_str().or_else(|| m["id"].as_str()) {
-                if !models.iter().any(|existing| existing.model == slug)
-                    && ModelRegistry::is_chatgpt_subscription_model(slug)
-                {
-                    models.push(ModelRegistry::model_info("chatgpt", slug));
-                }
-            }
-        }
-    }
-
-    if models.is_empty() {
-        tracing::warn!("ChatGPT API returned no compatible models; using hardcoded base only");
+    let listed = crate::models::chatgpt_models_from_codex_listing(&body);
+    if listed.is_empty() {
+        tracing::warn!("ChatGPT listed no selectable models; using bundled model list");
         return Ok(fallback_models);
     }
 
-    tracing::info!("Resolved {} compatible models for ChatGPT", models.len());
+    ModelRegistry::set_live_chatgpt_models(listed.iter().map(|model| model.slug.clone()));
+    let efforts = listed
+        .iter()
+        .filter(|model| !model.efforts.is_empty())
+        .map(|model| (model.slug.clone(), model.efforts.clone()))
+        .collect::<HashMap<_, _>>();
+    if !efforts.is_empty() {
+        ModelRegistry::replace_live_model_effort_provider("chatgpt", efforts);
+    }
+
+    let models: Vec<ModelInfo> = listed
+        .iter()
+        .map(|model| ModelRegistry::model_info("chatgpt", &model.slug))
+        .collect();
+    tracing::info!("Resolved {} models for ChatGPT", models.len());
     Ok(models)
 }
 

@@ -2,7 +2,7 @@ use rig::catalog::{Catalog, ModelSpec};
 use rig::completion::Effort;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 #[cfg(not(test))]
@@ -11,9 +11,6 @@ use tokio::sync::{Notify, RwLock};
 
 #[cfg(not(test))]
 mod model_lists {
-    pub use rig::providers::anthropic::completion::{
-        CLAUDE_HAIKU_4_5, CLAUDE_OPUS_4_6, CLAUDE_OPUS_4_7, CLAUDE_SONNET_4_6,
-    };
     pub use rig::providers::gemini::completion::{
         GEMINI_2_0_FLASH, GEMINI_2_5_FLASH, GEMINI_2_5_PRO_EXP_03_25, GEMINI_2_5_PRO_PREVIEW_06_05,
         GEMINI_3_1_FLASH_LITE_PREVIEW, GEMINI_3_FLASH_PREVIEW,
@@ -116,13 +113,6 @@ mod model_lists {
         GPT_4_1,
     ];
 
-    pub const ANTHROPIC_MODELS: &[&str] = &[
-        CLAUDE_OPUS_4_6,
-        CLAUDE_OPUS_4_7,
-        CLAUDE_SONNET_4_6,
-        CLAUDE_HAIKU_4_5,
-    ];
-
     pub const GEMINI_MODELS: &[&str] = &[
         GEMINI_3_1_FLASH_LITE_PREVIEW,
         GEMINI_3_FLASH_PREVIEW,
@@ -163,28 +153,6 @@ mod model_lists {
         PIXTRAL_SMALL,
         MISTRAL_NEMO,
         CODESTRAL_MAMBA,
-    ];
-
-    pub const CHATGPT_MODELS: &[&str] = &[
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex-spark",
-    ];
-
-    pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-pro",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
     ];
 
     pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
@@ -279,13 +247,6 @@ mod model_lists {
         "gpt-4.1",
     ];
 
-    pub const ANTHROPIC_MODELS: &[&str] = &[
-        "claude-opus-4-6",
-        "claude-opus-4-7",
-        "claude-sonnet-4-6",
-        "claude-haiku-4-5",
-    ];
-
     pub const GEMINI_MODELS: &[&str] = &[
         "gemini-3.1-flash-lite-preview",
         "gemini-3-flash-preview",
@@ -326,28 +287,6 @@ mod model_lists {
         "pixtral-12b-2409",
         "open-mistral-nemo",
         "open-codestral-mamba",
-    ];
-
-    pub const CHATGPT_MODELS: &[&str] = &[
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex-spark",
-    ];
-
-    pub const CHATGPT_DISCOVERABLE_MODELS: &[&str] = &[
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-pro",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
     ];
 
     pub const GITHUB_COPILOT_MODELS: &[&str] = &[];
@@ -397,10 +336,94 @@ mod model_lists {
 }
 
 use model_lists::{
-    ANTHROPIC_MODELS, CHATGPT_DISCOVERABLE_MODELS, CHATGPT_MODELS, GEMINI_MODELS,
-    GITHUB_COPILOT_MODELS, GROK_MODELS, GROQ_MODELS, MISTRAL_MODELS, OPENAI_MODELS,
+    GEMINI_MODELS, GITHUB_COPILOT_MODELS, GROK_MODELS, GROQ_MODELS, MISTRAL_MODELS, OPENAI_MODELS,
     OPENCODE_GO_MODELS,
 };
+
+static CHATGPT_FALLBACK_MODELS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    // Plan-gated `-pro` models stay out of the offline list; the live listing
+    // adds them for accounts that have them.
+    catalog_models_newest_first("chatgpt", |spec| spec.tools && !spec.id.ends_with("-pro"))
+});
+
+static ANTHROPIC_FALLBACK_MODELS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    catalog_models_newest_first("anthropic", |spec| {
+        spec.tools && !is_dated_snapshot(&spec.id)
+    })
+});
+
+/// Models the signed-in ChatGPT account listed on its last fetch, which may
+/// include models newer than the bundled catalog.
+static LIVE_CHATGPT_MODELS: LazyLock<StdRwLock<HashSet<String>>> =
+    LazyLock::new(|| StdRwLock::new(HashSet::new()));
+
+fn catalog_models_newest_first(
+    vendor: &str,
+    keep: impl Fn(&ModelSpec) -> bool,
+) -> Vec<&'static str> {
+    let mut specs: Vec<&'static ModelSpec> = Catalog::builtin()
+        .iter()
+        .filter(|spec| spec.provider.vendor() == vendor && !spec.deprecated && keep(spec))
+        .collect();
+    specs.sort_by_key(|spec| (std::cmp::Reverse(spec.details.release_date.as_deref()), &spec.id));
+    let mut seen = HashSet::new();
+    specs
+        .into_iter()
+        .filter_map(|spec| {
+            let id = spec.id.as_str();
+            seen.insert(id).then_some(id)
+        })
+        .collect()
+}
+
+fn is_dated_snapshot(id: &str) -> bool {
+    id.rsplit('-').next().is_some_and(|suffix| {
+        suffix.len() == 8 && suffix.starts_with("20") && suffix.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// A model the ChatGPT Codex backend lists for the signed-in account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ChatGptListedModel {
+    pub slug: String,
+    pub efforts: Vec<String>,
+}
+
+/// The pickable models in a `backend-api/codex/models` response, in the
+/// backend's priority order. Models marked `visibility: "hide"` are internal
+/// (auto-review, reserve capacity) and are skipped.
+pub(crate) fn chatgpt_models_from_codex_listing(
+    body: &serde_json::Value,
+) -> Vec<ChatGptListedModel> {
+    let mut entries: Vec<_> = body["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"].as_str().is_none_or(|v| v == "list"))
+        .collect();
+    entries.sort_by_key(|model| model["priority"].as_i64().unwrap_or(i64::MAX));
+
+    let mut seen = HashSet::new();
+    entries
+        .into_iter()
+        .filter_map(|model| {
+            let slug = model["slug"].as_str()?.trim();
+            if slug.is_empty() || !seen.insert(slug.to_owned()) {
+                return None;
+            }
+            let efforts = model["supported_reasoning_levels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|level| level["effort"].as_str().map(str::to_owned))
+                .collect();
+            Some(ChatGptListedModel {
+                slug: slug.to_owned(),
+                efforts,
+            })
+        })
+        .collect()
+}
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct ModelVariant {
@@ -643,6 +666,21 @@ impl ModelRegistry {
             } else {
                 None
             };
+
+            // Copilot's Chat Completions route rejects typed options ("unverified for copilot").
+            // Rig requires unverified gateway options to pass via additional_params.
+            if provider == "github_copilot" && !Self::copilot_model_routes_through_responses(model)
+            {
+                let mut params = default_additional_params.unwrap_or_else(|| json!({}));
+                params["reasoning_effort"] = json!(definition.effort.as_str());
+                return ResolvedModelVariant {
+                    variant: Some(definition.id),
+                    effort: None,
+                    additional_params: Some(params),
+                    warning,
+                };
+            }
+
             return ResolvedModelVariant {
                 variant: Some(definition.id),
                 effort: Some(definition.effort),
@@ -726,11 +764,11 @@ impl ModelRegistry {
     pub fn models_for_provider(provider: &str) -> &'static [&'static str] {
         match provider {
             "openai" => OPENAI_MODELS,
-            "chatgpt" => CHATGPT_MODELS,
+            "chatgpt" => CHATGPT_FALLBACK_MODELS.as_slice(),
             "github_copilot" => GITHUB_COPILOT_MODELS,
             "grok" => GROK_MODELS,
             "xai" => GROK_MODELS,
-            "anthropic" => ANTHROPIC_MODELS,
+            "anthropic" => ANTHROPIC_FALLBACK_MODELS.as_slice(),
             "gemini" => GEMINI_MODELS,
             "groq" => GROQ_MODELS,
             "mistral" => MISTRAL_MODELS,
@@ -740,18 +778,38 @@ impl ModelRegistry {
     }
 
     pub fn is_chatgpt_subscription_model(model: &str) -> bool {
-        CHATGPT_DISCOVERABLE_MODELS.contains(&model)
+        let listed_live = LIVE_CHATGPT_MODELS
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(model);
+        listed_live
+            || rig::providers::registry::ProviderId::catalog("chatgpt")
+                .and_then(|provider| Catalog::builtin().get_exact(provider, model))
+                .is_some_and(|spec| !spec.deprecated)
+    }
+
+    pub(crate) fn set_live_chatgpt_models(models: impl IntoIterator<Item = String>) {
+        *LIVE_CHATGPT_MODELS
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = models.into_iter().collect();
     }
 
     pub(crate) async fn copilot_supported_endpoints(model: &str) -> Option<Vec<String>> {
         let cache = MODEL_CACHE.read().await;
-        cache.values().find_map(|entry| {
-            entry
-                .models
-                .iter()
-                .find(|info| info.provider == "github_copilot" && info.model == model)
-                .and_then(|info| info.copilot_supported_endpoints.clone())
-        })
+        copilot_supported_endpoints_from_cache(&cache, model)
+    }
+
+    pub(crate) fn copilot_supported_endpoints_sync(model: &str) -> Option<Vec<String>> {
+        let cache = MODEL_CACHE.try_read().ok()?;
+        copilot_supported_endpoints_from_cache(&cache, model)
+    }
+
+    pub(crate) fn copilot_model_routes_through_responses(model: &str) -> bool {
+        let endpoints = Self::copilot_supported_endpoints_sync(model);
+        matches!(
+            crate::provider_client::copilot_route_for_model(model, endpoints.as_deref()),
+            Some(rig::providers::openai::Route::Responses)
+        )
     }
 
     #[allow(dead_code)]
@@ -926,6 +984,19 @@ impl ModelRegistry {
     }
 }
 
+fn copilot_supported_endpoints_from_cache(
+    cache: &HashMap<String, CachedModelList>,
+    model: &str,
+) -> Option<Vec<String>> {
+    cache.values().find_map(|entry| {
+        entry
+            .models
+            .iter()
+            .find(|info| info.provider == "github_copilot" && info.model == model)
+            .and_then(|info| info.copilot_supported_endpoints.clone())
+    })
+}
+
 fn parse_live_model_effort_catalog(
     json: &str,
 ) -> Result<LiveModelEffortCatalog, serde_json::Error> {
@@ -1093,24 +1164,37 @@ fn catalog_model_spec(provider: &str, model: &str) -> Option<&'static ModelSpec>
 
     match provider {
         "chatgpt" => resolve(format!("openai/{model}")),
+        "github_copilot" => {
+            if let Some(spec) = resolve(format!("openai/{model}")) {
+                return Some(spec);
+            }
+            unambiguous_reasoning_spec(catalog, model)
+        }
         "opencode_go" => {
             if let Some(spec) = resolve(format!("openai/{model}")) {
                 return Some(spec);
             }
 
-            // ponytail: gateway IDs must resolve unambiguously by exact model ID; provider capability metadata would remove this ceiling.
-            let mut matches = catalog.iter().filter(|spec| spec.id == model);
-            let first = matches.next()?;
-            let reasoning = &first.reasoning;
-            matches
-                .all(|spec| {
-                    spec.reasoning.supported() == reasoning.supported()
-                        && spec.reasoning.levels() == reasoning.levels()
-                })
-                .then_some(first)
+            unambiguous_reasoning_spec(catalog, model)
         }
         _ => None,
     }
+}
+
+fn unambiguous_reasoning_spec(
+    catalog: &'static Catalog,
+    model: &str,
+) -> Option<&'static ModelSpec> {
+    // ponytail: conflicting IDs get no variants; use provider-specific reasoning metadata to disambiguate.
+    let mut matches = catalog.iter().filter(|spec| spec.id == model);
+    let first = matches.next()?;
+    let reasoning = &first.reasoning;
+    matches
+        .all(|spec| {
+            spec.reasoning.supported() == reasoning.supported()
+                && spec.reasoning.levels() == reasoning.levels()
+        })
+        .then_some(first)
 }
 
 fn variant_definition_for_effort(effort: Effort) -> ModelVariantDefinition {
@@ -1459,6 +1543,81 @@ mod tests {
     }
 
     #[test]
+    fn github_copilot_chat_models_resolve_variants_to_reasoning_effort_param() {
+        let expected = [
+            ("reasoning-low", "low"),
+            ("reasoning-medium", "medium"),
+            ("reasoning-high", "high"),
+            ("reasoning-extra-high", "xhigh"),
+            ("reasoning-max", "max"),
+        ];
+        let model = ModelRegistry::model_info("github_copilot", "claude-fable-5.1");
+
+        assert_eq!(
+            variant_ids(&model),
+            expected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+        );
+        for (variant, effort_str) in expected {
+            let resolved = ModelRegistry::resolve_model_variant(
+                "github_copilot",
+                "claude-fable-5.1",
+                Some(variant),
+            );
+            assert_eq!(resolved.variant.as_deref(), Some(variant));
+            // Rig rejects typed options on Copilot Chat; effort must be None so options.reasoning stays unset
+            assert_eq!(resolved.effort, None);
+            assert_eq!(
+                resolved.additional_params,
+                Some(json!({ "reasoning_effort": effort_str }))
+            );
+            assert!(resolved.warning.is_none());
+        }
+
+        let default =
+            ModelRegistry::resolve_model_variant("github_copilot", "claude-fable-5.1", None);
+        assert_eq!(default.variant, None);
+        assert_eq!(default.effort, None);
+        assert_eq!(default.additional_params, None);
+    }
+
+    #[test]
+    fn github_copilot_responses_models_keep_typed_effort() {
+        let resolved = ModelRegistry::resolve_model_variant(
+            "github_copilot",
+            "gpt-5.3-codex",
+            Some("reasoning-high"),
+        );
+        assert_eq!(resolved.variant.as_deref(), Some("reasoning-high"));
+        assert_eq!(resolved.effort, Some(Effort::High));
+        assert!(resolved.additional_params.is_none());
+    }
+
+    #[test]
+    fn github_copilot_resolves_unprefixed_catalog_model_ids() {
+        let openai_fallback = ModelRegistry::model_info("github_copilot", "gpt-5.3-codex");
+        assert_eq!(
+            variant_ids(&openai_fallback),
+            vec![
+                "reasoning-low",
+                "reasoning-medium",
+                "reasoning-high",
+                "reasoning-extra-high"
+            ]
+        );
+
+        let unambiguous_fallback = ModelRegistry::model_info("github_copilot", "claude-sonnet-4-6");
+        assert_eq!(
+            variant_ids(&unambiguous_fallback),
+            vec![
+                "reasoning-low",
+                "reasoning-medium",
+                "reasoning-high",
+                "reasoning-max"
+            ]
+        );
+    }
+
+    #[test]
     fn missing_model_variant_falls_back_to_default_with_warning() {
         let resolved =
             ModelRegistry::resolve_model_variant("openai", "gpt-5.2", Some("missing-variant"));
@@ -1483,21 +1642,26 @@ mod tests {
     }
 
     #[test]
-    fn test_chatgpt_subscription_models_include_current_codex_options() {
-        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.6-sol"));
-        assert!(ModelRegistry::is_chatgpt_subscription_model(
-            "gpt-5.6-terra"
-        ));
-        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.6-luna"));
-        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.5"));
-        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4"));
-        assert!(ModelRegistry::is_chatgpt_subscription_model("gpt-5.4-mini"));
-        assert!(ModelRegistry::is_chatgpt_subscription_model(
-            "gpt-5.3-codex"
-        ));
-        assert!(ModelRegistry::is_chatgpt_subscription_model(
-            "gpt-5.3-codex-spark"
-        ));
+    fn test_chatgpt_subscription_models_follow_the_rig_catalog() {
+        for model in [
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+        ] {
+            assert!(
+                ModelRegistry::is_chatgpt_subscription_model(model),
+                "{model} should be a ChatGPT subscription model"
+            );
+        }
     }
 
     #[test]
@@ -1511,24 +1675,85 @@ mod tests {
         assert!(!ModelRegistry::is_chatgpt_subscription_model("gpt-4o"));
         assert!(!ModelRegistry::is_chatgpt_subscription_model("chat-latest"));
         assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-5.3-chat-latest"
+        ));
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-6-sol-wm"
+        ));
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
             "text-embedding-3-large"
         ));
     }
 
     #[test]
-    fn test_chatgpt_hardcoded_fallback_omits_tier_specific_models() {
+    fn test_chatgpt_live_listing_admits_models_newer_than_the_catalog() {
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-test-future-listed"
+        ));
+        ModelRegistry::set_live_chatgpt_models(["gpt-test-future-listed".to_string()]);
+        assert!(ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-test-future-listed"
+        ));
+        ModelRegistry::set_live_chatgpt_models(Vec::<String>::new());
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-test-future-listed"
+        ));
+    }
+
+    #[test]
+    fn test_chatgpt_fallback_comes_from_the_catalog_newest_first() {
         let models = ModelRegistry::models_for_provider("chatgpt");
 
-        assert_eq!(models.first(), Some(&"gpt-5.6-sol"));
-        assert!(models.contains(&"gpt-5.6-sol"));
-        assert!(models.contains(&"gpt-5.6-terra"));
-        assert!(models.contains(&"gpt-5.6-luna"));
-        assert!(models.contains(&"gpt-5.5"));
-        assert!(models.contains(&"gpt-5.4"));
-        assert!(models.contains(&"gpt-5.4-mini"));
-        assert!(models.contains(&"gpt-5.3-codex-spark"));
-        assert!(!models.contains(&"gpt-5.3-codex"));
+        assert_eq!(models.first(), Some(&"gpt-6.1-terra"));
+        for model in ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol"] {
+            assert!(models.contains(&model), "missing {model}");
+        }
         assert!(!models.contains(&"gpt-5.4-pro"));
+        assert!(!models.contains(&"gpt-5.3-chat-latest"));
+    }
+
+    #[test]
+    fn test_anthropic_fallback_includes_current_claude_models_without_snapshots() {
+        let models = ModelRegistry::models_for_provider("anthropic");
+
+        for model in [
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-fable-5",
+            "claude-sonnet-5-5",
+            "claude-opus-4-7",
+        ] {
+            assert!(models.contains(&model), "missing {model}");
+        }
+        assert!(!models.contains(&"claude-sonnet-4-5-20250929"));
+        assert!(!models.contains(&"claude-opus-4-0"));
+    }
+
+    #[test]
+    fn test_codex_listing_keeps_listed_models_in_priority_order() {
+        let body = json!({"models": [
+            {"slug": "gpt-6-sol", "visibility": "list", "priority": 4,
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "max"}]},
+            {"slug": "codex-auto-review", "visibility": "hide", "priority": 10},
+            {"slug": "gpt-6.1-sol", "visibility": "list", "priority": 1,
+             "supported_reasoning_levels": [{"effort": "medium"}, {"effort": "ultra"}]},
+            {"slug": "gpt-reserve", "visibility": "hide", "priority": 5},
+            {"slug": "gpt-6-sol", "visibility": "list", "priority": 6},
+            {"slug": "  ", "visibility": "list"},
+            {"visibility": "list"},
+            {"slug": "no-visibility-field"}
+        ]});
+
+        let listed = chatgpt_models_from_codex_listing(&body);
+
+        assert_eq!(
+            listed.iter().map(|m| m.slug.as_str()).collect::<Vec<_>>(),
+            ["gpt-6.1-sol", "gpt-6-sol", "no-visibility-field"]
+        );
+        assert_eq!(listed[0].efforts, ["medium", "ultra"]);
+        assert_eq!(listed[1].efforts, ["low", "max"]);
+        assert!(listed[2].efforts.is_empty());
+        assert!(chatgpt_models_from_codex_listing(&json!({})).is_empty());
     }
 
     #[test]

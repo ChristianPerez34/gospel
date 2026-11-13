@@ -44,7 +44,7 @@ pub(crate) async fn completion_model(
     let model = match provider {
         "openai" => openai::OpenAI::new(api_key).completion(model).into(),
         "chatgpt" => {
-            let auth = chatgpt_authenticator(None)
+            let auth = chatgpt_authenticator()
                 .auth_context(&rig::rig_reqwest::shared())
                 .await
                 .map_err(|e| client_err(e.to_string()))?;
@@ -115,9 +115,7 @@ fn copilot_completion_model(
     model: &str,
     supported_endpoints: Option<&[String]>,
 ) -> CompletionModel {
-    let route = supported_endpoints
-        .and_then(copilot_route_from_supported_endpoints)
-        .or_else(|| copilot_response_fallback(model));
+    let route = copilot_route_for_model(model, supported_endpoints);
     if let Some(route) = route {
         openai::OpenAIConfig::with_key(&copilot::wire::DIALECT, config.api_key.clone())
             .with_base_url(config.base_url.clone())
@@ -129,6 +127,15 @@ fn copilot_completion_model(
         // ponytail: endpoint-less catalogs fall back to Rig; endpoint metadata removes this ceiling.
         config.connect(http).completion(model).into()
     }
+}
+
+pub(crate) fn copilot_route_for_model(
+    model: &str,
+    supported_endpoints: Option<&[String]>,
+) -> Option<openai::Route> {
+    supported_endpoints
+        .and_then(copilot_route_from_supported_endpoints)
+        .or_else(|| copilot_response_fallback(model))
 }
 
 fn copilot_route_from_supported_endpoints(endpoints: &[String]) -> Option<openai::Route> {
@@ -152,18 +159,14 @@ fn copilot_response_fallback(model: &str) -> Option<openai::Route> {
     (id.contains("codex") || id.starts_with("gpt-6.1-")).then_some(openai::Route::Responses)
 }
 
-/// The ChatGPT subscription authenticator over Gospel's auth cache. A device
-/// code handler enables the interactive login; without one only the cached
-/// session (refreshed when needed) is used.
-pub(crate) fn chatgpt_authenticator(
-    device_code_handler: Option<chatgpt::auth::DeviceCodeHandler>,
-) -> chatgpt::auth::Authenticator {
-    let allow_device_flow = device_code_handler.is_some();
+/// The ChatGPT subscription authenticator over Gospel's auth cache. Requests
+/// use only the cached session; interactive browser sign-in is started explicitly.
+pub(crate) fn chatgpt_authenticator() -> chatgpt::auth::Authenticator {
     chatgpt::auth::Authenticator::new(
         chatgpt::auth::AuthSource::OAuth,
         crate::provider_token_store::ProviderTokenStore,
-        device_code_handler.unwrap_or_default(),
-        allow_device_flow,
+        chatgpt::auth::DeviceCodeHandler::default(),
+        false,
     )
 }
 
@@ -432,6 +435,15 @@ mod tests {
             copilot_response_fallback("gpt-6.1-sol"),
             Some(openai::Route::Responses)
         );
+        assert_eq!(
+            copilot_route_for_model("future-model", Some(&["/responses".to_string()])),
+            Some(openai::Route::Responses)
+        );
+        assert_eq!(
+            copilot_route_for_model("gpt-6.1-sol", None),
+            Some(openai::Route::Responses)
+        );
+        assert_eq!(copilot_route_for_model("future-model", None), None);
     }
 
     #[test]

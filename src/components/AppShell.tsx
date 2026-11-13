@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAgents } from "../hooks/useAgents";
 import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
@@ -18,6 +19,7 @@ import {
   type Session,
   type Workspace,
 } from "../types";
+import { BountyFindingsPanel } from "./BountyFindingsPanel";
 import { ChatView } from "./ChatView";
 import { CommandCenter, LiveTaskMonitor } from "./CommandCenter";
 import { CommandPalette } from "./CommandPalette";
@@ -46,6 +48,7 @@ interface BackendSessionRecord {
   variant?: string | null;
   status: string;
   workspace_id: string | null;
+  agent_id?: string | null;
   updated_at: string;
 }
 
@@ -78,6 +81,51 @@ function mergeLoadedSessions(loadedSessions: Session[], existingSessions: Sessio
   }
 
   return sortSessionsByTimestamp(Array.from(byId.values()));
+}
+
+type SessionHistory = {
+  sessions: BackendSessionRecord[];
+  archivedSessions: BackendArchivedSessionRecord[];
+  failedWorkspaceIds: Set<string>;
+  firstError: unknown;
+};
+
+async function fetchSessionHistory(workspaceIds: string[]): Promise<SessionHistory> {
+  const results = await Promise.all(
+    workspaceIds.map(async (workspaceId) => {
+      const [live, archived] = await Promise.allSettled([
+        invoke<BackendSessionRecord[]>("list_sessions", { workspaceId }),
+        invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId }),
+      ]);
+      return { workspaceId, live, archived };
+    })
+  );
+  const history: SessionHistory = {
+    sessions: [],
+    archivedSessions: [],
+    failedWorkspaceIds: new Set(),
+    firstError: undefined,
+  };
+  for (const { workspaceId, live, archived } of results) {
+    if (live.status === "fulfilled" && archived.status === "fulfilled") {
+      history.sessions.push(...live.value);
+      history.archivedSessions.push(...archived.value);
+      continue;
+    }
+    history.failedWorkspaceIds.add(workspaceId);
+    history.firstError ??=
+      live.status === "rejected"
+        ? live.reason
+        : archived.status === "rejected"
+          ? archived.reason
+          : undefined;
+  }
+  return history;
+}
+
+// A workspace whose history failed to load keeps what was already shown.
+function retainFailedWorkspaces(items: Session[], failedWorkspaceIds: Set<string>): Session[] {
+  return items.filter((item) => item.workspaceId && failedWorkspaceIds.has(item.workspaceId));
 }
 
 function groupSessionsByWorkspace(items: Session[]): Session[][] {
@@ -120,6 +168,7 @@ export function AppShell() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [skillOptOpen, setSkillOptOpen] = useState(isSkillOptPanelRequest);
+  const [findingsOpen, setFindingsOpen] = useState(false);
   const sessionToggleRef = useRef<HTMLButtonElement>(null);
   // The task rail reports its displayed order here so session shortcuts and
   // the palette's needs-you jump target exactly what the user sees.
@@ -160,6 +209,8 @@ export function AppShell() {
     loading: workspacesLoading,
   } = useWorkspaces();
   const { toasts, dismissToast, showError, showSuccess } = useToasts();
+  const { agents } = useAgents(activeWorkspace?.path);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const {
     models,
     providers,
@@ -214,12 +265,36 @@ export function AppShell() {
     sessions,
     onSessionsChange: setSessions,
     activeWorkspaceId: activeWorkspace?.id,
+    agentId: selectedAgentId,
     onSwitchWorkspace: switchWorkspace,
     onError: showError,
     onSuccess: showSuccess,
     onOpenSettings: openSettings,
     onModelVariantFallback: handleModelVariantFallback,
   });
+
+  useEffect(() => {
+    const active = sessions.find((item) => item.id === session.activeSessionId);
+    setSelectedAgentId(active?.agentId ?? null);
+  }, [session.activeSessionId, sessions]);
+
+  const handleAgentChange = useCallback(
+    (agentId: string | null) => {
+      setSelectedAgentId(agentId);
+      const sessionId = session.activeSessionId;
+      if (!sessionId) return;
+      const active = sessions.find((item) => item.id === sessionId);
+      setSessions((previous) =>
+        previous.map((item) => (item.id === sessionId ? { ...item, agentId } : item))
+      );
+      if (active?.backendCreated !== false) {
+        void invoke("set_session_agent", { sessionId, agentId }).catch((error) => {
+          showError(`Failed to save agent selection: ${error}`);
+        });
+      }
+    },
+    [session.activeSessionId, sessions, showError]
+  );
   const gitContext = useWorkspaceGitContext(
     overviewOpen || !session.activeSessionId ? undefined : activeWorkspace?.id
   );
@@ -307,6 +382,7 @@ export function AppShell() {
       status: (session.status === "active" ? "idle" : "error") as Session["status"],
       backendCreated: true,
       workspaceId: session.workspace_id ?? undefined,
+      agentId: session.agent_id ?? null,
     }));
   }, []);
 
@@ -342,6 +418,32 @@ export function AppShell() {
     setArchiveStats(stats);
   }, []);
 
+  const applySessionHistory = useCallback(
+    (history: SessionHistory, canMergeSessions: () => boolean = () => true) => {
+      const { failedWorkspaceIds } = history;
+      const loaded = mapBackendSessions(history.sessions);
+      const loadedArchived = mapBackendArchivedSessions(history.archivedSessions);
+      setSessions((prev) =>
+        canMergeSessions()
+          ? mergeLoadedSessions(
+              [...loaded, ...retainFailedWorkspaces(prev, failedWorkspaceIds)],
+              prev
+            )
+          : prev
+      );
+      setArchivedSessions((prev) =>
+        sortSessionsByTimestamp([
+          ...loadedArchived,
+          ...retainFailedWorkspaces(prev, failedWorkspaceIds),
+        ])
+      );
+      if (failedWorkspaceIds.size > 0) {
+        showError(`Failed to load session history: ${history.firstError}`);
+      }
+    },
+    [mapBackendArchivedSessions, mapBackendSessions, showError]
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -357,32 +459,15 @@ export function AppShell() {
         return;
       }
 
-      const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
-        Promise.all(
-          ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id }))
-        ),
-        Promise.all(
-          ids.map((id) =>
-            invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id })
-          )
-        ),
-      ]);
+      const history = await fetchSessionHistory(ids);
 
       if (cancelled) return;
 
-      const flattened = workspaceSessions.flatMap((backendSessions) =>
-        mapBackendSessions(backendSessions)
-      );
-      const flattenedArchived = workspaceArchivedSessions.flatMap((backendSessions) =>
-        mapBackendArchivedSessions(backendSessions)
-      );
       // A refresh started before chat creation must not remove the new draft.
-      setSessions((prev) =>
-        !creatingTaskRef.current && generation === sessionLoadGenerationRef.current
-          ? mergeLoadedSessions(flattened, prev)
-          : prev
+      applySessionHistory(
+        history,
+        () => !creatingTaskRef.current && generation === sessionLoadGenerationRef.current
       );
-      setArchivedSessions(sortSessionsByTimestamp(flattenedArchived));
       if (activeWorkspace?.id) {
         await loadArchiveMeta(activeWorkspace.id);
       } else {
@@ -390,18 +475,14 @@ export function AppShell() {
       }
     };
 
-    void loadWorkspaceSessions();
+    void loadWorkspaceSessions().catch((error) => {
+      if (!cancelled) showError(`Failed to load session history: ${error}`);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [
-    activeWorkspace?.id,
-    loadArchiveMeta,
-    mapBackendArchivedSessions,
-    mapBackendSessions,
-    workspaces,
-  ]);
+  }, [activeWorkspace?.id, applySessionHistory, loadArchiveMeta, showError, workspaces]);
 
   const reloadArchiveData = useCallback(async () => {
     const ids = workspaces.map((item) => item.id);
@@ -411,28 +492,9 @@ export function AppShell() {
       return;
     }
 
-    const [workspaceSessions, workspaceArchivedSessions] = await Promise.all([
-      Promise.all(
-        ids.map((id) => invoke<BackendSessionRecord[]>("list_sessions", { workspaceId: id }))
-      ),
-      Promise.all(
-        ids.map((id) =>
-          invoke<BackendArchivedSessionRecord[]>("list_archived_sessions", { workspaceId: id })
-        )
-      ),
-    ]);
-    setSessions((prev) => mergeLoadedSessions(workspaceSessions.flatMap(mapBackendSessions), prev));
-    setArchivedSessions(
-      sortSessionsByTimestamp(workspaceArchivedSessions.flatMap(mapBackendArchivedSessions))
-    );
+    applySessionHistory(await fetchSessionHistory(ids));
     await loadArchiveMeta(activeWorkspace?.id);
-  }, [
-    activeWorkspace?.id,
-    loadArchiveMeta,
-    mapBackendArchivedSessions,
-    mapBackendSessions,
-    workspaces,
-  ]);
+  }, [activeWorkspace?.id, applySessionHistory, loadArchiveMeta, workspaces]);
 
   const allSessions = useMemo(() => {
     return sortSessionsByTimestamp(session.sessions);
@@ -1111,9 +1173,12 @@ export function AppShell() {
                 modelPreferences={modelPreferences}
                 onModelChange={applyModelSelection}
                 onVariantChange={applyVariantSelection}
-                onSend={(message, skill) => {
+                agents={agents}
+                selectedAgentId={selectedAgentId}
+                onAgentChange={handleAgentChange}
+                onSend={(message, skill, delegatedAgent) => {
                   setOverviewOpen(false);
-                  session.handleSend(message, skill);
+                  session.handleSend(message, skill, delegatedAgent);
                 }}
                 onCancelStream={() => void session.cancelStream()}
                 isStreaming={session.isStreaming}
@@ -1249,6 +1314,7 @@ export function AppShell() {
         recentWorkspaces={workspaces}
         onSelectWorkspace={handleSwitchWorkspace}
         onOpenSkillOpt={() => setSkillOptOpen(true)}
+        onOpenBountyFindings={() => setFindingsOpen(true)}
         restoreFocusRef={commandPaletteRestoreRef}
         activityBySession={activityBySession}
         needsYouCount={needsYouCount}
@@ -1269,6 +1335,7 @@ export function AppShell() {
           onClose={() => setSkillOptOpen(false)}
         />
       )}
+      {findingsOpen && <BountyFindingsPanel onClose={() => setFindingsOpen(false)} />}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

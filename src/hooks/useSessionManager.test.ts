@@ -337,6 +337,7 @@ describe("useSessionManager", () => {
         provider: "openai",
         model: "gpt-4o",
         variant: null,
+        agentId: null,
       });
       expect(result.current.sessions[0]).toMatchObject({
         id: "named-task",
@@ -420,6 +421,7 @@ describe("useSessionManager", () => {
         model: "gpt-4o",
         variant: null,
         workspaceId: "ws-active",
+        agentId: null,
       });
       expect(result.current.activeSessionId).toBe("backend-session");
       expect(result.current.sessions[0]).toMatchObject({

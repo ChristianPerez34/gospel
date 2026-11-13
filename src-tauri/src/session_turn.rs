@@ -1,10 +1,14 @@
-use crate::harness_profile::ActiveWorkspaceContext;
+use crate::agents::{AgentDefinition, AgentOrchestration};
+use crate::harness_profile::{
+    resolve_custom_agent_profile, ActiveWorkspaceContext, CustomAgentProfileRequest, HarnessProfile,
+};
 use crate::llm::{
     self, LlmError, ReasoningPayload, ReasoningPhase, StreamCompletionResult, StreamEvent,
 };
 use crate::models::ModelRegistry;
 use crate::session_store::SessionNote;
 use crate::skills::{self, RunSkillScriptTool, Skill};
+use crate::subagent::{SubagentKind, SubagentStep};
 use crate::trace;
 use crate::verification::{VerificationResult, VerificationStatus};
 use rig::completion::message::{AssistantContent, Message, ToolResultContent, UserContent};
@@ -23,6 +27,12 @@ pub struct InvokedSkillRequest {
     pub args: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DelegatedAgentRequest {
+    pub name: String,
+    pub task: String,
+}
+
 pub struct StreamingTurnRequest {
     pub run_id: String,
     pub provider: String,
@@ -31,6 +41,8 @@ pub struct StreamingTurnRequest {
     pub variant: Option<String>,
     pub session_id: Option<String>,
     pub invoked_skill: Option<InvokedSkillRequest>,
+    pub agent_id: Option<String>,
+    pub delegated_agent: Option<DelegatedAgentRequest>,
     pub delegate_provider: String,
     pub delegate_model: String,
     pub delegate_api_key: String,
@@ -44,6 +56,7 @@ pub struct StreamingTurnDependencies<'a> {
     pub sessions: &'a dyn SessionTurnSessions,
     pub conversation: &'a dyn SessionTurnConversation,
     pub skills: &'a dyn SessionTurnSkills,
+    pub agents: &'a dyn SessionTurnAgents,
     pub llm: &'a dyn SessionTurnLlm,
     pub events: &'a dyn SessionTurnEvents,
     pub verification: &'a dyn SessionTurnVerification,
@@ -69,7 +82,7 @@ pub trait SessionTurnSessions: Send + Sync {
 
     fn unresolved_notes(&self, session_id: &str) -> Vec<SessionNote>;
 
-    fn failure_snapshot(&self, session_id: &str) -> Option<SessionFailureSnapshot>;
+    fn persisted_snapshot(&self, session_id: &str) -> Option<SessionSnapshot>;
 
     fn persist_turn(
         &self,
@@ -90,7 +103,7 @@ pub trait SessionTurnSessions: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionFailureSnapshot {
+pub struct SessionSnapshot {
     pub display_transcript: String,
     pub model_history: Option<String>,
 }
@@ -102,6 +115,10 @@ pub trait SessionTurnConversation: Send + Sync {
 
 pub trait SessionTurnSkills: Send + Sync {
     fn load_skills(&self, workspace_path: Option<&Path>) -> Vec<Skill>;
+}
+
+pub trait SessionTurnAgents: Send + Sync {
+    fn load_agents(&self, workspace_path: Option<&Path>) -> Vec<AgentDefinition>;
 }
 
 pub struct SessionTurnStreamRequest<'a> {
@@ -119,6 +136,7 @@ pub struct SessionTurnStreamRequest<'a> {
     pub invoked_skill_section: Option<String>,
     pub memory_section: Option<String>,
     pub skill_script_tool: Option<RunSkillScriptTool>,
+    pub custom_profile: Option<HarnessProfile>,
     /// Conversation id forwarded to providers that accept a session header
     /// (OpenCode Go) for routing and prompt-cache optimization.
     pub session_id: Option<&'a str>,
@@ -394,13 +412,210 @@ pub async fn run_streaming_turn(
         .chat_history(request.session_id.as_deref());
 
     let all_skills = deps.skills.load_skills(workspace_path.as_deref());
+    let session_agent = match request.agent_id.as_deref() {
+        Some(name) => {
+            if workspace_path.is_none() {
+                return Err(LlmError::ProviderError(
+                    "custom agents require an active workspace".to_string(),
+                )
+                .to_dto());
+            }
+            let agents = deps.agents.load_agents(workspace_path.as_deref());
+            Some(
+                agents
+                    .into_iter()
+                    .find(|agent| agent.name == name)
+                    .ok_or_else(|| {
+                        LlmError::ProviderError(format!(
+                            "agent '{name}' was not found in .agents/agents"
+                        ))
+                        .to_dto()
+                    })?,
+            )
+        }
+        None => None,
+    };
+    let custom_profile = match session_agent
+        .as_ref()
+        .filter(|agent| agent.orchestration.is_none())
+    {
+        Some(agent) => {
+            let workspace_path = workspace_path.as_ref().expect("checked above");
+            let attached_skills_section = {
+                let attached: Vec<&Skill> = all_skills
+                    .iter()
+                    .filter(|skill| agent.skills.iter().any(|name| name == &skill.name))
+                    .collect();
+                if attached.is_empty() {
+                    None
+                } else {
+                    let mut section = String::from("## Attached Skills\n\n");
+                    for skill in attached {
+                        section.push_str(&format!("### {}\n\n{}\n\n", skill.name, skill.body));
+                    }
+                    Some(section)
+                }
+            };
+            Some(resolve_custom_agent_profile(CustomAgentProfileRequest {
+                agent: agent.clone(),
+                workspace_path: workspace_path.clone(),
+                run_id: request.run_id.clone(),
+                attached_skills_section,
+            }))
+        }
+        None => None,
+    };
+    // An orchestrated session agent is a pipeline, not a conversational
+    // profile: every prompt becomes an implicit @agent delegation.
+    let effective_delegation = request.delegated_agent.clone().or_else(|| {
+        session_agent
+            .as_ref()
+            .filter(|agent| agent.orchestration.is_some())
+            .map(|agent| DelegatedAgentRequest {
+                name: agent.name.clone(),
+                task: request.prompt.clone(),
+            })
+    });
+    let effective_prompt = match effective_delegation.as_ref() {
+        Some(delegation) => {
+            let agents = deps.agents.load_agents(workspace_path.as_deref());
+            match agents
+                .into_iter()
+                .find(|agent| agent.name == delegation.name)
+            {
+                Some(agent) => {
+                    let (agent_provider, agent_model) = match agent.model.as_ref() {
+                        Some(model) => (
+                            model.provider(&request.provider).to_string(),
+                            model.model_name().to_string(),
+                        ),
+                        None => (request.provider.clone(), request.model.clone()),
+                    };
+                    let agent_api_key = if agent_provider == request.provider {
+                        api_key.clone()
+                    } else {
+                        deps.credentials
+                            .api_key(&agent_provider)
+                            .map_err(|error| error.to_dto())?
+                    };
+                    let Some(workspace_path) = workspace_path.as_ref() else {
+                        return Err(LlmError::ProviderError(
+                            "delegated agents require an active workspace".to_string(),
+                        )
+                        .to_dto());
+                    };
+                    let workspace = ActiveWorkspaceContext {
+                        workspace_path: workspace_path.clone(),
+                        source_edit_allowed: false,
+                    };
+                    let delegation_run_id =
+                        format!("{}-delegated-{}", request.run_id, delegation.name);
+                    let delegation_tool_id = format!("delegate-{}", request.run_id);
+                    let trace_sid = request.session_id.as_deref().unwrap_or("").to_string();
+                    deps.events.emit_stream_event(
+                        &trace_sid,
+                        "main",
+                        &request.run_id,
+                        &SessionTurnEvent::ToolCall {
+                            id: delegation_tool_id.clone(),
+                            name: "delegate_agent".to_string(),
+                            arguments: json!({
+                                "agent": delegation.name,
+                                "task": delegation.task,
+                            }),
+                        },
+                    );
+                    let report = match agent.orchestration {
+                        Some(AgentOrchestration::Sweep) => {
+                            let (worker_provider, worker_model) = match agent
+                                .worker_model
+                                .as_ref()
+                            {
+                                Some(model) => (
+                                    model.provider(&agent_provider).to_string(),
+                                    model.model_name().to_string(),
+                                ),
+                                None => (agent_provider.clone(), agent_model.clone()),
+                            };
+                            let worker_api_key = if worker_provider == request.provider {
+                                api_key.clone()
+                            } else if worker_provider == agent_provider {
+                                agent_api_key.clone()
+                            } else {
+                                deps.credentials
+                                    .api_key(&worker_provider)
+                                    .map_err(|error| error.to_dto())?
+                            };
+                            let on_event = |event: SessionTurnEvent| {
+                                deps.events.emit_stream_event(
+                                    &trace_sid,
+                                    "main",
+                                    &request.run_id,
+                                    &event,
+                                );
+                            };
+                            crate::bounty::sweep::run_sweep(
+                                &crate::bounty::sweep::SweepRequest {
+                                    agent: &agent,
+                                    task: &delegation.task,
+                                    lead_provider: &agent_provider,
+                                    lead_model: &agent_model,
+                                    lead_api_key: &agent_api_key,
+                                    worker_provider: &worker_provider,
+                                    worker_model: &worker_model,
+                                    worker_api_key: &worker_api_key,
+                                    workspace: &workspace,
+                                    run_id: &delegation_run_id,
+                                    session_id: request.session_id.as_deref(),
+                                },
+                                &on_event,
+                            )
+                            .await
+                            .unwrap_or_else(|error| format!("Sweep failed: {error}"))
+                        }
+                        None => llm::run_delegated_agent(
+                            &agent_provider,
+                            &agent_model,
+                            &agent_api_key,
+                            &workspace,
+                            &agent,
+                            &delegation.task,
+                            &delegation_run_id,
+                            request.session_id.as_deref(),
+                        )
+                        .await
+                        .unwrap_or_else(|error| format!("Delegation failed: {error}")),
+                    };
+                    deps.events.emit_stream_event(
+                        &trace_sid,
+                        "main",
+                        &request.run_id,
+                        &SessionTurnEvent::ToolResult {
+                            id: delegation_tool_id,
+                            name: "delegate_agent".to_string(),
+                            result: report.clone(),
+                        },
+                    );
+                    format!(
+                        "## Delegated report from @{}\n\n{}\n\n---\n\n{}",
+                        delegation.name, report, request.prompt
+                    )
+                }
+                None => format!(
+                    "## Delegated report from @{}\n\nDelegation failed: agent not found.\n\n---\n\n{}",
+                    delegation.name, request.prompt
+                ),
+            }
+        }
+        None => request.prompt.clone(),
+    };
     let unresolved_notes = if let Some(sid) = request.session_id.as_deref() {
         deps.sessions.unresolved_notes(sid)
     } else {
         Vec::new()
     };
     let prompt_preparation = prepare_prompt(
-        &request.prompt,
+        &effective_prompt,
         &all_skills,
         request.invoked_skill.as_ref(),
         &unresolved_notes,
@@ -426,7 +641,11 @@ pub async fn run_streaming_turn(
     };
 
     let trace_sid = request.session_id.clone().unwrap_or_default();
-    let trace_role = "main";
+    let trace_role = request
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| "main".to_string());
+    let trace_role_for_closure = trace_role.clone();
     let events = deps.events;
     let workspace_for_verify = workspace_context.clone();
     let run_id = request.run_id;
@@ -449,11 +668,17 @@ pub async fn run_streaming_turn(
                 invoked_skill_section: prompt_preparation.invoked_skill_section.clone(),
                 memory_section,
                 skill_script_tool,
+                custom_profile,
                 session_id: request.session_id.as_deref(),
                 run_id: Some(run_id.as_str()),
             },
             Box::new(move |event| {
-                events.emit_stream_event(&trace_sid, trace_role, &run_id_for_closure, &event);
+                events.emit_stream_event(
+                    &trace_sid,
+                    &trace_role_for_closure,
+                    &run_id_for_closure,
+                    &event,
+                );
             }),
         )
         .await;
@@ -462,33 +687,42 @@ pub async fn run_streaming_turn(
         Ok(stream_result) => {
             deps.events.trace_done(
                 request.session_id.as_deref().unwrap_or(""),
-                "main",
+                &trace_role,
                 stream_result.full_response.len(),
                 stream_result.prompt_tokens,
                 stream_result.response_tokens,
                 stream_result.tool_calls,
             );
-            if let (Some(sid), Some(persistence)) = (
-                &request.session_id,
-                successful_turn_persistence(stream_result.history.as_deref()),
-            ) {
-                if let Err(e) = deps.sessions.persist_turn(
-                    sid,
-                    &persistence.display_transcript,
-                    persistence.model_history.as_deref(),
-                ) {
-                    tracing::warn!("Failed to persist session {}: {}", sid, e);
-                } else {
-                    if let Err(e) = deps.sessions.update_status(sid, "active") {
-                        tracing::warn!("Failed to update session {} status: {}", sid, e);
+            if let Some(sid) = &request.session_id {
+                if let Some(persistence) =
+                    successful_turn_persistence(stream_result.history.as_deref())
+                {
+                    let display_transcript = merge_display_transcripts(
+                        deps.sessions
+                            .persisted_snapshot(sid)
+                            .map(|snapshot| snapshot.display_transcript)
+                            .as_deref()
+                            .unwrap_or("[]"),
+                        &persistence.display_transcript,
+                    );
+                    if let Err(e) = deps.sessions.persist_turn(
+                        sid,
+                        &display_transcript,
+                        persistence.model_history.as_deref(),
+                    ) {
+                        tracing::warn!("Failed to persist session {}: {}", sid, e);
+                    } else {
+                        if let Err(e) = deps.sessions.update_status(sid, "active") {
+                            tracing::warn!("Failed to update session {} status: {}", sid, e);
+                        }
+                        deps.conversation
+                            .store_history(sid, persistence.history.clone());
+                        deps.memory.schedule_ingest(MemoryIngestJobRequest {
+                            display_transcript: display_transcript.clone(),
+                            session_id: sid.clone(),
+                            workspace_id: workspace_resolution.workspace_id.clone(),
+                        });
                     }
-                    deps.conversation
-                        .store_history(sid, persistence.history.clone());
-                    deps.memory.schedule_ingest(MemoryIngestJobRequest {
-                        display_transcript: persistence.display_transcript.clone(),
-                        session_id: sid.clone(),
-                        workspace_id: workspace_resolution.workspace_id.clone(),
-                    });
                 }
             }
 
@@ -509,6 +743,7 @@ pub async fn run_streaming_turn(
                 &response_for_verify,
                 &prompt_preparation.effective_prompt,
                 request.session_id.as_deref(),
+                &run_id,
                 stream_result.source_edit_succeeded,
             ) {
                 deps.verification.schedule_verification(job);
@@ -518,9 +753,9 @@ pub async fn run_streaming_turn(
         }
         Err(e) => {
             deps.events
-                .trace_error(request.session_id.as_deref().unwrap_or(""), "main", &e);
+                .trace_error(request.session_id.as_deref().unwrap_or(""), &trace_role, &e);
             if let Some(sid) = &request.session_id {
-                if let Some(snapshot) = deps.sessions.failure_snapshot(sid) {
+                if let Some(snapshot) = deps.sessions.persisted_snapshot(sid) {
                     let persistence = failure_turn_persistence(
                         &snapshot.display_transcript,
                         snapshot.model_history.as_deref(),
@@ -657,6 +892,175 @@ pub struct SuccessfulTurnPersistence {
 pub struct FailureTurnPersistence {
     pub display_transcript: String,
     pub model_history: Option<String>,
+}
+
+fn transcript_entry_role(entry: &serde_json::Value) -> Option<&str> {
+    entry.get("role").and_then(|role| role.as_str())
+}
+
+/// A transcript entry left behind by a turn that failed or was stopped before
+/// Model History updated. Such turns exist only in the Display Transcript.
+fn is_terminal_failure_entry(entry: &serde_json::Value) -> bool {
+    entry.get("error").and_then(|v| v.as_bool()) == Some(true)
+        || entry
+            .get("controlled_stop")
+            .and_then(|v| v.as_bool())
+            == Some(true)
+}
+
+/// An assistant entry rebuilt from a tool result whose call was pruned from
+/// Model History: empty content and a single unnamed tool block.
+fn is_orphan_transcript_block(entry: &serde_json::Value) -> bool {
+    if transcript_entry_role(entry) != Some("assistant")
+        || !entry
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .is_empty()
+    {
+        return false;
+    }
+    if let Some(blocks) = entry.get("blocks").and_then(|b| b.as_array()) {
+        if blocks.len() == 1 {
+            return blocks[0]
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .is_empty();
+        }
+    }
+    false
+}
+
+/// Drop everything before the first user entry — a transcript's initiating
+/// user message is always item 0 — and remove orphan tool-result residue.
+fn sanitize_transcript_entries(mut entries: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    if let Some(first_user) = entries
+        .iter()
+        .position(|entry| transcript_entry_role(entry) == Some("user"))
+    {
+        entries.drain(..first_user);
+    }
+    entries.retain(|entry| !is_orphan_transcript_block(entry));
+    entries
+}
+
+/// Merge a freshly rebuilt Display Transcript with the persisted one.
+///
+/// Model History is pruned on a token budget, so the rebuild only covers a
+/// suffix of the conversation while the persisted transcript records
+/// everything the user saw. The overlap is positional rather than
+/// content-matched: the rebuild's last user entry is the prompt whose turn
+/// just completed, so its earlier user entries re-cover exactly the last
+/// `new_users - 1` persisted turns. Identical repeated prompts therefore
+/// cannot merge wrongly. Turns that never reached Model History (their
+/// response rows carry `error`/`controlled_stop`) are not overlap candidates;
+/// they survive in the kept prefix or are re-inserted after the persisted
+/// turn they originally followed.
+pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String {
+    let existing: Vec<serde_json::Value> =
+        serde_json::from_str(existing_json).unwrap_or_default();
+    let new_entries: Vec<serde_json::Value> =
+        serde_json::from_str(new_json).unwrap_or_default();
+
+    let Some(new_user_idx) = new_entries
+        .iter()
+        .position(|entry| transcript_entry_role(entry) == Some("user"))
+    else {
+        // The rebuild produced no user entry; keep history and append any
+        // non-orphan assistant entries it did produce.
+        let mut merged = sanitize_transcript_entries(existing);
+        merged.extend(new_entries.into_iter().filter(|entry| {
+            transcript_entry_role(entry) == Some("assistant")
+                && !is_orphan_transcript_block(entry)
+        }));
+        return serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string());
+    };
+    if existing.is_empty() {
+        return serde_json::to_string(&sanitize_transcript_entries(new_entries))
+            .unwrap_or_else(|_| "[]".to_string());
+    }
+
+    let rebuilt_user_turns = new_entries[new_user_idx..]
+        .iter()
+        .filter(|entry| transcript_entry_role(entry) == Some("user"))
+        .count()
+        .saturating_sub(1);
+
+    let existing_users: Vec<usize> = existing
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (transcript_entry_role(entry) == Some("user")).then_some(index)
+        })
+        .collect();
+    // Only turns that reached Model History can be re-covered by the rebuild.
+    let persisted_users: Vec<usize> = existing_users
+        .iter()
+        .enumerate()
+        .filter_map(|(position, &start)| {
+            let end = existing_users
+                .get(position + 1)
+                .copied()
+                .unwrap_or(existing.len());
+            (!existing[start..end].iter().any(is_terminal_failure_entry)).then_some(start)
+        })
+        .collect();
+
+    let overlap = rebuilt_user_turns.min(persisted_users.len());
+    let cut = if overlap == 0 {
+        existing.len()
+    } else {
+        persisted_users[persisted_users.len() - overlap]
+    };
+
+    let mut merged = sanitize_transcript_entries(existing[..cut].to_vec());
+
+    // Display-only turns in the dropped region (a prompt whose turn failed
+    // and was never retried) are re-inserted after the persisted turn they
+    // originally followed, so pruning cannot erase them. `failure_groups[i]`
+    // holds the failures that sat after the i-th dropped persisted turn.
+    let mut failure_groups: Vec<Vec<serde_json::Value>> = vec![Vec::new(); overlap];
+    if overlap > 0 {
+        let pos_cut = existing_users
+            .iter()
+            .position(|&index| index == cut)
+            .unwrap_or(existing_users.len());
+        let mut dropped_persisted = 0usize;
+        for pos in pos_cut..existing_users.len() {
+            let start = existing_users[pos];
+            let end = existing_users.get(pos + 1).copied().unwrap_or(existing.len());
+            let turn = &existing[start..end];
+            if turn.iter().any(is_terminal_failure_entry) {
+                if dropped_persisted > 0 {
+                    failure_groups[dropped_persisted - 1].extend(turn.iter().cloned());
+                }
+            } else {
+                dropped_persisted += 1;
+            }
+        }
+    }
+
+    // The i-th dropped persisted turn re-covers `new_users[rebuilt - overlap
+    // + i]`; its failures slot in before the next user entry, which for the
+    // last one is the current prompt.
+    let new_users: Vec<usize> = new_entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (transcript_entry_role(entry) == Some("user")).then_some(index)
+        })
+        .collect();
+    let keep = |entry: &&serde_json::Value| !is_orphan_transcript_block(entry);
+    let mut cursor = new_user_idx;
+    for (i, group) in failure_groups.iter().enumerate() {
+        let boundary = new_users[rebuilt_user_turns - overlap + i + 1];
+        merged.extend(new_entries[cursor..boundary].iter().filter(keep).cloned());
+        merged.extend_from_slice(group);
+        cursor = boundary;
+    }
+    merged.extend(new_entries[cursor..].iter().filter(keep).cloned());
+    serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string())
 }
 
 pub fn successful_turn_persistence(
@@ -830,6 +1234,16 @@ pub fn build_display_transcript(messages: &[Message]) -> Vec<serde_json::Value> 
         }
     }
 
+    // A transcript starts at its first user message. Model History pruned for
+    // the token budget can begin mid-turn, leaving assistant blocks orphaned
+    // in front of the initiating prompt.
+    if let Some(first_user) = entries
+        .iter()
+        .position(|entry| entry.get("role").and_then(|r| r.as_str()) == Some("user"))
+    {
+        entries.drain(..first_user);
+    }
+
     entries
 }
 
@@ -871,6 +1285,11 @@ pub enum SessionTurnEvent {
         model: String,
         variant: String,
         message: String,
+    },
+    Subagent {
+        parent_id: String,
+        agent: SubagentKind,
+        step: SubagentStep,
     },
 }
 
@@ -924,6 +1343,15 @@ impl From<StreamEvent> for SessionTurnEvent {
                 model,
                 variant,
                 message,
+            },
+            StreamEvent::Subagent {
+                parent_id,
+                agent,
+                step,
+            } => SessionTurnEvent::Subagent {
+                parent_id,
+                agent,
+                step,
             },
         }
     }
@@ -1003,6 +1431,42 @@ pub fn ui_event_payload(event: &SessionTurnEvent, run_id: &str) -> UiEventPayloa
                 "message": message
             }),
         },
+        SessionTurnEvent::Subagent {
+            parent_id,
+            agent,
+            step,
+        } => subagent_ui_event_payload(run_id, Some(parent_id), *agent, step),
+    }
+}
+
+/// Live sub-agent step for the frontend. `parent_id` names the parent tool
+/// call; verification has none because it runs after the turn.
+pub fn subagent_ui_event_payload(
+    run_id: &str,
+    parent_id: Option<&str>,
+    agent: SubagentKind,
+    step: &SubagentStep,
+) -> UiEventPayload {
+    let step = match step {
+        SubagentStep::ToolCall {
+            id,
+            name,
+            arguments,
+        } => SubagentStep::ToolCall {
+            id: id.clone(),
+            name: name.clone(),
+            arguments: observable_tool_arguments(name, arguments),
+        },
+        step => step.clone(),
+    };
+    UiEventPayload {
+        name: "llm-subagent-event",
+        payload: json!({
+            "runId": run_id,
+            "parentId": parent_id,
+            "agent": agent,
+            "step": step,
+        }),
     }
 }
 
@@ -1014,7 +1478,7 @@ pub fn trace_event_for_session_turn_event(
 ) -> Option<trace::TraceEvent> {
     match event {
         SessionTurnEvent::TextToken(_) | SessionTurnEvent::RetryReset { .. } => None,
-        SessionTurnEvent::Reasoning { .. } => None,
+        SessionTurnEvent::Reasoning { .. } | SessionTurnEvent::Subagent { .. } => None,
         SessionTurnEvent::ToolCall {
             name, arguments, ..
         } => Some(trace::TraceEvent::ToolCall {
@@ -1072,6 +1536,7 @@ pub struct VerificationJobRequest {
     pub response_to_verify: String,
     pub user_prompt: String,
     pub session_id: Option<String>,
+    pub run_id: String,
 }
 
 pub fn response_requires_verification(response: &str) -> bool {
@@ -1094,6 +1559,7 @@ pub fn verification_job_request(
     response_to_verify: &str,
     user_prompt: &str,
     session_id: Option<&str>,
+    run_id: &str,
     source_edit_succeeded: bool,
 ) -> Option<VerificationJobRequest> {
     if !turn_requires_verification(response_to_verify, source_edit_succeeded) {
@@ -1108,6 +1574,7 @@ pub fn verification_job_request(
         response_to_verify: response_to_verify.to_string(),
         user_prompt: user_prompt.to_string(),
         session_id: session_id.map(str::to_string),
+        run_id: run_id.to_string(),
     })
 }
 
@@ -1369,12 +1836,13 @@ mod tests {
         api_key: String,
         validated_bindings: Mutex<Vec<(String, Option<String>)>>,
         unresolved_notes: Vec<SessionNote>,
-        failure_snapshot: Mutex<Option<SessionFailureSnapshot>>,
+        persisted_snapshot: Mutex<Option<SessionSnapshot>>,
         persisted_turns: Mutex<Vec<PersistedTurn>>,
         statuses: Mutex<Vec<(String, String)>>,
         chat_history: Vec<Message>,
         stored_histories: Mutex<Vec<(String, Vec<Message>)>>,
         skills: Vec<Skill>,
+        agents: Vec<AgentDefinition>,
         stream_result: Mutex<Option<Result<StreamCompletionResult, LlmError>>>,
         stream_requests: Mutex<Vec<CapturedStreamRequest>>,
         model_updates: Mutex<Vec<(String, String, String, Option<String>)>>,
@@ -1402,12 +1870,13 @@ mod tests {
                 api_key: "api-key".to_string(),
                 validated_bindings: Mutex::new(Vec::new()),
                 unresolved_notes: Vec::new(),
-                failure_snapshot: Mutex::new(None),
+                persisted_snapshot: Mutex::new(None),
                 persisted_turns: Mutex::new(Vec::new()),
                 statuses: Mutex::new(Vec::new()),
                 chat_history: Vec::new(),
                 stored_histories: Mutex::new(Vec::new()),
                 skills: Vec::new(),
+                agents: Vec::new(),
                 stream_result: Mutex::new(Some(result)),
                 stream_requests: Mutex::new(Vec::new()),
                 model_updates: Mutex::new(Vec::new()),
@@ -1432,6 +1901,7 @@ mod tests {
                 sessions: self,
                 conversation: self,
                 skills: self,
+                agents: self,
                 llm: self,
                 events: self,
                 verification: self,
@@ -1473,8 +1943,8 @@ mod tests {
             self.unresolved_notes.clone()
         }
 
-        fn failure_snapshot(&self, _session_id: &str) -> Option<SessionFailureSnapshot> {
-            self.failure_snapshot.lock().unwrap().clone()
+        fn persisted_snapshot(&self, _session_id: &str) -> Option<SessionSnapshot> {
+            self.persisted_snapshot.lock().unwrap().clone()
         }
 
         fn persist_turn(
@@ -1533,6 +2003,12 @@ mod tests {
     impl SessionTurnSkills for FakeSessionTurnAdapters {
         fn load_skills(&self, _workspace_path: Option<&Path>) -> Vec<Skill> {
             self.skills.clone()
+        }
+    }
+
+    impl SessionTurnAgents for FakeSessionTurnAdapters {
+        fn load_agents(&self, _workspace_path: Option<&Path>) -> Vec<AgentDefinition> {
+            self.agents.clone()
         }
     }
 
@@ -1783,6 +2259,273 @@ mod tests {
     }
 
     #[test]
+    fn merge_preserves_historical_turns_when_context_is_pruned() {
+        let existing = json!([
+            { "role": "user", "content": "Assess what is needed" },
+            {
+                "role": "assistant",
+                "content": "Short answer: app is wired up",
+                "blocks": [{ "kind": "text", "id": "text-0", "text": "Short answer: app is wired up" }]
+            }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+
+        // Turn 2 rebuild: earlier context pruned, leaving an orphaned tool
+        // result before the turn prompt.
+        let new_json = serde_json::to_string(&json!([
+            {
+                "role": "assistant",
+                "content": "",
+                "blocks": [{ "kind": "tool", "id": "call-orphan", "name": "", "result": "x" }]
+            },
+            { "role": "user", "content": "proceed" },
+            {
+                "role": "assistant",
+                "content": "Done. I fixed everything.",
+                "blocks": [{ "kind": "text", "id": "text-0", "text": "Done. I fixed everything." }]
+            }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        assert_eq!(display.len(), 4);
+        assert_eq!(display[0]["role"], "user");
+        assert_eq!(display[0]["content"], "Assess what is needed");
+        assert_eq!(display[1]["role"], "assistant");
+        assert_eq!(display[1]["content"], "Short answer: app is wired up");
+        assert_eq!(display[2]["role"], "user");
+        assert_eq!(display[2]["content"], "proceed");
+        assert_eq!(display[3]["role"], "assistant");
+        assert_eq!(display[3]["content"], "Done. I fixed everything.");
+    }
+
+    #[test]
+    fn merge_keeps_earlier_turn_when_prompts_repeat_verbatim() {
+        // Two identical prompts ("proceed" twice): the rebuild's last user
+        // entry is the new turn, so the earlier identical turn must survive.
+        let existing = json!([
+            { "role": "user", "content": "proceed" },
+            { "role": "assistant", "content": "first answer", "blocks": [] }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "proceed" },
+            { "role": "assistant", "content": "second answer", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        assert_eq!(display.len(), 4);
+        assert_eq!(display[1]["content"], "first answer");
+        assert_eq!(display[3]["content"], "second answer");
+    }
+
+    #[test]
+    fn merge_replaces_only_the_rebuilt_suffix_of_existing() {
+        let existing = json!([
+            { "role": "user", "content": "one" },
+            { "role": "assistant", "content": "answer one", "blocks": [] },
+            { "role": "user", "content": "two" },
+            { "role": "assistant", "content": "answer two", "blocks": [] }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        // Model history still covers turn 2 plus the new turn: overlap is the
+        // last persisted turn only.
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "two" },
+            { "role": "assistant", "content": "answer two", "blocks": [] },
+            { "role": "user", "content": "three" },
+            { "role": "assistant", "content": "answer three", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        assert_eq!(display.len(), 6);
+        assert_eq!(display[0]["content"], "one");
+        assert_eq!(display[4]["content"], "three");
+    }
+
+    #[test]
+    fn merge_preserves_failed_turn_rows_before_the_new_prompt() {
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "second" },
+            { "role": "assistant", "content": "Error: down", "blocks": [], "error": true }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        // Turn 2 failed before Model History updated; turn 3 now succeeds.
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "ok", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        let contents: Vec<&str> = display
+            .iter()
+            .map(|entry| entry["content"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            contents,
+            vec!["first", "answer", "second", "Error: down", "third", "ok"]
+        );
+    }
+
+    #[test]
+    fn merge_repairs_existing_transcript_starting_with_orphans() {
+        let existing = json!([
+            {
+                "role": "assistant",
+                "content": "",
+                "blocks": [{ "kind": "tool", "id": "orphan", "name": "", "result": "x" }]
+            },
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "next" },
+            { "role": "assistant", "content": "ok", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        assert_eq!(display[0]["role"], "user");
+        assert_eq!(display[0]["content"], "first");
+        assert_eq!(display.len(), 4);
+    }
+
+    #[test]
+    fn merge_preserves_failed_turn_between_persisted_turns() {
+        // Turn 2 failed; turns 1 and 3 reached Model History and are both
+        // re-covered by the rebuild. The failed turn must be spliced back
+        // after the turn it followed, not dropped with the rebuilt suffix.
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "one", "blocks": [] },
+            { "role": "user", "content": "second" },
+            { "role": "assistant", "content": "Error: down", "blocks": [], "error": true },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "three", "blocks": [] }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "one", "blocks": [] },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "three", "blocks": [] },
+            { "role": "user", "content": "fourth" },
+            { "role": "assistant", "content": "four", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        let contents: Vec<&str> = display
+            .iter()
+            .map(|entry| entry["content"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            contents,
+            vec![
+                "first", "one", "second", "Error: down", "third", "three", "fourth", "four"
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_preserves_controlled_stop_rows() {
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "second" },
+            { "role": "assistant", "content": "Stopped", "blocks": [], "controlled_stop": true }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "ok", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        let contents: Vec<&str> = display
+            .iter()
+            .map(|entry| entry["content"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            contents,
+            vec!["first", "answer", "second", "Stopped", "third", "ok"]
+        );
+    }
+
+    #[test]
+    fn merge_filters_orphans_when_rebuild_has_no_user() {
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] }
+        ]);
+        let existing_str = serde_json::to_string(&existing).unwrap();
+        let new_json = serde_json::to_string(&json!([
+            {
+                "role": "assistant",
+                "content": "",
+                "blocks": [{ "kind": "tool", "id": "orphan", "name": "", "result": "x" }]
+            },
+            { "role": "assistant", "content": "note", "blocks": [] }
+        ]))
+        .unwrap();
+
+        let display: Vec<serde_json::Value> =
+            serde_json::from_str(&merge_display_transcripts(&existing_str, &new_json)).unwrap();
+
+        let contents: Vec<&str> = display
+            .iter()
+            .map(|entry| entry["content"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(contents, vec!["first", "answer", "note"]);
+    }
+
+    #[test]
+    fn build_display_transcript_starts_at_first_user_message() {
+        // Pruned history can begin with assistant tool calls whose prompt was
+        // dropped; the initiating user message is still item 0.
+        let history = vec![
+            assistant_message_with_blocks(&[AssistantPart::ToolCall {
+                id: "call-0",
+                name: "read_file",
+                arguments: json!({ "path": "src/lib.rs" }),
+            }]),
+            tool_result_message("call-0", "contents"),
+            user_message("proceed"),
+            assistant_message("done"),
+        ];
+
+        let display = build_display_transcript(&history);
+
+        assert_eq!(display[0]["role"], "user");
+        assert_eq!(display[0]["content"], "proceed");
+    }
+
+    #[test]
     fn provider_failure_appends_error_without_replacing_model_history() {
         let decision = failure_turn_persistence(
             r#"[{"role":"user","content":"hi"}]"#,
@@ -2014,6 +2757,36 @@ mod tests {
     }
 
     #[test]
+    fn subagent_event_payload_names_its_parent_and_redacts_edit_arguments() {
+        let event = SessionTurnEvent::from(StreamEvent::Subagent {
+            parent_id: "call-7".into(),
+            agent: SubagentKind::Exploration,
+            step: SubagentStep::ToolCall {
+                id: "inner-1".into(),
+                name: "source_edit".into(),
+                arguments: json!({"path": "a.rs", "old_text": "secret", "new_text": "x"}),
+            },
+        });
+        let payload = ui_event_payload(&event, "run-1");
+        assert_eq!(payload.name, "llm-subagent-event");
+        assert_eq!(
+            payload.payload,
+            json!({
+                "runId": "run-1",
+                "parentId": "call-7",
+                "agent": "exploration",
+                "step": {
+                    "type": "toolCall",
+                    "id": "inner-1",
+                    "name": "source_edit",
+                    "arguments": {"path": "a.rs", "old_text": "[REDACTED]", "new_text": "[REDACTED]"}
+                }
+            })
+        );
+        assert!(trace_event_for_session_turn_event(&event, "s", "main", 0).is_none());
+    }
+
+    #[test]
     fn reasoning_event_emits_ephemeral_payload_and_no_trace() {
         let run_id = "run-1";
         let delta = ui_event_payload(
@@ -2173,6 +2946,7 @@ mod tests {
             "plain response",
             "prompt",
             Some("session-1"),
+            "run-1",
             false,
         )
         .is_none());
@@ -2185,6 +2959,7 @@ mod tests {
             "```rust\nfn main() {}\n```",
             "prompt",
             Some("session-1"),
+            "run-1",
             false,
         )
         .unwrap();
@@ -2200,6 +2975,7 @@ mod tests {
             "done",
             "prompt",
             Some("session-1"),
+            "run-1",
             true,
         )
         .unwrap();
@@ -2315,6 +3091,8 @@ mod tests {
                 variant: Some("reasoning-high".to_string()),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2430,7 +3208,10 @@ mod tests {
         assert_eq!(verifications[0].model, "gpt-test");
         assert_eq!(verifications[0].api_key, "api-key");
         assert_eq!(verifications[0].session_id.as_deref(), Some("session-1"));
-        assert_eq!(verifications[0].workspace.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert_eq!(
+            verifications[0].workspace.workspace_path,
+            PathBuf::from("/tmp/workspace")
+        );
     }
 
     #[tokio::test]
@@ -2454,6 +3235,8 @@ mod tests {
                 variant: Some("missing-variant".to_string()),
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2504,6 +3287,8 @@ mod tests {
                 variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2544,6 +3329,8 @@ mod tests {
                 variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2562,7 +3349,7 @@ mod tests {
         let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ControlledStop(
             "Agent stopped".to_string(),
         )));
-        *adapters.failure_snapshot.lock().unwrap() = Some(SessionFailureSnapshot {
+        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
             display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
             model_history: Some(r#"[{"provider":"history"}]"#.to_string()),
         });
@@ -2577,6 +3364,8 @@ mod tests {
                 variant: None,
                 session_id: Some("session-1".to_string()),
                 invoked_skill: None,
+                agent_id: None,
+                delegated_agent: None,
                 delegate_provider: "openai".to_string(),
                 delegate_model: "gpt-4o-mini".to_string(),
                 delegate_api_key: "api-key".to_string(),
@@ -2649,6 +3438,29 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unknown_delegated_agent_injects_failure_note_and_proceeds() {
+        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+            "original prompt",
+            "handled",
+        )));
+        let mut request = streaming_request("run-delegation", "original prompt", Some("session-1"));
+        request.delegated_agent = Some(DelegatedAgentRequest {
+            name: "missing".to_string(),
+            task: "do the thing".to_string(),
+        });
+
+        let result = run_streaming_turn(adapters.deps(), request).await;
+        if let Err(err) = result {
+            panic!("turn failed: {} {}", err.code, err.message);
+        }
+
+        let streams = adapters.stream_requests.lock().unwrap();
+        assert!(streams[0].prompt.contains("Delegated report from @missing"));
+        assert!(streams[0].prompt.contains("agent not found"));
+        assert!(streams[0].prompt.contains("original prompt"));
+    }
+
     fn streaming_request(
         run_id: &str,
         prompt: &str,
@@ -2662,6 +3474,8 @@ mod tests {
             variant: None,
             session_id: session_id.map(str::to_string),
             invoked_skill: None,
+            agent_id: None,
+            delegated_agent: None,
             delegate_provider: "openai".to_string(),
             delegate_model: "gpt-4o-mini".to_string(),
             delegate_api_key: "api-key".to_string(),
@@ -2910,7 +3724,7 @@ mod tests {
         let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
             "boom".to_string(),
         )));
-        *adapters.failure_snapshot.lock().unwrap() = Some(SessionFailureSnapshot {
+        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
             display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
             model_history: Some(r#"[{"provider":"history"}]"#.to_string()),
         });

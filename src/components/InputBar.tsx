@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import type { ModelPreferences } from "../hooks/useModelPreferences";
 import { useSkills } from "../hooks/useSkills";
-import type { ModelOption } from "../types";
+import type { AgentSummary, ModelOption } from "../types";
 import { filterSkills } from "../utils/skillSearch";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 
@@ -22,7 +22,14 @@ interface InputBarProps {
   modelPreferences: ModelPreferences;
   onModelChange: (modelId: string) => void;
   onVariantChange: (variant: string | null) => void;
-  onSend: (message: string, invokedSkill?: { name: string; args?: string }) => void;
+  agents?: AgentSummary[];
+  selectedAgentId?: string | null;
+  onAgentChange?: (agentId: string | null) => void;
+  onSend: (
+    message: string,
+    invokedSkill?: { name: string; args?: string },
+    delegatedAgent?: { name: string; task: string }
+  ) => void;
   onCancelStream?: () => void;
   isStreaming?: boolean;
   disabled?: boolean;
@@ -34,6 +41,8 @@ interface InputBarProps {
 }
 
 const SLASH_REGEX = /^\/([a-zA-Z0-9-]+)(?:[ \t]+([\s\S]*))?$/;
+const MENTION_REGEX = /^@([a-zA-Z0-9-]+)(?:\s+([\s\S]*))?$/;
+const EMPTY_AGENTS: AgentSummary[] = [];
 const VARIANT_MENU_MAX_WIDTH = 352;
 const VARIANT_MENU_MAX_HEIGHT = 288;
 const MENU_GAP = 8;
@@ -70,6 +79,11 @@ function getVisibleBounds(anchor: HTMLElement) {
   while (ancestor) {
     const style = window.getComputedStyle(ancestor);
     const rect = ancestor.getBoundingClientRect();
+    // display: contents ancestors generate no box, so their rect is meaningless.
+    if (style.display === "contents" || rect.width === 0 || rect.height === 0) {
+      ancestor = ancestor.parentElement;
+      continue;
+    }
     const clipsX = clipsOverflow(style.overflowX) || clipsOverflow(style.overflow);
     const clipsY = clipsOverflow(style.overflowY) || clipsOverflow(style.overflow);
 
@@ -95,7 +109,7 @@ function getVariantMenuLayout(anchor: HTMLElement): VariantMenuLayout {
   const width = Math.min(VARIANT_MENU_MAX_WIDTH, availableWidth);
   const minimumLeft = bounds.left + MENU_EDGE_INSET;
   const maximumLeft = Math.max(minimumLeft, bounds.right - MENU_EDGE_INSET - width);
-  const viewportLeft = Math.min(Math.max(anchorRect.right - width, minimumLeft), maximumLeft);
+  const viewportLeft = Math.min(Math.max(anchorRect.left, minimumLeft), maximumLeft);
   const spaceAbove = Math.max(0, anchorRect.top - MENU_GAP - (bounds.top + MENU_EDGE_INSET));
   const spaceBelow = Math.max(0, bounds.bottom - MENU_EDGE_INSET - anchorRect.bottom - MENU_GAP);
   const placement: VariantMenuPlacement =
@@ -119,6 +133,9 @@ export function InputBar({
   modelPreferences,
   onModelChange,
   onVariantChange,
+  agents = EMPTY_AGENTS,
+  selectedAgentId = null,
+  onAgentChange,
   onSend,
   onCancelStream,
   isStreaming = false,
@@ -138,6 +155,7 @@ export function InputBar({
   const [activeOptionIndex, setActiveOptionIndex] = useState(0);
   const [slashFilter, setSlashFilter] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
   const [unknownSkill, setUnknownSkill] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -185,6 +203,18 @@ export function InputBar({
     activeOptionIndex,
     Math.max(visibleModels.length - 1, 0)
   );
+
+  const mentionMatch = useMemo(() => {
+    const firstLine = value.split("\n")[0] ?? "";
+    return firstLine.match(/^@([a-zA-Z0-9-]*)$/);
+  }, [value]);
+  const mentionFilter = mentionMatch?.[1] ?? "";
+  const showMentionMenu = !mentionDismissed && mentionMatch !== null && agents.length > 0;
+
+  const filteredAgents = useMemo(() => {
+    const query = mentionFilter.toLowerCase();
+    return agents.filter((agent) => agent.name.toLowerCase().includes(query));
+  }, [agents, mentionFilter]);
 
   const selectModelFromMenu = useCallback(
     (option: ModelOption) => {
@@ -344,6 +374,17 @@ export function InputBar({
     textareaRef.current?.focus();
   }, []);
 
+  const handleMentionSelect = useCallback((name: string) => {
+    setValue((current) => {
+      const lines = current.split("\n");
+      const firstLine = lines[0] ?? "";
+      const updatedFirstLine = firstLine.replace(/^@[a-zA-Z0-9-]*/, `@${name} `);
+      return [updatedFirstLine, ...lines.slice(1)].join("\n");
+    });
+    setMentionDismissed(true);
+    textareaRef.current?.focus();
+  }, []);
+
   const doSend = useCallback(
     (text: string) => {
       const firstLine = text.split("\n")[0] ?? text;
@@ -361,19 +402,44 @@ export function InputBar({
           return;
         }
       } else {
-        onSend(text);
+        const mentionMatch = firstLine.match(MENTION_REGEX);
+        const mentionedAgent = mentionMatch
+          ? agents.find((agent) => agent.name === mentionMatch[1])
+          : undefined;
+        if (mentionMatch && mentionedAgent) {
+          const task = [mentionMatch[2]?.trim(), rest].filter(Boolean).join("\n");
+          onSend(text, undefined, { name: mentionedAgent.name, task });
+        } else {
+          onSend(text);
+        }
       }
       setValue("");
       setUnknownSkill(null);
+      setMentionDismissed(false);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
     },
-    [skills, onSend]
+    [agents, skills, onSend]
   );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.key === "Tab" && showMentionMenu) {
+        const target = filteredAgents[0]?.name;
+        if (target) {
+          e.preventDefault();
+          handleMentionSelect(target);
+          return;
+        }
+      }
+
+      if (e.key === "Escape" && showMentionMenu) {
+        e.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+
       if (e.key === "Tab" && showSlashMenu) {
         const firstLine = value.split("\n")[0] ?? "";
         const match = firstLine.match(/^\/([a-zA-Z0-9-]*)/);
@@ -410,11 +476,23 @@ export function InputBar({
         }
       }
     },
-    [value, sendDisabled, doSend, showSlashMenu, skills, handleSlashSelect, unknownSkill, onSend]
+    [
+      value,
+      sendDisabled,
+      doSend,
+      showSlashMenu,
+      skills,
+      handleSlashSelect,
+      unknownSkill,
+      onSend,
+      showMentionMenu,
+      filteredAgents,
+      handleMentionSelect,
+    ]
   );
-
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setValue(e.target.value);
+    setMentionDismissed(false);
     const el = e.target;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
@@ -431,6 +509,25 @@ export function InputBar({
             onSelect={handleSlashSelect}
             onReload={reloadSkills}
           />
+          {showMentionMenu && (
+            <div className="model-menu absolute bottom-full left-0 mb-2 flex max-h-64 w-96 max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-surface-overlay bg-surface-elevated z-(--z-dropdowns)">
+              {filteredAgents.length === 0 ? (
+                <div className="p-3 text-body-sm text-text-muted">No matching agents.</div>
+              ) : (
+                filteredAgents.map((agent) => (
+                  <button
+                    key={agent.name}
+                    type="button"
+                    className="flex flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-surface-overlay/60"
+                    onClick={() => handleMentionSelect(agent.name)}
+                  >
+                    <span className="font-mono text-caption text-text-primary">@{agent.name}</span>
+                    <span className="text-caption text-text-muted">{agent.description}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
         </div>
         {unknownSkill && (
           <div className="px-3 text-caption text-status-error">
@@ -661,6 +758,29 @@ export function InputBar({
                   </div>
                 )}
               </div>
+              {agents.length > 0 && (
+                <div className="min-w-[10rem] flex-1 sm:flex-none">
+                  <label className="flex h-10 w-full flex-col justify-center rounded-md border border-surface-overlay bg-surface-base px-2.5">
+                    <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
+                      Agent
+                    </span>
+                    <select
+                      className="w-full bg-transparent font-mono text-caption text-text-primary outline-none"
+                      value={selectedAgentId ?? ""}
+                      onChange={(event) => onAgentChange?.(event.target.value || null)}
+                      disabled={disabled}
+                      aria-label="Select agent"
+                    >
+                      <option value="">General</option>
+                      {agents.map((agent) => (
+                        <option key={agent.name} value={agent.name}>
+                          {agent.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
               {variants.length > 0 && (
                 <div ref={variantPickerRef} className="relative min-w-[10rem] flex-1 sm:flex-none">
                   <Button

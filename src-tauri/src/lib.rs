@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 mod app_config;
+mod agents;
 pub mod approval_broker;
+mod bounty;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
@@ -34,6 +36,7 @@ mod shell_environment;
 mod shell_tools;
 mod skill_opt;
 pub mod skills;
+mod subagent;
 pub mod subprocess_output;
 pub(crate) mod symlink_guard;
 mod text_utils;
@@ -103,6 +106,18 @@ impl SkillCache {
     fn new() -> Self {
         Self {
             loader: skills::SkillLoader::new(),
+        }
+    }
+}
+
+pub struct AgentCache {
+    pub loader: agents::AgentLoader,
+}
+
+impl AgentCache {
+    fn new() -> Self {
+        Self {
+            loader: agents::AgentLoader::new(),
         }
     }
 }
@@ -1067,6 +1082,7 @@ struct TauriSessionTurnAdapters<'a> {
     session_store_state: &'a SessionStoreState,
     trace_state: &'a TraceState,
     skill_cache: &'a SkillCache,
+    agent_cache: &'a AgentCache,
 }
 
 impl session_turn::SessionTurnWorkspace for TauriSessionTurnAdapters<'_> {
@@ -1127,7 +1143,7 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
             .as_ref()
             .ok_or_else(|| "session store unavailable".to_string())?;
         if let Some(snapshot) =
-            session_turn::SessionTurnSessions::failure_snapshot(self, session_id)
+            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
         {
             let persistence = session_turn::failure_turn_persistence(
                 &snapshot.display_transcript,
@@ -1152,7 +1168,7 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
             .as_ref()
             .ok_or_else(|| "session store unavailable".to_string())?;
         if let Some(snapshot) =
-            session_turn::SessionTurnSessions::failure_snapshot(self, session_id)
+            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
         {
             let persistence = session_turn::failure_turn_persistence(
                 &snapshot.display_transcript,
@@ -1198,10 +1214,10 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn failure_snapshot(&self, session_id: &str) -> Option<session_turn::SessionFailureSnapshot> {
+    fn persisted_snapshot(&self, session_id: &str) -> Option<session_turn::SessionSnapshot> {
         let store = self.session_store_state.store.as_ref()?;
         let detail = store.get_session(session_id).ok().flatten()?;
-        Some(session_turn::SessionFailureSnapshot {
+        Some(session_turn::SessionSnapshot {
             display_transcript: detail.display_transcript,
             model_history: detail.model_history,
         })
@@ -1269,6 +1285,12 @@ impl session_turn::SessionTurnSkills for TauriSessionTurnAdapters<'_> {
     }
 }
 
+impl session_turn::SessionTurnAgents for TauriSessionTurnAdapters<'_> {
+    fn load_agents(&self, workspace_path: Option<&Path>) -> Vec<agents::AgentDefinition> {
+        self.agent_cache.loader.load(workspace_path)
+    }
+}
+
 impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
     fn stream_completion<'b>(
         &'b self,
@@ -1318,6 +1340,7 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 request.invoked_skill_section,
                 request.memory_section,
                 skill_script_tool,
+                request.custom_profile,
                 request.session_id,
                 mcp_tools,
                 move |event| on_event(session_turn::SessionTurnEvent::from(event)),
@@ -1411,6 +1434,19 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
     fn schedule_verification(&self, job: session_turn::VerificationJobRequest) {
         let app = self.app.clone();
         tauri::async_runtime::spawn(async move {
+            let emit_step = |step: subagent::SubagentStep| {
+                let mut ui_event = session_turn::subagent_ui_event_payload(
+                    &job.run_id,
+                    None,
+                    subagent::SubagentKind::Verification,
+                    &step,
+                );
+                ui_event.payload["sessionId"] = serde_json::json!(job.session_id);
+                let _ = app.emit(ui_event.name, ui_event.payload);
+            };
+            emit_step(subagent::SubagentStep::Phase {
+                label: "Checking the response".to_string(),
+            });
             let result = verification::run_verification(
                 &job.provider,
                 &job.model,
@@ -1419,6 +1455,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
                 &job.response_to_verify,
                 &job.user_prompt,
                 job.session_id.as_deref(),
+                emit_step,
             )
             .await;
 
@@ -1446,6 +1483,7 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
                 "llm-verification",
                 serde_json::json!({
                     "sessionId": job.session_id,
+                    "runId": job.run_id,
                     "status": result.status,
                     "concerns": result.concerns,
                     "summary": result.summary,
@@ -1464,6 +1502,7 @@ async fn complete_streaming(
     session_store_state: tauri::State<'_, SessionStoreState>,
     trace_state: tauri::State<'_, TraceState>,
     skill_cache: tauri::State<'_, SkillCache>,
+    agent_cache: tauri::State<'_, AgentCache>,
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     provider: String,
     prompt: String,
@@ -1471,6 +1510,8 @@ async fn complete_streaming(
     variant: Option<String>,
     session_id: Option<String>,
     invoked_skill: Option<session_turn::InvokedSkillRequest>,
+    agent_id: Option<String>,
+    delegated_agent: Option<session_turn::DelegatedAgentRequest>,
     run_id: String,
 ) -> Result<String, llm::LlmErrorDto> {
     let (delegate_provider, delegate_model, delegate_api_key) =
@@ -1483,6 +1524,7 @@ async fn complete_streaming(
         session_store_state: session_store_state.inner(),
         trace_state: trace_state.inner(),
         skill_cache: skill_cache.inner(),
+        agent_cache: agent_cache.inner(),
     };
 
     // Cancellation is provided by the `Abortable`/`AbortHandle` pair. When a
@@ -1500,6 +1542,7 @@ async fn complete_streaming(
             sessions: &adapters,
             conversation: &adapters,
             skills: &adapters,
+            agents: &adapters,
             llm: &adapters,
             events: &adapters,
             verification: &adapters,
@@ -1516,6 +1559,8 @@ async fn complete_streaming(
             delegate_api_key,
             session_id,
             invoked_skill,
+            agent_id,
+            delegated_agent,
         },
     );
 
@@ -1951,6 +1996,129 @@ fn reload_skills(
     Ok(skills.iter().map(skills::SkillSummary::from).collect())
 }
 
+#[tauri::command]
+fn list_agents(
+    app_config: tauri::State<'_, AppConfigState>,
+    agent_cache: tauri::State<'_, AgentCache>,
+) -> Result<Vec<agents::AgentSummary>, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        None => None,
+    };
+
+    let agents = agent_cache.loader.load(workspace_path.as_deref());
+    Ok(agents.iter().map(agents::AgentSummary::from).collect())
+}
+
+#[tauri::command]
+fn list_bounty_findings(
+    app_config: tauri::State<'_, AppConfigState>,
+    run_id: Option<String>,
+) -> Result<bounty::findings::BountyFindings, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
+        None => None,
+    };
+    let Some(workspace_path) = workspace_path else {
+        return Ok(bounty::findings::BountyFindings {
+            run_id: None,
+            runs: Vec::new(),
+            checkpoint_pending: false,
+            signals: Vec::new(),
+            verdicts: Vec::new(),
+            report: None,
+        });
+    };
+    Ok(bounty::findings::load_findings(
+        &workspace_path,
+        run_id.as_deref(),
+    ))
+}
+
+#[tauri::command]
+fn set_bounty_verdict(
+    app_config: tauri::State<'_, AppConfigState>,
+    run_id: String,
+    signal_id: String,
+    status: String,
+    severity: Option<String>,
+    rationale: Option<String>,
+) -> Result<(), String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
+        None => None,
+    };
+    let Some(workspace_path) = workspace_path else {
+        return Err("no active workspace".to_string());
+    };
+    bounty::findings::record_user_verdict(
+        &workspace_path,
+        &run_id,
+        &signal_id,
+        &status,
+        severity.as_deref(),
+        rationale.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn approve_bounty_checkpoint(
+    app_config: tauri::State<'_, AppConfigState>,
+    run_id: String,
+) -> Result<(), String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
+        None => None,
+    };
+    let Some(workspace_path) = workspace_path else {
+        return Err("no active workspace".to_string());
+    };
+    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(
+        &workspace_path,
+        &run_id,
+    ))
+}
+
+#[tauri::command]
+fn store_bounty_secret(name: String, secret: String) -> Result<(), String> {
+    keychain::store_bounty_secret(&name, &secret).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn delete_bounty_secret(name: String) -> Result<(), String> {
+    keychain::delete_bounty_secret(&name).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reload_agents(
+    app_config: tauri::State<'_, AppConfigState>,
+    agent_cache: tauri::State<'_, AgentCache>,
+) -> Result<Vec<agents::AgentSummary>, String> {
+    let workspace_path = match &app_config.store {
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        None => None,
+    };
+
+    if let Some(ref path) = workspace_path {
+        agent_cache.loader.invalidate(path);
+    }
+
+    let agents = agent_cache.loader.load(workspace_path.as_deref());
+    Ok(agents.iter().map(agents::AgentSummary::from).collect())
+}
+
 const SKILL_OPT_SESSION_CAP: usize = 50;
 
 #[derive(Serialize)]
@@ -2348,6 +2516,7 @@ fn create_session(
     model: String,
     variant: Option<String>,
     workspace_id: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<SessionRecord, String> {
     validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
     match &session_store.store {
@@ -2358,6 +2527,7 @@ fn create_session(
                 &model,
                 variant.as_deref(),
                 workspace_id.as_deref(),
+                agent_id.as_deref(),
             )
             .map_err(|e| e.to_string()),
         None => Err(session_store
@@ -2402,6 +2572,47 @@ fn update_session_title(
             validate_session_access(store, &session_id, app_config.inner())?;
             store
                 .update_session_title(&session_id, &title)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn get_session_agent(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    match &session_store.store {
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .get_session_agent(&session_id)
+                .map_err(|e| e.to_string())
+        }
+        None => Err(session_store
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "Session store is unavailable".to_string())),
+    }
+}
+
+#[tauri::command]
+fn set_session_agent(
+    session_store: tauri::State<'_, SessionStoreState>,
+    app_config: tauri::State<'_, AppConfigState>,
+    session_id: String,
+    agent_id: Option<String>,
+) -> Result<(), String> {
+    match &session_store.store {
+        Some(store) => {
+            validate_session_access(store, &session_id, app_config.inner())?;
+            store
+                .set_session_agent(&session_id, agent_id.as_deref())
                 .map_err(|e| e.to_string())
         }
         None => Err(session_store
@@ -2515,11 +2726,16 @@ fn run_session_message_action(
             request.expected_user_turns,
             (!request.fork && request.failed_response).then_some(request.turn_count),
         )?;
-        let history = if request.fork {
-            let turn_index = request
-                .turn_count
-                .checked_sub(1)
-                .ok_or("No user turn to fork")?;
+        let fork_turn_index = match request.fork {
+            true => Some(
+                request
+                    .turn_count
+                    .checked_sub(1)
+                    .ok_or("No user turn to fork")?,
+            ),
+            false => None,
+        };
+        let history = if let Some(turn_index) = fork_turn_index {
             session_actions::history_through_response(
                 source.model_history.as_deref(),
                 turn_index,
@@ -2540,8 +2756,13 @@ fn run_session_message_action(
         // A retried prompt stays in the saved transcript (unlike model
         // history, which the new turn re-extends itself) so a failed or
         // abandoned retry cannot silently drop it from the user's record.
-        let display_transcript = if request.fork {
-            persistence.display_transcript.clone()
+        // Both transcript slices preserve turns pruned from Model History.
+        let display_transcript = if let Some(turn_index) = fork_turn_index {
+            session_actions::transcript_through_response(
+                &source.display_transcript,
+                turn_index,
+                &request.response_text,
+            )?
         } else {
             session_actions::transcript_through_prompt(
                 &source.display_transcript,
@@ -2582,7 +2803,7 @@ fn list_sessions(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<SessionRecord>, String> {
-    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
+    validate_registered_workspace_id(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -2598,7 +2819,12 @@ fn list_sessions(
             // still streaming so the completed turn can persist.
             streaming_handles.mutate_excluding_in_flight(|in_flight| {
                 let _ = store.clean_stale_drafts(in_flight);
-                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+                run_list_archive_maintenance(
+                    store,
+                    workspace_id.as_deref(),
+                    app_config.inner(),
+                    in_flight,
+                );
             });
             store
                 .list_sessions_for_workspace(workspace_id.as_deref())
@@ -2618,7 +2844,7 @@ fn list_archived_sessions(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     workspace_id: Option<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
-    validate_optional_workspace_id_access(workspace_id.as_deref(), app_config.inner())?;
+    validate_registered_workspace_id(workspace_id.as_deref(), app_config.inner())?;
     let workspace_id = workspace_id.or_else(|| match &app_config.store {
         Some(store) => store
             .get_workspace_path()
@@ -2631,7 +2857,12 @@ fn list_archived_sessions(
     match &session_store.store {
         Some(store) => {
             streaming_handles.mutate_excluding_in_flight(|in_flight| {
-                let _ = store.run_archive_maintenance(workspace_id.as_deref(), in_flight);
+                run_list_archive_maintenance(
+                    store,
+                    workspace_id.as_deref(),
+                    app_config.inner(),
+                    in_flight,
+                );
             });
             store
                 .list_archived_sessions_for_workspace(workspace_id.as_deref())
@@ -3246,6 +3477,48 @@ fn validate_archive_policy_values(
     Ok(())
 }
 
+/// Validate an explicit optional workspace ID for app-wide session summary
+/// lists. Unlike `validate_optional_workspace_id_access`, any registered
+/// workspace is accepted; transcript access and mutations still require the
+/// active workspace.
+fn validate_registered_workspace_id(
+    workspace_id: Option<&str>,
+    app_config: &AppConfigState,
+) -> Result<(), String> {
+    let Some(id) = workspace_id else {
+        return Ok(());
+    };
+    let store = app_config.store.as_ref().ok_or_else(|| {
+        app_config
+            .init_warning
+            .clone()
+            .unwrap_or_else(|| "App config store is unavailable".to_string())
+    })?;
+    let workspaces = store.list_workspaces().map_err(|e| e.to_string())?;
+    if workspaces.iter().any(|workspace| workspace.id == id) {
+        Ok(())
+    } else {
+        Err(format!("Workspace not found: {id}"))
+    }
+}
+
+/// Archive maintenance archives and permanently deletes sessions, so listing
+/// only runs it for the active workspace (or the unscoped list). Other
+/// registered workspaces are listed without being modified.
+fn run_list_archive_maintenance(
+    store: &SessionStore,
+    workspace_id: Option<&str>,
+    app_config: &AppConfigState,
+    in_flight: &HashSet<String>,
+) -> Option<ArchiveMaintenanceResult> {
+    let is_active =
+        workspace_id.is_none_or(|id| active_workspace_id(app_config).as_deref() == Some(id));
+    if !is_active {
+        return None;
+    }
+    store.run_archive_maintenance(workspace_id, in_flight).ok()
+}
+
 fn validate_workspace_id_access(
     workspace_id: &str,
     app_config: &AppConfigState,
@@ -3395,6 +3668,7 @@ pub fn run() {
         .manage(session_store_state)
         .manage(trace_state)
         .manage(SkillCache::new())
+        .manage(AgentCache::new())
         .manage(ApprovalBrokerState::new())
         .manage(StreamingRunHandles::new())
         .manage(mcp_runtime::McpRuntime::new())
@@ -3439,6 +3713,13 @@ pub fn run() {
             get_workspace_git_context,
             list_skills,
             reload_skills,
+            list_agents,
+            list_bounty_findings,
+            set_bounty_verdict,
+            approve_bounty_checkpoint,
+            store_bounty_secret,
+            delete_bounty_secret,
+            reload_agents,
             harvest_skill_optimization_tasks,
             run_skill_selection_replay,
             optimize_skill_from_sessions,
@@ -3454,6 +3735,8 @@ pub fn run() {
             create_session,
             update_session_model_selection,
             update_session_title,
+            get_session_agent,
+            set_session_agent,
             generate_session_title,
             get_session,
             run_session_message_action,
@@ -4116,6 +4399,91 @@ mod session_access {
         assert!(validate_optional_workspace_id_access(Some(&second_id), &app_state).is_err());
         assert!(validate_optional_workspace_id_access(Some(&first_id), &app_state).is_ok());
         assert!(validate_optional_workspace_id_access(None, &app_state).is_ok());
+    }
+
+    #[test]
+    fn session_lists_include_registered_inactive_workspaces() {
+        let (_root, app_state, store, first_id, second_id) = setup();
+        let live = store
+            .create_session("Live", "openai", "gpt-4", Some(&first_id))
+            .unwrap();
+        store.persist_turn(&live.id, "[]", None).unwrap();
+        let archived = store
+            .create_session("Archived", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+        store.persist_turn(&archived.id, "[]", None).unwrap();
+        store.archive_session(&archived.id).unwrap();
+
+        let mut live_ids = Vec::new();
+        let mut archived_ids = Vec::new();
+        for workspace in app_state.store.as_ref().unwrap().list_workspaces().unwrap() {
+            validate_registered_workspace_id(Some(&workspace.id), &app_state).unwrap();
+            live_ids.extend(
+                store
+                    .list_sessions_for_workspace(Some(&workspace.id))
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),
+            );
+            archived_ids.extend(
+                store
+                    .list_archived_sessions_for_workspace(Some(&workspace.id))
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),
+            );
+        }
+        assert_eq!(live_ids, vec![live.id]);
+        assert_eq!(archived_ids, vec![archived.id.clone()]);
+        assert_eq!(
+            active_workspace_id(&app_state).as_deref(),
+            Some(first_id.as_str())
+        );
+        assert!(validate_archived_session_access(&store, &archived.id, &app_state).is_err());
+    }
+
+    #[test]
+    fn listing_runs_archive_maintenance_only_for_active_workspace() {
+        let (_root, app_state, store, first_id, second_id) = setup();
+        store.set_archive_policy(None, 90, 1).unwrap();
+        let mut idle_ids = Vec::new();
+        for workspace_id in [&first_id, &second_id] {
+            let session = store
+                .create_session("Idle", "openai", "gpt-4", Some(workspace_id))
+                .unwrap();
+            store.persist_turn(&session.id, "[]", None).unwrap();
+            store.set_updated_at_for_test(&session.id, "-2 days");
+            idle_ids.push(session.id);
+        }
+
+        let inactive =
+            run_list_archive_maintenance(&store, Some(&second_id), &app_state, &HashSet::new());
+        assert!(inactive.is_none());
+        let inactive_live = store.list_sessions_for_workspace(Some(&second_id)).unwrap();
+        assert_eq!(inactive_live.len(), 1);
+        assert_eq!(inactive_live[0].id, idle_ids[1]);
+
+        let active =
+            run_list_archive_maintenance(&store, Some(&first_id), &app_state, &HashSet::new())
+                .unwrap();
+        assert_eq!(active.archived_count, 1);
+        assert!(store
+            .list_sessions_for_workspace(Some(&first_id))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn session_lists_reject_unknown_workspaces_and_unavailable_config() {
+        let (_root, app_state, _store, first_id, _) = setup();
+        assert!(validate_registered_workspace_id(Some("unknown"), &app_state).is_err());
+        assert!(validate_registered_workspace_id(None, &app_state).is_ok());
+
+        let unavailable = AppConfigState {
+            store: None,
+            init_warning: Some("App config store is unavailable".to_string()),
+        };
+        assert!(validate_registered_workspace_id(Some(&first_id), &unavailable).is_err());
     }
 
     #[test]

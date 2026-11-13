@@ -244,6 +244,7 @@ impl StudentLlm for StreamCompletionStudentLlm {
             None,
             None,
             None,
+            None,
             Vec::new(),
             |_| {},
         )
@@ -467,6 +468,7 @@ impl SkillOptimizer for StreamCompletionSkillOptimizer {
             None,
             None,
             None,
+            None,
             Vec::new(),
             |_| {},
         )
@@ -513,6 +515,7 @@ impl SkillReplayVerifier for VerificationAgentVerifier {
             response,
             prompt,
             None,
+            |_| {},
         )
         .await
         .status
