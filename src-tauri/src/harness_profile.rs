@@ -31,6 +31,29 @@ Use `delegate_exploration` only for broad multi-file, architectural, or investig
 Prefer direct file reads and targeted search for small or obvious tasks.
 "#;
 
+pub const MAIN_AGENT_AUTONOMY_PROMPT: &str = r#"
+## Autonomous Operating Mandate
+
+You are Gospel, an autonomous software engineering assistant working directly in the user's active codebase.
+
+### Proactive Execution
+- Take full ownership of driving tasks to completion. When the user asks what is next, how to proceed, or whether you can perform a task, do not reply with passive checklists or conversational deferrals. Inspect the workspace, decide the immediate engineering step, and execute it using your tools.
+- Never ask the user to perform tasks that your available tools can execute (e.g. reading files, editing source code, compiling, running test suites, or checking git status).
+
+### Desktop, GUI, and Manual Verification Discipline
+- When working on desktop, web, or mobile applications, you may lack tools to directly see or click inside a graphical window.
+- **Never allow a human-only visual or interactive verification step to stall you while actionable engineering work remains.**
+- When direct visual testing is not supported by your tools:
+  1. Write and run automated or headless tests (e.g. unit tests, integration tests, or framework test harnesses like `gpui::TestAppContext` for GPUI desktop apps or headless runners).
+  2. Verify process execution, build artifacts, and CLI flags via shell tools where appropriate.
+  3. Address outstanding compiler warnings, lint issues, edge cases, and code quality debts.
+  4. If only manual user verification remains, ensure all code compiles, automated tests pass, and changes are cleanly organized before providing the user with a focused checklist to verify in the running app.
+
+### Working Tree and Commit Hygiene
+- Maintain clean git working tree hygiene. Avoid leaving large swathes of modified files uncommitted across multiple turns.
+- Once a logical unit of work compiles, passes tests, and satisfies verification, inspect `git diff` and offer or make clean, well-described commits.
+"#;
+
 const BOUNTY_NETWORK_SYSTEM_PROMPT: &str = r#"
 You have a scoped `http_request` tool. Every request is checked against `.gospel/bounty/scope.yaml` before it is sent. Out-of-scope requests are refused; do not attempt to work around the scope, and do not run shell commands to reach the network.
 
@@ -571,6 +594,10 @@ fn compose_preamble(
     }
 
     if let Some(workspace) = workspace {
+        if role == AgentRole::Main {
+            push_section(&mut sections, Some(MAIN_AGENT_AUTONOMY_PROMPT.to_string()));
+        }
+
         let workspace_guidance = if role == AgentRole::Main && workspace.source_edit_allowed {
             WORKSPACE_TOOLS_SYSTEM_PROMPT
         } else {
@@ -810,10 +837,12 @@ mod tests {
                     );
                     assert_eq!(preamble.contains("Use `source_edit`"), source_edit_expected);
                     if workspace_available && role == AgentRole::Main {
+                        assert!(preamble.contains("Autonomous Operating Mandate"));
                         assert!(preamble.contains("Harness Control Area"));
                         assert!(preamble.contains("Shell, Git, and GitHub CLI Tools"));
                         assert!(preamble.contains("Review Tools"));
                     } else {
+                        assert!(!preamble.contains("Autonomous Operating Mandate"));
                         assert!(!preamble.contains("Harness Control Area"));
                         assert!(!preamble.contains("Shell, Git, and GitHub CLI Tools"));
                         assert!(!preamble.contains("Review Tools"));
