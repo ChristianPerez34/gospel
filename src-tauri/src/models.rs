@@ -365,12 +365,7 @@ fn catalog_models_newest_first(
         .iter()
         .filter(|spec| spec.provider.vendor() == vendor && !spec.deprecated && keep(spec))
         .collect();
-    specs.sort_by(|a, b| {
-        b.details
-            .release_date
-            .cmp(&a.details.release_date)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    specs.sort_by_key(|spec| (std::cmp::Reverse(spec.details.release_date.as_deref()), &spec.id));
     let mut seen = HashSet::new();
     specs
         .into_iter()
@@ -400,19 +395,12 @@ pub(crate) struct ChatGptListedModel {
 pub(crate) fn chatgpt_models_from_codex_listing(
     body: &serde_json::Value,
 ) -> Vec<ChatGptListedModel> {
-    let mut entries: Vec<&serde_json::Value> = body["models"]
+    let mut entries: Vec<_> = body["models"]
         .as_array()
-        .map(|models| {
-            models
-                .iter()
-                .filter(|model| {
-                    model["visibility"]
-                        .as_str()
-                        .is_none_or(|visibility| visibility == "list")
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"].as_str().is_none_or(|v| v == "list"))
+        .collect();
     entries.sort_by_key(|model| model["priority"].as_i64().unwrap_or(i64::MAX));
 
     let mut seen = HashSet::new();

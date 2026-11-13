@@ -336,21 +336,17 @@ async fn fetch_chatgpt_models_impl() -> Result<Vec<ModelInfo>, String> {
         request = request.header("ChatGPT-Account-Id", account);
     }
 
-    let body: serde_json::Value = match request.send().await {
-        Ok(r) if r.status().is_success() => match r.json().await {
-            Ok(body) => body,
-            Err(e) => {
-                tracing::warn!("Failed to parse ChatGPT models ({e}); using bundled model list");
-                return Ok(fallback_models);
-            }
-        },
-        Ok(r) => {
-            tracing::warn!(
-                "ChatGPT models endpoint returned status {}; using bundled model list",
-                r.status()
-            );
-            return Ok(fallback_models);
-        }
+    let body: serde_json::Value = match async {
+        request
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await
+    }
+    .await
+    {
+        Ok(body) => body,
         Err(e) => {
             tracing::warn!("Failed to fetch ChatGPT models: {e}; using bundled model list");
             return Ok(fallback_models);
