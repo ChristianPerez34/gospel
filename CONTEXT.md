@@ -113,10 +113,10 @@ The first deliberate Harness Mechanism addition: a persistent, inspectable plan 
 
 **Primary artifact**: `.gospel/PLAN.md` — a lightweight plan file with required structure:
 - **Goal**: one-sentence description of what we are trying to accomplish.
-- **Steps**: checklist of completed and pending steps.
+- **Steps**: checklist of completed and pending steps; steps requiring human interaction are prefixed `[User Verification]` and kept separate from agent-actionable work.
 - **Evidence / Verification**: what has been verified so far (test results, manual checks, tool outputs).
 - **Open Questions / Risks**: blockers, unknowns, decisions still needed.
-- **Next Action**: the single most important thing to do next.
+- **Next Action**: the single most important agent-actionable engineering step to do next; manual verification checklists go to the user instead of parking the plan.
 
 **Tool-driven contract**: The `write_harness_file` tool allows the main agent to create and update files under `.gospel/`. It enforces the `.gospel/` prefix, creates parent directories, and caps content at 1 MiB. The tool is registered only for the main agent loop; the exploration sub-agent remains read-only for the substrate.
 

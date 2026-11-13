@@ -31,7 +31,7 @@ Use `delegate_exploration` only for broad multi-file, architectural, or investig
 Prefer direct file reads and targeted search for small or obvious tasks.
 "#;
 
-pub const MAIN_AGENT_AUTONOMY_PROMPT: &str = r#"
+const MAIN_AGENT_AUTONOMY_PROMPT: &str = r#"
 ## Autonomous Operating Mandate
 
 You are Gospel, an autonomous software engineering assistant working directly in the user's active codebase.
@@ -594,11 +594,12 @@ fn compose_preamble(
     }
 
     if let Some(workspace) = workspace {
-        if role == AgentRole::Main {
+        let main_can_edit_source = role == AgentRole::Main && workspace.source_edit_allowed;
+        if main_can_edit_source {
             push_section(&mut sections, Some(MAIN_AGENT_AUTONOMY_PROMPT.to_string()));
         }
 
-        let workspace_guidance = if role == AgentRole::Main && workspace.source_edit_allowed {
+        let workspace_guidance = if main_can_edit_source {
             WORKSPACE_TOOLS_SYSTEM_PROMPT
         } else {
             READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT
@@ -836,13 +837,15 @@ mod tests {
                         role == AgentRole::Main
                     );
                     assert_eq!(preamble.contains("Use `source_edit`"), source_edit_expected);
+                    assert_eq!(
+                        preamble.contains("Autonomous Operating Mandate"),
+                        source_edit_expected
+                    );
                     if workspace_available && role == AgentRole::Main {
-                        assert!(preamble.contains("Autonomous Operating Mandate"));
                         assert!(preamble.contains("Harness Control Area"));
                         assert!(preamble.contains("Shell, Git, and GitHub CLI Tools"));
                         assert!(preamble.contains("Review Tools"));
                     } else {
-                        assert!(!preamble.contains("Autonomous Operating Mandate"));
                         assert!(!preamble.contains("Harness Control Area"));
                         assert!(!preamble.contains("Shell, Git, and GitHub CLI Tools"));
                         assert!(!preamble.contains("Review Tools"));
