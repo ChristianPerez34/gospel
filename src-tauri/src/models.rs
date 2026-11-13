@@ -371,7 +371,14 @@ fn catalog_models_newest_first(
             .cmp(&a.details.release_date)
             .then_with(|| a.id.cmp(&b.id))
     });
-    specs.into_iter().map(|spec| spec.id.as_str()).collect()
+    let mut seen = HashSet::new();
+    specs
+        .into_iter()
+        .filter_map(|spec| {
+            let id = spec.id.as_str();
+            seen.insert(id).then_some(id)
+        })
+        .collect()
 }
 
 fn is_dated_snapshot(id: &str) -> bool {
@@ -1697,6 +1704,10 @@ mod tests {
         ));
         ModelRegistry::set_live_chatgpt_models(["gpt-test-future-listed".to_string()]);
         assert!(ModelRegistry::is_chatgpt_subscription_model(
+            "gpt-test-future-listed"
+        ));
+        ModelRegistry::set_live_chatgpt_models(Vec::<String>::new());
+        assert!(!ModelRegistry::is_chatgpt_subscription_model(
             "gpt-test-future-listed"
         ));
     }
