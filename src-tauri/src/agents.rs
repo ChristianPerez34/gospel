@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Duration;
 
-const DEFAULT_MAX_TURNS: usize = 50;
+pub(crate) const DEFAULT_MAX_TURNS: usize = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]

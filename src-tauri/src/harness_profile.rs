@@ -1,4 +1,4 @@
-use crate::agents::AgentDefinition;
+use crate::agents::{AgentDefinition, DEFAULT_MAX_TURNS};
 use crate::bounty::{BountyHttpTool, BountySignalTool};
 use crate::review::tools::{
     create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
@@ -650,7 +650,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Custom => HarnessRunGuards {
-            max_turns: Some(50),
+            max_turns: Some(DEFAULT_MAX_TURNS),
             deadline: None,
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -966,6 +966,7 @@ mod tests {
             (AgentRole::Verification, None, Some(90), 2, 3),
             (AgentRole::ReviewDetector, None, Some(60), 2, 3),
             (AgentRole::ReviewValidator, None, Some(30), 2, 3),
+            (AgentRole::Custom, Some(DEFAULT_MAX_TURNS), None, 3, 5),
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
