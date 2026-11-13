@@ -327,6 +327,9 @@ fn opencode_go_anthropic_config(api_key: &str) -> anthropic::AnthropicConfig {
 
 #[cfg(test)]
 mod tests {
+    // The config-home lock is held across awaits on purpose to serialize
+    // tests that mutate the process-global config-home env var.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     fn header_value(headers: &HeaderMap, name: impl reqwest::header::AsHeaderName) -> String {
