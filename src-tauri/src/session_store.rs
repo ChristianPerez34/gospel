@@ -1795,8 +1795,8 @@ mod tests {
 
         assert_eq!(counts.get("ws1"), Some(&2));
         assert_eq!(counts.get("ws2"), Some(&1));
-        assert!(counts.get("ws3").is_none());
-        assert!(counts.get("").is_none());
+        assert!(!counts.contains_key("ws3"));
+        assert!(!counts.contains_key(""));
         assert_eq!(store.workspace_session_count("ws1").unwrap(), 2);
         assert_eq!(
             store.get_session(&draft.id).unwrap().unwrap().status,
@@ -2190,13 +2190,13 @@ mod tests {
         assert_eq!(archived.len(), 2);
 
         let restored = store
-            .restore_archived_sessions_by_ids(&[first.id.clone()])
+            .restore_archived_sessions_by_ids(std::slice::from_ref(&first.id))
             .unwrap();
         assert_eq!(restored.len(), 1);
         assert!(store.get_session(&first.id).unwrap().is_some());
 
         let deleted = store
-            .delete_archived_sessions_by_ids(&[second.id.clone()])
+            .delete_archived_sessions_by_ids(std::slice::from_ref(&second.id))
             .unwrap();
         assert_eq!(deleted, 1);
         assert!(store.get_archived_session(&second.id).unwrap().is_none());
@@ -2227,7 +2227,9 @@ mod tests {
             .unwrap();
         store.archive_session(&s.id).unwrap();
 
-        let export = store.export_archived_sessions(&[s.id.clone()]).unwrap();
+        let export = store
+            .export_archived_sessions(std::slice::from_ref(&s.id))
+            .unwrap();
         store.delete_archived_session(&s.id).unwrap();
         let imported = store
             .import_archived_sessions(&export, Some("ws2"))

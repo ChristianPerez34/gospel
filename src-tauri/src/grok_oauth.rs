@@ -307,9 +307,11 @@ mod tests {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
+    type RecordedPost = (String, Vec<(String, String)>);
+
     struct ScriptedPoster {
         remaining: Mutex<Vec<(String, u16, Value)>>,
-        seen: Mutex<Vec<(String, Vec<(String, String)>)>>,
+        seen: Mutex<Vec<RecordedPost>>,
     }
 
     impl ScriptedPoster {

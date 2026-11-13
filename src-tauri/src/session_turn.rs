@@ -1725,6 +1725,10 @@ mod tests {
     use rig::completion::message::{CallId, ToolName};
     use std::{future, sync::Mutex};
 
+    type ModelUpdate = (String, String, String, Option<String>);
+    type DoneTrace = (String, String, usize, usize, usize, usize);
+    type SavedTurn = (String, String, String, Option<String>);
+
     fn skill(name: &str, description: &str, body: &str) -> Skill {
         Skill {
             name: name.to_string(),
@@ -1845,9 +1849,9 @@ mod tests {
         agents: Vec<AgentDefinition>,
         stream_result: Mutex<Option<Result<StreamCompletionResult, LlmError>>>,
         stream_requests: Mutex<Vec<CapturedStreamRequest>>,
-        model_updates: Mutex<Vec<(String, String, String, Option<String>)>>,
+        model_updates: Mutex<Vec<ModelUpdate>>,
         stream_events: Mutex<Vec<(String, String, SessionTurnEvent)>>,
-        done_traces: Mutex<Vec<(String, String, usize, usize, usize, usize)>>,
+        done_traces: Mutex<Vec<DoneTrace>>,
         error_traces: Mutex<Vec<(String, String, String)>>,
         done_responses: Mutex<Vec<(String, String)>>,
         emitted_errors: Mutex<Vec<(String, String)>>,
@@ -3849,7 +3853,7 @@ mod tests {
     }
 
     struct TestPersistence {
-        saved_turns: std::sync::Mutex<Vec<(String, String, String, Option<String>)>>,
+        saved_turns: std::sync::Mutex<Vec<SavedTurn>>,
         drafts_activated: std::sync::Mutex<Vec<String>>,
     }
 

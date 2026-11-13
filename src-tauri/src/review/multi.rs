@@ -949,7 +949,7 @@ mod tests {
             "gpt-test".to_string(),
             "local".to_string(),
             None,
-            &ALL_FOCUSES.to_vec(),
+            ALL_FOCUSES,
             PathBuf::from("/tmp"),
             "key".to_string(),
             emitter_dyn,

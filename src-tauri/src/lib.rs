@@ -846,6 +846,9 @@ fn provider_auth_type(provider: &str) -> &'static str {
 
 #[cfg(test)]
 mod availability_tests {
+    // Tests hold the config-home lock across awaits on purpose: it serializes
+    // tests that mutate the process-global config-home env var.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     #[test]
