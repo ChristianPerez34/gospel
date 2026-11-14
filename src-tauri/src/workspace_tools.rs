@@ -72,7 +72,8 @@ When working on multi-step or long-horizon tasks, maintain a system plan at `.go
 
 ## Steps
 - [x] <completed step>
-- [ ] <current or future step>
+- [ ] <current or future agent-actionable step>
+- [ ] [User Verification] <optional manual verification step requiring human interaction>
 
 ## Evidence / Verification
 <what has been verified so far — test results, manual checks, tool outputs>
@@ -81,7 +82,7 @@ When working on multi-step or long-horizon tasks, maintain a system plan at `.go
 <blockers, unknowns, decisions still needed>
 
 ## Next Action
-<the single most important thing to do next>
+<the single most important agent-actionable engineering step to execute next>
 ```
 
 ### Guidance
@@ -90,6 +91,9 @@ When working on multi-step or long-horizon tasks, maintain a system plan at `.go
 - Use `write_harness_file` with path `.gospel/PLAN.md` to create or update the plan after meaningful progress.
 - Keep the plan concise and current. Update Steps, Evidence, and Next Action as work progresses.
 - The plan is the source of truth for what has been done and what remains. Prefer updating it over relying on conversational memory.
+- **Distinguish Agent Steps from Human Verification**: In `## Steps`, separate automated engineering tasks from steps requiring user interaction (prefix user-only steps with `[User Verification]`).
+- **Keep Next Action Actionable**: `## Next Action` must ALWAYS specify an actionable engineering step (writing code, adding headless/automated tests, fixing compiler warnings, running builds, committing changes) whenever engineering work remains. Never assign a manual human-only action to `## Next Action` while there is pending code or test work.
+- **Do Not Stall on Manual Verification**: If all code and automated tests pass and only manual visual or interactive testing remains, mark the engineering steps complete, set `Next Action` to staging or committing the changes, and clearly present the manual verification checklist to the user rather than refusing to proceed.
 - **When a skill is active** (e.g. /tdd, /diagnose, or any other invoked or matched skill), still maintain the plan. The skill governs the workflow discipline; the plan is the outer persistent record that tracks goal, progress, and evidence across turns. Initialize the plan when the skill starts, update it after each meaningful step, and mark it complete when the skill's work is done.
 "#;
 
