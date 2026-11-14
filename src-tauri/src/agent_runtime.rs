@@ -5,17 +5,20 @@
 //! retries, 1s doubling, provider Retry-After honored up to 60s). Loop
 //! guards, stream events, and history stay Gospel-owned.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use futures::StreamExt;
+// `rig::tool` does not re-export rig-core's call-feedback helpers.
+use rig::__core::tool::feedback::{arguments_refusal, unknown_tool_feedback};
 use rig::completion::{
     AssistantContent, CompletionRequest, CompletionResponse, Effort, GenerationOptions, Message,
     ToolDefinition,
 };
 use rig::error::{ErrorReport, ProviderError};
 use rig::streaming::{Item as StreamItem, PartKind, StreamEvent as ProviderEvent};
-use rig::tool::{RegisteredTool, ToolContext, ToolSet};
+use rig::tool::{RegisteredTool, ToolContext, ToolExecutionError, ToolResult, ToolSet};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use crate::harness_profile::{HarnessRunGuards, LoopDetector, LoopStatus};
@@ -101,17 +104,41 @@ fn final_response(message: &Message) -> String {
     })
 }
 
-fn reasoning_id(
-    ids: &mut Vec<String>,
-    active: &mut Option<String>,
-    sequence: &mut usize,
-) -> String {
-    if let Some(id) = active.clone() {
-        return id;
+/// Reasoning identity for one run: the ids emitted to the UI, the block
+/// currently streaming, and the id sequence that keeps retries distinct.
+#[derive(Default)]
+struct ReasoningState {
+    ids: Vec<String>,
+    active: Option<String>,
+    sequence: usize,
+}
+
+impl ReasoningState {
+    /// Starts a model call; a retry resets this call's ids so it never
+    /// removes blocks an earlier call already completed.
+    fn begin_call(&mut self) {
+        self.active = None;
+        self.ids.clear();
     }
-    let id = llm::ensure_active_reasoning_id(active, sequence);
-    ids.push(id.clone());
-    id
+
+    fn id(&mut self) -> String {
+        if let Some(id) = &self.active {
+            return id.clone();
+        }
+        let id = llm::ensure_active_reasoning_id(&mut self.active, &mut self.sequence);
+        self.ids.push(id.clone());
+        id
+    }
+
+    fn close_block(&mut self) {
+        self.active = None;
+    }
+
+    /// The ids this attempt showed; a retry starts a fresh block.
+    fn reset_attempt(&mut self) -> Vec<String> {
+        self.active = None;
+        std::mem::take(&mut self.ids)
+    }
 }
 
 fn build_request(
@@ -139,14 +166,11 @@ fn build_request(
     request
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn stream_response<F>(
     model: &CompletionModel,
     request: CompletionRequest,
     live_text: &mut String,
-    reasoning_ids: &mut Vec<String>,
-    active_reasoning: &mut Option<String>,
-    reasoning_sequence: &mut usize,
+    reasoning: &mut ReasoningState,
     on_event: &mut F,
 ) -> Result<CompletionResponse, Box<ProviderError>>
 where
@@ -159,13 +183,13 @@ where
                 ProviderEvent::Start {
                     kind: PartKind::Reasoning,
                     ..
-                } => *active_reasoning = None,
+                } => reasoning.close_block(),
                 ProviderEvent::Text { text, .. } => {
                     live_text.push_str(&text);
                     on_event(StreamEvent::Text(text));
                 }
                 ProviderEvent::Reasoning { text, .. } if !text.is_empty() => {
-                    let id = reasoning_id(reasoning_ids, active_reasoning, reasoning_sequence);
+                    let id = reasoning.id();
                     on_event(StreamEvent::Reasoning(ReasoningPayload {
                         id,
                         text,
@@ -173,15 +197,15 @@ where
                     }));
                 }
                 ProviderEvent::End {
-                    content: AssistantContent::Reasoning(reasoning),
+                    content: AssistantContent::Reasoning(reasoning_content),
                     ..
                 } => {
-                    let id = reasoning_id(reasoning_ids, active_reasoning, reasoning_sequence);
-                    *active_reasoning = None;
-                    if !reasoning.redacted && !reasoning.text.is_empty() {
+                    let id = reasoning.id();
+                    reasoning.close_block();
+                    if !reasoning_content.redacted && !reasoning_content.text.is_empty() {
                         on_event(StreamEvent::Reasoning(ReasoningPayload {
                             id,
-                            text: reasoning.text.clone(),
+                            text: reasoning_content.text,
                             phase: ReasoningPhase::Complete,
                         }));
                     }
@@ -201,6 +225,59 @@ where
 {
     while let Ok(event) = received.try_recv() {
         on_event(event);
+    }
+}
+
+/// Emits the loop guard's event and returns the stop error, if any.
+fn apply_loop_status<F>(
+    status: LoopStatus,
+    count: usize,
+    tool_name: String,
+    stop_message: String,
+    on_event: &mut F,
+) -> Option<LlmError>
+where
+    F: FnMut(StreamEvent),
+{
+    match status {
+        LoopStatus::Ok => None,
+        LoopStatus::Warning(_) => {
+            on_event(StreamEvent::LoopWarning { count, tool_name });
+            None
+        }
+        LoopStatus::Stop => {
+            on_event(StreamEvent::LoopStopped {
+                count,
+                tool_name,
+                message: stop_message.clone(),
+            });
+            Some(LlmError::ControlledStop(stop_message))
+        }
+    }
+}
+
+/// Runs a tool while forwarding sub-agent steps, so they reach the UI while
+/// the tool is still working instead of all at once when it finishes.
+async fn execute_tool<F>(
+    tool: &RegisteredTool,
+    args: String,
+    received: &mut UnboundedReceiver<StreamEvent>,
+    on_event: &mut F,
+) -> ToolResult
+where
+    F: FnMut(StreamEvent),
+{
+    let mut context = ToolContext::default();
+    let execution = tool.execute(args, &mut context);
+    tokio::pin!(execution);
+    loop {
+        tokio::select! {
+            result = &mut execution => {
+                drain_steps(received, on_event);
+                return result;
+            }
+            Some(event) = received.recv() => on_event(event),
+        }
     }
 }
 
@@ -236,6 +313,10 @@ where
     }
     let catalog = toolset.catalog();
     let definitions: Vec<Arc<ToolDefinition>> = catalog.definitions().to_vec();
+    let parameters_by_name: HashMap<&str, &serde_json::Value> = definitions
+        .iter()
+        .map(|definition| (definition.name.as_str(), &definition.parameters))
+        .collect();
 
     let mut options = GenerationOptions::new();
     if let Some(effort) = request.reasoning {
@@ -263,9 +344,7 @@ where
 
     let mut detector = LoopDetector::new(request.guards.loop_guard);
     let mut live_text = String::new();
-    let mut reasoning_ids: Vec<String> = Vec::new();
-    let mut active_reasoning: Option<String> = None;
-    let mut reasoning_sequence = 0usize;
+    let mut reasoning = ReasoningState::default();
     let mut calls = 0usize;
     let mut tool_calls = 0usize;
     let mut source_edit_succeeded = false;
@@ -279,6 +358,7 @@ where
             }
         }
         calls += 1;
+        reasoning.begin_call();
         let attempt_start = live_text.len();
         // Retries re-send this snapshot; committed tool history only grows
         // after a successful model response, so tools never re-execute.
@@ -297,9 +377,7 @@ where
                 &request.model,
                 completion_request,
                 &mut live_text,
-                &mut reasoning_ids,
-                &mut active_reasoning,
-                &mut reasoning_sequence,
+                &mut reasoning,
                 on_event,
             )
             .await
@@ -313,10 +391,8 @@ where
                     live_text.truncate(attempt_start);
                     on_event(StreamEvent::RetryReset {
                         text: live_text.clone(),
-                        reasoning_ids: reasoning_ids.clone(),
+                        reasoning_ids: reasoning.reset_attempt(),
                     });
-                    reasoning_ids.clear();
-                    active_reasoning = None;
                     tokio::time::sleep(wait).await;
                 }
             }
@@ -343,24 +419,15 @@ where
         for call in &turn_calls {
             let name = call.function.name.to_string();
             let arguments = serde_json::Value::Object(call.function.arguments.clone());
-            match detector.record_call(&name, &arguments) {
-                LoopStatus::Ok => {}
-                LoopStatus::Warning(count) => on_event(StreamEvent::LoopWarning {
-                    count,
-                    tool_name: name.clone(),
-                }),
-                LoopStatus::Stop => {
-                    let count = detector.consecutive_count();
-                    let message = format!(
-                        "Agent stopped: repeated identical tool call '{name}' detected {count} times."
-                    );
-                    on_event(StreamEvent::LoopStopped {
-                        count,
-                        tool_name: name,
-                        message: message.clone(),
-                    });
-                    return Err(LlmError::ControlledStop(message));
-                }
+            let status = detector.record_call(&name, &arguments);
+            let count = detector.consecutive_count();
+            let stop_message = format!(
+                "Agent stopped: repeated identical tool call '{name}' detected {count} times."
+            );
+            if let Some(error) =
+                apply_loop_status(status, count, name.clone(), stop_message, on_event)
+            {
+                return Err(error);
             }
             tool_calls += 1;
             if let Some(relay) = &request.subagents {
@@ -377,14 +444,26 @@ where
         for call in &turn_calls {
             let name = call.function.name.to_string();
             let id = call.id.to_string();
-            let Some(tool) = catalog.get(name.as_str()) else {
-                return Err(LlmError::ProviderError(format!(
-                    "model attempted to call unknown tool `{name}`"
-                )));
+            let output = match (
+                parameters_by_name.get(name.as_str()),
+                catalog.get(name.as_str()),
+            ) {
+                (Some(parameters), Some(tool)) => match arguments_refusal(parameters, call) {
+                    Some(feedback) => {
+                        ToolResult::failed(ToolExecutionError::invalid_args(feedback))
+                    }
+                    None => {
+                        let args =
+                            serde_json::Value::Object(call.function.arguments.clone()).to_string();
+                        execute_tool(tool, args, &mut received, on_event).await
+                    }
+                },
+                _ => ToolResult::failed(ToolExecutionError::not_found(unknown_tool_feedback(
+                    &name,
+                    catalog.names(),
+                ))),
             };
-            let args = serde_json::Value::Object(call.function.arguments.clone()).to_string();
-            let mut context = ToolContext::default();
-            let output = tool.execute(args, &mut context).await;
+            let output = rig::redact::tool_result(&output).unwrap_or(output);
             let result = llm::tool_result_summary(output.output().as_content());
             if name == "source_edit" && llm::source_edit_result_changed(&result) {
                 source_edit_succeeded = true;
@@ -400,22 +479,14 @@ where
             });
             if let Some((reason, status)) = llm::record_tool_result_failure(&mut detector, &result)
             {
-                match status {
-                    LoopStatus::Warning(count) => on_event(StreamEvent::LoopWarning {
-                        count,
-                        tool_name: name,
-                    }),
-                    LoopStatus::Stop => {
-                        let count = detector.failure_streak();
-                        let message = format!("Agent stopped: repeated deterministic failure '{reason}' detected {count} times.");
-                        on_event(StreamEvent::LoopStopped {
-                            count,
-                            tool_name: name,
-                            message: message.clone(),
-                        });
-                        return Err(LlmError::ControlledStop(message));
-                    }
-                    LoopStatus::Ok => {}
+                let count = detector.failure_streak();
+                let stop_message = format!(
+                    "Agent stopped: repeated deterministic failure '{reason}' detected {count} times."
+                );
+                if let Some(error) =
+                    apply_loop_status(status, count, name.clone(), stop_message, on_event)
+                {
+                    return Err(error);
                 }
             }
             tool_results.push(call.answer(&output));
