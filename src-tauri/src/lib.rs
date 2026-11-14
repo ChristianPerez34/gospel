@@ -9,7 +9,7 @@ mod bounty;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
-mod ecs_runtime;
+mod agent_runtime;
 mod git_context;
 mod grok_oauth;
 mod harness_plan;

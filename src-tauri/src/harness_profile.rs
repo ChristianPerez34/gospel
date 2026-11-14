@@ -1015,7 +1015,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_profile_can_be_consumed_by_the_ecs_runtime() {
+    async fn resolved_profile_can_be_consumed_by_the_agent_runtime() {
         let profile = resolve_harness_profile(HarnessProfileRequest {
             role: AgentRole::Verification,
             workspace: Some(ActiveWorkspaceContext {
@@ -1031,8 +1031,8 @@ mod tests {
         .expect("profile");
 
         let preamble = profile.preamble.unwrap_or_default();
-        let result = crate::ecs_runtime::run(
-            crate::ecs_runtime::RunRequest {
+        let result = crate::agent_runtime::run(
+            crate::agent_runtime::RunRequest {
                 session_id: None,
                 model: MockCompletionModel::from_stream_turns([vec![
                     rig::test_utils::MockStreamEvent::text("ok"),
@@ -1051,7 +1051,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("ECS executes the profile");
+        .expect("runtime executes the profile");
         assert_eq!(result.full_response, "ok");
     }
 

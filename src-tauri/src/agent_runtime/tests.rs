@@ -6,7 +6,8 @@ use rig::test_utils::{MockCompletionModel, MockError, MockStreamEvent};
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use rig::ProviderResponseError;
 use serde_json::{json, Value};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::mpsc::UnboundedSender;
 
 fn answer(text: &str) -> Vec<MockStreamEvent> {
     vec![
@@ -376,6 +377,8 @@ async fn role_deadline_cancels_pending_work() {
 
 struct FakeSubagentTool {
     relay: Arc<crate::subagent::SubagentRelay>,
+    /// Held to keep the tool running until the test releases it.
+    gate: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Tool for FakeSubagentTool {
@@ -400,6 +403,9 @@ impl Tool for FakeSubagentTool {
         emitter.emit(crate::subagent::SubagentStep::Phase {
             label: format!("{task} started"),
         });
+        if let Some(gate) = &self.gate {
+            gate.notified().await;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
         emitter.emit(crate::subagent::SubagentStep::Text {
             text: format!("{task} report"),
@@ -423,7 +429,10 @@ async fn subagent_steps_reach_their_parent_call_between_call_and_result() {
     input.subagents = Some(relay.clone());
     input
         .tools
-        .push(RegisteredTool::from_tool(FakeSubagentTool { relay }));
+        .push(RegisteredTool::from_tool(FakeSubagentTool {
+            relay,
+            gate: None,
+        }));
     let mut log: Vec<String> = Vec::new();
     run(input, |event| match event {
         StreamEvent::ToolCall { id, .. } => log.push(format!("call {id}")),
@@ -554,4 +563,176 @@ async fn zero_max_turns_is_treated_as_unlimited() {
     assert_eq!(result.full_response, "Done");
     assert_eq!(executions.load(Ordering::SeqCst), 2);
     assert_eq!(model.request_count(), 3);
+}
+
+#[tokio::test]
+async fn redacts_tool_secrets_before_results_reach_the_model_or_ui() {
+    let model = MockCompletionModel::from_stream_turns([tool_turn("call-1"), answer("Done")]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions,
+        approval: None,
+        output: json!({"content": "GITHUB_TOKEN=abcdefgh12345678"}),
+    }));
+    let mut streamed = Vec::new();
+    let result = run(input, |event| {
+        if let StreamEvent::ToolResult { result, .. } = event {
+            streamed.push(result);
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(streamed.len(), 1);
+    assert!(!streamed[0].contains("abcdefgh12345678"), "{streamed:?}");
+    assert!(streamed[0].contains("[REDACTED]"), "{streamed:?}");
+    let history = serde_json::to_string(&result.history).unwrap();
+    assert!(!history.contains("abcdefgh12345678"));
+    assert!(history.contains("[REDACTED]"));
+    let sent = serde_json::to_string(&model.requests()[1].chat_history).unwrap();
+    assert!(!sent.contains("abcdefgh12345678"));
+}
+
+#[tokio::test]
+async fn refuses_malformed_and_schema_invalid_arguments_without_executing() {
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("call-broken", "count", json!("{\"attempt\":")),
+            MockStreamEvent::tool_call(
+                "call-wrong-type",
+                "count",
+                json!({"attempt": "not-an-integer"}),
+            ),
+            MockStreamEvent::final_response_with_default_usage(),
+        ],
+        answer("Corrected"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions: executions.clone(),
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let mut results = Vec::new();
+    let result = run(input, |event| {
+        if let StreamEvent::ToolResult { result, .. } = event {
+            results.push(result);
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(results.len(), 2);
+    assert!(results[0].contains("not a JSON object"), "{results:?}");
+    assert!(results[1].contains("do not fit its schema"), "{results:?}");
+    assert_eq!(result.full_response, "Corrected");
+}
+
+#[tokio::test]
+async fn unknown_tools_get_feedback_instead_of_ending_the_run() {
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("call-1", "missing_tool", json!({})),
+            MockStreamEvent::final_response_with_default_usage(),
+        ],
+        answer("Recovered"),
+    ]);
+    let mut results = Vec::new();
+    let result = run(request(&model), |event| {
+        if let StreamEvent::ToolResult { result, .. } = event {
+            results.push(result);
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.full_response, "Recovered");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].contains("no tools available"), "{results:?}");
+    assert_eq!(model.request_count(), 2);
+    let sent = serde_json::to_string(&model.requests()[1].chat_history).unwrap();
+    assert!(sent.contains("no tools available"), "{sent}");
+}
+
+#[tokio::test]
+async fn retry_reset_removes_only_the_current_calls_reasoning() {
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::reasoning("First thoughts"),
+            MockStreamEvent::tool_call("call-1", "count", json!({})),
+            MockStreamEvent::final_response_with_default_usage(),
+        ],
+        vec![MockStreamEvent::reasoning("Failed thoughts"), failed()],
+        answer("Recovered"),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut input = request(&model);
+    input.tools.push(RegisteredTool::from_tool(CountingTool {
+        executions,
+        approval: None,
+        output: json!({"success": true}),
+    }));
+    let mut emitted_ids = Vec::new();
+    let mut resets = Vec::new();
+    let result = run(input, |event| match event {
+        StreamEvent::Reasoning(payload) if payload.phase == ReasoningPhase::Delta => {
+            emitted_ids.push(payload.id);
+        }
+        StreamEvent::RetryReset { reasoning_ids, .. } => resets.push(reasoning_ids),
+        _ => {}
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.full_response, "Recovered");
+    assert_eq!(emitted_ids.len(), 2);
+    assert_ne!(emitted_ids[0], emitted_ids[1]);
+    assert_eq!(resets, vec![vec![emitted_ids[1].clone()]]);
+}
+
+#[tokio::test]
+async fn subagent_steps_stream_while_the_tool_is_still_running() {
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("call-a", "delegate_exploration", json!({"task": "alpha"})),
+            MockStreamEvent::final_response_with_default_usage(),
+        ],
+        answer("Done"),
+    ]);
+    let relay = crate::subagent::SubagentRelay::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let mut input = request(&model);
+    input.subagents = Some(relay.clone());
+    input
+        .tools
+        .push(RegisteredTool::from_tool(FakeSubagentTool {
+            relay,
+            gate: Some(gate.clone()),
+        }));
+
+    let (sent, mut events) = unbounded_channel();
+    let task = tokio::spawn(run(input, move |event| {
+        let _ = sent.send(event);
+    }));
+    let started = tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(event) = events.recv().await {
+            if let StreamEvent::Subagent {
+                step: crate::subagent::SubagentStep::Phase { label },
+                ..
+            } = event
+            {
+                return label;
+            }
+        }
+        panic!("the run ended before reporting a step");
+    })
+    .await
+    .expect("the step arrives while the tool is still running");
+    assert_eq!(started, "alpha started");
+
+    gate.notify_one();
+    assert_eq!(task.await.unwrap().unwrap().full_response, "Done");
 }
