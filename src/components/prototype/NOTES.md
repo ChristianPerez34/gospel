@@ -1,8 +1,7 @@
 # UI Prototype: Settings Page Overhaul
 
 > **Question:** How should Gospel's settings surface be overhauled to radically elevate UX (visual hierarchy & ergonomics), DX (developer tools & local configuration), and AX (Agent Experience & harness transparency)?
-> **Prototype Location:** `src/components/prototype/`  
-> **Route / Param:** Gated by `?variant=A|B|C|Orig` on the existing settings trigger. Switchable via the floating bottom bar or `←` / `→` arrow keys.
+> **Outcome:** Variant D shipped as the settings surface (`src/components/SettingsStudio.tsx`). Variants A/B/C and the prototype switcher were removed after evaluation; this file remains as the design record.
 
 ---
 
@@ -81,7 +80,7 @@
 ---
 
 ### Variant D: Studio Harness (The A + C Synthesis Iteration — Mobbin & Emil Kowalski Enhanced)
-* **File**: [VariantD_StudioHarness.tsx](file:///Users/lifelinelogics/RustProjects/gospel/src/components/prototype/VariantD_StudioHarness.tsx)
+* **File**: [SettingsStudio.tsx](file:///Users/lifelinelogics/RustProjects/gospel/src/components/SettingsStudio.tsx)
 * **Concept**: Fuses Variant A’s spacious master-detail studio layout with Variant C’s persona clarity and interactive simulator, refined using real UI pattern research from **Mobbin / Refero** (analyzing Linear, Anthropic Console, Raycast, Resend, and Parallel) and tuned with **Emil Kowalski's Design Engineering craft philosophy**.
 * **Key Craft Enhancements (Emil Kowalski Polish)**:
   * **Border Fatigue Elimination**: Stripped all heavy 1px wireframe borders from inner cards, inputs, buttons, and preset chips. Hierarchy is established through Gospel's **Inset Canvas tonal elevation** (`#0b0c0f` sunken base ➔ `#131418` canvas ➔ `#1a1b21` elevated cards with soft ambient shadow `shadow-[0_2px_12px_rgba(0,0,0,0.25)]`). Hairline borders are reduced to whisper-quiet 3–7% opacity.
@@ -120,12 +119,5 @@
 ## 4. How to Test & Evaluate
 
 1. Start Gospel dev server: `bun run dev`
-2. Open settings via:
-   - Clicking the **Settings** gear in the Top Bar, or
-   - Appending `?variant=D` (or `A`, `B`, `C`, `Orig`) to the local URL.
-3. Use the **floating bottom switcher** or `←` and `→` keyboard arrow keys to cycle through:
-   - `D — Studio Harness (A+C Hybrid)` *(Default)*
-   - `A — Studio Workbench`
-   - `B — Pipeline Command Matrix`
-   - `C — Dual-Persona Harness Lens`
-   - `Orig — Baseline (Current 680px Modal)`
+2. Open settings via the **Settings** gear in the Top Bar — Variant D (Studio Harness) is the shipped surface.
+3. Toggle the navigation rail with `[` and the Agent Inspector with `]` or `⌘J`.

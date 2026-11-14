@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import {
   Shield,
   Cpu,
@@ -16,13 +16,10 @@ import {
   Info,
   User,
   Bot,
-  Play,
   Layers,
   Copy,
   Check,
-  GitBranch,
   ChevronRight,
-  CornerDownLeft,
   PanelLeftClose,
   PanelLeft,
   PanelRightClose,
@@ -30,13 +27,17 @@ import {
   Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ProviderSelector, type ProviderConfig } from "../ProviderSelector";
-import { McpSettingsPanel } from "../McpSettingsPanel";
-import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../../types";
-import { useAutonomyPolicy } from "../../hooks/useAutonomyPolicy";
+import { ProviderSelector, type ProviderConfig } from "./ProviderSelector";
+import { McpSettingsPanel } from "./McpSettingsPanel";
+import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
+import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
+import { useFocusTrap } from "../hooks/useFocusTrap";
+import { useSkills } from "../hooks/useSkills";
+import { policyGlobToRegExp } from "../lib/policyGlob";
 
-interface VariantDProps {
+interface SettingsStudioProps {
   onClose: () => void;
+  initialCategory: SettingsCategory;
   providers: ProviderConfig[];
   onProvidersChange: (providers: ProviderConfig[]) => void;
   onRefreshAvailability: (forceRefresh?: boolean) => Promise<void>;
@@ -57,8 +58,8 @@ interface VariantDProps {
   archivePolicySaving?: boolean;
 }
 
-type PersonaFilter = "all" | "developer" | "agent" | "sandbox";
-type CategoryId =
+type PersonaFilter = "all" | "developer" | "agent";
+export type SettingsCategory =
   | "appearance"
   | "workspace"
   | "providers"
@@ -66,13 +67,12 @@ type CategoryId =
   | "autonomy"
   | "mcp"
   | "skills"
-  | "guards"
-  | "sandbox";
+  | "guards";
 
 interface CategoryMeta {
-  id: CategoryId;
+  id: SettingsCategory;
   name: string;
-  persona: "developer" | "agent" | "sandbox";
+  persona: "developer" | "agent";
   icon: typeof Shield;
   badge?: string;
   badgeColor?: string;
@@ -145,7 +145,7 @@ function PolicyControls({
               <button
                 key={option.value}
                 type="button"
-                className={`flex-1 min-h-8 px-2 rounded-md text-xs font-mono transition-all duration-150 active:scale-[0.97] ${
+                className={`flex-1 min-h-8 px-2 rounded-md text-xs font-mono transition duration-150 active:scale-[0.97] ${
                   selected
                     ? "bg-surface-elevated text-accent-structure shadow-sm font-semibold"
                     : "text-text-muted hover:text-text-secondary"
@@ -170,7 +170,7 @@ function PolicyControls({
               <button
                 key={option.value}
                 type="button"
-                className={`flex-1 min-h-8 px-2 rounded-md text-xs font-mono transition-all duration-150 active:scale-[0.97] ${
+                className={`flex-1 min-h-8 px-2 rounded-md text-xs font-mono transition duration-150 active:scale-[0.97] ${
                   selected
                     ? "bg-surface-elevated text-accent-structure shadow-sm font-semibold"
                     : "text-text-muted hover:text-text-secondary"
@@ -188,8 +188,9 @@ function PolicyControls({
   );
 }
 
-export function VariantD_StudioHarness({
+export function SettingsStudio({
   onClose,
+  initialCategory,
   providers,
   onProvidersChange,
   onRefreshAvailability,
@@ -199,14 +200,14 @@ export function VariantD_StudioHarness({
   archivePolicy,
   workspaceArchivePolicy,
   archiveStats,
-  activeWorkspaceName = "Current Project",
+  activeWorkspaceName,
   onArchivePolicyChange,
   onClearWorkspaceArchivePolicy,
   onRunArchiveMaintenance,
   archivePolicySaving = false,
-}: VariantDProps) {
+}: SettingsStudioProps) {
   const [personaFilter, setPersonaFilter] = useState<PersonaFilter>("all");
-  const [selectedCategory, setSelectedCategory] = useState<CategoryId>("autonomy");
+  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory>(initialCategory);
   const [searchQuery, setSearchQuery] = useState("");
   const [sidecarTab, setSidecarTab] = useState<"tester" | "preamble">("tester");
   const [copiedPreamble, setCopiedPreamble] = useState(false);
@@ -216,11 +217,19 @@ export function VariantD_StudioHarness({
   const [isSidecarOpen, setIsSidecarOpen] = useState(true);
 
   const autonomy = useAutonomyPolicy();
+  const { skills } = useSkills();
   const [newDenyRule, setNewDenyRule] = useState("");
 
-  // Live sandbox tester state
+  // Live tester state (Agent Inspector sidecar)
   const [testCommand, setTestCommand] = useState("rm -rf dist");
   const [testPrompt, setTestPrompt] = useState("diagnose a performance regression in test suite");
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap({ active: true, containerRef: dialogRef, onEscape: onClose });
+
+  useEffect(() => {
+    setSelectedCategory(initialCategory);
+  }, [initialCategory]);
 
   const activeProvidersCount = providers.filter((p) => p.credentialed).length;
 
@@ -241,8 +250,6 @@ export function VariantD_StudioHarness({
         name: "Workspace Binding",
         persona: "developer",
         icon: Activity,
-        badge: "Affine",
-        badgeColor: "text-accent-structure bg-accent-structure/15",
         description: "Folder roots and project session affinity",
       },
       {
@@ -262,7 +269,7 @@ export function VariantD_StudioHarness({
         name: "Storage & Retention",
         persona: "developer",
         icon: Database,
-        badge: archiveStats ? `${archiveStats.archived_count} Items` : "14.2 MB",
+        badge: archiveStats ? `${archiveStats.archived_count} Items` : undefined,
         badgeColor: "text-text-muted bg-surface-overlay/80",
         description: "SQLite transcripts and maintenance cleanup",
       },
@@ -285,7 +292,7 @@ export function VariantD_StudioHarness({
         name: "Discovered Skills",
         persona: "agent",
         icon: Sparkles,
-        badge: "8 Skills",
+        badge: `${skills.length} Skills`,
         badgeColor: "text-accent-action bg-accent-action/15",
         description: "Prompt token matchers and preambles",
       },
@@ -294,8 +301,6 @@ export function VariantD_StudioHarness({
         name: "MCP & Tool Registry",
         persona: "agent",
         icon: Server,
-        badge: "Installed",
-        badgeColor: "text-status-success bg-status-success/15",
         description: "Live workspace tools and MCP servers",
       },
       {
@@ -307,19 +312,8 @@ export function VariantD_StudioHarness({
         badgeColor: "text-status-warning bg-status-warning/15",
         description: "Loop detection and verification sub-agent",
       },
-
-      // Sandbox Category
-      {
-        id: "sandbox",
-        name: "Harness Sandbox",
-        persona: "sandbox",
-        icon: Play,
-        badge: "Interactive",
-        badgeColor: "text-accent-signal bg-accent-signal/20",
-        description: "Live command and prompt simulator",
-      },
     ],
-    [activeProvidersCount, autonomy.mode, themePreference, archiveStats]
+    [activeProvidersCount, autonomy.mode, themePreference, archiveStats, skills.length]
   );
 
   const selectedCategoryMeta = useMemo(() => {
@@ -353,15 +347,6 @@ export function VariantD_StudioHarness({
       } else if (e.key === "]" || (e.key === "j" && (e.metaKey || e.ctrlKey))) {
         e.preventDefault();
         setIsSidecarOpen((prev) => !prev);
-      } else if (e.key === "1") {
-        setPersonaFilter("developer");
-      } else if (e.key === "2") {
-        setPersonaFilter("agent");
-      } else if (e.key === "3") {
-        setPersonaFilter("sandbox");
-        setSelectedCategory("sandbox");
-      } else if (e.key === "0") {
-        setPersonaFilter("all");
       }
     },
     []
@@ -372,17 +357,17 @@ export function VariantD_StudioHarness({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  // Live command classifier evaluation (reactive to policy changes)
+  // Policy check against the user's real allow/deny rules. The built-in
+  // restricted-command list lives in the backend CommandPolicy and isn't
+  // re-evaluated here.
   const evaluatedCommand = useMemo(() => {
     const cmd = testCommand.trim();
     if (!cmd) return null;
 
-    // Check reject patterns
     for (const pattern of autonomy.policy.reject_patterns) {
-      const regex = new RegExp(`^${pattern.replace(/\*/g, ".*")}$`, "i");
+      const regex = policyGlobToRegExp(pattern);
       if (regex.test(cmd)) {
         return {
-          status: "blocked",
           badge: "DENY PATTERN",
           reason: `Matches User Deny Rule: "${pattern}"`,
           action: autonomy.mode === "auto" ? "Prompts human approval" : "Hard Denied in Ask mode",
@@ -392,31 +377,10 @@ export function VariantD_StudioHarness({
       }
     }
 
-    // Check restricted commands
-    if (
-      cmd.startsWith("rm -rf /") ||
-      cmd.includes(";") ||
-      cmd.includes("|") ||
-      cmd.startsWith("curl") ||
-      cmd.startsWith("bash") ||
-      cmd.startsWith("sh")
-    ) {
-      return {
-        status: "restricted",
-        badge: "RESTRICTED",
-        reason: "Shell metacharacters or dangerous root operation",
-        action: autonomy.mode === "auto" ? "Runs (Auto mode active)" : "Hard Denied in Ask mode",
-        icon: AlertTriangle,
-        color: "text-accent-signal bg-accent-signal/10 border-accent-signal/20",
-      };
-    }
-
-    // Check pre-approved patterns
     for (const pattern of autonomy.policy.allowed_patterns) {
-      const regex = new RegExp(`^${pattern.replace(/\*/g, ".*")}$`, "i");
+      const regex = policyGlobToRegExp(pattern);
       if (regex.test(cmd)) {
         return {
-          status: "allowed",
           badge: "PRE-APPROVED",
           reason: `Matches Workspace Pre-approved Pattern: "${pattern}"`,
           action: "Runs immediately without prompting",
@@ -427,9 +391,8 @@ export function VariantD_StudioHarness({
     }
 
     return {
-      status: autonomy.mode === "auto" ? "auto" : "ask",
       badge: autonomy.mode === "auto" ? "AUTO EXECUTE" : "PROMPT REQUIRED",
-      reason: "Standard workspace mutating command",
+      reason: "No user rule matched; backend CommandPolicy still applies",
       action: autonomy.mode === "auto" ? "Runs without prompting" : "Prompts user for one-time confirmation",
       icon: autonomy.mode === "auto" ? CheckCircle2 : Shield,
       color:
@@ -439,55 +402,52 @@ export function VariantD_StudioHarness({
     };
   }, [testCommand, autonomy.policy, autonomy.mode]);
 
-  // Skill auto-match simulator
-  const simulatedMatchedSkills = useMemo(() => {
+  // Name-match preview over the real discovered skills (the backend matcher
+  // owns actual prompt matching; this is a lookup hint only).
+  const matchedSkills = useMemo(() => {
     const p = testPrompt.toLowerCase();
-    const matches: Array<{ name: string; score: number; source: string }> = [];
-
-    if (p.includes("diagnose") || p.includes("bug") || p.includes("perf") || p.includes("regression")) {
-      matches.push({ name: "diagnose", score: 0.94, source: "Workspace" });
-    }
-    if (p.includes("prototype") || p.includes("design") || p.includes("page") || p.includes("ui")) {
-      matches.push({ name: "prototype", score: 0.96, source: "Workspace" });
-    }
-    if (p.includes("test") || p.includes("tdd") || p.includes("suite") || p.includes("vitest")) {
-      matches.push({ name: "tdd", score: 0.88, source: "Workspace" });
-    }
-    if (p.includes("clean") || p.includes("simple") || p.includes("minimal") || p.includes("bloat")) {
-      matches.push({ name: "ponytail", score: 0.81, source: "Global" });
-    }
-
-    return matches;
-  }, [testPrompt]);
+    if (!p) return [];
+    return skills.filter((s) => {
+      const name = s.name.toLowerCase();
+      return p.includes(name) || name.split(/[-_]/).some((t) => t.length > 2 && p.includes(t));
+    });
+  }, [testPrompt, skills]);
 
   const compiledPreambleText = useMemo(() => {
     return `# Gospel Agent System Preamble
-Workspace Context: ${activeWorkspaceName} (Affine Session)
+Workspace Context: ${activeWorkspaceName ?? "none"}
 Autonomy Mode: ${autonomy.mode.toUpperCase()}
 Deny Rules (${autonomy.policy.reject_patterns.length}): ${autonomy.policy.reject_patterns.join(", ")}
 
 Active Skills (Matched & Injected):
 ${
-  simulatedMatchedSkills.length > 0
-    ? simulatedMatchedSkills.map((m) => `- /${m.name} [${m.source}] (${(m.score * 100).toFixed(0)}% match)`).join("\n")
+  matchedSkills.length > 0
+    ? matchedSkills.map((m) => `- /${m.name} [${m.source}]`).join("\n")
     : "- None (General purpose assistant mode)"
-}
-
-Registered Tool Capabilities:
-- live_workspace: read_file, source_edit, search_files
-- shell_execution: run_shell_command, run_git_command (Gated by Policy)
-- mcp_tools: dynamic registry via McpSettingsPanel`;
-  }, [activeWorkspaceName, autonomy.mode, autonomy.policy.reject_patterns, simulatedMatchedSkills]);
+}`;
+  }, [activeWorkspaceName, autonomy.mode, autonomy.policy.reject_patterns, matchedSkills]);
 
   const handleCopyPreamble = () => {
-    navigator.clipboard.writeText(compiledPreambleText);
-    setCopiedPreamble(true);
-    setTimeout(() => setCopiedPreamble(false), 1800);
+    void navigator.clipboard
+      .writeText(compiledPreambleText)
+      .then(() => {
+        setCopiedPreamble(true);
+        setTimeout(() => setCopiedPreamble(false), 1800);
+      })
+      .catch(() => {});
   };
 
   return (
     <div className="fixed inset-0 bg-scrim z-[var(--z-dialog)] flex items-center justify-center p-3 sm:p-5 animate-fade-in font-sans">
+      <button
+        type="button"
+        className="absolute inset-0 cursor-default"
+        onClick={onClose}
+        aria-label="Close settings"
+        tabIndex={-1}
+      />
       <div
+        ref={dialogRef}
         className="relative w-full max-w-[1180px] h-[90vh] max-h-[860px] flex flex-col bg-surface-base border border-white/[0.07] rounded-2xl shadow-[0_32px_80px_rgba(0,0,0,0.7)] overflow-hidden animate-slide-up"
         role="dialog"
         aria-modal="true"
@@ -500,7 +460,7 @@ Registered Tool Capabilities:
             <button
               type="button"
               onClick={() => setIsNavCollapsed((prev) => !prev)}
-              className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-elevated/70 transition-all duration-150 active:scale-[0.95]"
+              className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-elevated/70 transition duration-150 active:scale-[0.95]"
               title={isNavCollapsed ? "Expand sidebar ([)" : "Collapse sidebar ([)"}
             >
               {isNavCollapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
@@ -528,19 +488,19 @@ Registered Tool Capabilities:
               <button
                 type="button"
                 onClick={() => setPersonaFilter("all")}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all duration-150 active:scale-[0.97] ${
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition duration-150 active:scale-[0.97] ${
                   personaFilter === "all"
                     ? "bg-surface-elevated text-text-primary shadow-sm"
                     : "text-text-muted hover:text-text-secondary"
                 }`}
-                title="All categories (0)"
+                title="All categories"
               >
-                All (9)
+                All ({categories.length})
               </button>
               <button
                 type="button"
                 onClick={() => setPersonaFilter("developer")}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all duration-150 active:scale-[0.97] ${
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition duration-150 active:scale-[0.97] ${
                   personaFilter === "developer"
                     ? "bg-surface-elevated text-accent-structure shadow-sm font-semibold"
                     : "text-text-muted hover:text-text-secondary"
@@ -552,7 +512,7 @@ Registered Tool Capabilities:
               <button
                 type="button"
                 onClick={() => setPersonaFilter("agent")}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all duration-150 active:scale-[0.97] ${
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition duration-150 active:scale-[0.97] ${
                   personaFilter === "agent"
                     ? "bg-surface-elevated text-accent-action shadow-sm font-semibold"
                     : "text-text-muted hover:text-text-secondary"
@@ -561,33 +521,12 @@ Registered Tool Capabilities:
               >
                 <Bot size={11} /> Agent Harness
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPersonaFilter("sandbox");
-                  setSelectedCategory("sandbox");
-                }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all duration-150 active:scale-[0.97] ${
-                  personaFilter === "sandbox"
-                    ? "bg-surface-elevated text-accent-signal shadow-sm font-semibold"
-                    : "text-text-muted hover:text-text-secondary"
-                }`}
-                title="Interactive Simulator (3)"
-              >
-                <Play size={11} /> Simulator
-              </button>
-            </div>
-
-            {/* Git Branch Badge */}
-            <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-elevated/70 text-[11px] font-mono text-text-muted">
-              <GitBranch size={11} className="text-status-success" />
-              <span className="text-text-secondary">main</span>
             </div>
 
             {/* Sync Button with active press scale */}
             <button
               type="button"
-              className="flex items-center gap-1.5 text-xs h-7 px-2.5 rounded-lg bg-surface-elevated/60 hover:bg-surface-elevated text-text-secondary hover:text-text-primary transition-all duration-150 active:scale-[0.97]"
+              className="flex items-center gap-1.5 text-xs h-7 px-2.5 rounded-lg bg-surface-elevated/60 hover:bg-surface-elevated text-text-secondary hover:text-text-primary transition duration-150 active:scale-[0.97]"
               onClick={() => void onRefreshAvailability(true)}
               disabled={isRefreshingModels}
             >
@@ -595,11 +534,19 @@ Registered Tool Capabilities:
               <span>{isRefreshingModels ? "Syncing..." : "Sync"}</span>
             </button>
 
+            {/* Live sync badge shown while the Inspector is collapsed */}
+            {!isSidecarOpen && (
+              <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-elevated/70 text-[11px] font-mono text-status-success">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-success inline-block" />
+                Synced · {autonomy.mode.toUpperCase()}
+              </span>
+            )}
+
             {/* Right Inspector Sidecar Toggle */}
             <button
               type="button"
               onClick={() => setIsSidecarOpen((prev) => !prev)}
-              className={`flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-medium transition-all duration-150 active:scale-[0.97] ${
+              className={`flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-medium transition duration-150 active:scale-[0.97] ${
                 isSidecarOpen
                   ? "bg-accent-action/15 text-accent-structure"
                   : "bg-surface-elevated/60 text-text-muted hover:text-text-secondary"
@@ -615,7 +562,7 @@ Registered Tool Capabilities:
             <button
               type="button"
               onClick={onClose}
-              className="text-xs h-7 px-2.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-elevated/60 transition-all duration-150 active:scale-[0.95]"
+              className="text-xs h-7 px-2.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-elevated/60 transition duration-150 active:scale-[0.95]"
               title="Close Settings (Esc)"
             >
               Esc
@@ -638,14 +585,12 @@ Registered Tool Capabilities:
                   <Search size={13} className="absolute left-2.5 text-text-muted" />
                   <input
                     type="text"
+                    aria-label="Filter settings"
                     placeholder="Filter settings..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-8 pr-7 py-1.5 text-xs bg-surface-sunken/80 rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent-action transition-all"
+                    className="w-full pl-8 pr-7 py-1.5 text-xs bg-surface-sunken/80 rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent-action transition"
                   />
-                  <span className="absolute right-2 px-1 py-0.2 rounded bg-surface-overlay/80 text-[10px] font-mono text-text-muted">
-                    ⌘F
-                  </span>
                 </div>
               </div>
             )}
@@ -663,7 +608,7 @@ Registered Tool Capabilities:
                       type="button"
                       onClick={() => setSelectedCategory(cat.id)}
                       title={`${cat.name} — ${cat.description}`}
-                      className={`w-full flex items-center justify-center p-2.5 rounded-xl transition-all duration-150 active:scale-[0.95] ${
+                      className={`w-full flex items-center justify-center p-2.5 rounded-xl transition duration-150 active:scale-[0.95] ${
                         isSelected
                           ? "bg-surface-elevated text-text-primary shadow-sm"
                           : "text-text-muted hover:text-text-primary hover:bg-surface-elevated/40"
@@ -675,9 +620,7 @@ Registered Tool Capabilities:
                           isSelected
                             ? cat.persona === "agent"
                               ? "text-accent-action"
-                              : cat.persona === "sandbox"
-                                ? "text-accent-signal"
-                                : "text-accent-structure"
+                              : "text-accent-structure"
                             : "text-text-muted"
                         }
                       />
@@ -690,7 +633,7 @@ Registered Tool Capabilities:
                     key={cat.id}
                     type="button"
                     onClick={() => setSelectedCategory(cat.id)}
-                    className={`w-full flex items-center justify-between p-2 rounded-xl text-left transition-all duration-150 active:scale-[0.98] ${
+                    className={`w-full flex items-center justify-between p-2 rounded-xl text-left transition duration-150 active:scale-[0.98] ${
                       isSelected
                         ? "bg-surface-elevated text-text-primary shadow-sm"
                         : "text-text-secondary hover:bg-surface-elevated/40 hover:text-text-primary"
@@ -703,9 +646,7 @@ Registered Tool Capabilities:
                           isSelected
                             ? cat.persona === "agent"
                               ? "text-accent-action"
-                              : cat.persona === "sandbox"
-                                ? "text-accent-signal"
-                                : "text-accent-structure"
+                              : "text-accent-structure"
                             : "text-text-muted"
                         }
                       />
@@ -758,7 +699,7 @@ Registered Tool Capabilities:
                   <button
                     type="button"
                     onClick={() => void autonomy.setMode("ask")}
-                    className={`p-4 rounded-xl text-left transition-all duration-150 active:scale-[0.98] ${
+                    className={`p-4 rounded-xl text-left transition duration-150 active:scale-[0.98] ${
                       autonomy.mode === "ask"
                         ? "bg-surface-elevated text-text-primary shadow-md ring-1 ring-accent-action/50"
                         : "bg-surface-sunken/40 text-text-muted hover:bg-surface-sunken/70 hover:text-text-secondary"
@@ -783,7 +724,7 @@ Registered Tool Capabilities:
                   <button
                     type="button"
                     onClick={() => void autonomy.setMode("auto")}
-                    className={`p-4 rounded-xl text-left transition-all duration-150 active:scale-[0.98] ${
+                    className={`p-4 rounded-xl text-left transition duration-150 active:scale-[0.98] ${
                       autonomy.mode === "auto"
                         ? "bg-surface-elevated text-text-primary shadow-md ring-1 ring-accent-signal/50"
                         : "bg-surface-sunken/40 text-text-muted hover:bg-surface-sunken/70 hover:text-text-secondary"
@@ -807,7 +748,7 @@ Registered Tool Capabilities:
                 </div>
 
                 {/* Deny & Reject Rules Manager (Tonal Inset Surfaces) */}
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-3">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-xs font-semibold text-text-primary">User Deny Rules</div>
@@ -833,7 +774,7 @@ Registered Tool Capabilities:
                             if (!alreadyAdded) void autonomy.addRejectRule(preset);
                           }}
                           disabled={alreadyAdded}
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-mono transition-all duration-150 active:scale-[0.95] ${
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-mono transition duration-150 active:scale-[0.95] ${
                             alreadyAdded
                               ? "bg-surface-sunken/30 text-text-muted/40 cursor-not-allowed"
                               : "bg-surface-sunken/80 text-text-secondary hover:bg-surface-overlay hover:text-text-primary cursor-pointer"
@@ -856,7 +797,7 @@ Registered Tool Capabilities:
                         <button
                           type="button"
                           onClick={() => void autonomy.removeRule(rule)}
-                          className="h-6 px-1.5 text-[10px] text-text-muted hover:text-status-error opacity-60 group-hover:opacity-100 transition-all active:scale-[0.95]"
+                          className="h-6 px-1.5 text-[10px] text-text-muted hover:text-status-error opacity-60 group-hover:opacity-100 transition active:scale-[0.95]"
                         >
                           Remove
                         </button>
@@ -867,6 +808,7 @@ Registered Tool Capabilities:
                   <div className="flex gap-2 pt-1">
                     <input
                       type="text"
+                      aria-label="Add custom deny pattern"
                       placeholder="Add custom pattern (e.g. drop table*, curl *)..."
                       value={newDenyRule}
                       onChange={(e) => setNewDenyRule(e.target.value)}
@@ -876,7 +818,7 @@ Registered Tool Capabilities:
                           setNewDenyRule("");
                         }
                       }}
-                      className="flex-1 px-3 py-1.5 text-xs bg-surface-sunken/80 rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent-action font-mono transition-all"
+                      className="flex-1 px-3 py-1.5 text-xs bg-surface-sunken/80 rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent-action font-mono transition"
                     />
                     <button
                       type="button"
@@ -886,7 +828,7 @@ Registered Tool Capabilities:
                           setNewDenyRule("");
                         }
                       }}
-                      className="flex items-center gap-1 text-xs h-8 px-3 rounded-lg bg-surface-overlay/80 hover:bg-surface-overlay text-text-secondary hover:text-text-primary transition-all active:scale-[0.97]"
+                      className="flex items-center gap-1 text-xs h-8 px-3 rounded-lg bg-surface-overlay/80 hover:bg-surface-overlay text-text-secondary hover:text-text-primary transition active:scale-[0.97]"
                     >
                       <Plus size={12} />
                       <span>Add Rule</span>
@@ -895,27 +837,38 @@ Registered Tool Capabilities:
                 </div>
 
                 {/* Pre-approved Tools Tonal Inset */}
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-2">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-2">
                   <div className="flex items-center justify-between text-xs font-semibold text-text-primary">
                     <span className="flex items-center gap-1.5 text-status-success">
                       <CheckCircle2 size={13} /> Pre-approved Workspace Commands
                     </span>
-                    <span className="text-[10px] font-mono text-text-muted">Auto-allowed</span>
+                    <span className="text-[10px] font-mono text-text-muted">
+                      {autonomy.policy.allowed_patterns.length} Auto-allowed
+                    </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs font-mono text-text-secondary">
-                    <div className="p-2 rounded-lg bg-surface-sunken/60">
-                      bun run test* / vitest run
+                  {autonomy.policy.allowed_patterns.length > 0 ? (
+                    <div className="grid grid-cols-2 gap-2 text-xs font-mono text-text-secondary">
+                      {autonomy.policy.allowed_patterns.map((pattern) => (
+                        <div
+                          key={pattern}
+                          className="p-2 rounded-lg bg-surface-sunken/60 flex items-center justify-between gap-2 group"
+                        >
+                          <span className="truncate">{pattern}</span>
+                          <button
+                            type="button"
+                            onClick={() => void autonomy.removeRule(pattern)}
+                            className="text-[10px] text-text-muted hover:text-status-error opacity-60 group-hover:opacity-100 transition active:scale-[0.95] shrink-0"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                    <div className="p-2 rounded-lg bg-surface-sunken/60">
-                      git status / git diff
-                    </div>
-                    <div className="p-2 rounded-lg bg-surface-sunken/60">
-                      cargo test* / cargo check
-                    </div>
-                    <div className="p-2 rounded-lg bg-surface-sunken/60">
-                      biome check / biome format
-                    </div>
-                  </div>
+                  ) : (
+                    <p className="text-[11px] text-text-muted m-0">
+                      No workspace allow rules yet. Commands approved with "Always allow" appear here.
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -935,7 +888,7 @@ Registered Tool Capabilities:
                   </span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03]">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03]">
                   <ProviderSelector
                     providers={providers}
                     onProvidersChange={onProvidersChange}
@@ -953,7 +906,7 @@ Registered Tool Capabilities:
                   <p className="text-xs text-text-muted mt-0.5">Customize display preferences and color palette.</p>
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-3">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
                   <div className="text-xs font-semibold text-text-primary">Theme Palette</div>
                   <div className="grid grid-cols-3 gap-3">
                     {(["dark", "light", "system"] as ThemePreference[]).map((mode) => (
@@ -961,7 +914,7 @@ Registered Tool Capabilities:
                         key={mode}
                         type="button"
                         onClick={() => onThemePreferenceChange(mode)}
-                        className={`p-3.5 rounded-xl text-left transition-all duration-150 active:scale-[0.98] ${
+                        className={`p-3.5 rounded-xl text-left transition duration-150 active:scale-[0.98] ${
                           themePreference === mode
                             ? "bg-surface-overlay text-text-primary ring-1 ring-accent-action/50 shadow-sm"
                             : "bg-surface-sunken/60 text-text-muted hover:text-text-secondary hover:bg-surface-sunken/90"
@@ -990,13 +943,12 @@ Registered Tool Capabilities:
                   <p className="text-xs text-text-muted mt-0.5">Active codebase affinity and execution directory.</p>
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-3">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
                   <div className="flex items-center justify-between">
-                    <div className="text-xs font-semibold text-text-primary">Active Directory</div>
-                    <span className="text-[10px] font-mono text-status-success">Branch: main (Clean)</span>
+                    <div className="text-xs font-semibold text-text-primary">Active Workspace</div>
                   </div>
                   <div className="p-2.5 rounded-lg bg-surface-sunken/70 font-mono text-xs text-text-secondary">
-                    {activeWorkspaceName}
+                    {activeWorkspaceName ?? "No active workspace"}
                   </div>
                 </div>
               </div>
@@ -1010,14 +962,14 @@ Registered Tool Capabilities:
                   <p className="text-xs text-text-muted mt-0.5">SQLite database storage and automated session pruning.</p>
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-4">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-xs font-semibold text-text-primary">Session Archive & Traces</div>
                       <div className="text-[11px] text-text-muted mt-0.5">
                         {archiveStats
                           ? `${archiveStats.archived_count} archived turns, ${archiveStats.expired_count} expired, ${formatBytes(archiveStats.archived_bytes)} stored`
-                          : "14.2 MB total trace log usage"}
+                          : "Archive statistics unavailable"}
                       </div>
                     </div>
                     <Button
@@ -1095,28 +1047,27 @@ Registered Tool Capabilities:
                 </div>
 
                 <div className="space-y-2">
-                  {[
-                    { name: "diagnose", desc: "Disciplined reproduction & fix loop for hard bugs", src: "Workspace" },
-                    { name: "prototype", desc: "Build throwaway code answering UI or logic questions", src: "Workspace" },
-                    { name: "tdd", desc: "Test-driven development (red-green-refactor)", src: "Workspace" },
-                    { name: "ponytail", desc: "Ultra-minimalist code review and YAGNI enforcement", src: "Global" },
-                  ].map((s) => (
-                    <div
-                      key={s.name}
-                      className="p-3 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] flex items-center justify-between text-xs"
-                    >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-semibold text-accent-structure">/{s.name}</span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-sunken/80 text-text-muted">
-                            {s.src}
-                          </span>
+                  {skills.length > 0 ? (
+                    skills.map((s) => (
+                      <div
+                        key={s.name}
+                        className="p-3 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] flex items-center justify-between text-xs"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-semibold text-accent-structure">/{s.name}</span>
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-sunken/80 text-text-muted">
+                              {s.source}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-text-muted mt-0.5">{s.description}</div>
                         </div>
-                        <div className="text-[11px] text-text-muted mt-0.5">{s.desc}</div>
+                        <span className="text-[10px] font-mono text-status-success">Invocable</span>
                       </div>
-                      <span className="text-[10px] font-mono text-status-success">Invocable</span>
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <p className="text-[11px] text-text-muted m-0">No user-invocable skills discovered.</p>
+                  )}
                 </div>
               </div>
             )}
@@ -1131,7 +1082,7 @@ Registered Tool Capabilities:
                   </p>
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03]">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03]">
                   <McpSettingsPanel />
                 </div>
               </div>
@@ -1145,7 +1096,7 @@ Registered Tool Capabilities:
                   <p className="text-xs text-text-muted mt-0.5">Safeguards preventing token runaways and silent regressions.</p>
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-3">
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
                   <div className="text-xs font-semibold text-text-primary">Loop Detection Rules</div>
                   <div className="grid grid-cols-2 gap-3 text-xs text-text-muted">
                     <div className="p-3 rounded-lg bg-surface-sunken/60">
@@ -1161,76 +1112,6 @@ Registered Tool Capabilities:
               </div>
             )}
 
-            {/* CATEGORY: FULL HARNESS SANDBOX */}
-            {selectedCategory === "sandbox" && (
-              <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
-                <div>
-                  <h3 className="text-base font-semibold text-text-primary m-0">Harness Interactive Sandbox</h3>
-                  <p className="text-xs text-text-muted mt-0.5">
-                    Test safety classifiers and prompt matchers against Gospel runtime rules.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  {/* Command Tester */}
-                  <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-3">
-                    <div className="text-xs font-semibold text-text-primary flex items-center gap-1.5">
-                      <Terminal size={14} className="text-accent-structure" />
-                      Test Shell Command
-                    </div>
-                    <input
-                      type="text"
-                      value={testCommand}
-                      onChange={(e) => setTestCommand(e.target.value)}
-                      placeholder="e.g. git push --force..."
-                      className="w-full px-3 py-1.5 text-xs bg-surface-sunken/80 rounded-lg font-mono text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-action transition-all"
-                    />
-                    {evaluatedCommand && (
-                      <div className={`p-3 rounded-lg border ${evaluatedCommand.color} text-xs space-y-1`}>
-                        <div className="flex items-center justify-between font-semibold">
-                          <div className="flex items-center gap-1.5">
-                            <evaluatedCommand.icon size={14} />
-                            <span>{evaluatedCommand.action}</span>
-                          </div>
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/20 font-bold">
-                            {evaluatedCommand.badge}
-                          </span>
-                        </div>
-                        <div className="text-[11px] opacity-90 pl-5">{evaluatedCommand.reason}</div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Prompt Tester */}
-                  <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-sm border border-white/[0.03] space-y-3">
-                    <div className="text-xs font-semibold text-text-primary flex items-center gap-1.5">
-                      <Sparkles size={14} className="text-accent-action" />
-                      Test Skill Matcher
-                    </div>
-                    <input
-                      type="text"
-                      value={testPrompt}
-                      onChange={(e) => setTestPrompt(e.target.value)}
-                      placeholder="e.g. write a prototype..."
-                      className="w-full px-3 py-1.5 text-xs bg-surface-sunken/80 rounded-lg text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-action transition-all"
-                    />
-                    <div className="space-y-1">
-                      {simulatedMatchedSkills.map((m) => (
-                        <div
-                          key={m.name}
-                          className="flex items-center justify-between p-2 rounded-lg bg-surface-sunken/60 text-xs"
-                        >
-                          <span className="font-mono text-accent-structure font-semibold">/{m.name}</span>
-                          <span className="font-mono text-[11px] text-status-success">
-                            {(m.score * 100).toFixed(0)}% match
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Right Live Sidecar (Collapsible 310px <-> 0px) */}
@@ -1247,7 +1128,7 @@ Registered Tool Capabilities:
                     <button
                       type="button"
                       onClick={() => setSidecarTab("tester")}
-                      className={`px-2 py-0.5 rounded-md transition-all duration-150 active:scale-[0.95] ${
+                      className={`px-2 py-0.5 rounded-md transition duration-150 active:scale-[0.95] ${
                         sidecarTab === "tester"
                           ? "bg-surface-elevated text-text-primary font-medium shadow-sm"
                           : "text-text-muted hover:text-text-secondary"
@@ -1258,7 +1139,7 @@ Registered Tool Capabilities:
                     <button
                       type="button"
                       onClick={() => setSidecarTab("preamble")}
-                      className={`px-2 py-0.5 rounded-md transition-all duration-150 active:scale-[0.95] ${
+                      className={`px-2 py-0.5 rounded-md transition duration-150 active:scale-[0.95] ${
                         sidecarTab === "preamble"
                           ? "bg-surface-elevated text-text-primary font-medium shadow-sm"
                           : "text-text-muted hover:text-text-secondary"
@@ -1270,7 +1151,7 @@ Registered Tool Capabilities:
                   <button
                     type="button"
                     onClick={() => setIsSidecarOpen(false)}
-                    className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-elevated/60 transition-all active:scale-[0.95]"
+                    className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-elevated/60 transition active:scale-[0.95]"
                     title="Collapse Inspector (] or ⌘J)"
                   >
                     <PanelRightClose size={13} />
@@ -1288,10 +1169,11 @@ Registered Tool Capabilities:
                     </div>
                     <input
                       type="text"
+                      aria-label="Quick command classifier input"
                       value={testCommand}
                       onChange={(e) => setTestCommand(e.target.value)}
                       placeholder="Type command e.g. git push --force..."
-                      className="w-full px-2.5 py-1 text-[11px] bg-surface-sunken/80 rounded-md font-mono text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-action transition-all"
+                      className="w-full px-2.5 py-1 text-[11px] bg-surface-sunken/80 rounded-md font-mono text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-action transition"
                     />
 
                     {/* Preset Command Chips for 1-Click Testing */}
@@ -1301,7 +1183,7 @@ Registered Tool Capabilities:
                           key={chip.label}
                           type="button"
                           onClick={() => setTestCommand(chip.cmd)}
-                          className="px-1.5 py-0.5 rounded bg-surface-sunken/80 text-[10px] font-mono text-text-muted hover:text-text-primary hover:bg-surface-overlay active:scale-[0.95] transition-all"
+                          className="px-1.5 py-0.5 rounded bg-surface-sunken/80 text-[10px] font-mono text-text-muted hover:text-text-primary hover:bg-surface-overlay active:scale-[0.95] transition"
                         >
                           {chip.label}
                         </button>
@@ -1332,10 +1214,11 @@ Registered Tool Capabilities:
                     </div>
                     <input
                       type="text"
+                      aria-label="Quick skill matcher input"
                       value={testPrompt}
                       onChange={(e) => setTestPrompt(e.target.value)}
                       placeholder="Type sample prompt..."
-                      className="w-full px-2.5 py-1 text-[11px] bg-surface-sunken/80 rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-action transition-all"
+                      className="w-full px-2.5 py-1 text-[11px] bg-surface-sunken/80 rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-action transition"
                     />
 
                     {/* Preset Prompt Chips for 1-Click Testing */}
@@ -1345,7 +1228,7 @@ Registered Tool Capabilities:
                           key={chip.label}
                           type="button"
                           onClick={() => setTestPrompt(chip.prompt)}
-                          className="px-1.5 py-0.5 rounded bg-surface-sunken/80 text-[10px] text-text-muted hover:text-text-primary hover:bg-surface-overlay active:scale-[0.95] transition-all"
+                          className="px-1.5 py-0.5 rounded bg-surface-sunken/80 text-[10px] text-text-muted hover:text-text-primary hover:bg-surface-overlay active:scale-[0.95] transition"
                         >
                           {chip.label}
                         </button>
@@ -1353,15 +1236,13 @@ Registered Tool Capabilities:
                     </div>
 
                     <div className="space-y-1 pt-1">
-                      {simulatedMatchedSkills.map((m) => (
+                      {matchedSkills.map((m) => (
                         <div
                           key={m.name}
                           className="flex items-center justify-between px-2 py-1 rounded-md bg-surface-sunken/60 text-[11px]"
                         >
                           <span className="font-mono text-accent-structure font-medium">/{m.name}</span>
-                          <span className="font-mono text-[10px] text-status-success font-semibold">
-                            {(m.score * 100).toFixed(0)}%
-                          </span>
+                          <span className="font-mono text-[10px] text-text-muted">{m.source}</span>
                         </div>
                       ))}
                     </div>
@@ -1391,21 +1272,20 @@ Registered Tool Capabilities:
                     <button
                       type="button"
                       onClick={handleCopyPreamble}
-                      className="flex items-center gap-1 text-[10px] font-mono text-accent-structure hover:text-white transition-all active:scale-[0.95]"
+                      className="flex items-center gap-1 text-[10px] font-mono text-accent-structure hover:text-white transition active:scale-[0.95]"
                     >
                       {copiedPreamble ? <Check size={11} className="text-status-success" /> : <Copy size={11} />}
                       <span>{copiedPreamble ? "Copied!" : "Copy"}</span>
                     </button>
                   </div>
 
-                  {/* Token Gauge Bar */}
+                  {/* Preamble Size */}
                   <div className="p-2 rounded-lg bg-surface-sunken/60 space-y-1">
                     <div className="flex justify-between text-[10px] font-mono text-text-muted">
-                      <span>Token Footprint</span>
-                      <span className="text-text-secondary font-semibold">640 / 8,192 tok</span>
-                    </div>
-                    <div className="w-full bg-surface-sunken h-1.5 rounded-full overflow-hidden">
-                      <div className="bg-accent-action h-full rounded-full" style={{ width: "7.8%" }} />
+                      <span>Preamble Size</span>
+                      <span className="text-text-secondary font-semibold">
+                        {compiledPreambleText.length} chars
+                      </span>
                     </div>
                   </div>
 
@@ -1447,18 +1327,6 @@ Registered Tool Capabilities:
             </span>
             <span className="flex items-center gap-1">
               <kbd className="px-1.5 py-0.5 rounded bg-surface-overlay/80 text-text-secondary">
-                1-3
-              </kbd>
-              <span>Lenses</span>
-            </span>
-            <span className="flex items-center gap-1">
-              <kbd className="px-1.5 py-0.5 rounded bg-surface-overlay/80 text-text-secondary">
-                <CornerDownLeft size={10} />
-              </kbd>
-              <span>Apply</span>
-            </span>
-            <span className="flex items-center gap-1">
-              <kbd className="px-1.5 py-0.5 rounded bg-surface-overlay/80 text-text-secondary">
                 Esc
               </kbd>
               <span>Close</span>
@@ -1467,7 +1335,7 @@ Registered Tool Capabilities:
 
           <div className="flex items-center gap-1.5 font-mono text-[10px] text-status-success">
             <span className="w-1.5 h-1.5 rounded-full bg-status-success inline-block" />
-            <span>Synced · 14ms latency</span>
+            <span>Synced · {autonomy.mode.toUpperCase()}</span>
           </div>
         </div>
       </div>
