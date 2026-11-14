@@ -42,11 +42,8 @@ fn request(model: &MockCompletionModel) -> RunRequest {
 }
 
 #[test]
-fn textless_answer_gets_a_visible_fallback() {
-    assert_eq!(
-        final_response(&Message::assistant("")),
-        "The agent ended this turn without a text response."
-    );
+fn textless_answer_has_an_empty_final_response() {
+    assert_eq!(final_response(&Message::assistant("")), "");
 }
 
 struct CountingTool {

@@ -1088,22 +1088,6 @@ struct TauriSessionTurnAdapters<'a> {
     agent_cache: &'a AgentCache,
 }
 
-impl TauriSessionTurnAdapters<'_> {
-    fn cache_model_history(
-        &self,
-        session_id: &str,
-        model_history_json: &str,
-    ) -> Result<(), serde_json::Error> {
-        let messages = model_history::parse_model_history(model_history_json)?;
-        self.conversation_state
-            .store
-            .lock()
-            .unwrap()
-            .store_history(session_id, messages);
-        Ok(())
-    }
-}
-
 impl session_turn::SessionTurnWorkspace for TauriSessionTurnAdapters<'_> {
     fn active_workspace_selection(&self) -> Option<session_turn::ActiveWorkspaceSelection> {
         match &self.app_config.store {
@@ -1161,38 +1145,11 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
         user_prompt: &str,
         error_message: &str,
     ) -> Result<(), String> {
-        let store = self
-            .session_store_state
-            .store
-            .as_ref()
-            .ok_or_else(|| "session store unavailable".to_string())?;
-        if let Some(snapshot) =
-            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
-        {
-            let persistence = session_turn::failure_turn_persistence(
-                &snapshot.display_transcript,
-                snapshot.model_history.as_deref(),
-                user_prompt,
-                &LlmError::ProviderError(error_message.to_string()),
-            );
-            store
-                .persist_turn(
-                    session_id,
-                    &persistence.display_transcript,
-                    persistence.model_history.as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-            if let Some(model_history) = persistence.model_history.as_deref() {
-                if let Err(error) = self.cache_model_history(session_id, model_history) {
-                    tracing::warn!(
-                        "Failed to cache model history for session {}: {}",
-                        session_id,
-                        error
-                    );
-                }
-            }
-        }
-        Ok(())
+        self.persist_failed_turn(
+            session_id,
+            user_prompt,
+            &LlmError::ProviderError(error_message.to_string()),
+        )
     }
 
     fn save_turn_stopped(
@@ -1201,38 +1158,31 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
         user_prompt: &str,
         stopped_reason: &str,
     ) -> Result<(), String> {
-        let store = self
-            .session_store_state
-            .store
-            .as_ref()
-            .ok_or_else(|| "session store unavailable".to_string())?;
-        if let Some(snapshot) =
-            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
-        {
-            let persistence = session_turn::failure_turn_persistence(
-                &snapshot.display_transcript,
-                snapshot.model_history.as_deref(),
-                user_prompt,
-                &LlmError::ControlledStop(stopped_reason.to_string()),
-            );
-            store
-                .persist_turn(
-                    session_id,
-                    &persistence.display_transcript,
-                    persistence.model_history.as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-            if let Some(model_history) = persistence.model_history.as_deref() {
-                if let Err(error) = self.cache_model_history(session_id, model_history) {
-                    tracing::warn!(
-                        "Failed to cache model history for session {}: {}",
-                        session_id,
-                        error
-                    );
-                }
-            }
-        }
-        Ok(())
+        self.persist_failed_turn(
+            session_id,
+            user_prompt,
+            &LlmError::ControlledStop(stopped_reason.to_string()),
+        )
+    }
+}
+
+impl TauriSessionTurnAdapters<'_> {
+    fn persist_failed_turn(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        error: &LlmError,
+    ) -> Result<(), String> {
+        session_turn::persist_failed_turn(
+            self,
+            self,
+            session_id,
+            &session_turn::FailedTurn {
+                display_prompt: user_prompt,
+                model_prompt: user_prompt,
+                error,
+            },
+        )
     }
 }
 
@@ -1312,40 +1262,9 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
 }
 
 impl session_turn::SessionTurnConversation for TauriSessionTurnAdapters<'_> {
-    fn chat_history(&self, session_id: Option<&str>) -> Vec<rig::completion::message::Message> {
-        let Some(sid) = session_id else {
-            return Vec::new();
-        };
-        {
-            let mut store = self.conversation_state.store.lock().unwrap();
-            if let Some(history) = store.get_history_if_present(sid) {
-                return history;
-            }
-        }
-
-        let Some(snapshot) = session_turn::SessionTurnSessions::persisted_snapshot(self, sid)
-        else {
-            return Vec::new();
-        };
-        let Some(model_history_json) = snapshot.model_history.as_deref() else {
-            return Vec::new();
-        };
-        match self.cache_model_history(sid, model_history_json) {
-            Ok(()) => self
-                .conversation_state
-                .store
-                .lock()
-                .unwrap()
-                .get_history(sid),
-            Err(error) => {
-                tracing::warn!(
-                    "Failed to parse model history for session {}: {}",
-                    sid,
-                    error
-                );
-                Vec::new()
-            }
-        }
+    fn cached_history(&self, session_id: &str) -> Option<Vec<rig::completion::message::Message>> {
+        let mut store = self.conversation_state.store.lock().unwrap();
+        store.get_history_if_present(session_id)
     }
 
     fn store_history(&self, session_id: &str, history: Vec<rig::completion::message::Message>) {
@@ -2822,9 +2741,8 @@ fn run_session_message_action(
                 request.turn_count,
             )?
         };
-        let persistence =
-            session_turn::successful_turn_persistence(Some(&history), &request.response_text)
-                .ok_or("Unable to prepare conversation history")?;
+        let persistence = session_turn::successful_turn_persistence(Some(&history), None)
+            .ok_or("Unable to prepare conversation history")?;
         let model_history = persistence
             .model_history
             .as_deref()

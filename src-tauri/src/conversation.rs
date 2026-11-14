@@ -21,6 +21,7 @@ impl ConversationStore {
         }
     }
 
+    #[cfg(test)]
     pub fn get_history(&mut self, session_id: &str) -> Vec<Message> {
         self.get_history_if_present(session_id).unwrap_or_default()
     }
@@ -248,6 +249,80 @@ mod tests {
         Message::assistant(text)
     }
 
+    fn make_tool_calls_message(ids: &[&str]) -> Message {
+        Message::Assistant(AssistantMessage::new(
+            ids.iter()
+                .map(|id| {
+                    AssistantContent::ToolCall(ToolCall {
+                        id: CallId::from_wire(*id),
+                        function: ToolFunction::new(
+                            ToolName::new("read_file").unwrap(),
+                            serde_json::json!({}),
+                        ),
+                        native: None,
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    #[test]
+    fn count_pruning_never_splits_a_multi_call_batch() {
+        let mut store = ConversationStore::new();
+        // 52 messages: the count cap would cut between the two results.
+        let mut messages = vec![
+            make_tool_calls_message(&["a", "b"]),
+            make_tool_result_message("a", "first"),
+            make_tool_result_message("b", "second"),
+        ];
+        for i in 0..24 {
+            messages.push(make_user_message(&format!("request {i}")));
+            messages.push(make_assistant_message("Done."));
+        }
+        messages.push(make_user_message("last"));
+
+        store.store_history("s1", messages);
+        let history = store.get_history("s1");
+
+        assert!(history.len() <= MAX_MESSAGES_PER_CONVERSATION);
+        assert!(rig::conversation::pairing::validate(&history).is_ok());
+        assert_eq!(history[0], make_user_message("request 0"));
+    }
+
+    #[test]
+    fn byte_pruning_keeps_tool_calls_paired() {
+        let mut store = ConversationStore::new();
+        let payload = "x".repeat(MAX_TOOL_RESULT_BYTES - 512);
+        let mut messages = Vec::new();
+        for i in 0..15 {
+            let id = format!("call-{i}");
+            messages.push(make_user_message(&format!("request {i}")));
+            messages.push(make_tool_calls_message(&[&id]));
+            messages.push(make_tool_result_message(&id, &payload));
+        }
+        assert!(serialized_history_bytes(&messages) > MAX_HISTORY_BYTES);
+
+        store.store_history("s1", messages);
+        let history = store.get_history("s1");
+
+        assert!(!history.is_empty());
+        assert!(serialized_history_bytes(&history) <= MAX_HISTORY_BYTES);
+        assert!(rig::conversation::pairing::validate(&history).is_ok());
+    }
+
+    #[test]
+    fn pruning_drops_history_made_only_of_orphaned_results() {
+        let mut store = ConversationStore::new();
+        store.store_history(
+            "s1",
+            vec![
+                make_tool_result_message("gone-1", "stale"),
+                make_tool_result_message("gone-2", "stale"),
+            ],
+        );
+
+        assert_eq!(store.get_history_if_present("s1"), Some(Vec::new()));
+    }
     #[test]
     fn store_replaces_history() {
         let mut store = ConversationStore::new();

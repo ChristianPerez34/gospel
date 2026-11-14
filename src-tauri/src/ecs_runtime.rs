@@ -306,19 +306,25 @@ fn reasoning_id(state: &mut RunState) -> String {
     id
 }
 
+/// Empty when the answer has no text; callers decide whether to show a
+/// fallback, since non-chat callers (e.g. title generation) treat empty output
+/// as "no result".
 fn final_response(message: &Message) -> String {
     message.final_answer().unwrap_or_else(|| {
-        if let Message::Assistant(assistant) = message {
-            if let Some(text) = assistant.content.iter().rev().find_map(|part| match part {
+        let Message::Assistant(assistant) = message else {
+            return String::new();
+        };
+        assistant
+            .content
+            .iter()
+            .rev()
+            .find_map(|part| match part {
                 AssistantContent::Text(text) if !text.text.trim().is_empty() => {
                     Some(text.text.trim().to_string())
                 }
                 _ => None,
-            }) {
-                return text;
-            }
-        }
-        "The agent ended this turn without a text response.".to_string()
+            })
+            .unwrap_or_default()
     })
 }
 
