@@ -6,7 +6,8 @@ use rig::test_utils::{MockCompletionModel, MockError, MockStreamEvent};
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use rig::ProviderResponseError;
 use serde_json::{json, Value};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::mpsc::UnboundedSender;
 
 fn answer(text: &str) -> Vec<MockStreamEvent> {
     vec![
