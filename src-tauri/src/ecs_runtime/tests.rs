@@ -41,6 +41,11 @@ fn request(model: &MockCompletionModel) -> RunRequest {
     }
 }
 
+#[test]
+fn textless_answer_has_an_empty_final_response() {
+    assert_eq!(final_response(&Message::assistant("")), "");
+}
+
 struct CountingTool {
     executions: Arc<AtomicUsize>,
     approval: Option<Arc<ApprovalBroker>>,

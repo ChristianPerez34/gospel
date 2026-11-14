@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use futures::future::poll_fn;
 use rig::catalog::{ModelSpec, ReasoningSupport};
+use rig::completion::message::AssistantContent;
 use rig::completion::{Effort, Message};
 use rig::effect::{family, EffectKind, HandlerDescriptor};
 use rig::providers::registry::ProviderId;
@@ -305,6 +306,28 @@ fn reasoning_id(state: &mut RunState) -> String {
     id
 }
 
+/// Empty when the answer has no text; callers decide whether to show a
+/// fallback, since non-chat callers (e.g. title generation) treat empty output
+/// as "no result".
+fn final_response(message: &Message) -> String {
+    message.final_answer().unwrap_or_else(|| {
+        let Message::Assistant(assistant) = message else {
+            return String::new();
+        };
+        assistant
+            .content
+            .iter()
+            .rev()
+            .find_map(|part| match part {
+                AssistantContent::Text(text) if !text.text.trim().is_empty() => {
+                    Some(text.text.trim().to_string())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    })
+}
+
 #[allow(
     clippy::type_complexity,
     reason = "Bevy systems declare component access in query types"
@@ -511,7 +534,7 @@ fn kernel(
             }
             return match outcome {
                 TurnOutcome::Answered(message) => {
-                    let full_response = message.final_answer().unwrap_or_default();
+                    let full_response = final_response(&message);
                     let history = app.world().get::<Conversation>(agent).map(|conversation| {
                         conversation
                             .messages()
