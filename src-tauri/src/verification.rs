@@ -131,8 +131,8 @@ async fn run_verification_agent(
     // run_verification owns the deadline so a timeout reports as a verification timeout.
     let mut guards = profile.guards;
     guards.deadline = None;
-    crate::ecs_runtime::run(
-        crate::ecs_runtime::RunRequest {
+    crate::agent_runtime::run(
+        crate::agent_runtime::RunRequest {
             session_id: session_id.map(str::to_owned),
             model,
             prompt: prompt.to_owned(),
