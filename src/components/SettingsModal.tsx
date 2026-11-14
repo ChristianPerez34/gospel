@@ -5,6 +5,19 @@ import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
 import { McpSettingsPanel } from "./McpSettingsPanel";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
+import { PrototypeSwitcher, type VariantOption } from "./prototype/PrototypeSwitcher";
+import { VariantA_StudioWorkbench } from "./prototype/VariantA_StudioWorkbench";
+import { VariantB_PipelineMatrix } from "./prototype/VariantB_PipelineMatrix";
+import { VariantC_DualPersonaSimulator } from "./prototype/VariantC_DualPersonaSimulator";
+import { VariantD_StudioHarness } from "./prototype/VariantD_StudioHarness";
+
+const PROTOTYPE_VARIANTS: VariantOption[] = [
+  { key: "D", name: "Studio Harness (A+C Hybrid)" },
+  { key: "A", name: "Studio Workbench" },
+  { key: "B", name: "Pipeline Command Matrix" },
+  { key: "C", name: "Dual-Persona Harness Lens" },
+  { key: "Orig", name: "Baseline (Current 680px Modal)" },
+];
 
 function themeIndex(value: ThemePreference) {
   switch (value) {
@@ -106,7 +119,147 @@ export function SettingsModal({
     shouldRestoreFocusOnDeactivate: true,
   });
 
+  const [activeVariant, setActiveVariant] = useState<string>(() => {
+    if (typeof window === "undefined") return "D";
+    const v = new URLSearchParams(window.location.search).get("variant");
+    if (!v) return "D";
+    const normalized = v.toUpperCase();
+    if (normalized === "D" || normalized === "AC" || normalized === "HYBRID") return "D";
+    if (normalized === "A") return "A";
+    if (normalized === "B") return "B";
+    if (normalized === "C") return "C";
+    if (normalized === "ORIG" || normalized === "ORIGINAL") return "Orig";
+    return "D";
+  });
+
+  const handleVariantChange = (nextKey: string) => {
+    setActiveVariant(nextKey);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("variant", nextKey);
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+      // safe in non-browser envs
+    }
+  };
+
   if (!open) return null;
+
+  if (activeVariant === "D") {
+    return (
+      <>
+        <VariantD_StudioHarness
+          onClose={onClose}
+          providers={providers}
+          onProvidersChange={onProvidersChange}
+          onRefreshAvailability={onRefreshAvailability}
+          isRefreshingModels={isRefreshingModels}
+          themePreference={themePreference}
+          onThemePreferenceChange={onThemePreferenceChange}
+          archivePolicy={archivePolicy}
+          workspaceArchivePolicy={workspaceArchivePolicy}
+          archiveStats={archiveStats}
+          activeWorkspaceName={activeWorkspaceName}
+          onArchivePolicyChange={onArchivePolicyChange}
+          onClearWorkspaceArchivePolicy={onClearWorkspaceArchivePolicy}
+          onRunArchiveMaintenance={onRunArchiveMaintenance}
+          archivePolicySaving={archivePolicySaving}
+        />
+        <PrototypeSwitcher
+          variants={PROTOTYPE_VARIANTS}
+          current={activeVariant}
+          onChange={handleVariantChange}
+        />
+      </>
+    );
+  }
+
+  if (activeVariant === "A") {
+    return (
+      <>
+        <VariantA_StudioWorkbench
+          onClose={onClose}
+          providers={providers}
+          onProvidersChange={onProvidersChange}
+          onRefreshAvailability={onRefreshAvailability}
+          isRefreshingModels={isRefreshingModels}
+          themePreference={themePreference}
+          onThemePreferenceChange={onThemePreferenceChange}
+          archivePolicy={archivePolicy}
+          workspaceArchivePolicy={workspaceArchivePolicy}
+          archiveStats={archiveStats}
+          activeWorkspaceName={activeWorkspaceName}
+          onArchivePolicyChange={onArchivePolicyChange}
+          onClearWorkspaceArchivePolicy={onClearWorkspaceArchivePolicy}
+          onRunArchiveMaintenance={onRunArchiveMaintenance}
+          archivePolicySaving={archivePolicySaving}
+        />
+        <PrototypeSwitcher
+          variants={PROTOTYPE_VARIANTS}
+          current={activeVariant}
+          onChange={handleVariantChange}
+        />
+      </>
+    );
+  }
+
+  if (activeVariant === "B") {
+    return (
+      <>
+        <VariantB_PipelineMatrix
+          onClose={onClose}
+          providers={providers}
+          onProvidersChange={onProvidersChange}
+          onRefreshAvailability={onRefreshAvailability}
+          isRefreshingModels={isRefreshingModels}
+          themePreference={themePreference}
+          onThemePreferenceChange={onThemePreferenceChange}
+          archivePolicy={archivePolicy}
+          workspaceArchivePolicy={workspaceArchivePolicy}
+          archiveStats={archiveStats}
+          activeWorkspaceName={activeWorkspaceName}
+          onArchivePolicyChange={onArchivePolicyChange}
+          onClearWorkspaceArchivePolicy={onClearWorkspaceArchivePolicy}
+          onRunArchiveMaintenance={onRunArchiveMaintenance}
+          archivePolicySaving={archivePolicySaving}
+        />
+        <PrototypeSwitcher
+          variants={PROTOTYPE_VARIANTS}
+          current={activeVariant}
+          onChange={handleVariantChange}
+        />
+      </>
+    );
+  }
+
+  if (activeVariant === "C") {
+    return (
+      <>
+        <VariantC_DualPersonaSimulator
+          onClose={onClose}
+          providers={providers}
+          onProvidersChange={onProvidersChange}
+          onRefreshAvailability={onRefreshAvailability}
+          isRefreshingModels={isRefreshingModels}
+          themePreference={themePreference}
+          onThemePreferenceChange={onThemePreferenceChange}
+          archivePolicy={archivePolicy}
+          workspaceArchivePolicy={workspaceArchivePolicy}
+          archiveStats={archiveStats}
+          activeWorkspaceName={activeWorkspaceName}
+          onArchivePolicyChange={onArchivePolicyChange}
+          onClearWorkspaceArchivePolicy={onClearWorkspaceArchivePolicy}
+          onRunArchiveMaintenance={onRunArchiveMaintenance}
+          archivePolicySaving={archivePolicySaving}
+        />
+        <PrototypeSwitcher
+          variants={PROTOTYPE_VARIANTS}
+          current={activeVariant}
+          onChange={handleVariantChange}
+        />
+      </>
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-scrim z-[var(--z-dialog)] flex items-center justify-center animate-fade-in">
@@ -358,6 +511,11 @@ export function SettingsModal({
           )}
         </div>
       </div>
+      <PrototypeSwitcher
+        variants={PROTOTYPE_VARIANTS}
+        current={activeVariant}
+        onChange={handleVariantChange}
+      />
     </div>
   );
 }

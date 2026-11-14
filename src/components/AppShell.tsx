@@ -40,6 +40,12 @@ function isSkillOptPanelRequest(): boolean {
   return new URLSearchParams(window.location.search).get("panel") === "skill-opt";
 }
 
+function isSettingsRequest(): boolean {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  return params.has("variant") || params.get("panel") === "settings" || params.get("settings") === "1";
+}
+
 interface BackendSessionRecord {
   id: string;
   title: string;
@@ -164,7 +170,7 @@ export function AppShell() {
   const [taskRailCollapsed, setTaskRailCollapsed] = useState(() => window.innerWidth < 1000);
   const [compactLayout, setCompactLayout] = useState(() => window.innerWidth < 1000);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(isSettingsRequest);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [skillOptOpen, setSkillOptOpen] = useState(isSkillOptPanelRequest);
