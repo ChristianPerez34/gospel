@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use futures::future::poll_fn;
 use rig::catalog::{ModelSpec, ReasoningSupport};
+use rig::completion::message::AssistantContent;
 use rig::completion::{Effort, Message};
 use rig::effect::{family, EffectKind, HandlerDescriptor};
 use rig::providers::registry::ProviderId;
@@ -305,6 +306,22 @@ fn reasoning_id(state: &mut RunState) -> String {
     id
 }
 
+fn final_response(message: &Message) -> String {
+    message.final_answer().unwrap_or_else(|| {
+        if let Message::Assistant(assistant) = message {
+            if let Some(text) = assistant.content.iter().rev().find_map(|part| match part {
+                AssistantContent::Text(text) if !text.text.trim().is_empty() => {
+                    Some(text.text.trim().to_string())
+                }
+                _ => None,
+            }) {
+                return text;
+            }
+        }
+        "The agent ended this turn without a text response.".to_string()
+    })
+}
+
 #[allow(
     clippy::type_complexity,
     reason = "Bevy systems declare component access in query types"
@@ -511,7 +528,7 @@ fn kernel(
             }
             return match outcome {
                 TurnOutcome::Answered(message) => {
-                    let full_response = message.final_answer().unwrap_or_default();
+                    let full_response = final_response(&message);
                     let history = app.world().get::<Conversation>(agent).map(|conversation| {
                         conversation
                             .messages()

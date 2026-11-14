@@ -239,8 +239,18 @@ pub trait TurnPersistenceAdapter: Send + Sync {
         assistant_reply: &str,
         model_history: Option<&str>,
     ) -> Result<(), String>;
-    fn save_turn_failure(&self, session_id: &str, error_message: &str) -> Result<(), String>;
-    fn save_turn_stopped(&self, session_id: &str, stopped_reason: &str) -> Result<(), String>;
+    fn save_turn_failure(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        error_message: &str,
+    ) -> Result<(), String>;
+    fn save_turn_stopped(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        stopped_reason: &str,
+    ) -> Result<(), String>;
 }
 
 impl<T: TurnPersistenceAdapter + ?Sized> TurnPersistenceAdapter for std::sync::Arc<T> {
@@ -258,12 +268,22 @@ impl<T: TurnPersistenceAdapter + ?Sized> TurnPersistenceAdapter for std::sync::A
         (**self).save_turn_success(session_id, user_prompt, assistant_reply, model_history)
     }
 
-    fn save_turn_failure(&self, session_id: &str, error_message: &str) -> Result<(), String> {
-        (**self).save_turn_failure(session_id, error_message)
+    fn save_turn_failure(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        error_message: &str,
+    ) -> Result<(), String> {
+        (**self).save_turn_failure(session_id, user_prompt, error_message)
     }
 
-    fn save_turn_stopped(&self, session_id: &str, stopped_reason: &str) -> Result<(), String> {
-        (**self).save_turn_stopped(session_id, stopped_reason)
+    fn save_turn_stopped(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        stopped_reason: &str,
+    ) -> Result<(), String> {
+        (**self).save_turn_stopped(session_id, user_prompt, stopped_reason)
     }
 }
 
@@ -346,13 +366,15 @@ impl<P: TurnPersistenceAdapter, E: TurnEventEmitter, L: TurnLlmAdapter> TurnOrch
                 })
             }
             Err(LlmError::ControlledStop(reason)) => {
-                self.persistence.save_turn_stopped(session_id, &reason).ok();
+                self.persistence
+                    .save_turn_stopped(session_id, prompt, &reason)
+                    .ok();
                 Err(LlmError::ControlledStop(reason))
             }
             Err(err) => {
                 let err_msg = err.to_string();
                 self.persistence
-                    .save_turn_failure(session_id, &err_msg)
+                    .save_turn_failure(session_id, prompt, &err_msg)
                     .ok();
                 Err(err)
             }
@@ -410,6 +432,7 @@ pub async fn run_streaming_turn(
     let chat_history = deps
         .conversation
         .chat_history(request.session_id.as_deref());
+    let history_before_turn = chat_history.clone();
 
     let all_skills = deps.skills.load_skills(workspace_path.as_deref());
     let session_agent = match request.agent_id.as_deref() {
@@ -694,9 +717,10 @@ pub async fn run_streaming_turn(
                 stream_result.tool_calls,
             );
             if let Some(sid) = &request.session_id {
-                if let Some(persistence) =
-                    successful_turn_persistence(stream_result.history.as_deref())
-                {
+                if let Some(persistence) = successful_turn_persistence(
+                    stream_result.history.as_deref(),
+                    &stream_result.full_response,
+                ) {
                     let display_transcript = merge_display_transcripts(
                         deps.sessions
                             .persisted_snapshot(sid)
@@ -755,17 +779,23 @@ pub async fn run_streaming_turn(
             deps.events
                 .trace_error(request.session_id.as_deref().unwrap_or(""), &trace_role, &e);
             if let Some(sid) = &request.session_id {
+                let mut failed_history = history_before_turn;
+                failed_history.push(Message::user(request.prompt.clone()));
+                deps.conversation.store_history(sid, failed_history);
                 if let Some(snapshot) = deps.sessions.persisted_snapshot(sid) {
                     let persistence = failure_turn_persistence(
                         &snapshot.display_transcript,
                         snapshot.model_history.as_deref(),
+                        &request.prompt,
                         &e,
                     );
-                    let _ = deps.sessions.persist_turn(
+                    if let Err(error) = deps.sessions.persist_turn(
                         sid,
                         &persistence.display_transcript,
                         persistence.model_history.as_deref(),
-                    );
+                    ) {
+                        tracing::warn!("Failed to persist failed session {} turn: {}", sid, error);
+                    }
                 }
             }
             deps.events.emit_error(&run_id, &e);
@@ -898,14 +928,11 @@ fn transcript_entry_role(entry: &serde_json::Value) -> Option<&str> {
     entry.get("role").and_then(|role| role.as_str())
 }
 
-/// A transcript entry left behind by a turn that failed or was stopped before
-/// Model History updated. Such turns exist only in the Display Transcript.
+/// Marks a failed/stopped turn in the transcript; Model History keeps its
+/// prompt, but not an assistant response.
 fn is_terminal_failure_entry(entry: &serde_json::Value) -> bool {
     entry.get("error").and_then(|v| v.as_bool()) == Some(true)
-        || entry
-            .get("controlled_stop")
-            .and_then(|v| v.as_bool())
-            == Some(true)
+        || entry.get("controlled_stop").and_then(|v| v.as_bool()) == Some(true)
 }
 
 /// An assistant entry rebuilt from a tool result whose call was pruned from
@@ -945,6 +972,72 @@ fn sanitize_transcript_entries(mut entries: Vec<serde_json::Value>) -> Vec<serde
     entries
 }
 
+fn remove_rebuilt_failed_prompts(
+    existing: &[serde_json::Value],
+    rebuilt: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let existing_users: Vec<usize> = existing
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (transcript_entry_role(entry) == Some("user")).then_some(index)
+        })
+        .collect();
+    let mut failed_prompts = std::collections::HashMap::<&str, usize>::new();
+    for (position, &start) in existing_users.iter().enumerate() {
+        let end = existing_users
+            .get(position + 1)
+            .copied()
+            .unwrap_or(existing.len());
+        if !existing[start..end].iter().any(is_terminal_failure_entry) {
+            continue;
+        }
+        if let Some(prompt) = existing[start]
+            .get("content")
+            .and_then(|content| content.as_str())
+        {
+            *failed_prompts.entry(prompt).or_default() += 1;
+        }
+    }
+
+    let rebuilt_users: Vec<usize> = rebuilt
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (transcript_entry_role(entry) == Some("user")).then_some(index)
+        })
+        .collect();
+    let mut remove = vec![false; rebuilt.len()];
+    for (position, &start) in rebuilt_users.iter().enumerate() {
+        let end = rebuilt_users
+            .get(position + 1)
+            .copied()
+            .unwrap_or(rebuilt.len());
+        if rebuilt[start + 1..end]
+            .iter()
+            .any(|entry| transcript_entry_role(entry) == Some("assistant"))
+        {
+            continue;
+        }
+        let Some(prompt) = rebuilt[start]
+            .get("content")
+            .and_then(|content| content.as_str())
+        else {
+            continue;
+        };
+        if let Some(count) = failed_prompts.get_mut(prompt).filter(|count| **count > 0) {
+            *count -= 1;
+            remove[start] = true;
+        }
+    }
+
+    rebuilt
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, entry)| (!remove[index]).then_some(entry))
+        .collect()
+}
+
 /// Merge a freshly rebuilt Display Transcript with the persisted one.
 ///
 /// Model History is pruned on a token budget, so the rebuild only covers a
@@ -953,15 +1046,13 @@ fn sanitize_transcript_entries(mut entries: Vec<serde_json::Value>) -> Vec<serde
 /// content-matched: the rebuild's last user entry is the prompt whose turn
 /// just completed, so its earlier user entries re-cover exactly the last
 /// `new_users - 1` persisted turns. Identical repeated prompts therefore
-/// cannot merge wrongly. Turns that never reached Model History (their
-/// response rows carry `error`/`controlled_stop`) are not overlap candidates;
-/// they survive in the kept prefix or are re-inserted after the persisted
-/// turn they originally followed.
+/// cannot merge wrongly. Failed turns are not overlap candidates. If a failed
+/// prompt is in Model History, it is removed from the rebuilt suffix and
+/// restored with its failure row, so it is not duplicated.
 pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String {
-    let existing: Vec<serde_json::Value> =
-        serde_json::from_str(existing_json).unwrap_or_default();
-    let new_entries: Vec<serde_json::Value> =
-        serde_json::from_str(new_json).unwrap_or_default();
+    let existing: Vec<serde_json::Value> = serde_json::from_str(existing_json).unwrap_or_default();
+    let new_entries: Vec<serde_json::Value> = serde_json::from_str(new_json).unwrap_or_default();
+    let new_entries = remove_rebuilt_failed_prompts(&existing, new_entries);
 
     let Some(new_user_idx) = new_entries
         .iter()
@@ -971,8 +1062,7 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
         // non-orphan assistant entries it did produce.
         let mut merged = sanitize_transcript_entries(existing);
         merged.extend(new_entries.into_iter().filter(|entry| {
-            transcript_entry_role(entry) == Some("assistant")
-                && !is_orphan_transcript_block(entry)
+            transcript_entry_role(entry) == Some("assistant") && !is_orphan_transcript_block(entry)
         }));
         return serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string());
     };
@@ -1029,7 +1119,10 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
         let mut dropped_persisted = 0usize;
         for pos in pos_cut..existing_users.len() {
             let start = existing_users[pos];
-            let end = existing_users.get(pos + 1).copied().unwrap_or(existing.len());
+            let end = existing_users
+                .get(pos + 1)
+                .copied()
+                .unwrap_or(existing.len());
             let turn = &existing[start..end];
             if turn.iter().any(is_terminal_failure_entry) {
                 if dropped_persisted > 0 {
@@ -1065,10 +1158,20 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
 
 pub fn successful_turn_persistence(
     history: Option<&[Message]>,
+    response: &str,
 ) -> Option<SuccessfulTurnPersistence> {
     let history = history?;
-    let display_transcript = serde_json::to_string(&build_display_transcript(history))
-        .unwrap_or_else(|_| "[]".to_string());
+    let mut display = build_display_transcript(history);
+    let last_assistant_has_text = history.iter().rev().find_map(|message| match message {
+        Message::Assistant(assistant) => Some(assistant.content.iter().any(
+            |part| matches!(part, AssistantContent::Text(text) if !text.text.trim().is_empty()),
+        )),
+        _ => None,
+    });
+    if last_assistant_has_text != Some(true) {
+        add_fallback_response(&mut display, response);
+    }
+    let display_transcript = serde_json::to_string(&display).unwrap_or_else(|_| "[]".to_string());
     let model_history = serde_json::to_string(history).ok();
 
     Some(SuccessfulTurnPersistence {
@@ -1078,9 +1181,56 @@ pub fn successful_turn_persistence(
     })
 }
 
+fn add_fallback_response(display: &mut Vec<serde_json::Value>, response: &str) {
+    if response.trim().is_empty() {
+        return;
+    }
+
+    if let Some(entry) = display
+        .iter_mut()
+        .rev()
+        .find(|entry| entry.get("role").and_then(|role| role.as_str()) == Some("assistant"))
+    {
+        if entry
+            .get("content")
+            .and_then(|content| content.as_str())
+            .is_none_or(|content| content.trim().is_empty())
+        {
+            entry["content"] = json!(response);
+            let blocks = entry
+                .get_mut("blocks")
+                .and_then(|blocks| blocks.as_array_mut());
+            if let Some(blocks) = blocks {
+                if let Some(empty_text) = blocks.iter_mut().find(|block| {
+                    block.get("kind").and_then(|kind| kind.as_str()) == Some("text")
+                        && block
+                            .get("text")
+                            .and_then(|text| text.as_str())
+                            .is_none_or(|text| text.trim().is_empty())
+                }) {
+                    empty_text["text"] = json!(response);
+                    return;
+                }
+                let id = format!("text-{}", blocks.len());
+                blocks.push(json!({"kind": "text", "id": id, "text": response}));
+            } else {
+                entry["blocks"] = json!([{"kind": "text", "id": "text-0", "text": response}]);
+            }
+            return;
+        }
+    }
+
+    display.push(json!({
+        "role": "assistant",
+        "content": response,
+        "blocks": [{"kind": "text", "id": "text-0", "text": response}],
+    }));
+}
+
 pub fn failure_turn_persistence(
     existing_display_transcript: &str,
     existing_model_history: Option<&str>,
+    failed_prompt: &str,
     error: &LlmError,
 ) -> FailureTurnPersistence {
     let mut transcript: Vec<serde_json::Value> =
@@ -1090,6 +1240,12 @@ pub fn failure_turn_persistence(
         _ => (format!("Error: {}", error.to_dto().message), false),
     };
 
+    if !transcript.last().is_some_and(|entry| {
+        transcript_entry_role(entry) == Some("user")
+            && entry.get("content").and_then(|content| content.as_str()) == Some(failed_prompt)
+    }) {
+        transcript.push(json!({"role": "user", "content": failed_prompt}));
+    }
     transcript.push(json!({
         "role": "assistant",
         "content": message,
@@ -1098,9 +1254,25 @@ pub fn failure_turn_persistence(
         "controlled_stop": is_controlled_stop,
     }));
 
+    let model_history = match existing_model_history {
+        Some(raw) => match crate::model_history::parse_model_history(raw) {
+            Ok(mut history) => {
+                history.push(Message::user(failed_prompt));
+                serde_json::to_string(&history)
+                    .ok()
+                    .or_else(|| Some(raw.to_string()))
+            }
+            Err(error) => {
+                tracing::warn!("Failed to append failed prompt to model history: {}", error);
+                Some(raw.to_string())
+            }
+        },
+        None => serde_json::to_string(&vec![Message::user(failed_prompt)]).ok(),
+    };
+
     FailureTurnPersistence {
         display_transcript: serde_json::to_string(&transcript).unwrap_or_else(|_| "[]".to_string()),
-        model_history: existing_model_history.map(str::to_string),
+        model_history,
     }
 }
 
@@ -2235,7 +2407,7 @@ mod tests {
     fn successful_turn_with_model_history_persists_transcript_and_history() {
         let history = vec![user_message("hello"), assistant_message("hi")];
 
-        let decision = successful_turn_persistence(Some(&history)).unwrap();
+        let decision = successful_turn_persistence(Some(&history), "hi").unwrap();
 
         let display: serde_json::Value =
             serde_json::from_str(&decision.display_transcript).unwrap();
@@ -2259,7 +2431,20 @@ mod tests {
 
     #[test]
     fn successful_turn_without_model_history_still_does_not_persist() {
-        assert!(successful_turn_persistence(None).is_none());
+        assert!(successful_turn_persistence(None, "").is_none());
+    }
+
+    #[test]
+    fn successful_turn_persists_fallback_for_textless_assistant() {
+        let response = "The agent ended this turn without a text response.";
+        let history = vec![user_message("do the task"), assistant_message("")];
+
+        let decision = successful_turn_persistence(Some(&history), response).unwrap();
+        let display: serde_json::Value =
+            serde_json::from_str(&decision.display_transcript).unwrap();
+
+        assert_eq!(display[1]["content"], response);
+        assert_eq!(display[1]["blocks"][0]["text"], response);
     }
 
     #[test]
@@ -2364,7 +2549,7 @@ mod tests {
             { "role": "assistant", "content": "Error: down", "blocks": [], "error": true }
         ]);
         let existing_str = serde_json::to_string(&existing).unwrap();
-        // Turn 2 failed before Model History updated; turn 3 now succeeds.
+        // Legacy turn 2 failed before its prompt reached Model History; turn 3 now succeeds.
         let new_json = serde_json::to_string(&json!([
             { "role": "user", "content": "first" },
             { "role": "assistant", "content": "answer", "blocks": [] },
@@ -2383,6 +2568,43 @@ mod tests {
         assert_eq!(
             contents,
             vec!["first", "answer", "second", "Error: down", "third", "ok"]
+        );
+    }
+
+    #[test]
+    fn merge_does_not_duplicate_failed_prompt_rebuilt_from_model_history() {
+        let existing = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "second" },
+            { "role": "assistant", "content": "Error: down", "blocks": [], "error": true }
+        ]);
+        let new = json!([
+            { "role": "user", "content": "first" },
+            { "role": "assistant", "content": "answer", "blocks": [] },
+            { "role": "user", "content": "second" },
+            { "role": "user", "content": "third" },
+            { "role": "assistant", "content": "ok", "blocks": [] }
+        ]);
+
+        let merged: Vec<serde_json::Value> = serde_json::from_str(&merge_display_transcripts(
+            &existing.to_string(),
+            &new.to_string(),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            merged,
+            existing
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned()
+                .chain([
+                    json!({"role": "user", "content": "third"}),
+                    json!({"role": "assistant", "content": "ok", "blocks": []}),
+                ])
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2530,42 +2752,52 @@ mod tests {
     }
 
     #[test]
-    fn provider_failure_appends_error_without_replacing_model_history() {
+    fn provider_failure_appends_error_and_failed_prompt_to_history() {
+        let mut history = vec![user_message("before"), assistant_message("answer")];
+        let existing_history = serde_json::to_string(&history).unwrap();
+        let failed_prompt = "continue after the failure";
         let decision = failure_turn_persistence(
             r#"[{"role":"user","content":"hi"}]"#,
-            Some(r#"[{"provider":"history"}]"#),
+            Some(&existing_history),
+            failed_prompt,
             &LlmError::ProviderError("network down".to_string()),
         );
 
         let display: serde_json::Value =
             serde_json::from_str(&decision.display_transcript).unwrap();
         assert_eq!(display[0], json!({"role":"user","content":"hi"}));
-        assert_eq!(display[1]["role"], "assistant");
-        assert_eq!(display[1]["error"], true);
-        assert_eq!(display[1]["controlled_stop"], false);
         assert_eq!(
-            decision.model_history.as_deref(),
-            Some(r#"[{"provider":"history"}]"#)
+            display[1],
+            json!({"role":"user","content":"continue after the failure"})
         );
+        assert_eq!(display[2]["role"], "assistant");
+        assert_eq!(display[2]["error"], true);
+        assert_eq!(display[2]["controlled_stop"], false);
+        history.push(user_message(failed_prompt));
+        let persisted_history: Vec<Message> =
+            serde_json::from_str(decision.model_history.as_deref().unwrap()).unwrap();
+        assert_eq!(persisted_history, history);
     }
 
     #[test]
-    fn controlled_stop_appends_stop_without_replacing_model_history() {
+    fn controlled_stop_persists_the_interrupted_prompt() {
+        let failed_prompt = "continue the interrupted task";
         let decision = failure_turn_persistence(
             "[]",
-            Some(r#"[{"provider":"history"}]"#),
+            None,
+            failed_prompt,
             &LlmError::ControlledStop("Agent stopped".to_string()),
         );
 
         let display: serde_json::Value =
             serde_json::from_str(&decision.display_transcript).unwrap();
-        assert_eq!(display[0]["content"], "Agent stopped");
-        assert_eq!(display[0]["error"], false);
-        assert_eq!(display[0]["controlled_stop"], true);
-        assert_eq!(
-            decision.model_history.as_deref(),
-            Some(r#"[{"provider":"history"}]"#)
-        );
+        assert_eq!(display[0], json!({"role":"user","content":failed_prompt}));
+        assert_eq!(display[1]["content"], "Agent stopped");
+        assert_eq!(display[1]["error"], false);
+        assert_eq!(display[1]["controlled_stop"], true);
+        let persisted_history: Vec<Message> =
+            serde_json::from_str(decision.model_history.as_deref().unwrap()).unwrap();
+        assert_eq!(persisted_history, vec![user_message(failed_prompt)]);
     }
 
     #[test]
@@ -2576,9 +2808,15 @@ mod tests {
         );
         let error = LlmError::ProviderError(raw);
         let expected = format!("Error: {}", error.to_dto().message);
+        let existing_history = serde_json::to_string(&vec![
+            user_message("earlier prompt"),
+            assistant_message("earlier answer"),
+        ])
+        .unwrap();
         let decision = failure_turn_persistence(
             r#"[{"role":"user","content":"hi"}]"#,
-            Some(r#"[{"provider":"history"}]"#),
+            Some(&existing_history),
+            "hi",
             &error,
         );
 
@@ -2590,9 +2828,15 @@ mod tests {
         assert!(!persisted.contains("sk-"));
         assert!(!persisted.contains("dangerous second line"));
         assert!(persisted.contains("[REDACTED]"));
+        let persisted_history: Vec<Message> =
+            serde_json::from_str(decision.model_history.as_deref().unwrap()).unwrap();
         assert_eq!(
-            decision.model_history.as_deref(),
-            Some(r#"[{"provider":"history"}]"#)
+            persisted_history,
+            vec![
+                user_message("earlier prompt"),
+                assistant_message("earlier answer"),
+                user_message("hi"),
+            ]
         );
     }
 
@@ -3349,13 +3593,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streaming_turn_failure_persists_controlled_stop_without_replacing_model_history() {
+    async fn streaming_turn_failure_persists_controlled_stop_with_failed_prompt() {
         let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ControlledStop(
             "Agent stopped".to_string(),
         )));
+        let prior_history = vec![user_message("before"), assistant_message("answer")];
+        let prior_history_json = serde_json::to_string(&prior_history).unwrap();
         *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
             display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
-            model_history: Some(r#"[{"provider":"history"}]"#.to_string()),
+            model_history: Some(prior_history_json),
         });
 
         let err = run_streaming_turn(
@@ -3398,9 +3644,15 @@ mod tests {
         let persisted_turns = adapters.persisted_turns.lock().unwrap();
         assert_eq!(persisted_turns.len(), 1);
         assert_eq!(persisted_turns[0].session_id, "session-1");
+        let model_history: Vec<Message> =
+            serde_json::from_str(persisted_turns[0].model_history.as_deref().unwrap()).unwrap();
         assert_eq!(
-            persisted_turns[0].model_history.as_deref(),
-            Some(r#"[{"provider":"history"}]"#)
+            model_history,
+            vec![
+                user_message("before"),
+                assistant_message("answer"),
+                user_message("hi"),
+            ]
         );
         let display: serde_json::Value =
             serde_json::from_str(&persisted_turns[0].display_transcript).unwrap();
@@ -3408,6 +3660,10 @@ mod tests {
         assert_eq!(display[1]["content"], "Agent stopped");
         assert_eq!(display[1]["error"], false);
         assert_eq!(display[1]["controlled_stop"], true);
+        let stored_histories = adapters.stored_histories.lock().unwrap();
+        assert_eq!(stored_histories.len(), 1);
+        assert_eq!(stored_histories[0].0, "session-1");
+        assert_eq!(stored_histories[0].1.last(), Some(&user_message("hi")));
         assert!(adapters.ingests.lock().unwrap().is_empty());
     }
 
@@ -3728,9 +3984,12 @@ mod tests {
         let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
             "boom".to_string(),
         )));
+        let model_history =
+            serde_json::to_string(&vec![user_message("prior"), assistant_message("answer")])
+                .unwrap();
         *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
             display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
-            model_history: Some(r#"[{"provider":"history"}]"#.to_string()),
+            model_history: Some(model_history),
         });
 
         let err = run_streaming_turn(
@@ -3891,13 +4150,19 @@ mod tests {
             Ok(())
         }
 
-        fn save_turn_failure(&self, _session_id: &str, _error_message: &str) -> Result<(), String> {
+        fn save_turn_failure(
+            &self,
+            _session_id: &str,
+            _user_prompt: &str,
+            _error_message: &str,
+        ) -> Result<(), String> {
             Ok(())
         }
 
         fn save_turn_stopped(
             &self,
             _session_id: &str,
+            _user_prompt: &str,
             _stopped_reason: &str,
         ) -> Result<(), String> {
             Ok(())
