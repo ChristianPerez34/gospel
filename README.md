@@ -10,6 +10,12 @@ The alpha is ad-hoc signed but not notarized. If macOS blocks the first launch, 
 
 Please report bugs, regressions, and feedback through [GitHub Issues](https://github.com/ChristianPerez34/gospel/issues).
 
+## Custom providers
+
+Under Settings > Models, add a custom OpenAI-compatible provider with its API base URL (for example `https://example.com/v1` or `http://localhost:11434/v1`). An API key is optional. Leave model IDs empty to discover them from `/models`, or enter model IDs manually, one per line or separated by commas. Requests use the streaming Chat Completions API; the selected model must support tool calling for agent actions.
+
+Provider definitions are stored in Gospel's app settings database. API keys use the existing `~/.config/gospel/credentials.json` credential store, not the provider definition. HTTP connections send prompts and keys unencrypted. A provider's base URL cannot be changed after creation; create a new provider for a different endpoint.
+
 ## Development
 
 Install dependencies with `bun install`, then run `bun tauri dev`.

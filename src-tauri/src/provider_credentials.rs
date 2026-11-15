@@ -3,8 +3,8 @@
 
 use thiserror::Error;
 
-use crate::keychain::{delete, has_key, retrieve, KeychainError};
-use crate::providers::{provider as find_provider, ProviderAuthKind};
+use crate::keychain::{delete, has_key, retrieve, retrieve_optional_custom, KeychainError};
+use crate::providers::{is_custom_provider, provider as find_provider, ProviderAuthKind};
 
 #[derive(Error, Debug)]
 pub enum CredentialError {
@@ -25,6 +25,7 @@ pub enum ResolvedAuth {
 }
 
 /// Whether Gospel can use this Credentialed Provider (keychain key or OAuth session).
+/// A Custom Provider's API key is optional, so a registered one is always usable.
 pub fn is_credentialed(provider_id: &str) -> bool {
     match find_provider(provider_id) {
         Some(entry) => match entry.auth_kind {
@@ -34,14 +35,19 @@ pub fn is_credentialed(provider_id: &str) -> bool {
                 .is_some_and(|hooks| (hooks.has_session)()),
             ProviderAuthKind::ApiKey => has_key(provider_id),
         },
-        None => false,
+        None => is_custom_provider(provider_id),
     }
 }
 
 /// Resolve stored credentials for a Credentialed Provider.
 pub fn resolve(provider_id: &str) -> Result<ResolvedAuth, CredentialError> {
-    let entry = find_provider(provider_id)
-        .ok_or_else(|| CredentialError::UnsupportedProvider(provider_id.to_string()))?;
+    let Some(entry) = find_provider(provider_id) else {
+        return if is_custom_provider(provider_id) {
+            Ok(ResolvedAuth::ApiKey(retrieve_optional_custom(provider_id)?))
+        } else {
+            Err(CredentialError::UnsupportedProvider(provider_id.to_string()))
+        };
+    };
 
     match entry.auth_kind {
         ProviderAuthKind::Oauth => {
@@ -75,12 +81,19 @@ pub fn api_key_for_model_fetch(provider_id: &str) -> Result<Option<String>, Cred
     }
 }
 
-/// Validates that inference can run: OAuth providers need a session; API-key providers need a non-empty supplied key.
+/// Whether a non-empty API key is stored for the provider. A keyless Custom Provider has none.
+pub fn has_api_key(provider_id: &str) -> bool {
+    matches!(resolve(provider_id), Ok(ResolvedAuth::ApiKey(key)) if !key.is_empty())
+}
+
+/// Validates that inference can run: OAuth providers need a session; API-key providers need a
+/// non-empty supplied key; Custom Providers run with or without one.
 pub fn ensure_inference_ready(
     provider_id: &str,
     supplied_api_key: &str,
 ) -> Result<(), CredentialError> {
     match find_provider(provider_id) {
+        None if is_custom_provider(provider_id) => Ok(()),
         None => Err(CredentialError::UnsupportedProvider(
             provider_id.to_string(),
         )),
@@ -185,5 +198,37 @@ mod tests {
         if is_credentialed("chatgpt") {
             assert_eq!(api_key_for_rig("chatgpt").unwrap(), "");
         }
+    }
+
+    #[test]
+    fn has_api_key_reflects_saved_key_for_custom_providers() {
+        let _lock = crate::keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::keychain::isolate_config_home(dir.path());
+        let id = crate::providers::new_custom_provider_id();
+        let _registry = crate::providers::RegisteredCustomProviders::new(vec![
+            crate::providers::CustomProvider {
+                id: id.clone(),
+                name: "Local".into(),
+                base_url: "https://example.test/v1".into(),
+                models: Vec::new(),
+            },
+        ]);
+
+        // A keyless Custom Provider is credentialed but reports no saved key.
+        assert!(is_credentialed(&id));
+        assert!(!has_api_key(&id));
+
+        store_api_key(&id, "sk-local").unwrap();
+        assert!(has_api_key(&id));
+
+        delete_api_key(&id).unwrap();
+        assert!(!has_api_key(&id));
+
+        // Deleting a key for a Custom Provider that was already removed must still work.
+        store_api_key(&id, "sk-local").unwrap();
+        drop(_registry);
+        assert!(delete_api_key(&id).is_ok());
+        assert!(!has_api_key(&id));
     }
 }

@@ -817,6 +817,7 @@ impl ModelRegistry {
         crate::providers::is_oauth_provider(provider)
     }
 
+    #[allow(dead_code)]
     pub fn provider_display_name(provider: &str) -> &'static str {
         crate::providers::provider_display_name(provider)
     }

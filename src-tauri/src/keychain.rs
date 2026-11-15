@@ -84,8 +84,22 @@ pub fn retrieve(provider: &str) -> Result<String, KeychainError> {
     Err(KeychainError::NotFound(provider.to_string()))
 }
 
-pub fn delete(provider: &str) -> Result<(), KeychainError> {
+/// Key for a Custom Provider, whose API key is optional: a missing, blank, or unreadable
+/// credentials file resolves to an empty key instead of blocking a keyless provider.
+pub(crate) fn retrieve_optional_custom(provider: &str) -> Result<String, KeychainError> {
     ensure_known(provider)?;
+    Ok(read_credentials()
+        .ok()
+        .and_then(|mut credentials| credentials.remove(provider))
+        .map(|key| key.trim().to_string())
+        .unwrap_or_default())
+}
+
+pub fn delete(provider: &str) -> Result<(), KeychainError> {
+    // A deleted Custom Provider is no longer registered, but its saved key must stay removable.
+    if !crate::providers::is_custom_provider_id(provider) {
+        ensure_known(provider)?;
+    }
     let mut credentials = read_credentials()?;
     if credentials.remove(provider).is_some() {
         write_credentials(&credentials)?;
@@ -487,5 +501,38 @@ mod tests {
 
     fn noop_delete_keyring(_provider: &str) -> Result<(), KeychainError> {
         Ok(())
+    }
+
+    #[test]
+    fn retrieve_optional_custom_trims_and_tolerates_unreadable_credentials() {
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        let _registry = crate::providers::RegisteredCustomProviders::new(vec![
+            crate::providers::CustomProvider {
+                id: "custom_test".into(),
+                name: "Local".into(),
+                base_url: "https://example.test/v1".into(),
+                models: Vec::new(),
+            },
+        ]);
+
+        // No credentials file at all resolves to a keyless provider, not an error.
+        assert_eq!(retrieve_optional_custom("custom_test").unwrap(), "");
+
+        // A stored key comes back trimmed.
+        let path = credentials_file_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"custom_test": "  sk-local \n"}"#).unwrap();
+        assert_eq!(retrieve_optional_custom("custom_test").unwrap(), "sk-local");
+
+        // An unreadable credentials file must not block a keyless Custom Provider.
+        std::fs::write(&path, "{ invalid json ").unwrap();
+        assert_eq!(retrieve_optional_custom("custom_test").unwrap(), "");
+
+        assert!(matches!(
+            retrieve_optional_custom("unregistered"),
+            Err(KeychainError::UnsupportedProvider(_))
+        ));
     }
 }

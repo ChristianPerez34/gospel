@@ -4,7 +4,7 @@ use crate::mcp::{
     McpServerStateRecord, UpdateMcpServerRequest, MCP_HEALTH_NOT_CONNECTED, MCP_KIND_BUILT_IN,
     MCP_KIND_CUSTOM, MCP_READINESS_AWAITING_FIRST_CONNECTION,
 };
-use crate::models::ModelRegistry;
+use crate::providers::{is_custom_provider_id, normalize_model_ids, CustomProvider};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -31,6 +31,8 @@ pub enum AppConfigError {
     InvalidMcpServer(String),
     #[error("MCP import error: {0}")]
     McpImport(String),
+    #[error("invalid custom provider: {0}")]
+    InvalidCustomProvider(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,6 +58,12 @@ const APP_CONFIG_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS provider_settings (
     provider_id TEXT PRIMARY KEY NOT NULL,
     visible INTEGER NOT NULL CHECK (visible IN (0, 1)),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS custom_providers (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    models_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
@@ -170,6 +178,88 @@ impl AppConfigStore {
 
     fn lock_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn list_custom_providers(&self) -> Result<Vec<CustomProvider>, AppConfigError> {
+        list_custom_providers_locked(&self.lock_conn())
+    }
+
+    pub fn save_custom_provider(
+        &self,
+        mut provider: CustomProvider,
+    ) -> Result<CustomProvider, AppConfigError> {
+        provider.name = provider.name.trim().to_string();
+        if provider.name.is_empty() || provider.name.len() > 100 {
+            return Err(AppConfigError::InvalidCustomProvider(
+                "Name must be 1 to 100 characters".into(),
+            ));
+        }
+        let url = reqwest::Url::parse(provider.base_url.trim()).map_err(|_| {
+            AppConfigError::InvalidCustomProvider("Enter a valid HTTP or HTTPS base URL".into())
+        })?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(AppConfigError::InvalidCustomProvider(
+                "Base URL must be HTTP or HTTPS without credentials, query, or fragment".into(),
+            ));
+        }
+        provider.base_url = url.as_str().trim_end_matches('/').to_string();
+        provider.models = normalize_model_ids(provider.models);
+        if provider
+            .models
+            .iter()
+            .any(|model| model.len() > 512 || model.chars().any(char::is_control))
+        {
+            return Err(AppConfigError::InvalidCustomProvider(
+                "Invalid model ID".into(),
+            ));
+        }
+        let conn = self.lock_conn();
+        let existing = list_custom_providers_locked(&conn)?
+            .into_iter()
+            .find(|item| item.id == provider.id);
+        if let Some(existing) = existing {
+            if existing.base_url != provider.base_url {
+                return Err(AppConfigError::InvalidCustomProvider(
+                    "Base URL cannot be changed; add a new provider instead".into(),
+                ));
+            }
+        } else if !is_custom_provider_id(&provider.id) {
+            return Err(AppConfigError::InvalidCustomProvider(
+                "Invalid provider ID".into(),
+            ));
+        }
+        let models_json = serde_json::to_string(&provider.models)
+            .map_err(|error| AppConfigError::InvalidCustomProvider(error.to_string()))?;
+        conn.execute(
+            "INSERT INTO custom_providers (id, name, base_url, models_json) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, models_json = excluded.models_json",
+            params![provider.id, provider.name, provider.base_url, models_json],
+        )?;
+        crate::providers::replace_custom_providers(list_custom_providers_locked(&conn)?);
+        Ok(provider)
+    }
+
+    pub fn delete_custom_provider(&self, id: &str) -> Result<(), AppConfigError> {
+        let mut conn = self.lock_conn();
+        let tx = conn.transaction()?;
+        if tx.execute("DELETE FROM custom_providers WHERE id = ?1", params![id])? == 0 {
+            return Err(AppConfigError::InvalidCustomProvider(
+                "Provider not found".into(),
+            ));
+        }
+        tx.execute(
+            "DELETE FROM provider_settings WHERE provider_id = ?1",
+            params![id],
+        )?;
+        tx.commit()?;
+        crate::providers::replace_custom_providers(list_custom_providers_locked(&conn)?);
+        Ok(())
     }
 
     pub fn provider_visibility(&self, provider: &str) -> Result<bool, AppConfigError> {
@@ -661,6 +751,29 @@ fn store_request_secret_values(
     }
 }
 
+fn list_custom_providers_locked(conn: &Connection) -> Result<Vec<CustomProvider>, AppConfigError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, base_url, models_json FROM custom_providers ORDER BY name, id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let json: String = row.get(3)?;
+        let models = serde_json::from_str(&json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
+        Ok(CustomProvider {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            base_url: row.get(2)?,
+            models,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 fn bool_int(value: bool) -> i64 {
     if value {
         1
@@ -1116,7 +1229,7 @@ fn persist_mcp_refresh_locked(
 }
 
 fn validate_provider(provider: &str) -> Result<(), AppConfigError> {
-    if ModelRegistry::all_providers().contains(&provider) {
+    if crate::providers::is_known_provider(provider) {
         Ok(())
     } else {
         Err(AppConfigError::UnsupportedProvider(provider.to_string()))
@@ -1125,7 +1238,102 @@ fn validate_provider(provider: &str) -> Result<(), AppConfigError> {
 
 #[cfg(test)]
 mod tests {
+    // Tests hold the config-home lock across awaits on purpose to serialize
+    // tests that mutate the process-global config-home env var.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
+
+    #[tokio::test]
+    async fn custom_provider_persists_validates_and_supports_keyless_and_keyed_auth() {
+        let _lock = crate::keychain::lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::keychain::isolate_config_home(dir.path());
+        let _registry = crate::providers::RegisteredCustomProviders::new(Vec::new());
+        let path = dir.path().join("app.sqlite3");
+        let store = AppConfigStore::from_connection(Connection::open(&path).unwrap()).unwrap();
+        let provider = CustomProvider {
+            id: format!("custom_{}", Uuid::new_v4()),
+            name: " Local inference ".into(),
+            base_url: "http://localhost:11434/v1/".into(),
+            models: vec![" llama-3 ".into(), "llama-3".into(), "".into()],
+        };
+        let saved = store.save_custom_provider(provider).unwrap();
+        assert_eq!(saved.name, "Local inference");
+        assert_eq!(saved.base_url, "http://localhost:11434/v1");
+        assert_eq!(saved.models, ["llama-3"]);
+        assert!(crate::provider_credentials::is_credentialed(&saved.id));
+        assert!(crate::provider_credentials::ensure_inference_ready(&saved.id, "").is_ok());
+        assert_eq!(
+            crate::provider_credentials::api_key_for_rig(&saved.id).unwrap(),
+            ""
+        );
+        assert_eq!(store.list_custom_providers().unwrap(), vec![saved.clone()]);
+        store.set_provider_visibility(&saved.id, false).unwrap();
+        assert!(!store.provider_visibility(&saved.id).unwrap());
+        store.set_provider_visibility(&saved.id, true).unwrap();
+
+        let snapshot = crate::build_model_availability(
+            [(saved.id.clone(), true)].into_iter().collect(),
+            Vec::new(),
+            false,
+        )
+        .await;
+        let availability = snapshot
+            .providers
+            .iter()
+            .find(|item| item.provider == saved.id)
+            .unwrap();
+        assert_eq!(availability.display_name, "Local inference");
+        assert!(availability.visible);
+        assert!(snapshot
+            .available_models
+            .iter()
+            .any(|model| model.provider == saved.id && model.model == "llama-3"));
+        let hidden = crate::build_model_availability(
+            [(saved.id.clone(), false)].into_iter().collect(),
+            Vec::new(),
+            false,
+        )
+        .await;
+        assert!(!hidden
+            .available_models
+            .iter()
+            .any(|model| model.provider == saved.id));
+
+        let mut changed_url = saved.clone();
+        changed_url.base_url = "https://other.example/v1".into();
+        assert!(store.save_custom_provider(changed_url).is_err());
+        for invalid in [
+            "file:///tmp/models",
+            "https://user:password@example.com/v1",
+            "https://example.com/v1?key=secret",
+        ] {
+            let mut invalid_provider = saved.clone();
+            invalid_provider.base_url = invalid.into();
+            assert!(store.save_custom_provider(invalid_provider).is_err());
+        }
+        let reopened = AppConfigStore::from_connection(Connection::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            reopened.list_custom_providers().unwrap(),
+            vec![saved.clone()]
+        );
+        let model = crate::provider_client::completion_model(&saved.id, "llama-3", "", None)
+            .await
+            .unwrap();
+        assert_eq!(model.id(), Some("llama-3"));
+        crate::provider_credentials::store_api_key(&saved.id, "secret-key").unwrap();
+        assert_eq!(
+            crate::provider_credentials::api_key_for_rig(&saved.id).unwrap(),
+            "secret-key"
+        );
+        assert!(!serde_json::to_string(&saved)
+            .unwrap()
+            .contains("secret-key"));
+        crate::provider_credentials::delete_api_key(&saved.id).unwrap();
+        reopened.delete_custom_provider(&saved.id).unwrap();
+        assert!(!crate::providers::is_known_provider(&saved.id));
+        assert!(reopened.list_custom_providers().unwrap().is_empty());
+    }
 
     #[test]
     fn test_poisoned_mutex_handling() {

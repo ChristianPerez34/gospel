@@ -74,6 +74,31 @@ describe("useModelAvailability", () => {
     expect(result.current.selectedModel?.provider).toBe("opencode_go");
   });
 
+  it("marks custom providers from the availability snapshot", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      providers: [
+        {
+          provider: "custom_abc",
+          display_name: "Local",
+          auth_type: "api_key",
+          is_custom: true,
+          credentialed: true,
+          visible: true,
+          model_fetch_status: "loaded",
+          model_count: 1,
+        },
+      ],
+      available_models: [{ provider: "custom_abc", model: "llama-3" }],
+      empty_reason: null,
+      warnings: [],
+    });
+
+    const { result } = renderHook(() => useModelAvailability());
+
+    await waitFor(() => expect(result.current.providers[0]?.isCustom).toBe(true));
+    expect(result.current.providers[0]?.name).toBe("Local");
+  });
+
   it("does not let an older startup snapshot undo a saved provider", async () => {
     const pending: Array<(snapshot: ModelAvailabilitySnapshot) => void> = [];
     vi.mocked(invoke).mockImplementation((command: string) => {

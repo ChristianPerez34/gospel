@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProviderSelector, type ProviderConfig } from "./ProviderSelector";
+import { CustomProvidersPanel } from "./CustomProvidersPanel";
 import { McpSettingsPanel } from "./McpSettingsPanel";
 import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
 import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
@@ -232,6 +233,24 @@ export function SettingsStudio({
   }, [initialCategory]);
 
   const activeProvidersCount = providers.filter((p) => p.credentialed).length;
+
+  // Custom Providers are managed by CustomProvidersPanel; the built-in
+  // ProviderSelector list must not duplicate them. Re-append them on change
+  // so a built-in edit never drops the custom rows.
+  const builtinProviders = useMemo(
+    () => providers.filter((provider) => !provider.isCustom),
+    [providers]
+  );
+  const customProviders = useMemo(
+    () => providers.filter((provider) => provider.isCustom),
+    [providers]
+  );
+  const handleBuiltinProvidersChange = useCallback(
+    (updated: ProviderConfig[]) => {
+      onProvidersChange([...updated, ...customProviders]);
+    },
+    [onProvidersChange, customProviders]
+  );
 
   const categories: CategoryMeta[] = useMemo(
     () => [
@@ -888,10 +907,16 @@ ${
                   </span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03]">
-                  <ProviderSelector
+                <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
+                  <CustomProvidersPanel
                     providers={providers}
-                    onProvidersChange={onProvidersChange}
+                    onRefreshAvailability={onRefreshAvailability}
+                    isRefreshingModels={isRefreshingModels}
+                  />
+                  <div className="text-xs font-semibold text-text-primary">Built-in providers</div>
+                  <ProviderSelector
+                    providers={builtinProviders}
+                    onProvidersChange={handleBuiltinProvidersChange}
                     onRefreshAvailability={onRefreshAvailability}
                   />
                 </div>
