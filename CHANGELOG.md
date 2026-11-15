@@ -6,6 +6,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- Custom OpenAI-compatible providers: add your own endpoint (for example a local or self-hosted gateway) from Settings, with an optional API key, manual model IDs, or model discovery from the endpoint. Custom providers join the provider registry and work across the model picker, visibility toggles, and chat.
+
 ### Changed
 
 - Auto-archive now defaults to Off. Explicitly saved archive policies are unchanged.

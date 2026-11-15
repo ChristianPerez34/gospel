@@ -4,7 +4,7 @@ use crate::mcp::{
     McpServerStateRecord, UpdateMcpServerRequest, MCP_HEALTH_NOT_CONNECTED, MCP_KIND_BUILT_IN,
     MCP_KIND_CUSTOM, MCP_READINESS_AWAITING_FIRST_CONNECTION,
 };
-use crate::providers::CustomProvider;
+use crate::providers::{is_custom_provider_id, normalize_model_ids, CustomProvider};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -209,13 +209,7 @@ impl AppConfigStore {
             ));
         }
         provider.base_url = url.as_str().trim_end_matches('/').to_string();
-        let mut seen = HashSet::new();
-        provider.models = provider
-            .models
-            .into_iter()
-            .map(|model| model.trim().to_string())
-            .filter(|model| !model.is_empty() && seen.insert(model.clone()))
-            .collect();
+        provider.models = normalize_model_ids(provider.models);
         if provider
             .models
             .iter()
@@ -235,8 +229,7 @@ impl AppConfigStore {
                     "Base URL cannot be changed; add a new provider instead".into(),
                 ));
             }
-        } else if !provider.id.starts_with("custom_") || Uuid::parse_str(&provider.id[7..]).is_err()
-        {
+        } else if !is_custom_provider_id(&provider.id) {
             return Err(AppConfigError::InvalidCustomProvider(
                 "Invalid provider ID".into(),
             ));
@@ -1245,6 +1238,9 @@ fn validate_provider(provider: &str) -> Result<(), AppConfigError> {
 
 #[cfg(test)]
 mod tests {
+    // Tests hold the config-home lock across awaits on purpose to serialize
+    // tests that mutate the process-global config-home env var.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     #[tokio::test]
@@ -1252,6 +1248,7 @@ mod tests {
         let _lock = crate::keychain::lock_config_home();
         let dir = tempfile::tempdir().unwrap();
         let _home = crate::keychain::isolate_config_home(dir.path());
+        let _registry = crate::providers::RegisteredCustomProviders::new(Vec::new());
         let path = dir.path().join("app.sqlite3");
         let store = AppConfigStore::from_connection(Connection::open(&path).unwrap()).unwrap();
         let provider = CustomProvider {

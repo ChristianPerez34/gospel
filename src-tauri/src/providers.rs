@@ -1,9 +1,13 @@
 //! Credentialed Provider registry — single source of truth for supported provider identity,
-//! auth kind, OAuth session hooks, and model-fetch strategy.
+//! auth kind, OAuth session hooks, and model-fetch strategy. User-defined Custom Providers
+//! register here at runtime, so every consumer resolves providers through this module.
 
 use crate::keychain::KeychainError;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::{LazyLock, RwLock};
+
+const CUSTOM_PROVIDER_ID_PREFIX: &str = "custom_";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -33,8 +37,57 @@ pub fn custom_provider(id: &str) -> Option<CustomProvider> {
         .cloned()
 }
 
+pub fn is_custom_provider(id: &str) -> bool {
+    CUSTOM_PROVIDERS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|provider| provider.id == id)
+}
+
 pub fn replace_custom_providers(providers: Vec<CustomProvider>) {
     *CUSTOM_PROVIDERS.write().unwrap_or_else(|e| e.into_inner()) = providers;
+}
+
+/// A fresh Custom Provider id. The prefix keeps it from colliding with a built-in id.
+pub fn new_custom_provider_id() -> String {
+    format!("{CUSTOM_PROVIDER_ID_PREFIX}{}", uuid::Uuid::new_v4())
+}
+
+/// Whether `id` has the shape of a Custom Provider id. Registration is a separate question,
+/// see [`is_custom_provider`].
+pub fn is_custom_provider_id(id: &str) -> bool {
+    id.strip_prefix(CUSTOM_PROVIDER_ID_PREFIX)
+        .is_some_and(|rest| uuid::Uuid::parse_str(rest).is_ok())
+}
+
+/// Trims model IDs, drops blanks, and removes repeats, keeping first-seen order.
+pub fn normalize_model_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    ids.into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+        .collect()
+}
+
+/// Test-only handle that registers Custom Providers and clears them on drop. Hold
+/// `keychain::lock_config_home()` first: the registry is process-global.
+#[cfg(test)]
+pub(crate) struct RegisteredCustomProviders;
+
+#[cfg(test)]
+impl RegisteredCustomProviders {
+    pub(crate) fn new(providers: Vec<CustomProvider>) -> Self {
+        replace_custom_providers(providers);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for RegisteredCustomProviders {
+    fn drop(&mut self) {
+        replace_custom_providers(Vec::new());
+    }
 }
 
 pub struct OauthProviderHooks {
@@ -185,6 +238,15 @@ pub fn provider_ids() -> Vec<&'static str> {
         .collect()
 }
 
+/// Built-in registrations followed by Custom Providers: every provider the app can list.
+pub fn all_provider_ids() -> Vec<String> {
+    provider_ids()
+        .into_iter()
+        .map(String::from)
+        .chain(custom_providers().into_iter().map(|custom| custom.id))
+        .collect()
+}
+
 pub fn oauth_provider_ids() -> Vec<&'static str> {
     CREDENTIALED_PROVIDERS
         .iter()
@@ -194,7 +256,7 @@ pub fn oauth_provider_ids() -> Vec<&'static str> {
 }
 
 pub fn is_known_provider(id: &str) -> bool {
-    provider(id).is_some() || custom_provider(id).is_some()
+    provider(id).is_some() || is_custom_provider(id)
 }
 
 pub fn is_oauth_provider(id: &str) -> bool {
@@ -205,6 +267,18 @@ pub fn provider_display_name(id: &str) -> &'static str {
     provider(id)
         .map(|entry| entry.display_name)
         .unwrap_or("Unknown Provider")
+}
+
+/// Name to show for any provider id: a Custom Provider's own name, the registered display
+/// name, or the id itself when nothing is registered under it.
+pub fn display_name(id: &str) -> String {
+    if let Some(custom) = custom_provider(id) {
+        return custom.name;
+    }
+    match provider_display_name(id) {
+        "Unknown Provider" => id.to_string(),
+        name => name.to_string(),
+    }
 }
 
 pub fn provider_auth_type(id: &str) -> &'static str {
@@ -293,15 +367,7 @@ mod tests {
 
     #[test]
     fn api_key_providers_are_not_oauth() {
-        for id in [
-            "openai",
-            "xai",
-            "anthropic",
-            "gemini",
-            "groq",
-            "mistral",
-            "opencode_go",
-        ] {
+        for id in ["openai", "xai", "anthropic", "gemini", "groq", "mistral", "opencode_go"] {
             assert!(!is_oauth_provider(id));
             assert_eq!(provider_auth_type(id), "api_key");
             assert!(provider(id).unwrap().oauth.is_none());
@@ -377,5 +443,65 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("account:"));
         assert!(second.starts_with("account:"));
+    }
+
+    #[test]
+    fn custom_provider_ids_have_a_recognizable_shape() {
+        for _ in 0..4 {
+            assert!(is_custom_provider_id(&new_custom_provider_id()));
+        }
+        assert!(!is_custom_provider_id("openai"));
+        assert!(!is_custom_provider_id("custom_"));
+        assert!(!is_custom_provider_id("custom_not-a-uuid"));
+        assert!(!is_custom_provider_id("custom_openai"));
+    }
+
+    #[test]
+    fn normalize_model_ids_trims_drops_blanks_and_dedupes() {
+        assert_eq!(
+            normalize_model_ids([
+                "  llama-3 ".to_string(),
+                String::new(),
+                "   ".to_string(),
+                "other/model".to_string(),
+                "llama-3".to_string(),
+            ]),
+            ["llama-3", "other/model"]
+        );
+        assert!(normalize_model_ids(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn all_provider_ids_lists_builtins_then_custom_providers() {
+        let _lock = crate::keychain::lock_config_home();
+        let _registry = RegisteredCustomProviders::new(vec![CustomProvider {
+            id: "custom_test".into(),
+            name: "Local".into(),
+            base_url: "https://example.test/v1".into(),
+            models: Vec::new(),
+        }]);
+
+        let ids = all_provider_ids();
+        assert_eq!(ids.len(), CREDENTIALED_PROVIDERS.len() + 1);
+        assert!(ids.starts_with(&CREDENTIALED_PROVIDERS.iter().map(|entry| entry.id.to_string()).collect::<Vec<_>>()));
+        assert_eq!(ids.last().map(String::as_str), Some("custom_test"));
+        assert!(is_custom_provider("custom_test"));
+        assert!(is_known_provider("custom_test"));
+        assert!(!is_custom_provider("openai"));
+    }
+
+    #[test]
+    fn display_name_prefers_custom_name_then_registration() {
+        let _lock = crate::keychain::lock_config_home();
+        let _registry = RegisteredCustomProviders::new(vec![CustomProvider {
+            id: "custom_test".into(),
+            name: "Local".into(),
+            base_url: "https://example.test/v1".into(),
+            models: Vec::new(),
+        }]);
+
+        assert_eq!(display_name("custom_test"), "Local");
+        assert_eq!(display_name("openai"), "OpenAI");
+        assert_eq!(display_name("unregistered"), "unregistered");
     }
 }

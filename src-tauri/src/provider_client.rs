@@ -2,13 +2,17 @@
 //!
 //! New Credentialed Providers must be registered in
 //! `providers::CREDENTIALED_PROVIDERS` and given a match arm in
-//! [`completion_model`].
+//! [`completion_model`]. Custom Providers share the fallback arm.
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 use rig::http_client::{DynHttpClient, Exchange, HeaderMap, HeaderValue, HttpMiddleware};
 use rig::providers::{anthropic, chatgpt, copilot, gemini, groq, mistral, openai, xai};
 use rig::wasm_compat::WasmBoxedFuture;
 
-use crate::models::ModelRegistry;
+use crate::models::{ModelInfo, ModelRegistry};
+use crate::providers::{normalize_model_ids, CustomProvider};
 
 pub(crate) type CompletionModel = rig::DynModel<rig::operation::Completion>;
 
@@ -93,7 +97,7 @@ pub(crate) async fn completion_model(
             }
         }
         other => match crate::providers::custom_provider(other) {
-            Some(provider) => custom_openai_config(&provider.base_url, api_key)
+            Some(provider) => custom_openai_config(&provider.id, &provider.base_url, api_key)
                 .client()
                 .chat(model)
                 .into(),
@@ -103,49 +107,59 @@ pub(crate) async fn completion_model(
     Ok(model)
 }
 
-const CUSTOM_OPENAI_DIALECT: openai::wire::Dialect =
-    openai::wire::Dialect::gateway("custom-openai", "", "")
-        .with_quirks(openai::wire::Quirks::openai().without_stream_usage());
+/// Rig records a turn's provider as its dialect name and replays recorded provider items only
+/// to that same provider, so each Custom Provider needs its own name. Rig wants a
+/// `&'static str`; interning leaks one short string per provider rather than one per request.
+fn custom_openai_dialect(provider_id: &str) -> openai::wire::Dialect {
+    static NAMES: LazyLock<Mutex<HashMap<String, &'static str>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let name = *NAMES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(provider_id.to_string())
+        .or_insert_with(|| Box::leak(provider_id.to_string().into_boxed_str()));
+    openai::wire::Dialect::gateway(name, "", "")
+        .with_quirks(openai::wire::Quirks::openai().without_stream_usage())
+}
 
-pub(crate) fn custom_openai_config(base_url: &str, api_key: &str) -> openai::OpenAIConfig {
-    openai::OpenAIConfig::with_key(&CUSTOM_OPENAI_DIALECT, api_key)
+pub(crate) fn custom_openai_config(
+    provider_id: &str,
+    base_url: &str,
+    api_key: &str,
+) -> openai::OpenAIConfig {
+    openai::OpenAIConfig::with_key(&custom_openai_dialect(provider_id), api_key)
         .with_base_url(base_url)
         .with_auth(openai::wire::Auth::OptionalBearer)
         .with_route(openai::Route::Chat)
 }
 
-pub(crate) async fn custom_models(
-    custom: &crate::providers::CustomProvider,
+/// Model entries for the model IDs the user typed in. Saving already normalized them.
+pub(crate) fn custom_manual_models(custom: &CustomProvider) -> Vec<ModelInfo> {
+    custom
+        .models
+        .iter()
+        .map(|id| ModelRegistry::model_info(&custom.id, id))
+        .collect()
+}
+
+/// Model entries the provider's `/models` endpoint lists.
+pub(crate) async fn discover_custom_models(
+    custom: &CustomProvider,
     api_key: &str,
     http: impl rig::http_client::HttpClientExt + 'static,
-) -> Result<Vec<crate::models::ModelInfo>, String> {
-    let ids = if custom.models.is_empty() {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            custom_openai_config(&custom.base_url, api_key)
-                .connect(http)
-                .list_models(),
-        )
-        .await
-        .map_err(|_| "Custom provider model listing timed out".to_string())?
-        .map_err(|error| format!("Failed to list custom provider models: {error}"))?
-        .data
+) -> Result<Vec<ModelInfo>, String> {
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        custom_openai_config(&custom.id, &custom.base_url, api_key)
+            .connect(http)
+            .list_models(),
+    )
+    .await
+    .map_err(|_| "Custom provider model listing timed out".to_string())?
+    .map_err(|error| format!("Failed to list custom provider models: {error}"))?;
+    Ok(normalize_model_ids(listed.data.into_iter().map(|model| model.id))
         .into_iter()
-        .map(|model| model.id)
-        .collect()
-    } else {
-        custom.models.clone()
-    };
-    let mut seen = std::collections::HashSet::new();
-    Ok(ids
-        .into_iter()
-        .filter_map(|model| {
-            let id = model.trim();
-            if id.is_empty() || !seen.insert(id.to_string()) {
-                return None;
-            }
-            Some(ModelRegistry::model_info(&custom.id, id))
-        })
+        .map(|id| ModelRegistry::model_info(&custom.id, &id))
         .collect())
 }
 
@@ -300,7 +314,9 @@ pub(crate) async fn grok_access_token(api_key: &str) -> Result<String, String> {
         Err(e) => {
             tracing::warn!("Grok token refresh failed ({e}); using stored access token");
             crate::grok_oauth::access_token(&auth_path).map_err(|stored_err| {
-                format!("Grok OAuth session expired or invalid; sign in again ({e}; {stored_err})")
+                format!(
+                    "Grok OAuth session expired or invalid; sign in again ({e}; {stored_err})"
+                )
             })
         }
     }
@@ -405,51 +421,143 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn custom_gateway_streams_tool_calls_and_replays_results() {
-        use rig::test_utils::{MockHttpResponse, SequencedHttpClient};
-        let tool_turn = concat!(
-            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"one\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n",
-            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"one\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
-            "data: [DONE]\n\n",
-        );
-        let final_turn = concat!(
-            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"two\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Done\"}}]}\n\n",
-            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"two\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-            "data: [DONE]\n\n",
-        );
-        let http = SequencedHttpClient::new([tool_turn, final_turn].map(|body| {
-            MockHttpResponse::success_typed(body.as_bytes().to_vec(), "text/event-stream")
-        }));
-        let request = crate::agent_runtime::RunRequest {
+    const TOOL_TURN: &str = concat!(
+        "data: {\"object\":\"chat.completion.chunk\",\"id\":\"one\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        "data: {\"object\":\"chat.completion.chunk\",\"id\":\"one\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    const FINAL_TURN: &str = concat!(
+        "data: {\"object\":\"chat.completion.chunk\",\"id\":\"two\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Done\"}}]}\n\n",
+        "data: {\"object\":\"chat.completion.chunk\",\"id\":\"two\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    fn sse_replies(bodies: &[&str]) -> rig::test_utils::SequencedHttpClient {
+        rig::test_utils::SequencedHttpClient::new(bodies.iter().map(|body| {
+            rig::test_utils::MockHttpResponse::success_typed(
+                body.as_bytes().to_vec(),
+                "text/event-stream",
+            )
+        }))
+    }
+
+    fn custom_chat_model(
+        http: &rig::test_utils::SequencedHttpClient,
+        provider_id: &str,
+    ) -> CompletionModel {
+        custom_openai_config(provider_id, "https://example.test/v1", "key")
+            .connect(http.clone())
+            .chat("m")
+            .into()
+    }
+
+    fn lookup_run(
+        model: CompletionModel,
+        prompt: &str,
+        history: Vec<rig::completion::Message>,
+    ) -> crate::agent_runtime::RunRequest {
+        crate::agent_runtime::RunRequest {
             session_id: Some("session".into()),
-            model: custom_openai_config("https://example.test/v1", "key")
-                .connect(http.clone())
-                .chat("m")
-                .into(),
-            prompt: "Look it up".into(),
+            model,
+            prompt: prompt.into(),
             preamble: None,
             tools: vec![rig::tool::RegisteredTool::from_tool(TestTool)],
-            history: Vec::new(),
+            history,
             guards: crate::harness_profile::guards_for_role(
                 crate::harness_profile::AgentRole::Main,
             ),
             additional_params: None,
             reasoning: None,
             subagents: None,
-        };
+        }
+    }
+
+    fn request_messages(request: &rig::test_utils::CapturedHttpRequest) -> Vec<serde_json::Value> {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        body["messages"].as_array().unwrap().clone()
+    }
+
+    fn assistant_origin_provider(history: &[rig::completion::Message]) -> String {
+        history
+            .iter()
+            .find_map(|message| match message {
+                rig::completion::Message::Assistant(turn) => turn.origin.clone(),
+                _ => None,
+            })
+            .expect("an assistant turn records which provider produced it")
+            .provider
+    }
+
+    #[tokio::test]
+    async fn custom_gateway_streams_tool_calls_and_replays_results() {
+        let http = sse_replies(&[TOOL_TURN, FINAL_TURN]);
+        let request = lookup_run(custom_chat_model(&http, "custom_test"), "Look it up", vec![]);
         let result = crate::agent_runtime::run(request, |_| {}).await.unwrap();
         assert_eq!(result.full_response, "Done");
         let requests = http.requests();
         assert_eq!(requests.len(), 2);
         let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
-        let second: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
         assert_eq!(first["tools"][0]["function"]["name"], "lookup");
-        assert!(second["messages"]
-            .as_array()
-            .unwrap()
+        assert!(request_messages(&requests[1])
             .iter()
             .any(|message| message["role"] == "tool" && message["tool_call_id"] == "call_1"));
+    }
+
+    #[tokio::test]
+    async fn custom_provider_tool_calls_replay_from_persisted_model_history() {
+        let first_http = sse_replies(&[TOOL_TURN, FINAL_TURN]);
+        let first = crate::agent_runtime::run(
+            lookup_run(custom_chat_model(&first_http, "custom_test"), "Look it up", vec![]),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        // Sessions store Model History as JSON between turns.
+        let stored = serde_json::to_string(&first.history.unwrap()).unwrap();
+        let restored = crate::model_history::parse_model_history(&stored).unwrap();
+
+        let second_http = sse_replies(&[FINAL_TURN]);
+        crate::agent_runtime::run(
+            lookup_run(custom_chat_model(&second_http, "custom_test"), "And again", restored),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        let messages = request_messages(&second_http.requests()[0]);
+        let call = messages
+            .iter()
+            .position(|message| {
+                message["role"] == "assistant"
+                    && message["tool_calls"][0]["id"] == "call_1"
+                    && message["tool_calls"][0]["function"]["name"] == "lookup"
+            })
+            .expect("the stored tool call is replayed");
+        let result = messages
+            .iter()
+            .position(|message| message["role"] == "tool" && message["tool_call_id"] == "call_1")
+            .expect("the stored tool result is replayed");
+        let prompt = messages.len() - 1;
+        assert!(call < result && result < prompt);
+        assert_eq!(messages[prompt]["role"], "user");
+        assert!(messages[prompt].to_string().contains("And again"));
+    }
+
+    #[tokio::test]
+    async fn custom_providers_sharing_a_model_id_record_distinct_origins() {
+        let mut origins = Vec::new();
+        for provider_id in ["custom_alpha", "custom_beta"] {
+            let http = sse_replies(&[FINAL_TURN]);
+            let result = crate::agent_runtime::run(
+                lookup_run(custom_chat_model(&http, provider_id), "hi", vec![]),
+                |_| {},
+            )
+            .await
+            .unwrap();
+            origins.push(assistant_origin_provider(&result.history.unwrap()));
+        }
+        assert_eq!(origins, ["custom_alpha", "custom_beta"]);
     }
 
     #[tokio::test]
@@ -464,7 +572,7 @@ mod tests {
         let discovery = RecordingHttpClient::new(
             br#"{"data":[{"id":" llama-3 "},{"id":"other/model"},{"id":"llama-3"}]}"#.to_vec(),
         );
-        let models = custom_models(&provider, "token", discovery.clone())
+        let models = discover_custom_models(&provider, "token", discovery.clone())
             .await
             .unwrap();
         assert_eq!(
@@ -484,10 +592,10 @@ mod tests {
             "Bearer token"
         );
         provider.models = vec!["manual-model".into()];
-        let unused = RecordingHttpClient::new(Vec::new());
-        let models = custom_models(&provider, "", unused.clone()).await.unwrap();
+        let models = custom_manual_models(&provider);
+        assert_eq!(models.len(), 1);
         assert_eq!(models[0].model, "manual-model");
-        assert!(unused.requests().is_empty());
+        assert_eq!(models[0].provider, provider.id);
 
         for key in ["", "token"] {
             let sse = concat!(
@@ -499,7 +607,7 @@ mod tests {
                 sse.as_bytes().to_vec(),
                 "text/event-stream",
             )]);
-            let model = custom_openai_config(&provider.base_url, key)
+            let model = custom_openai_config(&provider.id, &provider.base_url, key)
                 .connect(http.clone())
                 .chat("manual-model")
                 .into();
@@ -732,10 +840,7 @@ mod tests {
         assert_eq!(request.uri, "https://cli-chat-proxy.grok.com/v1/responses");
         let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
         assert_ne!(body.get("stream"), Some(&serde_json::json!(true)));
-        assert_ne!(
-            header_value(&request.headers, "accept"),
-            "text/event-stream"
-        );
+        assert_ne!(header_value(&request.headers, "accept"), "text/event-stream");
     }
 
     #[test]

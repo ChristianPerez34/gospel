@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-mod agent_runtime;
-mod agents;
 mod app_config;
+mod agents;
 pub mod approval_broker;
 mod bounty;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
+mod agent_runtime;
 mod git_context;
 mod grok_oauth;
 mod harness_plan;
@@ -56,13 +56,10 @@ mod model_fetch {
         _api_key: Option<&str>,
         _force_refresh: bool,
     ) -> ModelInfoWithFreshness {
-        let models = crate::providers::custom_provider(provider)
-            .map(|custom| {
-                custom.models.into_iter().map(|model| ModelRegistry::model_info(provider, &model)).collect()
-            })
-            .unwrap_or_else(|| ModelRegistry::hardcoded_models_for(provider));
         ModelInfoWithFreshness {
-            models,
+            models: crate::providers::custom_provider(provider)
+                .map(|custom| crate::provider_client::custom_manual_models(&custom))
+                .unwrap_or_else(|| ModelRegistry::hardcoded_models_for(provider)),
             is_fresh: true,
             error_kind: None,
             error_detail: None,
@@ -374,6 +371,7 @@ struct ProviderAvailability {
     provider: String,
     display_name: String,
     auth_type: String,
+    is_custom: bool,
     credentialed: bool,
     visible: bool,
     model_fetch_status: String,
@@ -413,19 +411,78 @@ async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
     provider_credentials::store_api_key(&provider, &api_key).map_err(|e| e.to_string())
 }
 
+/// A Custom Provider as the settings UI sees it. The API key itself never leaves the
+/// credentials store; the UI only learns whether one is saved.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomProviderView {
+    #[serde(flatten)]
+    provider: providers::CustomProvider,
+    has_api_key: bool,
+}
+
+impl CustomProviderView {
+    fn new(provider: providers::CustomProvider) -> Self {
+        let has_api_key = provider_credentials::has_api_key(&provider.id);
+        Self {
+            provider,
+            has_api_key,
+        }
+    }
+}
+
 #[tauri::command]
 fn list_custom_providers(
     app_config: tauri::State<'_, AppConfigState>,
-) -> Result<Vec<providers::CustomProvider>, String> {
-    app_config_store(app_config.inner())?
+) -> Result<Vec<CustomProviderView>, String> {
+    let custom = app_config_store(app_config.inner())?
         .list_custom_providers()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(custom.into_iter().map(CustomProviderView::new).collect())
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct CustomProviderSaveResult {
-    provider: providers::CustomProvider,
+    provider: CustomProviderView,
     warning: Option<String>,
+}
+
+fn save_custom_provider_in(
+    store: &AppConfigStore,
+    id: Option<String>,
+    name: String,
+    base_url: String,
+    models: Vec<String>,
+    api_key: Option<String>,
+    remove_key: bool,
+) -> Result<CustomProviderSaveResult, String> {
+    if remove_key && api_key.as_deref().is_some_and(|key| !key.trim().is_empty()) {
+        return Err("Cannot replace and remove the API key at the same time".into());
+    }
+    if id.as_deref().is_some_and(|id| !providers::is_custom_provider(id)) {
+        return Err("Custom provider not found".into());
+    }
+    let provider = store
+        .save_custom_provider(providers::CustomProvider {
+            id: id.unwrap_or_else(providers::new_custom_provider_id),
+            name,
+            base_url,
+            models,
+        })
+        .map_err(|e| e.to_string())?;
+    let key_update = if remove_key {
+        provider_credentials::delete_api_key(&provider.id)
+    } else if let Some(key) = api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+        provider_credentials::store_api_key(&provider.id, key)
+    } else {
+        Ok(())
+    };
+    Ok(CustomProviderSaveResult {
+        provider: CustomProviderView::new(provider),
+        warning: key_update
+            .err()
+            .map(|error| format!("Provider saved, but its API key could not be updated: {error}")),
+    })
 }
 
 #[tauri::command]
@@ -438,49 +495,37 @@ fn save_custom_provider(
     api_key: Option<String>,
     remove_key: bool,
 ) -> Result<CustomProviderSaveResult, String> {
-    if remove_key && api_key.as_deref().is_some_and(|key| !key.trim().is_empty()) {
-        return Err("Cannot replace and remove the API key at the same time".into());
+    save_custom_provider_in(
+        app_config_store(app_config.inner())?,
+        id,
+        name,
+        base_url,
+        models,
+        api_key,
+        remove_key,
+    )
+}
+
+/// Removes the provider row first, then its saved key. A failed row delete leaves the
+/// provider fully intact; a key that cannot be removed afterwards is returned as a warning.
+fn delete_custom_provider_in(store: &AppConfigStore, id: &str) -> Result<Option<String>, String> {
+    if !providers::is_custom_provider(id) {
+        return Err("Custom provider not found".into());
     }
-    if let Some(id) = &id {
-        if providers::custom_provider(id).is_none() {
-            return Err("Custom provider not found".into());
-        }
-    }
-    let provider = app_config_store(app_config.inner())?
-        .save_custom_provider(providers::CustomProvider {
-            id: id.unwrap_or_else(|| format!("custom_{}", uuid::Uuid::new_v4())),
-            name,
-            base_url,
-            models,
-        })
-        .map_err(|e| e.to_string())?;
-    let result = if remove_key {
-        provider_credentials::delete_api_key(&provider.id)
-    } else if let Some(key) = api_key.as_deref().filter(|key| !key.trim().is_empty()) {
-        provider_credentials::store_api_key(&provider.id, key)
-    } else {
-        Ok(())
-    };
-    Ok(CustomProviderSaveResult {
-        provider,
-        warning: result
-            .err()
-            .map(|error| format!("Provider saved, but its API key could not be updated: {error}")),
-    })
+    store
+        .delete_custom_provider(id)
+        .map_err(|error| error.to_string())?;
+    Ok(provider_credentials::delete_api_key(id).err().map(|error| {
+        format!("Provider removed, but its saved API key could not be deleted: {error}")
+    }))
 }
 
 #[tauri::command]
 fn delete_custom_provider(
     app_config: tauri::State<'_, AppConfigState>,
     id: String,
-) -> Result<(), String> {
-    if providers::custom_provider(&id).is_none() {
-        return Err("Custom provider not found".into());
-    }
-    provider_credentials::delete_api_key(&id).map_err(|error| error.to_string())?;
-    app_config_store(app_config.inner())?
-        .delete_custom_provider(&id)
-        .map_err(|error| error.to_string())
+) -> Result<Option<String>, String> {
+    delete_custom_provider_in(app_config_store(app_config.inner())?, &id)
 }
 
 #[tauri::command]
@@ -717,15 +762,7 @@ async fn build_model_availability(
     warnings: Vec<String>,
     force_refresh: bool,
 ) -> ModelAvailabilitySnapshot {
-    let mut provider_ids: Vec<String> = models::ModelRegistry::all_providers()
-        .iter()
-        .map(|id| (*id).to_string())
-        .collect();
-    provider_ids.extend(
-        providers::custom_providers()
-            .into_iter()
-            .map(|provider| provider.id),
-    );
+    let provider_ids = providers::all_provider_ids();
     let mut providers: Vec<Option<ProviderAvailability>> = vec![None; provider_ids.len()];
     let mut fetch_inputs = Vec::new();
     let mut all_models = Vec::new();
@@ -878,19 +915,10 @@ fn read_visibility_snapshot(state: &AppConfigState) -> (HashMap<String, bool>, V
     }
 
     if let Some(store) = &state.store {
-        let mut provider_ids: Vec<String> = models::ModelRegistry::all_providers()
-            .iter()
-            .map(|id| (*id).to_string())
-            .collect();
-        provider_ids.extend(
-            providers::custom_providers()
-                .into_iter()
-                .map(|provider| provider.id),
-        );
-        for provider in &provider_ids {
-            match store.provider_visibility(provider) {
+        for provider in providers::all_provider_ids() {
+            match store.provider_visibility(&provider) {
                 Ok(visible) => {
-                    visibility_by_provider.insert(provider.to_string(), visible);
+                    visibility_by_provider.insert(provider, visible);
                 }
                 Err(e) => warnings.push(format!(
                     "Failed to read provider visibility for {provider}; using default visible: {e}"
@@ -913,26 +941,15 @@ fn provider_availability(
 ) -> ProviderAvailability {
     ProviderAvailability {
         provider: provider.to_string(),
-        display_name: provider_display_name(provider),
+        display_name: providers::display_name(provider),
         auth_type: provider_auth_type(provider).to_string(),
+        is_custom: providers::is_custom_provider(provider),
         credentialed,
         visible,
         model_fetch_status,
         model_count,
         error_kind,
         error_detail,
-    }
-}
-
-fn provider_display_name(provider: &str) -> String {
-    if let Some(custom) = providers::custom_provider(provider) {
-        return custom.name;
-    }
-    let name = ModelRegistry::provider_display_name(provider);
-    if name == "Unknown Provider" {
-        provider.to_string()
-    } else {
-        name.to_string()
     }
 }
 
@@ -2106,7 +2123,11 @@ fn list_bounty_findings(
     run_id: Option<String>,
 ) -> Result<bounty::findings::BountyFindings, String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
@@ -2135,7 +2156,11 @@ fn set_bounty_verdict(
     rationale: Option<String>,
 ) -> Result<(), String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
@@ -2157,13 +2182,20 @@ fn approve_bounty_checkpoint(
     run_id: String,
 ) -> Result<(), String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
+        Some(store) => store
+            .get_workspace_path()
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
         return Err("no active workspace".to_string());
     };
-    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(&workspace_path, &run_id))
+    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(
+        &workspace_path,
+        &run_id,
+    ))
 }
 
 #[tauri::command]
@@ -4641,5 +4673,166 @@ mod session_access {
             authorized_session_detail(&session_store, &second_session.id, &app_state).unwrap_err();
 
         assert!(error.contains("active workspace"));
+    }
+}
+
+#[cfg(test)]
+mod custom_provider_command_tests {
+    // Tests hold the config-home lock across awaits on purpose: it serializes
+    // tests that mutate the process-global config-home env var.
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+
+    struct CustomProviderFixture {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home: keychain::IsolatedConfigHome,
+        _registry: providers::RegisteredCustomProviders,
+        dir: tempfile::TempDir,
+        store: AppConfigStore,
+    }
+
+    impl CustomProviderFixture {
+        fn new() -> Self {
+            let lock = keychain::lock_config_home();
+            let dir = tempfile::tempdir().unwrap();
+            let home = keychain::isolate_config_home(dir.path());
+            let registry = providers::RegisteredCustomProviders::new(Vec::new());
+            let store = AppConfigStore::in_memory_for_test().unwrap();
+            Self {
+                _lock: lock,
+                _home: home,
+                _registry: registry,
+                dir,
+                store,
+            }
+        }
+
+        fn corrupt_credentials(&self) {
+            let path = self.dir.path().join("gospel").join("credentials.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{ invalid json ").unwrap();
+        }
+
+        fn save(
+            &self,
+            id: Option<String>,
+            models: Vec<String>,
+            api_key: Option<String>,
+            remove_key: bool,
+        ) -> Result<CustomProviderSaveResult, String> {
+            save_custom_provider_in(
+                &self.store,
+                id,
+                "Local".to_string(),
+                "https://example.test/v1".to_string(),
+                models,
+                api_key,
+                remove_key,
+            )
+        }
+    }
+
+    #[test]
+    fn save_rejects_replacing_and_removing_the_key_at_once() {
+        let fixture = CustomProviderFixture::new();
+        let error = fixture
+            .save(None, Vec::new(), Some("sk-new".into()), true)
+            .unwrap_err();
+        assert!(error.contains("Cannot replace and remove"));
+    }
+
+    #[test]
+    fn save_reports_key_presence_and_remove_key_clears_it() {
+        let fixture = CustomProviderFixture::new();
+
+        let keyless = fixture.save(None, Vec::new(), None, false).unwrap();
+        assert!(!keyless.provider.has_api_key);
+        assert!(keyless.warning.is_none());
+
+        let keyed = fixture
+            .save(None, Vec::new(), Some("sk-local".into()), false)
+            .unwrap();
+        assert!(keyed.provider.has_api_key);
+
+        let renamed = fixture
+            .save(
+                Some(keyed.provider.provider.id.clone()),
+                Vec::new(),
+                None,
+                true,
+            )
+            .unwrap();
+        assert!(!renamed.provider.has_api_key);
+        assert!(!provider_credentials::has_api_key(&keyed.provider.provider.id));
+    }
+
+    #[test]
+    fn save_editing_requires_a_registered_custom_provider() {
+        let fixture = CustomProviderFixture::new();
+        let error = fixture
+            .save(
+                Some(providers::new_custom_provider_id()),
+                Vec::new(),
+                None,
+                false,
+            )
+            .unwrap_err();
+        assert!(error.contains("Custom provider not found"));
+    }
+
+    #[test]
+    fn delete_removes_provider_even_when_key_removal_fails() {
+        let fixture = CustomProviderFixture::new();
+        let saved = fixture
+            .save(None, Vec::new(), Some("sk-local".into()), false)
+            .unwrap();
+        let id = saved.provider.provider.id;
+
+        // A credentials file that cannot be read must not keep the provider row alive.
+        fixture.corrupt_credentials();
+        let warning = delete_custom_provider_in(&fixture.store, &id).unwrap();
+
+        assert!(warning.is_some());
+        assert!(fixture.store.list_custom_providers().unwrap().is_empty());
+        assert!(!providers::is_custom_provider(&id));
+    }
+
+    #[test]
+    fn delete_unknown_provider_is_an_error() {
+        let fixture = CustomProviderFixture::new();
+        let error = delete_custom_provider_in(&fixture.store, &providers::new_custom_provider_id())
+            .unwrap_err();
+        assert!(error.contains("Custom provider not found"));
+    }
+
+    #[tokio::test]
+    async fn availability_marks_custom_providers() {
+        let fixture = CustomProviderFixture::new();
+        let saved = fixture
+            .save(None, vec!["llama-3".into()], None, false)
+            .unwrap();
+        let id = saved.provider.provider.id;
+
+        let snapshot =
+            build_model_availability([(id.clone(), true)].into_iter().collect(), Vec::new(), false)
+                .await;
+        let custom = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == id)
+            .expect("the saved Custom Provider is listed");
+        let builtin = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == "openai")
+            .expect("built-in providers are still listed");
+
+        assert!(custom.is_custom);
+        assert!(custom.credentialed);
+        assert!(!builtin.is_custom);
+        assert!(snapshot
+            .available_models
+            .iter()
+            .any(|model| model.provider == id && model.model == "llama-3"));
     }
 }
