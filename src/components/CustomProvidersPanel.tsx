@@ -131,10 +131,7 @@ export function CustomProvidersPanel({
   }
 
   return (
-    <section
-      className="grid gap-3 pt-3 border-t border-surface-overlay"
-      aria-label="Custom providers"
-    >
+    <section className="grid gap-3" aria-label="Custom providers">
       <div className="flex items-center justify-between gap-3">
         <h3 className="m-0 text-[13px] font-semibold text-text-secondary">Custom providers</h3>
         <Button
