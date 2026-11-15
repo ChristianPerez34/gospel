@@ -2,6 +2,40 @@
 //! auth kind, OAuth session hooks, and model-fetch strategy.
 
 use crate::keychain::KeychainError;
+use serde::{Deserialize, Serialize};
+use std::sync::{LazyLock, RwLock};
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProvider {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub models: Vec<String>,
+}
+
+static CUSTOM_PROVIDERS: LazyLock<RwLock<Vec<CustomProvider>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+
+pub fn custom_providers() -> Vec<CustomProvider> {
+    CUSTOM_PROVIDERS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+pub fn custom_provider(id: &str) -> Option<CustomProvider> {
+    CUSTOM_PROVIDERS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|provider| provider.id == id)
+        .cloned()
+}
+
+pub fn replace_custom_providers(providers: Vec<CustomProvider>) {
+    *CUSTOM_PROVIDERS.write().unwrap_or_else(|e| e.into_inner()) = providers;
+}
 
 pub struct OauthProviderHooks {
     pub auth_complete_event: &'static str,
@@ -160,7 +194,7 @@ pub fn oauth_provider_ids() -> Vec<&'static str> {
 }
 
 pub fn is_known_provider(id: &str) -> bool {
-    provider(id).is_some()
+    provider(id).is_some() || custom_provider(id).is_some()
 }
 
 pub fn is_oauth_provider(id: &str) -> bool {
@@ -259,7 +293,15 @@ mod tests {
 
     #[test]
     fn api_key_providers_are_not_oauth() {
-        for id in ["openai", "xai", "anthropic", "gemini", "groq", "mistral", "opencode_go"] {
+        for id in [
+            "openai",
+            "xai",
+            "anthropic",
+            "gemini",
+            "groq",
+            "mistral",
+            "opencode_go",
+        ] {
             assert!(!is_oauth_provider(id));
             assert_eq!(provider_auth_type(id), "api_key");
             assert!(provider(id).unwrap().oauth.is_none());

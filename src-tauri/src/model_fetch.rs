@@ -36,6 +36,35 @@ pub async fn fetch_models_for_provider(
     api_key: Option<&str>,
     force_refresh: bool,
 ) -> ModelInfoWithFreshness {
+    if let Some(custom) = crate::providers::custom_provider(provider_id) {
+        if !custom.models.is_empty() {
+            return ModelInfoWithFreshness {
+                models: custom
+                    .models
+                    .iter()
+                    .map(|model| ModelRegistry::model_info(provider_id, model))
+                    .collect(),
+                is_fresh: true,
+                error_kind: None,
+                error_detail: None,
+            };
+        }
+        let cache_key = format!(
+            "{}:{}:{}",
+            provider_id,
+            custom.base_url,
+            api_key.unwrap_or("")
+        );
+        return ModelRegistry::get_or_fetch(&cache_key, provider_id, force_refresh, || async {
+            crate::provider_client::custom_models(
+                &custom,
+                api_key.unwrap_or(""),
+                rig::rig_reqwest::shared(),
+            )
+            .await
+        })
+        .await;
+    }
     let entry = provider(provider_id);
     let cache_scope = entry
         .map(|entry| crate::providers::model_cache_scope_key(entry, api_key))

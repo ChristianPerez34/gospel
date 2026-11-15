@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-mod app_config;
+mod agent_runtime;
 mod agents;
+mod app_config;
 pub mod approval_broker;
 mod bounty;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
-mod agent_runtime;
 mod git_context;
 mod grok_oauth;
 mod harness_plan;
@@ -56,8 +56,13 @@ mod model_fetch {
         _api_key: Option<&str>,
         _force_refresh: bool,
     ) -> ModelInfoWithFreshness {
+        let models = crate::providers::custom_provider(provider)
+            .map(|custom| {
+                custom.models.into_iter().map(|model| ModelRegistry::model_info(provider, &model)).collect()
+            })
+            .unwrap_or_else(|| ModelRegistry::hardcoded_models_for(provider));
         ModelInfoWithFreshness {
-            models: ModelRegistry::hardcoded_models_for(provider),
+            models,
             is_fresh: true,
             error_kind: None,
             error_detail: None,
@@ -409,6 +414,76 @@ async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_custom_providers(
+    app_config: tauri::State<'_, AppConfigState>,
+) -> Result<Vec<providers::CustomProvider>, String> {
+    app_config_store(app_config.inner())?
+        .list_custom_providers()
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct CustomProviderSaveResult {
+    provider: providers::CustomProvider,
+    warning: Option<String>,
+}
+
+#[tauri::command]
+fn save_custom_provider(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: Option<String>,
+    name: String,
+    base_url: String,
+    models: Vec<String>,
+    api_key: Option<String>,
+    remove_key: bool,
+) -> Result<CustomProviderSaveResult, String> {
+    if remove_key && api_key.as_deref().is_some_and(|key| !key.trim().is_empty()) {
+        return Err("Cannot replace and remove the API key at the same time".into());
+    }
+    if let Some(id) = &id {
+        if providers::custom_provider(id).is_none() {
+            return Err("Custom provider not found".into());
+        }
+    }
+    let provider = app_config_store(app_config.inner())?
+        .save_custom_provider(providers::CustomProvider {
+            id: id.unwrap_or_else(|| format!("custom_{}", uuid::Uuid::new_v4())),
+            name,
+            base_url,
+            models,
+        })
+        .map_err(|e| e.to_string())?;
+    let result = if remove_key {
+        provider_credentials::delete_api_key(&provider.id)
+    } else if let Some(key) = api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+        provider_credentials::store_api_key(&provider.id, key)
+    } else {
+        Ok(())
+    };
+    Ok(CustomProviderSaveResult {
+        provider,
+        warning: result
+            .err()
+            .map(|error| format!("Provider saved, but its API key could not be updated: {error}")),
+    })
+}
+
+#[tauri::command]
+fn delete_custom_provider(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+) -> Result<(), String> {
+    if providers::custom_provider(&id).is_none() {
+        return Err("Custom provider not found".into());
+    }
+    provider_credentials::delete_api_key(&id).map_err(|error| error.to_string())?;
+    app_config_store(app_config.inner())?
+        .delete_custom_provider(&id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn delete_api_key(provider: String) -> Result<(), String> {
     provider_credentials::delete_api_key(&provider).map_err(|e| e.to_string())
 }
@@ -642,12 +717,21 @@ async fn build_model_availability(
     warnings: Vec<String>,
     force_refresh: bool,
 ) -> ModelAvailabilitySnapshot {
-    let provider_ids = models::ModelRegistry::all_providers();
+    let mut provider_ids: Vec<String> = models::ModelRegistry::all_providers()
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect();
+    provider_ids.extend(
+        providers::custom_providers()
+            .into_iter()
+            .map(|provider| provider.id),
+    );
     let mut providers: Vec<Option<ProviderAvailability>> = vec![None; provider_ids.len()];
     let mut fetch_inputs = Vec::new();
     let mut all_models = Vec::new();
 
-    for (index, &provider) in provider_ids.iter().enumerate() {
+    for (index, provider) in provider_ids.iter().enumerate() {
+        let provider = provider.as_str();
         let credentialed = keychain::provider_has_credentials(provider);
         let visible = if credentialed {
             visibility_by_provider
@@ -794,7 +878,16 @@ fn read_visibility_snapshot(state: &AppConfigState) -> (HashMap<String, bool>, V
     }
 
     if let Some(store) = &state.store {
-        for &provider in models::ModelRegistry::all_providers() {
+        let mut provider_ids: Vec<String> = models::ModelRegistry::all_providers()
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+        provider_ids.extend(
+            providers::custom_providers()
+                .into_iter()
+                .map(|provider| provider.id),
+        );
+        for provider in &provider_ids {
             match store.provider_visibility(provider) {
                 Ok(visible) => {
                     visibility_by_provider.insert(provider.to_string(), visible);
@@ -832,6 +925,9 @@ fn provider_availability(
 }
 
 fn provider_display_name(provider: &str) -> String {
+    if let Some(custom) = providers::custom_provider(provider) {
+        return custom.name;
+    }
     let name = ModelRegistry::provider_display_name(provider);
     if name == "Unknown Provider" {
         provider.to_string()
@@ -2010,11 +2106,7 @@ fn list_bounty_findings(
     run_id: Option<String>,
 ) -> Result<bounty::findings::BountyFindings, String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(PathBuf::from),
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
@@ -2043,11 +2135,7 @@ fn set_bounty_verdict(
     rationale: Option<String>,
 ) -> Result<(), String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(PathBuf::from),
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
@@ -2069,20 +2157,13 @@ fn approve_bounty_checkpoint(
     run_id: String,
 ) -> Result<(), String> {
     let workspace_path = match &app_config.store {
-        Some(store) => store
-            .get_workspace_path()
-            .ok()
-            .flatten()
-            .map(PathBuf::from),
+        Some(store) => store.get_workspace_path().ok().flatten().map(PathBuf::from),
         None => None,
     };
     let Some(workspace_path) = workspace_path else {
         return Err("no active workspace".to_string());
     };
-    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(
-        &workspace_path,
-        &run_id,
-    ))
+    bounty::checkpoint::approve_checkpoint(&bounty::http_tool::run_dir(&workspace_path, &run_id))
 }
 
 #[tauri::command]
@@ -3598,6 +3679,10 @@ pub fn run() {
 
     let app_config_state = match app_config::AppConfigStore::new() {
         Ok(store) => {
+            match store.list_custom_providers() {
+                Ok(providers) => providers::replace_custom_providers(providers),
+                Err(error) => eprintln!("Warning: could not load custom providers: {error}"),
+            }
             if let Some(ref dir_path) = cli.dir {
                 let workspace_for_dir = match store.add_workspace(dir_path) {
                     Ok(ws) => Some(ws),
@@ -3681,6 +3766,9 @@ pub fn run() {
             trust_mcp_server,
             revoke_trust_mcp_server,
             refresh_mcp_server,
+            list_custom_providers,
+            save_custom_provider,
+            delete_custom_provider,
             start_mcp_server_oauth,
             logout_mcp_server_oauth,
             preview_import_mcp_servers,

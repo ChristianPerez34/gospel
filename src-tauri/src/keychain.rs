@@ -84,6 +84,14 @@ pub fn retrieve(provider: &str) -> Result<String, KeychainError> {
     Err(KeychainError::NotFound(provider.to_string()))
 }
 
+pub(crate) fn retrieve_optional_custom(provider: &str) -> Result<String, KeychainError> {
+    ensure_known(provider)?;
+    Ok(read_credentials()?
+        .get(provider)
+        .cloned()
+        .unwrap_or_default())
+}
+
 pub fn delete(provider: &str) -> Result<(), KeychainError> {
     ensure_known(provider)?;
     let mut credentials = read_credentials()?;

@@ -26,6 +26,9 @@ pub enum ResolvedAuth {
 
 /// Whether Gospel can use this Credentialed Provider (keychain key or OAuth session).
 pub fn is_credentialed(provider_id: &str) -> bool {
+    if crate::providers::custom_provider(provider_id).is_some() {
+        return true;
+    }
     match find_provider(provider_id) {
         Some(entry) => match entry.auth_kind {
             ProviderAuthKind::Oauth => entry
@@ -40,6 +43,11 @@ pub fn is_credentialed(provider_id: &str) -> bool {
 
 /// Resolve stored credentials for a Credentialed Provider.
 pub fn resolve(provider_id: &str) -> Result<ResolvedAuth, CredentialError> {
+    if crate::providers::custom_provider(provider_id).is_some() {
+        return Ok(ResolvedAuth::ApiKey(
+            crate::keychain::retrieve_optional_custom(provider_id)?,
+        ));
+    }
     let entry = find_provider(provider_id)
         .ok_or_else(|| CredentialError::UnsupportedProvider(provider_id.to_string()))?;
 
@@ -80,6 +88,9 @@ pub fn ensure_inference_ready(
     provider_id: &str,
     supplied_api_key: &str,
 ) -> Result<(), CredentialError> {
+    if crate::providers::custom_provider(provider_id).is_some() {
+        return Ok(());
+    }
     match find_provider(provider_id) {
         None => Err(CredentialError::UnsupportedProvider(
             provider_id.to_string(),
@@ -170,7 +181,8 @@ mod tests {
         // Keychain backends may still fail in headless CI; only the unsupported
         // variant is a regression for this issue.
         match store_api_key("xai", "gospel-xai-credential-gate-probe") {
-            Ok(()) | Err(CredentialError::Keychain(_)) | Err(CredentialError::NotConfigured(_)) => {}
+            Ok(()) | Err(CredentialError::Keychain(_)) | Err(CredentialError::NotConfigured(_)) => {
+            }
             Err(CredentialError::ApiKeyStorageUnsupported(_)) => {
                 panic!("xAI must support API-key storage like other pay-as-you-go providers")
             }

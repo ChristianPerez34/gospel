@@ -92,9 +92,61 @@ pub(crate) async fn completion_model(
                     .into(),
             }
         }
-        other => return Err(ProviderClientError::Unsupported(other.to_string())),
+        other => match crate::providers::custom_provider(other) {
+            Some(provider) => custom_openai_config(&provider.base_url, api_key)
+                .client()
+                .chat(model)
+                .into(),
+            None => return Err(ProviderClientError::Unsupported(other.to_string())),
+        },
     };
     Ok(model)
+}
+
+const CUSTOM_OPENAI_DIALECT: openai::wire::Dialect =
+    openai::wire::Dialect::gateway("custom-openai", "", "")
+        .with_quirks(openai::wire::Quirks::openai().without_stream_usage());
+
+pub(crate) fn custom_openai_config(base_url: &str, api_key: &str) -> openai::OpenAIConfig {
+    openai::OpenAIConfig::with_key(&CUSTOM_OPENAI_DIALECT, api_key)
+        .with_base_url(base_url)
+        .with_auth(openai::wire::Auth::OptionalBearer)
+        .with_route(openai::Route::Chat)
+}
+
+pub(crate) async fn custom_models(
+    custom: &crate::providers::CustomProvider,
+    api_key: &str,
+    http: impl rig::http_client::HttpClientExt + 'static,
+) -> Result<Vec<crate::models::ModelInfo>, String> {
+    let ids = if custom.models.is_empty() {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            custom_openai_config(&custom.base_url, api_key)
+                .connect(http)
+                .list_models(),
+        )
+        .await
+        .map_err(|_| "Custom provider model listing timed out".to_string())?
+        .map_err(|error| format!("Failed to list custom provider models: {error}"))?
+        .data
+        .into_iter()
+        .map(|model| model.id)
+        .collect()
+    } else {
+        custom.models.clone()
+    };
+    let mut seen = std::collections::HashSet::new();
+    Ok(ids
+        .into_iter()
+        .filter_map(|model| {
+            let id = model.trim();
+            if id.is_empty() || !seen.insert(id.to_string()) {
+                return None;
+            }
+            Some(ModelRegistry::model_info(&custom.id, id))
+        })
+        .collect())
 }
 
 pub(crate) async fn copilot_config() -> Result<openai::OpenAIConfig, String> {
@@ -248,9 +300,7 @@ pub(crate) async fn grok_access_token(api_key: &str) -> Result<String, String> {
         Err(e) => {
             tracing::warn!("Grok token refresh failed ({e}); using stored access token");
             crate::grok_oauth::access_token(&auth_path).map_err(|stored_err| {
-                format!(
-                    "Grok OAuth session expired or invalid; sign in again ({e}; {stored_err})"
-                )
+                format!("Grok OAuth session expired or invalid; sign in again ({e}; {stored_err})")
             })
         }
     }
@@ -331,6 +381,163 @@ mod tests {
     // tests that mutate the process-global config-home env var.
     #![allow(clippy::await_holding_lock)]
     use super::*;
+
+    struct TestTool;
+
+    impl rig::tool::Tool for TestTool {
+        const NAME: &'static str = "lookup";
+        type Args = serde_json::Value;
+        type Output = serde_json::Value;
+        type Error = rig::tool::ToolExecutionError;
+
+        fn description(&self) -> String {
+            "Look up a value".into()
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        async fn call(
+            &self,
+            _: &mut rig::tool::ToolContext,
+            _: Self::Args,
+        ) -> Result<Self::Output, Self::Error> {
+            Ok(serde_json::json!({"found": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_gateway_streams_tool_calls_and_replays_results() {
+        use rig::test_utils::{MockHttpResponse, SequencedHttpClient};
+        let tool_turn = concat!(
+            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"one\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"one\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let final_turn = concat!(
+            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"two\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Done\"}}]}\n\n",
+            "data: {\"object\":\"chat.completion.chunk\",\"id\":\"two\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let http = SequencedHttpClient::new([tool_turn, final_turn].map(|body| {
+            MockHttpResponse::success_typed(body.as_bytes().to_vec(), "text/event-stream")
+        }));
+        let request = crate::agent_runtime::RunRequest {
+            session_id: Some("session".into()),
+            model: custom_openai_config("https://example.test/v1", "key")
+                .connect(http.clone())
+                .chat("m")
+                .into(),
+            prompt: "Look it up".into(),
+            preamble: None,
+            tools: vec![rig::tool::RegisteredTool::from_tool(TestTool)],
+            history: Vec::new(),
+            guards: crate::harness_profile::guards_for_role(
+                crate::harness_profile::AgentRole::Main,
+            ),
+            additional_params: None,
+            reasoning: None,
+            subagents: None,
+        };
+        let result = crate::agent_runtime::run(request, |_| {}).await.unwrap();
+        assert_eq!(result.full_response, "Done");
+        let requests = http.requests();
+        assert_eq!(requests.len(), 2);
+        let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let second: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(first["tools"][0]["function"]["name"], "lookup");
+        assert!(second["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "tool" && message["tool_call_id"] == "call_1"));
+    }
+
+    #[tokio::test]
+    async fn custom_openai_models_discovery_and_streaming_use_the_configured_endpoint() {
+        use rig::test_utils::{MockHttpResponse, RecordingHttpClient, SequencedHttpClient};
+        let mut provider = crate::providers::CustomProvider {
+            id: "custom_test".into(),
+            name: "Local".into(),
+            base_url: "https://example.test/v1".into(),
+            models: Vec::new(),
+        };
+        let discovery = RecordingHttpClient::new(
+            br#"{"data":[{"id":" llama-3 "},{"id":"other/model"},{"id":"llama-3"}]}"#.to_vec(),
+        );
+        let models = custom_models(&provider, "token", discovery.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            ["llama-3", "other/model"]
+        );
+        assert!(models.iter().all(|model| model.provider == provider.id));
+        assert_eq!(
+            discovery.requests()[0].uri,
+            "https://example.test/v1/models"
+        );
+        assert_eq!(
+            discovery.requests()[0].headers["authorization"],
+            "Bearer token"
+        );
+        provider.models = vec!["manual-model".into()];
+        let unused = RecordingHttpClient::new(Vec::new());
+        let models = custom_models(&provider, "", unused.clone()).await.unwrap();
+        assert_eq!(models[0].model, "manual-model");
+        assert!(unused.requests().is_empty());
+
+        for key in ["", "token"] {
+            let sse = concat!(
+                "data: {\"object\":\"chat.completion.chunk\",\"id\":\"reply\",\"model\":\"manual-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                "data: {\"object\":\"chat.completion.chunk\",\"id\":\"reply\",\"model\":\"manual-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n",
+            );
+            let http = SequencedHttpClient::new([MockHttpResponse::success_typed(
+                sse.as_bytes().to_vec(),
+                "text/event-stream",
+            )]);
+            let model = custom_openai_config(&provider.base_url, key)
+                .connect(http.clone())
+                .chat("manual-model")
+                .into();
+            let request = crate::agent_runtime::RunRequest {
+                session_id: None,
+                model,
+                prompt: "Say hello".into(),
+                preamble: None,
+                tools: Vec::new(),
+                history: Vec::new(),
+                guards: crate::harness_profile::guards_for_role(
+                    crate::harness_profile::AgentRole::Main,
+                ),
+                additional_params: None,
+                reasoning: None,
+                subagents: None,
+            };
+            let response = crate::agent_runtime::run(request, |_| {}).await.unwrap();
+            assert_eq!(response.full_response, "Hello");
+            let requests = http.requests();
+            assert_eq!(requests[0].uri, "https://example.test/v1/chat/completions");
+            assert_eq!(
+                requests[0]
+                    .headers
+                    .get("authorization")
+                    .map(|value| value.to_str().unwrap()),
+                if key.is_empty() {
+                    None
+                } else {
+                    Some("Bearer token")
+                }
+            );
+            let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+            assert_eq!(body["model"], "manual-model");
+            assert_eq!(body["stream"], true);
+            assert!(body.get("stream_options").is_none());
+        }
+    }
 
     fn header_value(headers: &HeaderMap, name: impl reqwest::header::AsHeaderName) -> String {
         headers
@@ -525,7 +732,10 @@ mod tests {
         assert_eq!(request.uri, "https://cli-chat-proxy.grok.com/v1/responses");
         let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
         assert_ne!(body.get("stream"), Some(&serde_json::json!(true)));
-        assert_ne!(header_value(&request.headers, "accept"), "text/event-stream");
+        assert_ne!(
+            header_value(&request.headers, "accept"),
+            "text/event-stream"
+        );
     }
 
     #[test]

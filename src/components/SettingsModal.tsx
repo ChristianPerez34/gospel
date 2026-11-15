@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
+import { CustomProvidersPanel } from "./CustomProvidersPanel";
 import { McpSettingsPanel } from "./McpSettingsPanel";
 import type { ProviderConfig } from "./ProviderSelector";
 import { ProviderSelector } from "./ProviderSelector";
@@ -196,7 +197,7 @@ export function SettingsModal({
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="font-sans text-body-sm font-semibold text-text-secondary uppercase tracking-[0.04em] m-0">
-                  Credentialed Providers
+                  Providers
                 </h3>
                 <Button
                   variant="outline"
@@ -207,13 +208,20 @@ export function SettingsModal({
                   {isRefreshingModels ? "Refreshing..." : "Refresh models"}
                 </Button>
               </div>
-              <p className="m-0 text-body-sm text-text-muted">
-                Provider rows are loaded from backend availability. Add credentials to make models
-                selectable.
-              </p>
-              <ProviderSelector
+              <CustomProvidersPanel
                 providers={providers}
-                onProvidersChange={onProvidersChange}
+                onRefreshAvailability={onRefreshAvailability}
+                isRefreshingModels={isRefreshingModels}
+              />
+              <p className="m-0 text-body-sm text-text-muted">Built-in providers</p>
+              <ProviderSelector
+                providers={providers.filter((provider) => !provider.id.startsWith("custom_"))}
+                onProvidersChange={(updated) =>
+                  onProvidersChange([
+                    ...updated,
+                    ...providers.filter((provider) => provider.id.startsWith("custom_")),
+                  ])
+                }
                 onRefreshAvailability={onRefreshAvailability}
               />
             </div>
