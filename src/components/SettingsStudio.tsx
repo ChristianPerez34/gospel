@@ -776,8 +776,9 @@ ${
                       )}
                     </div>
                     <p className="text-[11px] text-text-muted m-0 leading-relaxed">
-                      Zero human interruption. Executes commands autonomously except those matching
-                      explicit User Deny Rules.
+                      Executes commands autonomously except those matching explicit User Deny
+                      Rules. External-path requests always require per-request approval, and MCP
+                      tools require explicit server/tool allow rules.
                     </p>
                   </button>
                 </div>

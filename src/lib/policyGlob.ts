@@ -8,7 +8,7 @@ export function policyGlobToRegExp(pattern: string): RegExp {
 
   if (pattern.endsWith(" *") && pattern.slice(0, -2).trim().length > 0) {
     const prefix = pattern.slice(0, -2).split("*").map(escapeLiteral).join(".*");
-    return new RegExp(`^${prefix}(?:\\s.*)?$`, "i");
+    return new RegExp(`^${prefix}(?: .*)?$`, "i");
   }
 
   const literal = pattern.split("*").map(escapeLiteral).join(".*");

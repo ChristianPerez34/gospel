@@ -28,5 +28,6 @@ describe("policyGlobToRegExp", () => {
     expect(policyGlobToRegExp("cargo fmt *").test("cargo fmt --check")).toBe(true);
     expect(policyGlobToRegExp("rm -rf *").test("rm -rf")).toBe(true);
     expect(policyGlobToRegExp("rm -rf *").test("rm -rf dist")).toBe(true);
+    expect(policyGlobToRegExp("cargo fmt *").test("cargo fmt\t--check")).toBe(false);
   });
 });
