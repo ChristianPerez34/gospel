@@ -16,4 +16,17 @@ describe("policyGlobToRegExp", () => {
     expect(policyGlobToRegExp("git commit (wip").test("git commit (wip)")).toBe(false);
     expect(policyGlobToRegExp("file.txt").test("fileXtxt")).toBe(false);
   });
+
+  it("matches patterns without wildcards against exact command or command with arguments", () => {
+    expect(policyGlobToRegExp("bun test").test("bun test")).toBe(true);
+    expect(policyGlobToRegExp("bun test").test("bun test src/foo.ts")).toBe(true);
+    expect(policyGlobToRegExp("bun test").test("bun testing")).toBe(false);
+  });
+
+  it("matches patterns ending in ` *` against bare command and command with arguments", () => {
+    expect(policyGlobToRegExp("cargo fmt *").test("cargo fmt")).toBe(true);
+    expect(policyGlobToRegExp("cargo fmt *").test("cargo fmt --check")).toBe(true);
+    expect(policyGlobToRegExp("rm -rf *").test("rm -rf")).toBe(true);
+    expect(policyGlobToRegExp("rm -rf *").test("rm -rf dist")).toBe(true);
+  });
 });

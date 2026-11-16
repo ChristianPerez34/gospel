@@ -68,21 +68,22 @@ export function CustomProvidersPanel({
 
   async function save() {
     if (!draft || busy || isRefreshingModels) return;
+    const savingDraft = draft;
     setBusy(true);
     setError("");
     try {
       const result = await invoke<{ warning?: string | null }>("save_custom_provider", {
-        id: draft.id,
-        name: draft.name,
-        baseUrl: draft.baseUrl,
-        models: draft.models
+        id: savingDraft.id,
+        name: savingDraft.name,
+        baseUrl: savingDraft.baseUrl,
+        models: savingDraft.models
           .split(/[\n,]/)
           .map((model) => model.trim())
           .filter(Boolean),
-        apiKey: draft.apiKey || null,
-        removeKey: draft.removeKey,
+        apiKey: savingDraft.apiKey || null,
+        removeKey: savingDraft.removeKey,
       });
-      setDraft(null);
+      setDraft((current) => (current === savingDraft ? null : current));
       if (result?.warning) setError(result.warning);
       await load();
       await onRefreshAvailability();
@@ -103,7 +104,7 @@ export function CustomProvidersPanel({
       const warning = await invoke<string | null>("delete_custom_provider", { id });
       if (warning) setError(warning);
       setConfirmDelete(null);
-      setDraft(null);
+      setDraft((current) => (current?.id === id ? null : current));
       await load();
       await onRefreshAvailability();
     } catch (error) {
@@ -138,6 +139,7 @@ export function CustomProvidersPanel({
           type="button"
           variant="outline"
           size="sm"
+          disabled={busy || isRefreshingModels}
           onClick={() => {
             setDraft(emptyDraft());
             setError("");
@@ -169,6 +171,7 @@ export function CustomProvidersPanel({
               required
               maxLength={100}
               value={draft.name}
+              disabled={busy}
               onChange={(event) => setDraft({ ...draft, name: event.target.value })}
             />
           </div>
@@ -180,7 +183,7 @@ export function CustomProvidersPanel({
               required
               placeholder="https://api.example.com/v1"
               value={draft.baseUrl}
-              disabled={draft.id !== null}
+              disabled={busy || draft.id !== null}
               onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
             />
           </div>
@@ -196,6 +199,7 @@ export function CustomProvidersPanel({
               rows={2}
               placeholder="Leave empty to discover models"
               value={draft.models}
+              disabled={busy}
               onChange={(event) => setDraft({ ...draft, models: event.target.value })}
             />
           </div>
@@ -205,7 +209,7 @@ export function CustomProvidersPanel({
               id="custom-provider-api-key"
               type="password"
               autoComplete="off"
-              disabled={draft.removeKey}
+              disabled={busy || draft.removeKey}
               value={draft.apiKey}
               onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })}
             />
@@ -215,6 +219,7 @@ export function CustomProvidersPanel({
               <input
                 type="checkbox"
                 checked={draft.removeKey}
+                disabled={busy}
                 onChange={(event) =>
                   setDraft({ ...draft, removeKey: event.target.checked, apiKey: "" })
                 }
@@ -265,6 +270,7 @@ export function CustomProvidersPanel({
                   type="button"
                   variant="ghost"
                   size="icon"
+                  disabled={busy || isRefreshingModels}
                   aria-label={`Edit ${custom.name}`}
                   title={`Edit ${custom.name}`}
                   onClick={() => {
@@ -286,6 +292,7 @@ export function CustomProvidersPanel({
                   type="button"
                   variant="ghost"
                   size="icon"
+                  disabled={busy || isRefreshingModels}
                   aria-label={`Delete ${custom.name}`}
                   title={`Delete ${custom.name}`}
                   onClick={() => setConfirmDelete(custom.id)}

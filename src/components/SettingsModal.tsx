@@ -1,6 +1,6 @@
 import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
 import type { ProviderConfig } from "./ProviderSelector";
-import { SettingsStudio, type SettingsCategory } from "./SettingsStudio";
+import { type SettingsCategory, SettingsStudio } from "./SettingsStudio";
 
 type TabKey = "general" | "models" | "mcp" | "data";
 

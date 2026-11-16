@@ -4684,11 +4684,11 @@ mod custom_provider_command_tests {
     use super::*;
 
     struct CustomProviderFixture {
-        _lock: std::sync::MutexGuard<'static, ()>,
         _home: keychain::IsolatedConfigHome,
         _registry: providers::RegisteredCustomProviders,
         dir: tempfile::TempDir,
         store: AppConfigStore,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl CustomProviderFixture {
@@ -4699,11 +4699,11 @@ mod custom_provider_command_tests {
             let registry = providers::RegisteredCustomProviders::new(Vec::new());
             let store = AppConfigStore::in_memory_for_test().unwrap();
             Self {
-                _lock: lock,
                 _home: home,
                 _registry: registry,
                 dir,
                 store,
+                _lock: lock,
             }
         }
 

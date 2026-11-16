@@ -1124,17 +1124,25 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
 
     let rebuilt_prior_turns = rebuilt_turns.len() - 1;
     let existing_turns = user_turn_spans(&existing);
-    let kinds: Vec<TranscriptTurnKind> = existing_turns
+    let has_trailing_pending_prompt = existing
+        .last()
+        .is_some_and(|entry| transcript_entry_role(entry) == Some("user"));
+    let completed_existing_turns = if has_trailing_pending_prompt {
+        existing_turns.len().saturating_sub(1)
+    } else {
+        existing_turns.len()
+    };
+    let kinds: Vec<TranscriptTurnKind> = existing_turns[..completed_existing_turns]
         .iter()
         .map(|span| transcript_turn_kind(&existing[span.clone()]))
         .collect();
-    let in_model_history: Vec<usize> = (0..existing_turns.len())
+    let in_model_history: Vec<usize> = (0..completed_existing_turns)
         .filter(|&turn| kinds[turn] != TranscriptTurnKind::FailedDisplayOnly)
         .collect();
 
     let overlap = rebuilt_prior_turns.min(in_model_history.len());
     let first_overlapped_turn = if overlap == 0 {
-        existing_turns.len()
+        completed_existing_turns
     } else {
         in_model_history[in_model_history.len() - overlap]
     };
@@ -1155,14 +1163,36 @@ pub fn merge_display_transcripts(existing_json: &str, new_json: &str) -> String 
     for index in 0..next_rebuilt {
         merged.extend(rebuilt_turn(index));
     }
-    for (turn, span) in existing_turns
+    for (turn, span) in existing_turns[..completed_existing_turns]
         .iter()
         .enumerate()
         .skip(first_overlapped_turn)
     {
         match kinds[turn] {
             TranscriptTurnKind::Completed => {
-                merged.extend(rebuilt_turn(next_rebuilt));
+                let mut rebuilt = rebuilt_turn(next_rebuilt);
+                let has_assistant_text = rebuilt.iter().any(|entry| {
+                    transcript_entry_role(entry) == Some("assistant")
+                        && entry
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|c| !c.trim().is_empty())
+                });
+                if !has_assistant_text {
+                    if let Some(fallback) = existing[span.clone()].iter().rev().find_map(|entry| {
+                        if transcript_entry_role(entry) == Some("assistant") {
+                            entry
+                                .get("content")
+                                .and_then(|c| c.as_str())
+                                .filter(|c| !c.trim().is_empty())
+                        } else {
+                            None
+                        }
+                    }) {
+                        add_fallback_response(&mut rebuilt, fallback);
+                    }
+                }
+                merged.extend(rebuilt);
                 next_rebuilt += 1;
             }
             TranscriptTurnKind::FailedInModelHistory => {
@@ -2915,6 +2945,65 @@ mod tests {
         expected.push(json!({"role": "user", "content": "next"}));
         expected.push(json!({"role": "assistant", "content": "ok", "blocks": []}));
         assert_eq!(merged, expected);
+    }
+
+    #[test]
+    fn merge_handles_trailing_pending_retry_prompt_without_duplication() {
+        let existing = json!([
+            { "role": "user", "content": "first prompt" },
+            { "role": "assistant", "content": "first reply", "blocks": [] },
+            { "role": "user", "content": "retried prompt" }
+        ]);
+        let new = json!([
+            { "role": "user", "content": "first prompt" },
+            { "role": "assistant", "content": "first reply", "blocks": [] },
+            { "role": "user", "content": "retried prompt" },
+            { "role": "assistant", "content": "retried reply", "blocks": [] }
+        ]);
+
+        let merged: Vec<serde_json::Value> = serde_json::from_str(&merge_display_transcripts(
+            &existing.to_string(),
+            &new.to_string(),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            merged,
+            vec![
+                json!({ "role": "user", "content": "first prompt" }),
+                json!({ "role": "assistant", "content": "first reply", "blocks": [] }),
+                json!({ "role": "user", "content": "retried prompt" }),
+                json!({ "role": "assistant", "content": "retried reply", "blocks": [] }),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_retains_display_only_fallback_when_rebuilt_turn_has_no_assistant_text() {
+        let existing = json!([
+            { "role": "user", "content": "first prompt" },
+            { "role": "assistant", "content": EMPTY_RESPONSE_FALLBACK, "blocks": [{ "kind": "text", "id": "text-0", "text": EMPTY_RESPONSE_FALLBACK }] }
+        ]);
+        // When rebuilt from model history where assistant had empty text,
+        // rebuilt turn only has empty content (or tool calls without text).
+        let new = json!([
+            { "role": "user", "content": "first prompt" },
+            { "role": "assistant", "content": "", "blocks": [] },
+            { "role": "user", "content": "second prompt" },
+            { "role": "assistant", "content": "second reply", "blocks": [] }
+        ]);
+
+        let merged: Vec<serde_json::Value> = serde_json::from_str(&merge_display_transcripts(
+            &existing.to_string(),
+            &new.to_string(),
+        ))
+        .unwrap();
+
+        assert_eq!(merged.len(), 4);
+        assert_eq!(merged[0]["content"], "first prompt");
+        assert_eq!(merged[1]["content"], EMPTY_RESPONSE_FALLBACK);
+        assert_eq!(merged[2]["content"], "second prompt");
+        assert_eq!(merged[3]["content"], "second reply");
     }
 
     #[test]

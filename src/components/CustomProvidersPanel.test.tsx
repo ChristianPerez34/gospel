@@ -187,4 +187,46 @@ describe("CustomProvidersPanel", () => {
       })
     );
   });
+
+  it("does not clear a draft for a different provider when removing a provider", async () => {
+    const custom1 = {
+      id: "custom_1",
+      name: "Provider One",
+      baseUrl: "https://one.example.com/v1",
+      models: [],
+      hasApiKey: false,
+    };
+    const custom2 = {
+      id: "custom_2",
+      name: "Provider Two",
+      baseUrl: "https://two.example.com/v1",
+      models: [],
+      hasApiKey: false,
+    };
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === "list_custom_providers") return [custom1, custom2];
+      return undefined;
+    });
+
+    render(
+      <CustomProvidersPanel
+        providers={[availabilityFor(custom1), availabilityFor(custom2)]}
+        onRefreshAvailability={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+    await screen.findByText("Provider One");
+    // Start editing Provider One
+    fireEvent.click(screen.getByRole("button", { name: "Edit Provider One" }));
+    expect(screen.getByDisplayValue("Provider One")).toBeTruthy();
+
+    // Now delete Provider Two
+    fireEvent.click(screen.getByRole("button", { name: "Delete Provider Two" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove provider" }));
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("delete_custom_provider", { id: "custom_2" })
+    );
+    // The draft for Provider One should still be open!
+    expect(screen.getByDisplayValue("Provider One")).toBeTruthy();
+  });
 });

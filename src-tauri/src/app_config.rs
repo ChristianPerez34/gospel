@@ -189,7 +189,7 @@ impl AppConfigStore {
         mut provider: CustomProvider,
     ) -> Result<CustomProvider, AppConfigError> {
         provider.name = provider.name.trim().to_string();
-        if provider.name.is_empty() || provider.name.len() > 100 {
+        if provider.name.is_empty() || provider.name.chars().count() > 100 {
             return Err(AppConfigError::InvalidCustomProvider(
                 "Name must be 1 to 100 characters".into(),
             ));
@@ -1333,6 +1333,19 @@ mod tests {
         reopened.delete_custom_provider(&saved.id).unwrap();
         assert!(!crate::providers::is_known_provider(&saved.id));
         assert!(reopened.list_custom_providers().unwrap().is_empty());
+
+        let unicode_provider = CustomProvider {
+            id: format!("custom_{}", Uuid::new_v4()),
+            name: "界".repeat(40),
+            base_url: "http://localhost:11434/v1".into(),
+            models: vec!["llama-3".into()],
+        };
+        let saved_unicode = reopened.save_custom_provider(unicode_provider).unwrap();
+        assert_eq!(saved_unicode.name, "界".repeat(40));
+
+        let mut too_long_unicode = saved_unicode.clone();
+        too_long_unicode.name = "界".repeat(101);
+        assert!(reopened.save_custom_provider(too_long_unicode).is_err());
     }
 
     #[test]

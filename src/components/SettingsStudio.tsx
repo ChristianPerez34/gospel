@@ -1,40 +1,40 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import {
-  Shield,
+  Activity,
+  AlertTriangle,
+  Bot,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Copy,
   Cpu,
-  Server,
   Database,
-  Sliders,
+  Info,
+  Layers,
+  PanelLeft,
+  PanelLeftClose,
+  PanelRight,
+  PanelRightClose,
+  Plus,
+  RefreshCw,
   Search,
+  Server,
+  Shield,
+  Sliders,
   Sparkles,
   Terminal,
-  Activity,
-  CheckCircle2,
-  AlertTriangle,
-  XCircle,
-  RefreshCw,
-  Info,
   User,
-  Bot,
-  Layers,
-  Copy,
-  Check,
-  ChevronRight,
-  PanelLeftClose,
-  PanelLeft,
-  PanelRightClose,
-  PanelRight,
-  Plus,
+  XCircle,
 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ProviderSelector, type ProviderConfig } from "./ProviderSelector";
-import { CustomProvidersPanel } from "./CustomProvidersPanel";
-import { McpSettingsPanel } from "./McpSettingsPanel";
-import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
 import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useSkills } from "../hooks/useSkills";
 import { policyGlobToRegExp } from "../lib/policyGlob";
+import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
+import { CustomProvidersPanel } from "./CustomProvidersPanel";
+import { McpSettingsPanel } from "./McpSettingsPanel";
+import { type ProviderConfig, ProviderSelector } from "./ProviderSelector";
 
 interface SettingsStudioProps {
   onClose: () => void;
@@ -95,13 +95,7 @@ const PRESET_PROMPTS = [
   { label: "Simplify code", prompt: "ponytail simplify this bloated helper" },
 ];
 
-const QUICK_DENY_PRESETS = [
-  "rm -rf *",
-  "git push *--force*",
-  "drop table*",
-  "curl *",
-  "dd if=*",
-];
+const QUICK_DENY_PRESETS = ["rm -rf *", "git push *--force*", "drop table*", "curl *", "dd if=*"];
 
 const RETENTION_OPTIONS = [
   { value: 7, label: "7d" },
@@ -226,6 +220,16 @@ export function SettingsStudio({
   const [testPrompt, setTestPrompt] = useState("diagnose a performance regression in test suite");
 
   const dialogRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    openerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => {
+      openerRef.current?.focus();
+    };
+  }, []);
+
   useFocusTrap({ active: true, containerRef: dialogRef, onEscape: onClose });
 
   useEffect(() => {
@@ -245,11 +249,16 @@ export function SettingsStudio({
     () => providers.filter((provider) => provider.isCustom),
     [providers]
   );
+  const customProvidersRef = useRef(customProviders);
+  useEffect(() => {
+    customProvidersRef.current = customProviders;
+  }, [customProviders]);
+
   const handleBuiltinProvidersChange = useCallback(
     (updated: ProviderConfig[]) => {
-      onProvidersChange([...updated, ...customProviders]);
+      onProvidersChange([...updated, ...customProvidersRef.current]);
     },
-    [onProvidersChange, customProviders]
+    [onProvidersChange]
   );
 
   const categories: CategoryMeta[] = useMemo(
@@ -350,26 +359,23 @@ export function SettingsStudio({
   }, [categories, personaFilter, searchQuery]);
 
   // Keyboard shortcut listener for power users
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      const activeEl = document.activeElement;
-      if (
-        activeEl instanceof HTMLInputElement ||
-        activeEl instanceof HTMLTextAreaElement ||
-        (activeEl instanceof HTMLElement && activeEl.isContentEditable)
-      ) {
-        return;
-      }
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    const activeEl = document.activeElement;
+    if (
+      activeEl instanceof HTMLInputElement ||
+      activeEl instanceof HTMLTextAreaElement ||
+      (activeEl instanceof HTMLElement && activeEl.isContentEditable)
+    ) {
+      return;
+    }
 
-      if (e.key === "[") {
-        setIsNavCollapsed((prev) => !prev);
-      } else if (e.key === "]" || (e.key === "j" && (e.metaKey || e.ctrlKey))) {
-        e.preventDefault();
-        setIsSidecarOpen((prev) => !prev);
-      }
-    },
-    []
-  );
+    if (e.key === "[") {
+      setIsNavCollapsed((prev) => !prev);
+    } else if (e.key === "]" || (e.key === "j" && (e.metaKey || e.ctrlKey))) {
+      e.preventDefault();
+      setIsSidecarOpen((prev) => !prev);
+    }
+  }, []);
 
   useEffect(() => {
     window.addEventListener("keydown", handleKeyDown);
@@ -410,14 +416,11 @@ export function SettingsStudio({
     }
 
     return {
-      badge: autonomy.mode === "auto" ? "AUTO EXECUTE" : "PROMPT REQUIRED",
-      reason: "No user rule matched; backend CommandPolicy still applies",
-      action: autonomy.mode === "auto" ? "Runs without prompting" : "Prompts user for one-time confirmation",
-      icon: autonomy.mode === "auto" ? CheckCircle2 : Shield,
-      color:
-        autonomy.mode === "auto"
-          ? "text-status-success bg-status-success/10 border-status-success/20"
-          : "text-accent-structure bg-accent-structure/10 border-accent-structure/20",
+      badge: "NO USER RULE",
+      reason: "No user rule matched; runtime decision handled by backend CommandPolicy",
+      action: "No user rule matched",
+      icon: Info,
+      color: "text-text-muted bg-surface-overlay/80 border-border-subtle",
     };
   }, [testCommand, autonomy.policy, autonomy.mode]);
 
@@ -496,7 +499,9 @@ ${
                   {personaFilter === "all" ? "Settings" : `${personaFilter} Lens`}
                 </span>
                 <ChevronRight size={12} className="text-text-muted/60" />
-                <span className="font-medium text-accent-structure">{selectedCategoryMeta.name}</span>
+                <span className="font-medium text-accent-structure">
+                  {selectedCategoryMeta.name}
+                </span>
               </div>
             </div>
           </div>
@@ -572,7 +577,10 @@ ${
               }`}
               title={isSidecarOpen ? "Hide Inspector (] or ⌘J)" : "Show Inspector (] or ⌘J)"}
             >
-              <Sparkles size={12} className={isSidecarOpen ? "text-accent-structure" : "text-text-muted"} />
+              <Sparkles
+                size={12}
+                className={isSidecarOpen ? "text-accent-structure" : "text-text-muted"}
+              />
               <span className="hidden sm:inline">Inspector</span>
               {isSidecarOpen ? <PanelRightClose size={13} /> : <PanelRight size={13} />}
             </button>
@@ -671,11 +679,15 @@ ${
                       />
                       <div className="truncate">
                         <div className="text-xs font-medium truncate">{cat.name}</div>
-                        <div className="text-[10px] text-text-muted truncate">{cat.description}</div>
+                        <div className="text-[10px] text-text-muted truncate">
+                          {cat.description}
+                        </div>
                       </div>
                     </div>
                     {cat.badge && (
-                      <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md shrink-0 ml-1 ${cat.badgeColor}`}>
+                      <span
+                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md shrink-0 ml-1 ${cat.badgeColor}`}
+                      >
                         {cat.badge}
                       </span>
                     )}
@@ -687,7 +699,9 @@ ${
             {/* Bottom Status Footnote */}
             <div className="p-3 border-t border-white/[0.04] text-[11px] text-text-muted flex items-center justify-between">
               {!isNavCollapsed && <span className="font-mono text-[10px]">v0.1.0-alpha.1</span>}
-              <span className={`inline-flex items-center gap-1.5 text-status-success font-mono text-[10px] ${isNavCollapsed ? "mx-auto" : ""}`}>
+              <span
+                className={`inline-flex items-center gap-1.5 text-status-success font-mono text-[10px] ${isNavCollapsed ? "mx-auto" : ""}`}
+              >
                 <span className="w-1.5 h-1.5 rounded-full bg-status-success inline-block animate-pulse" />
                 {!isNavCollapsed && "Harness Live"}
               </span>
@@ -736,7 +750,8 @@ ${
                       )}
                     </div>
                     <p className="text-[11px] text-text-muted m-0 leading-relaxed">
-                      Requires one-time approval for mutating commands. Blocks dangerous restricted commands outright.
+                      Requires one-time approval for mutating commands. Blocks dangerous restricted
+                      commands outright.
                     </p>
                   </button>
 
@@ -761,7 +776,8 @@ ${
                       )}
                     </div>
                     <p className="text-[11px] text-text-muted m-0 leading-relaxed">
-                      Zero human interruption. Executes commands autonomously except those matching explicit User Deny Rules.
+                      Zero human interruption. Executes commands autonomously except those matching
+                      explicit User Deny Rules.
                     </p>
                   </button>
                 </div>
@@ -885,7 +901,8 @@ ${
                     </div>
                   ) : (
                     <p className="text-[11px] text-text-muted m-0">
-                      No workspace allow rules yet. Commands approved with "Always allow" appear here.
+                      No workspace allow rules yet. Commands approved with "Always allow" appear
+                      here.
                     </p>
                   )}
                 </div>
@@ -897,7 +914,9 @@ ${
               <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="text-base font-semibold text-text-primary m-0">Inference Providers & API Keys</h3>
+                    <h3 className="text-base font-semibold text-text-primary m-0">
+                      Inference Providers & API Keys
+                    </h3>
                     <p className="text-xs text-text-muted mt-0.5">
                       OAuth sign-in, API keys, availability checks, and active model catalogs.
                     </p>
@@ -927,8 +946,12 @@ ${
             {selectedCategory === "appearance" && (
               <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
                 <div>
-                  <h3 className="text-base font-semibold text-text-primary m-0">Interface & Visual Theme</h3>
-                  <p className="text-xs text-text-muted mt-0.5">Customize display preferences and color palette.</p>
+                  <h3 className="text-base font-semibold text-text-primary m-0">
+                    Interface & Visual Theme
+                  </h3>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Customize display preferences and color palette.
+                  </p>
                 </div>
 
                 <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
@@ -964,8 +987,12 @@ ${
             {selectedCategory === "workspace" && (
               <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
                 <div>
-                  <h3 className="text-base font-semibold text-text-primary m-0">Workspace & Git Context</h3>
-                  <p className="text-xs text-text-muted mt-0.5">Active codebase affinity and execution directory.</p>
+                  <h3 className="text-base font-semibold text-text-primary m-0">
+                    Workspace & Git Context
+                  </h3>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Active codebase affinity and execution directory.
+                  </p>
                 </div>
 
                 <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
@@ -983,14 +1010,20 @@ ${
             {selectedCategory === "storage" && (
               <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
                 <div>
-                  <h3 className="text-base font-semibold text-text-primary m-0">Storage, Retention & Traces</h3>
-                  <p className="text-xs text-text-muted mt-0.5">SQLite database storage and automated session pruning.</p>
+                  <h3 className="text-base font-semibold text-text-primary m-0">
+                    Storage, Retention & Traces
+                  </h3>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    SQLite database storage and automated session pruning.
+                  </p>
                 </div>
 
                 <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-xs font-semibold text-text-primary">Session Archive & Traces</div>
+                      <div className="text-xs font-semibold text-text-primary">
+                        Session Archive & Traces
+                      </div>
                       <div className="text-[11px] text-text-muted mt-0.5">
                         {archiveStats
                           ? `${archiveStats.archived_count} archived turns, ${archiveStats.expired_count} expired, ${formatBytes(archiveStats.archived_bytes)} stored`
@@ -1010,8 +1043,12 @@ ${
 
                   {archivePolicy && (
                     <div className="pt-3 border-t border-white/[0.04] space-y-2">
-                      <div className="text-xs font-semibold text-text-primary">Global Retention Policy</div>
-                      <div className="text-[11px] text-text-muted">Default for every workspace without an override.</div>
+                      <div className="text-xs font-semibold text-text-primary">
+                        Global Retention Policy
+                      </div>
+                      <div className="text-[11px] text-text-muted">
+                        Default for every workspace without an override.
+                      </div>
                       <PolicyControls
                         policy={archivePolicy}
                         disabled={archivePolicySaving || !onArchivePolicyChange}
@@ -1026,7 +1063,9 @@ ${
                     <div className="pt-3 border-t border-white/[0.04] space-y-2">
                       <div className="flex items-center justify-between">
                         <div>
-                          <div className="text-xs font-semibold text-text-primary">Workspace Policy Override</div>
+                          <div className="text-xs font-semibold text-text-primary">
+                            Workspace Policy Override
+                          </div>
                           <div className="text-[11px] text-text-muted">
                             {workspaceArchivePolicy.uses_workspace_override
                               ? activeWorkspaceName
@@ -1065,7 +1104,9 @@ ${
             {selectedCategory === "skills" && (
               <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
                 <div>
-                  <h3 className="text-base font-semibold text-text-primary m-0">Discovered Skills & Prompts</h3>
+                  <h3 className="text-base font-semibold text-text-primary m-0">
+                    Discovered Skills & Prompts
+                  </h3>
                   <p className="text-xs text-text-muted mt-0.5">
                     Skills match user prompts and dynamically inject instructions into the preamble.
                   </p>
@@ -1080,7 +1121,9 @@ ${
                       >
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="font-mono font-semibold text-accent-structure">/{s.name}</span>
+                            <span className="font-mono font-semibold text-accent-structure">
+                              /{s.name}
+                            </span>
                             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-sunken/80 text-text-muted">
                               {s.source}
                             </span>
@@ -1091,7 +1134,9 @@ ${
                       </div>
                     ))
                   ) : (
-                    <p className="text-[11px] text-text-muted m-0">No user-invocable skills discovered.</p>
+                    <p className="text-[11px] text-text-muted m-0">
+                      No user-invocable skills discovered.
+                    </p>
                   )}
                 </div>
               </div>
@@ -1101,9 +1146,12 @@ ${
             {selectedCategory === "mcp" && (
               <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
                 <div>
-                  <h3 className="text-base font-semibold text-text-primary m-0">Model Context Protocol (MCP)</h3>
+                  <h3 className="text-base font-semibold text-text-primary m-0">
+                    Model Context Protocol (MCP)
+                  </h3>
                   <p className="text-xs text-text-muted mt-0.5">
-                    Installed tool servers providing filesystem, git, and custom capability discovery.
+                    Installed tool servers providing filesystem, git, and custom capability
+                    discovery.
                   </p>
                 </div>
 
@@ -1117,26 +1165,37 @@ ${
             {selectedCategory === "guards" && (
               <div className="max-w-[760px] mx-auto space-y-6 animate-fade-in">
                 <div>
-                  <h3 className="text-base font-semibold text-text-primary m-0">Turn Circuit Breakers & Verification</h3>
-                  <p className="text-xs text-text-muted mt-0.5">Safeguards preventing token runaways and silent regressions.</p>
+                  <h3 className="text-base font-semibold text-text-primary m-0">
+                    Turn Circuit Breakers & Verification
+                  </h3>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Safeguards preventing token runaways and silent regressions.
+                  </p>
                 </div>
 
                 <div className="p-4 rounded-xl bg-surface-elevated/70 shadow-[0_2px_12px_rgba(0,0,0,0.25)] border border-white/[0.03] space-y-3">
-                  <div className="text-xs font-semibold text-text-primary">Loop Detection Rules</div>
+                  <div className="text-xs font-semibold text-text-primary">
+                    Loop Detection Rules
+                  </div>
                   <div className="grid grid-cols-2 gap-3 text-xs text-text-muted">
                     <div className="p-3 rounded-lg bg-surface-sunken/60">
-                      <span className="font-semibold text-text-secondary">Loop Warning:</span> 3 identical tool calls
-                      <div className="text-[10px] text-text-muted mt-1">Alerts user with caution event</div>
+                      <span className="font-semibold text-text-secondary">Loop Warning:</span> 3
+                      identical tool calls
+                      <div className="text-[10px] text-text-muted mt-1">
+                        Alerts user with caution event
+                      </div>
                     </div>
                     <div className="p-3 rounded-lg bg-surface-sunken/60">
-                      <span className="font-semibold text-text-secondary">Controlled Stop:</span> 5 calls
-                      <div className="text-[10px] text-text-muted mt-1">Cleanly stops without corrupting history</div>
+                      <span className="font-semibold text-text-secondary">Controlled Stop:</span> 5
+                      calls
+                      <div className="text-[10px] text-text-muted mt-1">
+                        Cleanly stops without corrupting history
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
             )}
-
           </div>
 
           {/* Right Live Sidecar (Collapsible 310px <-> 0px) */}
@@ -1216,7 +1275,9 @@ ${
                     </div>
 
                     {evaluatedCommand && (
-                      <div className={`p-2 rounded-lg border ${evaluatedCommand.color} text-[11px] space-y-1`}>
+                      <div
+                        className={`p-2 rounded-lg border ${evaluatedCommand.color} text-[11px] space-y-1`}
+                      >
                         <div className="flex items-center justify-between font-semibold">
                           <div className="flex items-center gap-1.5">
                             <evaluatedCommand.icon size={13} />
@@ -1266,7 +1327,9 @@ ${
                           key={m.name}
                           className="flex items-center justify-between px-2 py-1 rounded-md bg-surface-sunken/60 text-[11px]"
                         >
-                          <span className="font-mono text-accent-structure font-medium">/{m.name}</span>
+                          <span className="font-mono text-accent-structure font-medium">
+                            /{m.name}
+                          </span>
                           <span className="font-mono text-[10px] text-text-muted">{m.source}</span>
                         </div>
                       ))}
@@ -1277,11 +1340,15 @@ ${
                   <div className="p-2.5 rounded-lg bg-surface-sunken/60 space-y-1 text-[11px]">
                     <div className="flex justify-between text-text-muted">
                       <span>Active Autonomy:</span>
-                      <strong className="text-text-primary uppercase font-mono">{autonomy.mode}</strong>
+                      <strong className="text-text-primary uppercase font-mono">
+                        {autonomy.mode}
+                      </strong>
                     </div>
                     <div className="flex justify-between text-text-muted">
                       <span>Denied Patterns:</span>
-                      <strong className="text-text-primary font-mono">{autonomy.policy.reject_patterns.length} rules</strong>
+                      <strong className="text-text-primary font-mono">
+                        {autonomy.policy.reject_patterns.length} rules
+                      </strong>
                     </div>
                     <div className="flex justify-between text-text-muted">
                       <span>Turn Budget Cap:</span>
@@ -1293,13 +1360,19 @@ ${
                 /* Compiled Preamble View with Copy & Token Gauge */
                 <div className="flex-1 flex flex-col space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono uppercase text-text-muted">Preamble Output</span>
+                    <span className="text-[10px] font-mono uppercase text-text-muted">
+                      Preamble Output
+                    </span>
                     <button
                       type="button"
                       onClick={handleCopyPreamble}
                       className="flex items-center gap-1 text-[10px] font-mono text-accent-structure hover:text-white transition active:scale-[0.95]"
                     >
-                      {copiedPreamble ? <Check size={11} className="text-status-success" /> : <Copy size={11} />}
+                      {copiedPreamble ? (
+                        <Check size={11} className="text-status-success" />
+                      ) : (
+                        <Copy size={11} />
+                      )}
                       <span>{copiedPreamble ? "Copied!" : "Copy"}</span>
                     </button>
                   </div>
