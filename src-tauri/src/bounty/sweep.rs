@@ -1,7 +1,7 @@
 use crate::agents::AgentDefinition;
 use crate::bounty::scope::BountyScope;
 use crate::bounty::signal::{load_signals, SignalKind, SignalRecord};
-use crate::ecs_runtime::{self, RunRequest};
+use crate::agent_runtime::{self, RunRequest};
 use crate::harness_profile::{
     resolve_custom_agent_profile, ActiveWorkspaceContext, CustomAgentProfileRequest,
     HarnessRunGuards, LoopGuardPolicy,
@@ -279,7 +279,7 @@ async fn run_phase(
         request.session_id,
     )
     .await?;
-    let result = ecs_runtime::run(
+    let result = agent_runtime::run(
         RunRequest {
             session_id: request.session_id.map(str::to_owned),
             model,
@@ -345,7 +345,7 @@ async fn run_worker(
             request.session_id,
         )
         .await?;
-        ecs_runtime::run(
+        agent_runtime::run(
             RunRequest {
                 session_id: request.session_id.map(str::to_owned),
                 model,

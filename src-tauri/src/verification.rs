@@ -128,15 +128,18 @@ async fn run_verification_agent(
     let model = crate::provider_client::completion_model(provider, model, api_key, session_id)
         .await
         .map_err(|error| error.to_string())?;
-    crate::ecs_runtime::run(
-        crate::ecs_runtime::RunRequest {
+    // run_verification owns the deadline so a timeout reports as a verification timeout.
+    let mut guards = profile.guards;
+    guards.deadline = None;
+    crate::agent_runtime::run(
+        crate::agent_runtime::RunRequest {
             session_id: session_id.map(str::to_owned),
             model,
             prompt: prompt.to_owned(),
             preamble: profile.preamble,
             tools: profile.tools,
             history: Vec::new(),
-            guards: profile.guards,
+            guards,
             additional_params: None,
             reasoning: None,
             subagents: None,

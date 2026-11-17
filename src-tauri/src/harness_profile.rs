@@ -1,4 +1,4 @@
-use crate::agents::AgentDefinition;
+use crate::agents::{AgentDefinition, DEFAULT_MAX_TURNS};
 use crate::bounty::{BountyHttpTool, BountySignalTool};
 use crate::review::tools::{
     create_record_review_outcome_tool, create_run_multi_review_tool, create_run_review_tool,
@@ -29,6 +29,29 @@ use thiserror::Error;
 const DELEGATION_SYSTEM_PROMPT: &str = r#"
 Use `delegate_exploration` only for broad multi-file, architectural, or investigative tasks that would benefit from a focused report before you answer the user.
 Prefer direct file reads and targeted search for small or obvious tasks.
+"#;
+
+const MAIN_AGENT_AUTONOMY_PROMPT: &str = r#"
+## Autonomous Operating Mandate
+
+You are Gospel, an autonomous software engineering assistant working directly in the user's active codebase.
+
+### Proactive Execution
+- Take full ownership of driving tasks to completion. When the user asks what is next, how to proceed, or whether you can perform a task, do not reply with passive checklists or conversational deferrals. Inspect the workspace, decide the immediate engineering step, and execute it using your tools.
+- Never ask the user to perform tasks that your available tools can execute (e.g. reading files, editing source code, compiling, running test suites, or checking git status).
+
+### Desktop, GUI, and Manual Verification Discipline
+- When working on desktop, web, or mobile applications, you may lack tools to directly see or click inside a graphical window.
+- **Never allow a human-only visual or interactive verification step to stall you while actionable engineering work remains.**
+- When direct visual testing is not supported by your tools:
+  1. Write and run automated or headless tests (e.g. unit tests, integration tests, or framework test harnesses like `gpui::TestAppContext` for GPUI desktop apps or headless runners).
+  2. Verify process execution, build artifacts, and CLI flags via shell tools where appropriate.
+  3. Address outstanding compiler warnings, lint issues, edge cases, and code quality debts.
+  4. If only manual user verification remains, ensure all code compiles, automated tests pass, and changes are cleanly organized before providing the user with a focused checklist to verify in the running app.
+
+### Working Tree and Commit Hygiene
+- Maintain clean git working tree hygiene. Avoid leaving large swathes of modified files uncommitted across multiple turns.
+- Once a logical unit of work compiles, passes tests, and satisfies verification, inspect `git diff` and offer or make clean, well-described commits.
 "#;
 
 const BOUNTY_NETWORK_SYSTEM_PROMPT: &str = r#"
@@ -571,7 +594,12 @@ fn compose_preamble(
     }
 
     if let Some(workspace) = workspace {
-        let workspace_guidance = if role == AgentRole::Main && workspace.source_edit_allowed {
+        let main_can_edit_source = role == AgentRole::Main && workspace.source_edit_allowed;
+        if main_can_edit_source {
+            push_section(&mut sections, Some(MAIN_AGENT_AUTONOMY_PROMPT.to_string()));
+        }
+
+        let workspace_guidance = if main_can_edit_source {
             WORKSPACE_TOOLS_SYSTEM_PROMPT
         } else {
             READ_ONLY_WORKSPACE_TOOLS_SYSTEM_PROMPT
@@ -607,44 +635,10 @@ fn push_section(sections: &mut Vec<String>, section: Option<String>) {
     }
 }
 
-fn configured_max_turns() -> Option<Option<usize>> {
-    let raw = std::env::var("GOSPEL_MAX_TURNS")
-        .or_else(|_| std::env::var("GOSPEL_AGENT_MAX_TURNS"))
-        .ok()?;
-    parse_max_turns_env(&raw)
-}
-
-fn parse_max_turns_env(raw: &str) -> Option<Option<usize>> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.eq_ignore_ascii_case("unlimited")
-        || trimmed.eq_ignore_ascii_case("none")
-        || trimmed.eq_ignore_ascii_case("inf")
-        || trimmed.eq_ignore_ascii_case("infinity")
-        || trimmed == "0"
-    {
-        return Some(None);
-    }
-    match trimmed.parse::<usize>() {
-        Ok(val) => Some(Some(val)),
-        Err(error) => {
-            tracing::warn!(
-                raw = %raw,
-                error = %error,
-                "invalid GOSPEL_MAX_TURNS; ignoring override"
-            );
-            None
-        }
-    }
-}
-
 pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
-    let override_turns = configured_max_turns();
     match role {
         AgentRole::Main => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: None,
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -652,7 +646,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Exploration => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: Some(Duration::from_secs(90)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -660,7 +654,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Verification => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(Some(6)),
+            max_turns: None,
             deadline: Some(Duration::from_secs(90)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -668,7 +662,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::ReviewDetector => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: Some(Duration::from_secs(60)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -676,7 +670,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::ReviewValidator => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(None),
+            max_turns: None,
             deadline: Some(Duration::from_secs(30)),
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 2,
@@ -684,7 +678,7 @@ pub(crate) fn guards_for_role(role: AgentRole) -> HarnessRunGuards {
             },
         },
         AgentRole::Custom => HarnessRunGuards {
-            max_turns: override_turns.unwrap_or(Some(50)),
+            max_turns: Some(DEFAULT_MAX_TURNS),
             deadline: None,
             loop_guard: LoopGuardPolicy {
                 warning_threshold: 3,
@@ -843,6 +837,10 @@ mod tests {
                         role == AgentRole::Main
                     );
                     assert_eq!(preamble.contains("Use `source_edit`"), source_edit_expected);
+                    assert_eq!(
+                        preamble.contains("Autonomous Operating Mandate"),
+                        source_edit_expected
+                    );
                     if workspace_available && role == AgentRole::Main {
                         assert!(preamble.contains("Harness Control Area"));
                         assert!(preamble.contains("Shell, Git, and GitHub CLI Tools"));
@@ -997,9 +995,10 @@ mod tests {
         let expected = [
             (AgentRole::Main, None, None, 3, 5),
             (AgentRole::Exploration, None, Some(90), 3, 5),
-            (AgentRole::Verification, Some(6), Some(90), 2, 3),
+            (AgentRole::Verification, None, Some(90), 2, 3),
             (AgentRole::ReviewDetector, None, Some(60), 2, 3),
             (AgentRole::ReviewValidator, None, Some(30), 2, 3),
+            (AgentRole::Custom, Some(DEFAULT_MAX_TURNS), None, 3, 5),
         ];
 
         for (role, max_turns, deadline_seconds, warning, stop) in expected {
@@ -1015,22 +1014,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn max_turns_env_parsing_supports_limits_and_unlimited_variants() {
-        assert_eq!(parse_max_turns_env(""), None);
-        assert_eq!(parse_max_turns_env("   "), None);
-        assert_eq!(parse_max_turns_env("100"), Some(Some(100)));
-        assert_eq!(parse_max_turns_env(" 250 "), Some(Some(250)));
-        assert_eq!(parse_max_turns_env("0"), Some(None));
-        assert_eq!(parse_max_turns_env("unlimited"), Some(None));
-        assert_eq!(parse_max_turns_env("UNLIMITED"), Some(None));
-        assert_eq!(parse_max_turns_env("none"), Some(None));
-        assert_eq!(parse_max_turns_env("inf"), Some(None));
-        assert_eq!(parse_max_turns_env("invalid_number"), None);
-    }
-
     #[tokio::test]
-    async fn resolved_profile_can_be_consumed_by_the_ecs_runtime() {
+    async fn resolved_profile_can_be_consumed_by_the_agent_runtime() {
         let profile = resolve_harness_profile(HarnessProfileRequest {
             role: AgentRole::Verification,
             workspace: Some(ActiveWorkspaceContext {
@@ -1046,8 +1031,8 @@ mod tests {
         .expect("profile");
 
         let preamble = profile.preamble.unwrap_or_default();
-        let result = crate::ecs_runtime::run(
-            crate::ecs_runtime::RunRequest {
+        let result = crate::agent_runtime::run(
+            crate::agent_runtime::RunRequest {
                 session_id: None,
                 model: MockCompletionModel::from_stream_turns([vec![
                     rig::test_utils::MockStreamEvent::text("ok"),
@@ -1066,7 +1051,7 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("ECS executes the profile");
+        .expect("runtime executes the profile");
         assert_eq!(result.full_response, "ok");
     }
 

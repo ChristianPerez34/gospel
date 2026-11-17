@@ -7,6 +7,7 @@ interface ProviderAvailability {
   provider: ProviderId;
   display_name: string;
   auth_type: "api_key" | "oauth";
+  is_custom?: boolean | null;
   credentialed: boolean;
   visible: boolean;
   model_fetch_status: string;
@@ -71,6 +72,7 @@ function providerConfigFromAvailability(
     testMessage: existing?.testMessage ?? "",
     isOAuth: provider.auth_type === "oauth",
     isAuthenticated: provider.auth_type === "oauth" ? isCredentialed : undefined,
+    isCustom: provider.is_custom === true,
   };
 }
 

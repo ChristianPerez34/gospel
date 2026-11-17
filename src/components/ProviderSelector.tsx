@@ -22,6 +22,7 @@ export interface ProviderConfig {
   testMessage: string;
   isOAuth?: boolean;
   isAuthenticated?: boolean;
+  isCustom?: boolean;
 }
 
 interface ProviderSelectorProps {
@@ -41,13 +42,47 @@ interface OAuthCompletion {
   success: boolean;
 }
 
-function providerAvailabilitySummary(provider: ProviderConfig) {
+export function providerAvailabilitySummary(provider: ProviderConfig) {
   if (!provider.credentialed) return "Not credentialed";
   if (!provider.visible) return "Hidden";
   if (provider.modelFetchStatus === "failed") return provider.errorDetail || "Model load failed";
   if (provider.modelFetchStatus === "stale") return `${provider.modelCount} stale models`;
   if (provider.modelFetchStatus === "empty") return "No models returned";
   return `${provider.modelCount} models`;
+}
+
+// Shared provider visibility toggle: settings rows and the custom providers
+// panel must look and behave the same, including the disabled state.
+export function ProviderVisibilitySwitch({
+  visible,
+  disabled = false,
+  label,
+  onToggle,
+}: {
+  visible: boolean;
+  disabled?: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className={`hit-target relative w-9 h-5 border-none rounded-full p-0 transition-all duration-150 ease-out-quart shrink-0 ${
+        visible ? "bg-accent-action" : "bg-surface-overlay"
+      } ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer active:scale-95"}`}
+      onClick={onToggle}
+      aria-pressed={visible}
+      disabled={disabled}
+      type="button"
+      aria-label={label}
+      title={label}
+    >
+      <span
+        className={`absolute top-0.5 left-0.5 w-4 h-4 bg-text-inverse rounded-full transition-transform duration-150 ease-out-quart ${
+          visible ? "translate-x-4" : ""
+        }`}
+      />
+    </button>
+  );
 }
 
 // Best-effort visibility persist: callers await it to preserve write ordering,
@@ -385,25 +420,12 @@ export function ProviderSelector({
                 )}
               </div>
 
-              <button
-                className={`hit-target relative w-9 h-5 border-none rounded-full p-0 transition-all duration-150 ease-out-quart shrink-0 ${
-                  isVisible ? "bg-accent-action" : "bg-surface-overlay"
-                } ${
-                  !isConfigured ? "opacity-40 cursor-not-allowed" : "cursor-pointer active:scale-95"
-                }`}
-                onClick={() => handleToggle(provider.id)}
-                aria-pressed={isVisible}
+              <ProviderVisibilitySwitch
+                visible={isVisible}
                 disabled={!isConfigured}
-                type="button"
-                aria-label={toggleLabel}
-                title={toggleLabel}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 bg-text-inverse rounded-full transition-transform duration-150 ease-out-quart ${
-                    isVisible ? "translate-x-4" : ""
-                  }`}
-                />
-              </button>
+                label={toggleLabel}
+                onToggle={() => handleToggle(provider.id)}
+              />
             </div>
 
             {(isVisible || !isConfigured) && (

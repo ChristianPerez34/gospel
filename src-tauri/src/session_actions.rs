@@ -44,8 +44,8 @@ pub fn validate_turn_count(
     retry_turn: Option<usize>,
 ) -> Result<(), String> {
     let actual = turn_starts(&parse_history(raw_history)?).len();
-    // A failed turn may not have reached model-history persistence. Otherwise
-    // fail closed when pruning or another view has changed the saved history.
+    // Legacy failed turns may not have reached model-history persistence.
+    // Otherwise fail closed when pruning or another view changed the history.
     if actual == expected || (retry_turn == Some(actual) && expected == actual + 1) {
         Ok(())
     } else {

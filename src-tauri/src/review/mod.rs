@@ -2258,8 +2258,8 @@ pub(crate) async fn run_workspace_agent(
     })?;
     let mut guards = profile_guards;
     guards.deadline = None;
-    let work = crate::ecs_runtime::run(
-        crate::ecs_runtime::RunRequest {
+    let work = crate::agent_runtime::run(
+        crate::agent_runtime::RunRequest {
             session_id: None,
             model,
             prompt: config.prompt.to_owned(),

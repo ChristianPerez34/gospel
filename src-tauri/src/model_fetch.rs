@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::models::{ModelInfo, ModelInfoWithFreshness, ModelRegistry};
-use crate::providers::{provider, ModelFetchKind};
+use crate::provider_client::{custom_manual_models, discover_custom_models};
+use crate::providers::{provider, CustomProvider, ModelFetchKind};
 
 fn should_include_completion_model(model_id: &str) -> bool {
     let id = model_id.to_lowercase();
@@ -36,6 +37,9 @@ pub async fn fetch_models_for_provider(
     api_key: Option<&str>,
     force_refresh: bool,
 ) -> ModelInfoWithFreshness {
+    if let Some(custom) = crate::providers::custom_provider(provider_id) {
+        return fetch_custom_models(&custom, api_key.unwrap_or(""), force_refresh).await;
+    }
     let entry = provider(provider_id);
     let cache_scope = entry
         .map(|entry| crate::providers::model_cache_scope_key(entry, api_key))
@@ -80,6 +84,28 @@ pub async fn fetch_models_for_provider(
         model.variants = ModelRegistry::variants_for_model(&model.provider, &model.model);
     }
     result
+}
+
+/// A Custom Provider lists the model IDs the user typed in, and only asks the endpoint when
+/// there are none.
+async fn fetch_custom_models(
+    custom: &CustomProvider,
+    api_key: &str,
+    force_refresh: bool,
+) -> ModelInfoWithFreshness {
+    if !custom.models.is_empty() {
+        return ModelInfoWithFreshness {
+            models: custom_manual_models(custom),
+            is_fresh: true,
+            error_kind: None,
+            error_detail: None,
+        };
+    }
+    let cache_key = format!("{}:{}:{}", custom.id, custom.base_url, api_key);
+    ModelRegistry::get_or_fetch(&cache_key, &custom.id, force_refresh, || {
+        discover_custom_models(custom, api_key, rig::rig_reqwest::shared())
+    })
+    .await
 }
 
 async fn fetch_openai_models_impl(api_key: &str) -> Result<Vec<ModelInfo>, String> {

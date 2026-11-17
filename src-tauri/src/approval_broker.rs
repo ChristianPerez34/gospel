@@ -372,18 +372,16 @@ pub fn split_compound_commands(command: &str) -> Vec<&str> {
             in_single_quote = !in_single_quote;
         } else if b == b'"' && !in_single_quote {
             in_double_quote = !in_double_quote;
-        } else if !in_single_quote && !in_double_quote {
-            if b == b';' || b == b'|' || b == b'&' {
-                let end = i;
-                let segment = command[current_start..end].trim();
-                if !segment.is_empty() {
-                    subcommands.push(segment);
-                }
-                if i + 1 < len && (bytes[i + 1] == b'&' || bytes[i + 1] == b'|') {
-                    i += 1;
-                }
-                current_start = i + 1;
+        } else if !in_single_quote && !in_double_quote && (b == b';' || b == b'|' || b == b'&') {
+            let end = i;
+            let segment = command[current_start..end].trim();
+            if !segment.is_empty() {
+                subcommands.push(segment);
             }
+            if i + 1 < len && (bytes[i + 1] == b'&' || bytes[i + 1] == b'|') {
+                i += 1;
+            }
+            current_start = i + 1;
         }
         i += 1;
     }

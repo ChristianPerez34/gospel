@@ -9,7 +9,7 @@ mod bounty;
 mod conversation;
 mod copilot_models;
 mod credential_failure;
-mod ecs_runtime;
+mod agent_runtime;
 mod git_context;
 mod grok_oauth;
 mod harness_plan;
@@ -57,7 +57,9 @@ mod model_fetch {
         _force_refresh: bool,
     ) -> ModelInfoWithFreshness {
         ModelInfoWithFreshness {
-            models: ModelRegistry::hardcoded_models_for(provider),
+            models: crate::providers::custom_provider(provider)
+                .map(|custom| crate::provider_client::custom_manual_models(&custom))
+                .unwrap_or_else(|| ModelRegistry::hardcoded_models_for(provider)),
             is_fresh: true,
             error_kind: None,
             error_detail: None,
@@ -369,6 +371,7 @@ struct ProviderAvailability {
     provider: String,
     display_name: String,
     auth_type: String,
+    is_custom: bool,
     credentialed: bool,
     visible: bool,
     model_fetch_status: String,
@@ -406,6 +409,123 @@ pub(crate) fn validate_active_workspace_path(path: &Path) -> Result<(), String> 
 #[tauri::command]
 async fn set_api_key(provider: String, api_key: String) -> Result<(), String> {
     provider_credentials::store_api_key(&provider, &api_key).map_err(|e| e.to_string())
+}
+
+/// A Custom Provider as the settings UI sees it. The API key itself never leaves the
+/// credentials store; the UI only learns whether one is saved.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomProviderView {
+    #[serde(flatten)]
+    provider: providers::CustomProvider,
+    has_api_key: bool,
+}
+
+impl CustomProviderView {
+    fn new(provider: providers::CustomProvider) -> Self {
+        let has_api_key = provider_credentials::has_api_key(&provider.id);
+        Self {
+            provider,
+            has_api_key,
+        }
+    }
+}
+
+#[tauri::command]
+fn list_custom_providers(
+    app_config: tauri::State<'_, AppConfigState>,
+) -> Result<Vec<CustomProviderView>, String> {
+    let custom = app_config_store(app_config.inner())?
+        .list_custom_providers()
+        .map_err(|e| e.to_string())?;
+    Ok(custom.into_iter().map(CustomProviderView::new).collect())
+}
+
+#[derive(Debug, Serialize)]
+struct CustomProviderSaveResult {
+    provider: CustomProviderView,
+    warning: Option<String>,
+}
+
+fn save_custom_provider_in(
+    store: &AppConfigStore,
+    id: Option<String>,
+    name: String,
+    base_url: String,
+    models: Vec<String>,
+    api_key: Option<String>,
+    remove_key: bool,
+) -> Result<CustomProviderSaveResult, String> {
+    if remove_key && api_key.as_deref().is_some_and(|key| !key.trim().is_empty()) {
+        return Err("Cannot replace and remove the API key at the same time".into());
+    }
+    if id.as_deref().is_some_and(|id| !providers::is_custom_provider(id)) {
+        return Err("Custom provider not found".into());
+    }
+    let provider = store
+        .save_custom_provider(providers::CustomProvider {
+            id: id.unwrap_or_else(providers::new_custom_provider_id),
+            name,
+            base_url,
+            models,
+        })
+        .map_err(|e| e.to_string())?;
+    let key_update = if remove_key {
+        provider_credentials::delete_api_key(&provider.id)
+    } else if let Some(key) = api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+        provider_credentials::store_api_key(&provider.id, key)
+    } else {
+        Ok(())
+    };
+    Ok(CustomProviderSaveResult {
+        provider: CustomProviderView::new(provider),
+        warning: key_update
+            .err()
+            .map(|error| format!("Provider saved, but its API key could not be updated: {error}")),
+    })
+}
+
+#[tauri::command]
+fn save_custom_provider(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: Option<String>,
+    name: String,
+    base_url: String,
+    models: Vec<String>,
+    api_key: Option<String>,
+    remove_key: bool,
+) -> Result<CustomProviderSaveResult, String> {
+    save_custom_provider_in(
+        app_config_store(app_config.inner())?,
+        id,
+        name,
+        base_url,
+        models,
+        api_key,
+        remove_key,
+    )
+}
+
+/// Removes the provider row first, then its saved key. A failed row delete leaves the
+/// provider fully intact; a key that cannot be removed afterwards is returned as a warning.
+fn delete_custom_provider_in(store: &AppConfigStore, id: &str) -> Result<Option<String>, String> {
+    if !providers::is_custom_provider(id) {
+        return Err("Custom provider not found".into());
+    }
+    store
+        .delete_custom_provider(id)
+        .map_err(|error| error.to_string())?;
+    Ok(provider_credentials::delete_api_key(id).err().map(|error| {
+        format!("Provider removed, but its saved API key could not be deleted: {error}")
+    }))
+}
+
+#[tauri::command]
+fn delete_custom_provider(
+    app_config: tauri::State<'_, AppConfigState>,
+    id: String,
+) -> Result<Option<String>, String> {
+    delete_custom_provider_in(app_config_store(app_config.inner())?, &id)
 }
 
 #[tauri::command]
@@ -642,12 +762,13 @@ async fn build_model_availability(
     warnings: Vec<String>,
     force_refresh: bool,
 ) -> ModelAvailabilitySnapshot {
-    let provider_ids = models::ModelRegistry::all_providers();
+    let provider_ids = providers::all_provider_ids();
     let mut providers: Vec<Option<ProviderAvailability>> = vec![None; provider_ids.len()];
     let mut fetch_inputs = Vec::new();
     let mut all_models = Vec::new();
 
-    for (index, &provider) in provider_ids.iter().enumerate() {
+    for (index, provider) in provider_ids.iter().enumerate() {
+        let provider = provider.as_str();
         let credentialed = keychain::provider_has_credentials(provider);
         let visible = if credentialed {
             visibility_by_provider
@@ -794,10 +915,10 @@ fn read_visibility_snapshot(state: &AppConfigState) -> (HashMap<String, bool>, V
     }
 
     if let Some(store) = &state.store {
-        for &provider in models::ModelRegistry::all_providers() {
-            match store.provider_visibility(provider) {
+        for provider in providers::all_provider_ids() {
+            match store.provider_visibility(&provider) {
                 Ok(visible) => {
-                    visibility_by_provider.insert(provider.to_string(), visible);
+                    visibility_by_provider.insert(provider, visible);
                 }
                 Err(e) => warnings.push(format!(
                     "Failed to read provider visibility for {provider}; using default visible: {e}"
@@ -820,8 +941,9 @@ fn provider_availability(
 ) -> ProviderAvailability {
     ProviderAvailability {
         provider: provider.to_string(),
-        display_name: provider_display_name(provider),
+        display_name: providers::display_name(provider),
         auth_type: provider_auth_type(provider).to_string(),
+        is_custom: providers::is_custom_provider(provider),
         credentialed,
         visible,
         model_fetch_status,
@@ -831,21 +953,15 @@ fn provider_availability(
     }
 }
 
-fn provider_display_name(provider: &str) -> String {
-    let name = ModelRegistry::provider_display_name(provider);
-    if name == "Unknown Provider" {
-        provider.to_string()
-    } else {
-        name.to_string()
-    }
-}
-
 fn provider_auth_type(provider: &str) -> &'static str {
     ModelRegistry::provider_auth_type(provider)
 }
 
 #[cfg(test)]
 mod availability_tests {
+    // Tests hold the config-home lock across awaits on purpose: it serializes
+    // tests that mutate the process-global config-home env var.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     #[test]
@@ -1136,54 +1252,50 @@ impl session_turn::TurnPersistenceAdapter for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn save_turn_failure(&self, session_id: &str, error_message: &str) -> Result<(), String> {
-        let store = self
-            .session_store_state
-            .store
-            .as_ref()
-            .ok_or_else(|| "session store unavailable".to_string())?;
-        if let Some(snapshot) =
-            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
-        {
-            let persistence = session_turn::failure_turn_persistence(
-                &snapshot.display_transcript,
-                snapshot.model_history.as_deref(),
-                &LlmError::ProviderError(error_message.to_string()),
-            );
-            store
-                .persist_turn(
-                    session_id,
-                    &persistence.display_transcript,
-                    persistence.model_history.as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+    fn save_turn_failure(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        error_message: &str,
+    ) -> Result<(), String> {
+        self.persist_failed_turn(
+            session_id,
+            user_prompt,
+            &LlmError::ProviderError(error_message.to_string()),
+        )
     }
 
-    fn save_turn_stopped(&self, session_id: &str, stopped_reason: &str) -> Result<(), String> {
-        let store = self
-            .session_store_state
-            .store
-            .as_ref()
-            .ok_or_else(|| "session store unavailable".to_string())?;
-        if let Some(snapshot) =
-            session_turn::SessionTurnSessions::persisted_snapshot(self, session_id)
-        {
-            let persistence = session_turn::failure_turn_persistence(
-                &snapshot.display_transcript,
-                snapshot.model_history.as_deref(),
-                &LlmError::ControlledStop(stopped_reason.to_string()),
-            );
-            store
-                .persist_turn(
-                    session_id,
-                    &persistence.display_transcript,
-                    persistence.model_history.as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+    fn save_turn_stopped(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        stopped_reason: &str,
+    ) -> Result<(), String> {
+        self.persist_failed_turn(
+            session_id,
+            user_prompt,
+            &LlmError::ControlledStop(stopped_reason.to_string()),
+        )
+    }
+}
+
+impl TauriSessionTurnAdapters<'_> {
+    fn persist_failed_turn(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+        error: &LlmError,
+    ) -> Result<(), String> {
+        session_turn::persist_failed_turn(
+            self,
+            self,
+            session_id,
+            &session_turn::FailedTurn {
+                display_prompt: user_prompt,
+                model_prompt: user_prompt,
+                error,
+            },
+        )
     }
 }
 
@@ -1263,14 +1375,9 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
 }
 
 impl session_turn::SessionTurnConversation for TauriSessionTurnAdapters<'_> {
-    fn chat_history(&self, session_id: Option<&str>) -> Vec<rig::completion::message::Message> {
-        match session_id {
-            Some(sid) => {
-                let mut store = self.conversation_state.store.lock().unwrap();
-                store.get_history(sid)
-            }
-            None => Vec::new(),
-        }
+    fn cached_history(&self, session_id: &str) -> Option<Vec<rig::completion::message::Message>> {
+        let mut store = self.conversation_state.store.lock().unwrap();
+        store.get_history_if_present(session_id)
     }
 
     fn store_history(&self, session_id: &str, history: Vec<rig::completion::message::Message>) {
@@ -2747,7 +2854,7 @@ fn run_session_message_action(
                 request.turn_count,
             )?
         };
-        let persistence = session_turn::successful_turn_persistence(Some(&history))
+        let persistence = session_turn::successful_turn_persistence(Some(&history), None)
             .ok_or("Unable to prepare conversation history")?;
         let model_history = persistence
             .model_history
@@ -3604,6 +3711,10 @@ pub fn run() {
 
     let app_config_state = match app_config::AppConfigStore::new() {
         Ok(store) => {
+            match store.list_custom_providers() {
+                Ok(providers) => providers::replace_custom_providers(providers),
+                Err(error) => eprintln!("Warning: could not load custom providers: {error}"),
+            }
             if let Some(ref dir_path) = cli.dir {
                 let workspace_for_dir = match store.add_workspace(dir_path) {
                     Ok(ws) => Some(ws),
@@ -3687,6 +3798,9 @@ pub fn run() {
             trust_mcp_server,
             revoke_trust_mcp_server,
             refresh_mcp_server,
+            list_custom_providers,
+            save_custom_provider,
+            delete_custom_provider,
             start_mcp_server_oauth,
             logout_mcp_server_oauth,
             preview_import_mcp_servers,
@@ -4559,5 +4673,166 @@ mod session_access {
             authorized_session_detail(&session_store, &second_session.id, &app_state).unwrap_err();
 
         assert!(error.contains("active workspace"));
+    }
+}
+
+#[cfg(test)]
+mod custom_provider_command_tests {
+    // Tests hold the config-home lock across awaits on purpose: it serializes
+    // tests that mutate the process-global config-home env var.
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+
+    struct CustomProviderFixture {
+        _home: keychain::IsolatedConfigHome,
+        _registry: providers::RegisteredCustomProviders,
+        dir: tempfile::TempDir,
+        store: AppConfigStore,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl CustomProviderFixture {
+        fn new() -> Self {
+            let lock = keychain::lock_config_home();
+            let dir = tempfile::tempdir().unwrap();
+            let home = keychain::isolate_config_home(dir.path());
+            let registry = providers::RegisteredCustomProviders::new(Vec::new());
+            let store = AppConfigStore::in_memory_for_test().unwrap();
+            Self {
+                _home: home,
+                _registry: registry,
+                dir,
+                store,
+                _lock: lock,
+            }
+        }
+
+        fn corrupt_credentials(&self) {
+            let path = self.dir.path().join("gospel").join("credentials.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{ invalid json ").unwrap();
+        }
+
+        fn save(
+            &self,
+            id: Option<String>,
+            models: Vec<String>,
+            api_key: Option<String>,
+            remove_key: bool,
+        ) -> Result<CustomProviderSaveResult, String> {
+            save_custom_provider_in(
+                &self.store,
+                id,
+                "Local".to_string(),
+                "https://example.test/v1".to_string(),
+                models,
+                api_key,
+                remove_key,
+            )
+        }
+    }
+
+    #[test]
+    fn save_rejects_replacing_and_removing_the_key_at_once() {
+        let fixture = CustomProviderFixture::new();
+        let error = fixture
+            .save(None, Vec::new(), Some("sk-new".into()), true)
+            .unwrap_err();
+        assert!(error.contains("Cannot replace and remove"));
+    }
+
+    #[test]
+    fn save_reports_key_presence_and_remove_key_clears_it() {
+        let fixture = CustomProviderFixture::new();
+
+        let keyless = fixture.save(None, Vec::new(), None, false).unwrap();
+        assert!(!keyless.provider.has_api_key);
+        assert!(keyless.warning.is_none());
+
+        let keyed = fixture
+            .save(None, Vec::new(), Some("sk-local".into()), false)
+            .unwrap();
+        assert!(keyed.provider.has_api_key);
+
+        let renamed = fixture
+            .save(
+                Some(keyed.provider.provider.id.clone()),
+                Vec::new(),
+                None,
+                true,
+            )
+            .unwrap();
+        assert!(!renamed.provider.has_api_key);
+        assert!(!provider_credentials::has_api_key(&keyed.provider.provider.id));
+    }
+
+    #[test]
+    fn save_editing_requires_a_registered_custom_provider() {
+        let fixture = CustomProviderFixture::new();
+        let error = fixture
+            .save(
+                Some(providers::new_custom_provider_id()),
+                Vec::new(),
+                None,
+                false,
+            )
+            .unwrap_err();
+        assert!(error.contains("Custom provider not found"));
+    }
+
+    #[test]
+    fn delete_removes_provider_even_when_key_removal_fails() {
+        let fixture = CustomProviderFixture::new();
+        let saved = fixture
+            .save(None, Vec::new(), Some("sk-local".into()), false)
+            .unwrap();
+        let id = saved.provider.provider.id;
+
+        // A credentials file that cannot be read must not keep the provider row alive.
+        fixture.corrupt_credentials();
+        let warning = delete_custom_provider_in(&fixture.store, &id).unwrap();
+
+        assert!(warning.is_some());
+        assert!(fixture.store.list_custom_providers().unwrap().is_empty());
+        assert!(!providers::is_custom_provider(&id));
+    }
+
+    #[test]
+    fn delete_unknown_provider_is_an_error() {
+        let fixture = CustomProviderFixture::new();
+        let error = delete_custom_provider_in(&fixture.store, &providers::new_custom_provider_id())
+            .unwrap_err();
+        assert!(error.contains("Custom provider not found"));
+    }
+
+    #[tokio::test]
+    async fn availability_marks_custom_providers() {
+        let fixture = CustomProviderFixture::new();
+        let saved = fixture
+            .save(None, vec!["llama-3".into()], None, false)
+            .unwrap();
+        let id = saved.provider.provider.id;
+
+        let snapshot =
+            build_model_availability([(id.clone(), true)].into_iter().collect(), Vec::new(), false)
+                .await;
+        let custom = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == id)
+            .expect("the saved Custom Provider is listed");
+        let builtin = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider == "openai")
+            .expect("built-in providers are still listed");
+
+        assert!(custom.is_custom);
+        assert!(custom.credentialed);
+        assert!(!builtin.is_custom);
+        assert!(snapshot
+            .available_models
+            .iter()
+            .any(|model| model.provider == id && model.model == "llama-3"));
     }
 }

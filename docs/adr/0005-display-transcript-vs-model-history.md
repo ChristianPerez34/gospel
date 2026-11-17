@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. The failure rule is superseded by ADR-0017: failed and stopped turns now append their prompt (not partial output) to Model History.
 
 ## Context
 
