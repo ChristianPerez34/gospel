@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderConfig } from "./ProviderSelector";
-import { SettingsStudio } from "./SettingsStudio";
+import { type SettingsCategory, SettingsStudio } from "./SettingsStudio";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -28,11 +28,15 @@ function provider(
   };
 }
 
-function renderStudio(providers: ProviderConfig[], onProvidersChange = vi.fn()) {
+function renderStudio(
+  providers: ProviderConfig[],
+  onProvidersChange = vi.fn(),
+  initialCategory: SettingsCategory = "providers"
+) {
   render(
     <SettingsStudio
       onClose={vi.fn()}
-      initialCategory="providers"
+      initialCategory={initialCategory}
       providers={providers}
       onProvidersChange={onProvidersChange}
       onRefreshAvailability={vi.fn().mockResolvedValue(undefined)}
@@ -75,6 +79,25 @@ describe("SettingsStudio providers category", () => {
     );
     expect(screen.getByText("Built-in providers")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Hide OpenAI from model picker" })).toBeTruthy();
+  });
+
+  it("matches deny rules after collapsing command whitespace", async () => {
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === "get_approval_policy") {
+        return { mode: "ask", allowed_patterns: [], reject_patterns: ["cargo fmt *"] };
+      }
+      if (command === "list_skills") return [];
+      return undefined;
+    });
+
+    renderStudio([], vi.fn(), "autonomy");
+
+    const input = await screen.findByRole("textbox", { name: "Quick command classifier input" });
+    fireEvent.change(input, { target: { value: "cargo fmt --check" } });
+    expect(await screen.findByText('Matches User Deny Rule: "cargo fmt *"')).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: "cargo\tfmt  --check" } });
+    expect(await screen.findByText('Matches User Deny Rule: "cargo fmt *"')).toBeTruthy();
   });
 
   it("keeps custom providers when a built-in provider is edited", async () => {

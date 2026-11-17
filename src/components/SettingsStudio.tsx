@@ -388,10 +388,11 @@ export function SettingsStudio({
   const evaluatedCommand = useMemo(() => {
     const cmd = testCommand.trim();
     if (!cmd) return null;
+    const normalizedCmd = cmd.replace(/\s+/g, " ");
 
     for (const pattern of autonomy.policy.reject_patterns) {
       const regex = policyGlobToRegExp(pattern);
-      if (regex.test(cmd)) {
+      if (regex.test(cmd) || regex.test(normalizedCmd)) {
         return {
           badge: "DENY PATTERN",
           reason: `Matches User Deny Rule: "${pattern}"`,
