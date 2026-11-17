@@ -16,13 +16,18 @@ function legacyCopy(text: string): void {
   textarea.value = text;
   textarea.setAttribute("readonly", "");
   textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
   textarea.style.opacity = "0";
   document.body.appendChild(textarea);
-  textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-  const ok = document.execCommand("copy");
-  document.body.removeChild(textarea);
-  if (!ok) throw new Error("Copy failed");
+  try {
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    const ok = document.execCommand("copy");
+    if (!ok) throw new Error("Copy failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }
 
 /**
@@ -56,6 +61,13 @@ async function copyChain(
  * `navigator.clipboard.writeText` directly.
  */
 export async function copyToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    const fn = navigator.clipboard.writeText as PatchedFn;
+    if (fn[PATCH_MARKER]) {
+      await fn(text);
+      return;
+    }
+  }
   const native =
     typeof navigator !== "undefined"
       ? navigator.clipboard?.writeText?.bind(navigator.clipboard)
@@ -82,21 +94,23 @@ export function installClipboardPolyfill(): void {
 
   try {
     if (nav.clipboard) {
-      nav.clipboard.writeText = patched;
+      try {
+        nav.clipboard.writeText = patched;
+      } catch {
+        Object.defineProperty(nav.clipboard, "writeText", {
+          value: patched,
+          configurable: true,
+          writable: true,
+        });
+      }
     } else {
       Object.defineProperty(navigator, "clipboard", {
         value: { writeText: patched },
         configurable: true,
+        writable: true,
       });
     }
   } catch {
-    try {
-      Object.defineProperty(navigator, "clipboard", {
-        value: { writeText: patched },
-        configurable: true,
-      });
-    } catch {
-      // Leave the Clipboard API untouched; direct callers keep old behavior.
-    }
+    // Leave the Clipboard API untouched; direct callers keep old behavior.
   }
 }

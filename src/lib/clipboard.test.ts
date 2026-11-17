@@ -8,10 +8,18 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 
 const pluginWriteText = vi.mocked(writeTextViaPlugin);
 
-function setClipboard(writeText?: (text: string) => Promise<void>) {
+function setClipboard(writeText?: ((text: string) => Promise<void>) | Record<string, unknown>) {
+  let value: unknown;
+  if (typeof writeText === "function") {
+    value = { writeText: vi.fn(writeText) };
+  } else if (writeText !== undefined) {
+    value = writeText;
+  } else {
+    value = undefined;
+  }
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
-    value: writeText ? { writeText: vi.fn(writeText) } : undefined,
+    value,
   });
 }
 
@@ -73,6 +81,30 @@ describe("copyToClipboard", () => {
     stubExecCommand(() => false);
     await expect(copyToClipboard("doomed")).rejects.toThrow();
   });
+
+  it("guarantees textarea removal when execCommand throws", async () => {
+    setClipboard(async () => {
+      throw new Error("Permission denied");
+    });
+    stubExecCommand(() => {
+      throw new Error("execCommand disabled");
+    });
+    const initialChildren = document.body.children.length;
+    await expect(copyToClipboard("textarea leak check")).rejects.toThrow("execCommand disabled");
+    expect(document.body.children.length).toBe(initialChildren);
+  });
+
+  it("delegates directly to patched writeText without double-wrapping when polyfill is installed", async () => {
+    setClipboard(async () => {
+      throw new Error("Permission denied");
+    });
+    const execCommand = stubExecCommand(() => false);
+    installClipboardPolyfill();
+    await expect(copyToClipboard("doomed once")).rejects.toThrow();
+    // Plugin and execCommand should each be attempted exactly once, not twice.
+    expect(pluginWriteText).toHaveBeenCalledTimes(1);
+    expect(execCommand).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("installClipboardPolyfill", () => {
@@ -98,5 +130,50 @@ describe("installClipboardPolyfill", () => {
     expect(native).toHaveBeenCalledWith("native path");
     expect(pluginWriteText).not.toHaveBeenCalled();
     expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it("defines navigator.clipboard if initially undefined", async () => {
+    setClipboard(undefined);
+    pluginWriteText.mockResolvedValue(undefined);
+    installClipboardPolyfill();
+    expect(navigator.clipboard).toBeDefined();
+    expect(typeof navigator.clipboard.writeText).toBe("function");
+    await navigator.clipboard.writeText("defined");
+    expect(pluginWriteText).toHaveBeenCalledWith("defined");
+  });
+
+  it("preserves other clipboard members when writeText assignment throws", async () => {
+    const mockReadText = vi.fn(async () => "existing text");
+    const existingClipboard = {
+      readText: mockReadText,
+    };
+    Object.defineProperty(existingClipboard, "writeText", {
+      get() {
+        return undefined;
+      },
+      set() {
+        throw new TypeError("Cannot assign to read-only property 'writeText'");
+      },
+      configurable: true,
+    });
+    setClipboard(existingClipboard);
+    pluginWriteText.mockResolvedValue(undefined);
+
+    installClipboardPolyfill();
+
+    expect((navigator.clipboard as unknown as { readText: typeof mockReadText }).readText).toBe(
+      mockReadText
+    );
+    await navigator.clipboard.writeText("polyfilled");
+    expect(pluginWriteText).toHaveBeenCalledWith("polyfilled");
+  });
+
+  it("is idempotent when called multiple times", async () => {
+    const native = vi.fn(async (_text: string) => {});
+    setClipboard(native);
+    installClipboardPolyfill();
+    const firstPatched = navigator.clipboard.writeText;
+    installClipboardPolyfill();
+    expect(navigator.clipboard.writeText).toBe(firstPatched);
   });
 });
