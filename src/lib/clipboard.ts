@@ -1,10 +1,12 @@
+import { writeText as writeTextViaPlugin } from "@tauri-apps/plugin-clipboard-manager";
+
 const PATCH_MARKER = "__gospelClipboardFallback";
 
 type PatchedFn = ((text: string) => Promise<void>) & { [PATCH_MARKER]?: true };
 
 /**
- * Legacy copy path for WebViews where the async Clipboard API is missing
- * or rejects (e.g. the Tauri WebView backing this app).
+ * Legacy copy path for contexts where neither the async Clipboard API nor
+ * the Tauri clipboard plugin can write (e.g. a plain browser preview).
  */
 function legacyCopy(text: string): void {
   if (typeof document === "undefined" || typeof document.execCommand !== "function") {
@@ -24,16 +26,25 @@ function legacyCopy(text: string): void {
 }
 
 /**
- * Copy text, falling back to a hidden-textarea `execCommand("copy")` when
- * the async Clipboard API is unavailable or rejects. Prefer this over
- * calling `navigator.clipboard.writeText` directly.
+ * Shared write chain: async Clipboard API, then the Tauri
+ * clipboard-manager plugin (the reliable path inside the app's WebView),
+ * then the legacy textarea fallback.
  */
-export async function copyToClipboard(text: string): Promise<void> {
-  try {
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
+async function copyChain(
+  nativeWrite: ((text: string) => Promise<void>) | undefined,
+  text: string
+): Promise<void> {
+  if (nativeWrite) {
+    try {
+      await nativeWrite(text);
       return;
+    } catch {
+      // Fall through to the plugin below.
     }
+  }
+  try {
+    await writeTextViaPlugin(text);
+    return;
   } catch {
     // Fall through to the legacy path below.
   }
@@ -41,7 +52,19 @@ export async function copyToClipboard(text: string): Promise<void> {
 }
 
 /**
- * Patch `navigator.clipboard.writeText` with the legacy fallback so
+ * Copy text, trying each backend in turn. Prefer this over calling
+ * `navigator.clipboard.writeText` directly.
+ */
+export async function copyToClipboard(text: string): Promise<void> {
+  const native =
+    typeof navigator !== "undefined"
+      ? navigator.clipboard?.writeText?.bind(navigator.clipboard)
+      : undefined;
+  await copyChain(native, text);
+}
+
+/**
+ * Patch `navigator.clipboard.writeText` with the same fallback chain so
  * third-party copy buttons that call it directly (Streamdown's code-block
  * copy button) keep working in the Tauri WebView. Idempotent; call once
  * at startup.
@@ -53,15 +76,7 @@ export function installClipboardPolyfill(): void {
 
   const original = nav.clipboard?.writeText?.bind(nav.clipboard);
   const patched = (async (text: string): Promise<void> => {
-    if (original) {
-      try {
-        await original(text);
-        return;
-      } catch {
-        // Fall through to the legacy path below.
-      }
-    }
-    legacyCopy(text);
+    await copyChain(original, text);
   }) as PatchedFn;
   patched[PATCH_MARKER] = true;
 

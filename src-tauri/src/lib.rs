@@ -3785,6 +3785,7 @@ pub fn run() {
         .manage(mcp_runtime::McpRuntime::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             set_api_key,
             delete_api_key,

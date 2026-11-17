@@ -1,5 +1,12 @@
+import { writeText as writeTextViaPlugin } from "@tauri-apps/plugin-clipboard-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copyToClipboard, installClipboardPolyfill } from "./clipboard";
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: vi.fn(),
+}));
+
+const pluginWriteText = vi.mocked(writeTextViaPlugin);
 
 function setClipboard(writeText?: (text: string) => Promise<void>) {
   Object.defineProperty(navigator, "clipboard", {
@@ -20,6 +27,7 @@ function stubExecCommand(impl: () => boolean) {
 
 beforeEach(() => {
   setClipboard(async () => {});
+  pluginWriteText.mockRejectedValue(new Error("not in Tauri"));
 });
 
 afterEach(() => {
@@ -34,22 +42,27 @@ describe("copyToClipboard", () => {
     const execCommand = stubExecCommand(() => true);
     await copyToClipboard("hello");
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("hello");
+    expect(pluginWriteText).not.toHaveBeenCalled();
     expect(execCommand).not.toHaveBeenCalled();
   });
 
-  it("falls back to execCommand when writeText rejects (Tauri WebView)", async () => {
+  it("falls back to the Tauri plugin when writeText rejects (Tauri WebView)", async () => {
+    setClipboard(async () => {
+      throw new Error("Permission denied");
+    });
+    pluginWriteText.mockResolvedValue(undefined);
+    const execCommand = stubExecCommand(() => true);
+    await copyToClipboard("plugin text");
+    expect(pluginWriteText).toHaveBeenCalledWith("plugin text");
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it("falls back to execCommand when both writeText and the plugin fail", async () => {
     setClipboard(async () => {
       throw new Error("Permission denied");
     });
     const execCommand = stubExecCommand(() => true);
     await copyToClipboard("fallback text");
-    expect(execCommand).toHaveBeenCalledWith("copy");
-  });
-
-  it("falls back to execCommand when the Clipboard API is missing", async () => {
-    setClipboard(undefined);
-    const execCommand = stubExecCommand(() => true);
-    await copyToClipboard("no api");
     expect(execCommand).toHaveBeenCalledWith("copy");
   });
 
@@ -63,15 +76,17 @@ describe("copyToClipboard", () => {
 });
 
 describe("installClipboardPolyfill", () => {
-  it("rescues direct navigator.clipboard.writeText calls via the fallback", async () => {
+  it("rescues direct navigator.clipboard.writeText calls via the plugin", async () => {
     setClipboard(async () => {
       throw new Error("Permission denied");
     });
+    pluginWriteText.mockResolvedValue(undefined);
     const execCommand = stubExecCommand(() => true);
     installClipboardPolyfill();
     // Third-party buttons (Streamdown code blocks) call this directly.
     await navigator.clipboard.writeText("code snippet");
-    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(pluginWriteText).toHaveBeenCalledWith("code snippet");
+    expect(execCommand).not.toHaveBeenCalled();
   });
 
   it("still delegates to the native API when it works", async () => {
@@ -81,6 +96,7 @@ describe("installClipboardPolyfill", () => {
     installClipboardPolyfill();
     await navigator.clipboard.writeText("native path");
     expect(native).toHaveBeenCalledWith("native path");
+    expect(pluginWriteText).not.toHaveBeenCalled();
     expect(execCommand).not.toHaveBeenCalled();
   });
 });
