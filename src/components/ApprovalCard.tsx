@@ -1,6 +1,7 @@
 import { Check, ChevronDown, ChevronUp, Copy } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { copyToClipboard } from "../lib/clipboard";
 import type { ApprovalDecision, ApprovalRisk, TurnBlock } from "../types";
 
 type ApprovalBlock = Extract<TurnBlock, { kind: "approval" }>;
@@ -112,11 +113,9 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
 
   const copySummary = useCallback(async () => {
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(block.summary);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }
+      await copyToClipboard(block.summary);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
     } catch (error) {
       console.error("[ApprovalCard] failed to copy summary", error);
     }

@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useSkills } from "../hooks/useSkills";
+import { copyToClipboard } from "../lib/clipboard";
 import { policyGlobToRegExp } from "../lib/policyGlob";
 import type { ArchivePolicy, ArchiveStats, ThemePreference } from "../types";
 import { CustomProvidersPanel } from "./CustomProvidersPanel";
@@ -451,8 +452,7 @@ ${
   }, [activeWorkspaceName, autonomy.mode, autonomy.policy.reject_patterns, matchedSkills]);
 
   const handleCopyPreamble = () => {
-    void navigator.clipboard
-      .writeText(compiledPreambleText)
+    void copyToClipboard(compiledPreambleText)
       .then(() => {
         setCopiedPreamble(true);
         setTimeout(() => setCopiedPreamble(false), 1800);

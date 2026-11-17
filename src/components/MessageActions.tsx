@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { copyToClipboard } from "../lib/clipboard";
 import type { Message } from "../types";
 
 export interface MessageActionCallbacks {
@@ -31,7 +32,7 @@ export function MessageActions({
           ?.filter((block) => block.kind === "text")
           .map((block) => block.text)
           .join("\n\n") || message.content;
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       setCopied(true);
     } catch {
       setError("Unable to copy this message. Check clipboard permissions and try again.");
