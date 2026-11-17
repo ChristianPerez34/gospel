@@ -10,7 +10,6 @@ import { useSessionShortcuts } from "../hooks/useSessionShortcuts";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useWorkspaceGitContext } from "../hooks/useWorkspaceGitContext";
 import { useWorkspaces } from "../hooks/useWorkspaces";
-import { copyToClipboard } from "../lib/clipboard";
 import { noModelCopy } from "../modelAvailabilityCopy";
 import { deriveSessionActivity, nextSessionNeedingYou } from "../sessionActivity";
 import {
@@ -661,7 +660,7 @@ export function AppShell() {
                 null,
                 2
               );
-        await copyToClipboard(clipboardPayload);
+        await navigator.clipboard.writeText(clipboardPayload);
         showSuccess(
           targets.length === 1
             ? "Archive export copied."
