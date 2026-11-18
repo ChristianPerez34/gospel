@@ -924,6 +924,95 @@ describe("useChatStream", () => {
       });
     });
 
+    it.each([
+      { label: "focused", background: false },
+      { label: "background", background: true },
+    ])("drops pending approvals while preserving tool blocks when llm-error aborts a $label run", async ({
+      background,
+    }) => {
+      const onMessagesForSession = vi.fn();
+      const sessionId = background ? "session-b" : "session-a";
+      const { result } = renderChatStream({ sessionId: "session-a", onMessagesForSession });
+      await act(async () => {});
+      await act(async () => {
+        await result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId,
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent("llm-tool-call", { runId, id: "running", name: "run_shell_command" });
+        triggerEvent("approval-requested", { ...BASE_APPROVAL_REQUEST, run_id: runId });
+        triggerEvent("llm-error", { runId, code: "RUNTIME", message: "boom" });
+      });
+
+      const update = onMessagesForSession.mock.calls.find(([id]) => id === sessionId)![1] as (
+        prev: Message[]
+      ) => Message[];
+      const blocks = update([])[0].blocks!;
+      expect(blocks.find((block) => block.id === "running")).toMatchObject({ status: "calling" });
+      expect(blocks.find((block) => block.id === "approval-1")).toBeUndefined();
+    });
+
+    it.each([
+      { label: "focused pending", background: false, approved: false },
+      { label: "focused approved", background: false, approved: true },
+      { label: "background pending", background: true, approved: false },
+      { label: "background approved", background: true, approved: true },
+    ])("settles tools and approvals when cancelling a $label run", async ({
+      background,
+      approved,
+    }) => {
+      const onMessagesForSession = vi.fn();
+      const sessionId = background ? "session-b" : "session-a";
+      const { result } = renderChatStream({ sessionId: "session-a", onMessagesForSession });
+      await act(async () => {});
+      await act(async () => {
+        await result.current.startStream({
+          provider: "openai",
+          prompt: "hi",
+          model: "gpt-4o",
+          sessionId,
+        });
+      });
+      const runId = latestCompleteStreamingRunId();
+
+      await act(async () => {
+        triggerEvent("llm-tool-call", { runId, id: "done", name: "read_file" });
+        triggerEvent("llm-tool-result", { runId, id: "done", name: "read_file", result: "ok" });
+        triggerEvent("llm-tool-call", { runId, id: "running", name: "run_shell_command" });
+        triggerEvent("approval-requested", { ...BASE_APPROVAL_REQUEST, run_id: runId });
+        if (approved) {
+          triggerEvent("approval-resolved", {
+            id: "approval-1",
+            outcome: "approved",
+            run_id: runId,
+          });
+        }
+      });
+      await act(async () => {
+        await result.current.cancelStreamForSession(sessionId);
+        triggerEvent("approval-resolved", { id: "approval-1", outcome: "denied", run_id: runId });
+      });
+
+      const update = onMessagesForSession.mock.calls.find(([id]) => id === sessionId)![1] as (
+        prev: Message[]
+      ) => Message[];
+      const blocks = update([])[0].blocks!;
+      expect(blocks.find((block) => block.id === "done")).toMatchObject({
+        status: "completed",
+        result: "ok",
+      });
+      expect(blocks.find((block) => block.id === "running")).toMatchObject({ status: "cancelled" });
+      const approval = blocks.find((block) => block.id === "approval-1");
+      if (approved) expect(approval).toMatchObject({ status: "approved" });
+      else expect(approval).toBeUndefined();
+    });
+
     it("cancelStream without an active run is a no-op", async () => {
       const onMessages = vi.fn();
       const { result } = renderChatStream({ onMessages, sessionId: "s-2" });

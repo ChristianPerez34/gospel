@@ -169,8 +169,17 @@ function joinTextBlocks(blocks: TurnBlock[]): string {
 /** Strip ephemeral reasoning blocks. Reasoning is shown live only and must
  * never reach a finalized `Message` (which is persisted, copied, or fed to
  * verification and tracing downstream). */
-function dropReasoningBlocks(blocks: TurnBlock[]): TurnBlock[] {
-  return blocks.filter((block) => block.kind !== "reasoning");
+function finalizedTurnBlocks(blocks: TurnBlock[]): TurnBlock[] {
+  return blocks.filter(
+    (block) =>
+      block.kind !== "reasoning" && (block.kind !== "approval" || block.status !== "pending")
+  );
+}
+
+function cancelledTurnBlocks(blocks: TurnBlock[]): TurnBlock[] {
+  return finalizedTurnBlocks(blocks).map((block) =>
+    block.kind === "tool" && block.status === "calling" ? { ...block, status: "cancelled" } : block
+  );
 }
 
 function hasApproval(turn: CurrentTurn | null, id: string): boolean {
@@ -677,7 +686,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 const payloadContent =
                   typeof payload === "string" ? payload : (payload?.response ?? "");
                 const rawBlocks = finalTurn?.blocks ?? [];
-                const blocks = dropReasoningBlocks(rawBlocks);
+                const blocks = finalizedTurnBlocks(rawBlocks);
                 const derivedContent = joinTextBlocks(blocks);
                 const content = payloadContent || derivedContent || "";
                 const messageId = finalTurn?.id ?? generateTurnId();
@@ -714,10 +723,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               const payloadContent =
                 typeof payload === "string" ? payload : (payload?.response ?? "");
               const rawBlocks = finalTurn?.blocks ?? [];
-              // Reasoning blocks are ephemeral: do not let them leak into
-              // the finalized message content, blocks, or anything that
-              // gets copied or persisted downstream.
-              const blocks = dropReasoningBlocks(rawBlocks);
+              // Reasoning blocks and pending approvals are ephemeral: do not
+              // let them leak into the finalized message content or blocks.
+              const blocks = finalizedTurnBlocks(rawBlocks);
               const derivedContent = joinTextBlocks(blocks);
               // Prefer the backend's authoritative response text when present;
               // otherwise fall back to streamed text blocks.
@@ -774,7 +782,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 const finalTurn = backgroundTurnsRef.current.get(sessionId);
                 const messageId = finalTurn?.id ?? generateTurnId();
                 const rawBlocks = finalTurn?.blocks ?? [];
-                const blocks = dropReasoningBlocks(rawBlocks);
+                const blocks = finalizedTurnBlocks(rawBlocks);
                 const derivedContent = joinTextBlocks(blocks);
                 if (err?.message || derivedContent || blocks.length > 0) {
                   const message: Message = {
@@ -818,7 +826,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               } = resolveCompletionSession(runId);
               const messageId = finalTurn?.id ?? generateTurnId();
               const rawBlocks = finalTurn?.blocks ?? [];
-              const blocks = dropReasoningBlocks(rawBlocks);
+              const blocks = finalizedTurnBlocks(rawBlocks);
               const derivedContent = joinTextBlocks(blocks);
 
               if (err?.message || derivedContent || blocks.length > 0) {
@@ -1295,7 +1303,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         flushPendingForSession(sid);
         const finalTurn = currentTurnRef.current;
         const rawBlocks = finalTurn?.blocks ?? [];
-        const blocks = dropReasoningBlocks(rawBlocks);
+        const blocks = cancelledTurnBlocks(rawBlocks);
         const derivedContent = joinTextBlocks(blocks);
         const messageId = finalTurn?.id ?? generateTurnId();
         const cancelContent = derivedContent ? derivedContent : "Stream cancelled by user.";
@@ -1322,7 +1330,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       flushPendingForSession(sid);
       const finalTurn = backgroundTurnsRef.current.get(sid);
       const rawBlocks = finalTurn?.blocks ?? [];
-      const blocks = dropReasoningBlocks(rawBlocks);
+      const blocks = cancelledTurnBlocks(rawBlocks);
       const derivedContent = joinTextBlocks(blocks);
       const messageId = finalTurn?.id ?? generateTurnId();
       const cancelContent = derivedContent ? derivedContent : "Stream cancelled by user.";

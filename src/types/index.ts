@@ -102,7 +102,7 @@ export interface ToolCallActivity {
   name: string;
   arguments?: unknown;
   result?: string;
-  status: "calling" | "completed";
+  status: "calling" | "completed" | "cancelled";
   subagent?: SubagentActivity;
 }
 
@@ -144,7 +144,7 @@ export type TurnBlock =
       name: string;
       arguments?: unknown;
       result?: string;
-      status: "calling" | "completed";
+      status: "calling" | "completed" | "cancelled";
       subagent?: SubagentActivity;
     }
   | {
@@ -206,7 +206,7 @@ export interface ActionCard {
   sections?: ActionCardSection[];
   rawPayload?: string;
   expanded?: boolean;
-  status?: "calling" | "completed";
+  status?: "calling" | "completed" | "cancelled" | "denied";
   /** Number of consecutive identical calls merged into this step (>= 2 when grouped). */
   groupCount?: number;
   /** Per-call cards when consecutive identical calls are grouped into one step. */
