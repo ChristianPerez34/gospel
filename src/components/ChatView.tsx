@@ -132,8 +132,13 @@ function ToolTimeline({
     () => blocks.filter((b): b is ToolTurnBlock => b.kind === "tool"),
     [blocks]
   );
+  // Resolved cards are dropped: the matching tool call already shows the
+  // command and its outcome, so keeping both reads as a duplicate.
   const approvalBlocks = useMemo(
-    () => blocks.filter((b): b is ApprovalTurnBlock => b.kind === "approval"),
+    () =>
+      blocks.filter(
+        (b): b is ApprovalTurnBlock => b.kind === "approval" && b.status === "pending"
+      ),
     [blocks]
   );
   const steps = useMemo(

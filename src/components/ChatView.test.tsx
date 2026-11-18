@@ -342,6 +342,53 @@ describe("ChatView block timeline rendering", () => {
     expect(items).toHaveLength(2);
   });
 
+  it("hides a resolved approval card while the tool call stays", () => {
+    const tool = {
+      kind: "tool" as const,
+      id: "tool-cmd",
+      name: "run_shell_command",
+      arguments: { command: "bun run test" },
+      result: "ok",
+      status: "completed" as const,
+    };
+    const approval = {
+      kind: "approval" as const,
+      id: "approval-1",
+      toolName: "run_shell_command",
+      approvalKind: "command" as const,
+      title: "Run command",
+      summary: "bun run test",
+      reason: "Mutating command",
+      risk: "mutating" as const,
+      status: "approved" as const,
+    };
+    const { container, rerender } = renderChat({
+      currentTurn: {
+        id: "turn-approval",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
+        blocks: [tool, approval],
+      },
+    });
+
+    expect(container.querySelector(".approval-card")).toBeNull();
+    expect(screen.getByTestId("tool-row-label")).not.toBeNull();
+
+    rerender(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        currentTurn={{
+          id: "turn-approval",
+          createdAt: new Date("2026-06-24T00:00:30Z"),
+          blocks: [tool, { ...approval, status: "pending" }],
+        }}
+      />
+    );
+
+    expect(container.querySelector(".approval-card")).not.toBeNull();
+  });
+
   it("renders historical text-only sessions without stale tool rows", () => {
     renderChat({
       messages: [
