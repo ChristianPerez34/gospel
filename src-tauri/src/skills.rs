@@ -108,6 +108,8 @@ pub struct RunSkillScriptOutput {
     pub exit_code: i32,
     pub truncated: bool,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -190,6 +192,7 @@ impl Tool for RunSkillScriptTool {
                     exit_code: -1,
                     truncated: false,
                     error: Some(format!("Unknown skill '{}'", args.skill)),
+                    reason: None,
                 });
             }
         };
@@ -207,6 +210,7 @@ impl Tool for RunSkillScriptTool {
                     args.skill,
                     skill.scripts.join(", ")
                 )),
+                reason: None,
             });
         }
 
@@ -218,6 +222,7 @@ impl Tool for RunSkillScriptTool {
                 exit_code: -1,
                 truncated: false,
                 error: Some("Execution denied: approval broker unavailable".to_string()),
+                reason: None,
             });
         };
 
@@ -232,6 +237,7 @@ impl Tool for RunSkillScriptTool {
                         exit_code: -1,
                         truncated: false,
                         error: Some(error),
+                        reason: None,
                     });
                 }
             };
@@ -256,6 +262,7 @@ impl Tool for RunSkillScriptTool {
                 exit_code: -1,
                 truncated: false,
                 error: Some("Execution denied by user".to_string()),
+                reason: Some("approval_denied"),
             });
         }
 
@@ -274,6 +281,7 @@ impl Tool for RunSkillScriptTool {
                 exit_code: res.exit_code,
                 truncated: res.truncated,
                 error: None,
+                reason: None,
             }),
             Err(e) => Ok(RunSkillScriptOutput {
                 success: false,
@@ -282,6 +290,7 @@ impl Tool for RunSkillScriptTool {
                 exit_code: -1,
                 truncated: false,
                 error: Some(e),
+                reason: None,
             }),
         }
     }
@@ -2006,6 +2015,10 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.error.as_deref(), Some("Execution denied by user"));
+        assert_eq!(
+            serde_json::to_value(&output).unwrap()["reason"],
+            "approval_denied"
+        );
         assert!(!marker.exists());
         assert_eq!(requests.lock().unwrap().len(), 1);
     }

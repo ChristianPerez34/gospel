@@ -39,8 +39,19 @@ interface AgentTurnBlockProps extends MessageActionCallbacks {
 type TextTurnBlock = Extract<TurnBlock, { kind: "text" }>;
 type ToolTurnBlock = Extract<TurnBlock, { kind: "tool" }>;
 type ApprovalTurnBlock = Extract<TurnBlock, { kind: "approval" }>;
+type PendingApprovalTurnBlock = ApprovalTurnBlock & { status: "pending" };
 type ReasoningTurnBlock = Extract<TurnBlock, { kind: "reasoning" }>;
 type ActivityTurnBlock = ToolTurnBlock | ApprovalTurnBlock;
+
+function isPendingApprovalBlock(block: TurnBlock): block is PendingApprovalTurnBlock {
+  return block.kind === "approval" && block.status === "pending";
+}
+
+function isRenderedTurnBlock(block: TurnBlock, isLive: boolean): boolean {
+  if (block.kind === "reasoning") return isLive;
+  if (block.kind === "approval") return isLive && isPendingApprovalBlock(block);
+  return true;
+}
 
 type TurnSegment =
   | { kind: "text"; block: TextTurnBlock }
@@ -132,16 +143,15 @@ function ToolTimeline({
     () => blocks.filter((b): b is ToolTurnBlock => b.kind === "tool"),
     [blocks]
   );
-  const approvalBlocks = useMemo(
-    () => blocks.filter((b): b is ApprovalTurnBlock => b.kind === "approval"),
-    [blocks]
-  );
+  // Resolved cards are dropped: the matching tool call already shows the
+  // action and its outcome, so keeping both reads as a duplicate.
+  const pendingApprovalBlocks = useMemo(() => blocks.filter(isPendingApprovalBlock), [blocks]);
   const steps = useMemo(
     () => toolActivitiesToTimelineSteps(toolBlocks.map(toolBlockToActivity)),
     [toolBlocks]
   );
 
-  if (steps.length === 0 && approvalBlocks.length === 0) return null;
+  if (steps.length === 0 && pendingApprovalBlocks.length === 0) return null;
 
   return (
     <div
@@ -152,7 +162,7 @@ function ToolTimeline({
         {steps.map((step) => (
           <ActivityStep card={step} key={step.id} />
         ))}
-        {approvalBlocks.map((block) => (
+        {pendingApprovalBlocks.map((block) => (
           <ApprovalCard key={block.id} block={block} onResolve={onResolveApproval} />
         ))}
       </ol>
@@ -273,19 +283,15 @@ function AgentTurnBlock({
     (message?.content
       ? [{ kind: "text" as const, id: `${turnId}-legacy-text`, text: message.content }]
       : []);
-  // Reasoning is ephemeral and must never appear in finalized agent
-  // messages. Live turns keep reasoning blocks so the user can see them
-  // stream in real time, but the moment a turn is finalized, we drop
-  // them from the displayed blocks. We also defend in depth against any
-  // historical message that somehow still contains one.
-  const blocks = currentTurn
-    ? liveBlocks
-    : liveBlocks.filter((block) => block.kind !== "reasoning");
+  const isLive = Boolean(currentTurn);
+  // Reasoning is ephemeral and approval cards are live-only prompts while
+  // pending: drop resolved approvals before segment coalescing and strip any
+  // leftover reasoning or approval blocks from finalized messages.
+  const blocks = liveBlocks.filter((block) => isRenderedTurnBlock(block, isLive));
   const visibleBlocks =
     blocks.length > 0 || !isThinking
       ? blocks
       : [{ kind: "text" as const, id: `${turnId}-thinking`, text: "Thinking..." }];
-  const isLive = Boolean(currentTurn);
   const toolBlocks = visibleBlocks.filter((block): block is ToolTurnBlock => block.kind === "tool");
   const showActions = Boolean(message && !currentTurn);
   const segments = useMemo(() => coalesceBlocks(visibleBlocks), [visibleBlocks]);

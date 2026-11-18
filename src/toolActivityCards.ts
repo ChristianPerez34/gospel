@@ -166,15 +166,43 @@ function parsedResult(activity: ToolCallActivity) {
   return parseJsonValue(activity.result);
 }
 
+function parseMcpToolName(name: string): { server: string; tool: string } | null {
+  const match = /^mcp_([a-z0-9_-]+)__(.+)$/i.exec(name);
+  if (!match) return null;
+  const [, server, rawTool] = match;
+  const tool = rawTool.replace(/_[0-9a-f]{16}$/i, "");
+  return tool ? { server, tool } : null;
+}
+
+function mcpToolTarget(
+  activity: ToolCallActivity,
+  result = resultRecord(activity)
+): string | undefined {
+  const explicitRule = displayValue(result?.rule);
+  if (explicitRule) return explicitRule;
+  const parsed = parseMcpToolName(activity.name);
+  return parsed ? `mcp://${parsed.server}/${parsed.tool}` : undefined;
+}
+
 function toolTarget(activity: ToolCallActivity): string | undefined {
   const args = parsedArguments(activity);
   const result = resultRecord(activity);
-  const candidate = args?.path ?? args?.pattern ?? args?.glob ?? args?.identifier ?? result?.path;
+  const candidate =
+    args?.path ??
+    args?.pattern ??
+    args?.glob ??
+    args?.identifier ??
+    result?.path ??
+    mcpToolTarget(activity, result);
   return displayValue(candidate);
 }
 
 function resultRecord(activity: ToolCallActivity) {
   return asRecord(parsedResult(activity));
+}
+
+function isApprovalDenied(activity: ToolCallActivity): boolean {
+  return resultRecord(activity)?.reason === "approval_denied";
 }
 
 function waitingSection(activity: ToolCallActivity): ActionCardSection[] {
@@ -187,7 +215,7 @@ function failureSection(result: Record<string, unknown> | undefined) {
 
   return [
     fieldsSection("Failure", [field("Reason", result.reason)]),
-    textSection("Message", result.message) ?? {
+    textSection("Message", result.message ?? result.error) ?? {
       type: "text" as const,
       title: "Message",
       content: "Tool returned an unsuccessful result.",
@@ -580,13 +608,20 @@ function commandCard(activity: ToolCallActivity): Partial<ActionCard> {
 }
 
 function fallbackCard(activity: ToolCallActivity): Partial<ActionCard> {
+  const result = resultRecord(activity);
+  const mcpTarget = mcpToolTarget(activity, result);
   const sections = [
+    mcpTarget ? fieldsSection("MCP tool", [field("Rule", mcpTarget)]) : undefined,
     textSection("Arguments", formatValue(activity.arguments), true),
+    ...failureSection(result),
     textSection("Result", formatValue(activity.result), true),
     ...waitingSection(activity),
-  ].filter((section): section is ActionCardSection => Boolean(section));
+  ].filter(isRenderableSection);
 
-  return { sections };
+  return {
+    ...(mcpTarget ? { detail: mcpTarget, target: mcpTarget } : {}),
+    sections,
+  };
 }
 
 function actionCardTypeForTool(name: string): ActionCardType {
@@ -626,7 +661,9 @@ export function formatToolActivityLabel(
   activity: Pick<ToolCallActivity, "name" | "status">,
   live = false
 ) {
-  const label = TOOL_LABELS[activity.name] ?? startCase(activity.name);
+  const label =
+    TOOL_LABELS[activity.name] ??
+    (parseMcpToolName(activity.name) ? "MCP tool" : startCase(activity.name));
   return live && activity.status === "calling" ? `${label}...` : label;
 }
 
@@ -686,6 +723,8 @@ export function toolActivitiesToActionCards(activities: ToolCallActivity[]): Act
   return activities.map((activity) => {
     const formatter = TOOL_CARD_FORMATTERS[activity.name] ?? fallbackCard;
     const formatted = formatter(activity);
+    const status: ActionCard["status"] =
+      activity.status === "completed" && isApprovalDenied(activity) ? "denied" : activity.status;
 
     return {
       id: activity.id,
@@ -694,7 +733,7 @@ export function toolActivitiesToActionCards(activities: ToolCallActivity[]): Act
       target: toolTarget(activity),
       rawPayload: rawPayload(activity),
       expanded: false,
-      status: activity.status,
+      status,
       ...formatted,
       subagent: activity.subagent ? subagentCardView(activity.subagent) : undefined,
     };
@@ -708,7 +747,13 @@ function groupKey(activity: ToolCallActivity, card: ActionCard): string | null {
 
 function mergeGroupedCards(cards: ActionCard[]): ActionCard {
   const first = cards[0];
-  const status = cards.some((card) => card.status === "calling") ? "calling" : "completed";
+  const status = cards.some((card) => card.status === "calling")
+    ? "calling"
+    : cards.some((card) => card.status === "denied")
+      ? "denied"
+      : cards.some((card) => card.status === "cancelled")
+        ? "cancelled"
+        : "completed";
   return {
     ...first,
     id: first.id,
