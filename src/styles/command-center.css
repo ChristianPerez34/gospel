@@ -1420,6 +1420,21 @@
   font-size: 10.5px;
 }
 
+.live-task-statusrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.live-task-age {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .live-task-new {
   display: flex;
   align-items: center;

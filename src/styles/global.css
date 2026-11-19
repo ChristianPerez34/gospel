@@ -520,22 +520,31 @@ summary,
 
 .task-rail-state {
   min-width: 0;
+  max-width: 62%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-overlay) 80%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 
 .task-rail-row.is-running .task-rail-state {
   color: var(--status-success);
+  background: color-mix(in srgb, var(--status-success) 15%, transparent);
 }
 
 .task-rail-row.is-needs-approval .task-rail-state,
 .task-rail-row.is-new-reply .task-rail-state {
   color: var(--accent-signal);
+  background: color-mix(in srgb, var(--accent-signal) 15%, transparent);
 }
 
 .task-rail-row.is-failed .task-rail-state {
   color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
 }
 
 .task-rail-meta-project {

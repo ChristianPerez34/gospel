@@ -358,9 +358,16 @@ export function LiveTaskMonitor({
                 "Unscoped"}
             </span>
             <strong>{session.title || "Untitled"}</strong>
-            <span className={`task-status is-${activity.state}`}>
-              <span className="live-dot" />
-              {ACTIVITY_LABELS[activity.state]}
+            <span className="live-task-statusrow">
+              <span className={`task-status is-${activity.state}`}>
+                <span className="live-dot" />
+                {ACTIVITY_LABELS[activity.state]}
+              </span>
+              <span className="live-task-age">
+                {activity.state === "running" && activity.runStartedAt !== undefined
+                  ? formatElapsed(Date.now() - activity.runStartedAt)
+                  : formatRelativeTime(session.timestamp, Date.now())}
+              </span>
             </span>
             <span className="live-task-preview">
               {sessionActivityPreview(session, liveTurnsBySession[session.id])
