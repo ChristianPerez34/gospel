@@ -247,6 +247,11 @@ export function ApprovalCard({ block, onResolve }: ApprovalCardProps) {
           </span>
         </div>
       )}
+      {isPending && (
+        <p className="m-0 font-mono text-caption text-text-muted">
+          Allow runs this step once and resumes the turn.
+        </p>
+      )}
     </li>
   );
 }
