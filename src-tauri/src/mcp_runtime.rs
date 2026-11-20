@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rig::message::ToolName;
-use rig::tool::{DynamicTool, RegisteredTool, ToolExecutionError};
+use rig::tool::{DynamicTool, RegisteredTool, ToolExecutionError, ToolOutput};
 use rmcp::service::{Peer, RoleClient, RunningService, ServiceExt};
 use rmcp::transport::auth::{AuthClient, AuthorizationManager, OAuthState};
 use rmcp::transport::child_process::{ConfigureCommandExt, TokioChildProcess};
@@ -417,15 +417,19 @@ fn build_session_tool(
                     let allowed = broker
                         .request(ApprovalRequest::mcp_tool(
                             registered,
-                            rule,
+                            rule.clone(),
                             reason,
                             run_id.as_deref(),
                         ))
                         .await;
                     if !allowed {
-                        return Err(ToolExecutionError::other(
-                            "The MCP tool call was denied.".to_string(),
-                        ));
+                        return Err(ToolExecutionError::other("The MCP tool call was denied.")
+                            .with_model_output(ToolOutput::json(serde_json::json!({
+                                "success": false,
+                                "reason": "approval_denied",
+                                "rule": rule,
+                                "message": "The MCP tool call was denied.",
+                            }))));
                     }
                 }
                 let arguments = match args {
@@ -852,6 +856,62 @@ mod tests {
                 }
                 assert!(runtime.connections.lock().await.is_empty());
             }
+        });
+    }
+
+    #[test]
+    fn denied_mcp_tool_returns_an_approval_denied_result() {
+        use crate::approval_broker::{ApprovalDecision, ApprovalEventEmitter, ApprovalResolution};
+        use rig::tool::ToolContext;
+        use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+
+        struct ApprovalEvents(UnboundedSender<ApprovalRequest>);
+        impl ApprovalEventEmitter for ApprovalEvents {
+            fn emit_requested(&self, request: &ApprovalRequest) {
+                let _ = self.0.send(request.clone());
+            }
+            fn emit_resolved(&self, _: &ApprovalResolution) {}
+        }
+
+        let _lock = lock_config_home();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = isolate_config_home(dir.path());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let remote = TestServer::start().await;
+            let store = AppConfigStore::in_memory_for_test().unwrap();
+            let server = enabled_server(&store, &remote.url);
+            let runtime = McpRuntime::new();
+            remote.release.notify_one();
+            runtime
+                .connect_and_report(&store, &server.id)
+                .await
+                .unwrap();
+            let peer = runtime.connections.lock().await[&server.id]
+                .service
+                .peer()
+                .clone();
+            let (send, mut requested) = unbounded_channel();
+            let broker = Arc::new(ApprovalBroker::new(Arc::new(ApprovalEvents(send))));
+            let tool = rmcp::model::Tool::new("mutate", "test", Arc::new(Default::default()));
+            let tool = RegisteredTool::from_dynamic(
+                build_session_tool(&server.id, "test", tool, peer, broker.clone(), None).unwrap(),
+            );
+            let execution = tokio::spawn(async move {
+                tool.execute("{}".to_string(), &mut ToolContext::default())
+                    .await
+            });
+            let request = tokio::time::timeout(std::time::Duration::from_secs(5), requested.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(broker.resolve(&request.id, ApprovalDecision::Deny));
+            let result = execution.await.unwrap();
+            assert!(result.is_error());
+            let summary = crate::llm::tool_result_summary(result.output().as_content());
+            let payload: serde_json::Value = serde_json::from_str(&summary).unwrap();
+            assert_eq!(payload["success"], false);
+            assert_eq!(payload["reason"], "approval_denied");
+            assert_eq!(payload["rule"], format!("mcp://{}/mutate", server.id));
         });
     }
 

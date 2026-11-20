@@ -1094,6 +1094,7 @@ export function AppShell() {
           workspaceNames={workspaceNames}
           activeWorkspaceId={activeWorkspace?.id}
           onSelect={selectTask}
+          onPrefetchSession={session.prefetchSession}
           onNewTask={newTask}
           onWorkspaceSwitch={() => {
             if (creatingTaskRef.current) return;
@@ -1138,6 +1139,7 @@ export function AppShell() {
                 liveTurnsBySession={liveTurns}
                 workspaces={workspaces}
                 onSelect={selectTask}
+                onPrefetchSession={session.prefetchSession}
                 onNewTask={newTask}
                 onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
               />
@@ -1162,7 +1164,13 @@ export function AppShell() {
                 onResolveApproval={session.resolveApproval}
                 onRetry={session.retryMessage}
                 onFork={session.forkMessage}
-                actionsDisabled={session.isStreaming || session.messageActionsPending}
+                actionsDisabled={
+                  session.isStreaming || session.messageActionsPending || session.historyLoading
+                }
+                historyLoading={session.historyLoading}
+                hasMoreHistory={session.hasMoreHistory}
+                earlierHistoryLoading={session.earlierHistoryLoading}
+                onLoadEarlier={session.loadEarlierMessages}
               />
             )}
             {!overviewOpen && session.activeSessionId && (
@@ -1183,7 +1191,10 @@ export function AppShell() {
                 onCancelStream={() => void session.cancelStream()}
                 isStreaming={session.isStreaming}
                 disabled={
-                  session.isStreaming || session.messageActionsPending || models.length === 0
+                  session.isStreaming ||
+                  session.messageActionsPending ||
+                  session.historyLoading ||
+                  models.length === 0
                 }
                 unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
                 unavailableDetail={noModels.detail}
@@ -1201,6 +1212,7 @@ export function AppShell() {
               workspaces={workspaces}
               activeSessionId={session.activeSessionId}
               onSelect={selectTask}
+              onPrefetchSession={session.prefetchSession}
               onNewTask={newTask}
               onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
             />
@@ -1220,6 +1232,7 @@ export function AppShell() {
           selectTask(s);
           closeSessionDrawer();
         }}
+        onPrefetchSession={session.prefetchSession}
         onArchiveSessions={(items) => {
           void handleArchiveSessions(items);
         }}

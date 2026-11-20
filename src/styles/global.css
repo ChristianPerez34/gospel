@@ -520,22 +520,31 @@ summary,
 
 .task-rail-state {
   min-width: 0;
+  max-width: 62%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-overlay) 80%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 
 .task-rail-row.is-running .task-rail-state {
   color: var(--status-success);
+  background: color-mix(in srgb, var(--status-success) 15%, transparent);
 }
 
 .task-rail-row.is-needs-approval .task-rail-state,
 .task-rail-row.is-new-reply .task-rail-state {
   color: var(--accent-signal);
+  background: color-mix(in srgb, var(--accent-signal) 15%, transparent);
 }
 
 .task-rail-row.is-failed .task-rail-state {
   color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
 }
 
 .task-rail-meta-project {
@@ -1047,6 +1056,32 @@ summary,
 .agent-avatar {
   background: var(--accent-action);
   border-radius: 6px;
+}
+
+.chat-earlier {
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--surface-overlay);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-earlier:hover:not(:disabled) {
+    color: var(--text-secondary);
+    border-color: var(--surface-line, var(--surface-overlay));
+  }
+}
+
+.chat-earlier:disabled {
+  cursor: default;
 }
 
 .activity-step {

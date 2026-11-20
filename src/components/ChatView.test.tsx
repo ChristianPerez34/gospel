@@ -342,6 +342,185 @@ describe("ChatView block timeline rendering", () => {
     expect(items).toHaveLength(2);
   });
 
+  it("hides a resolved approval card while the tool call shows the command and outcome", () => {
+    const tool = {
+      kind: "tool" as const,
+      id: "tool-cmd",
+      name: "run_shell_command",
+      arguments: { program: "bun", args: ["run", "test"] },
+      result: JSON.stringify({
+        success: true,
+        exit_code: 0,
+        stdout: "440 passed",
+        stderr: "",
+        truncated: false,
+      }),
+      status: "completed" as const,
+    };
+    const approval = {
+      kind: "approval" as const,
+      id: "approval-1",
+      toolName: "run_shell_command",
+      approvalKind: "command" as const,
+      title: "Allow mutating command?",
+      summary: "bun run test",
+      reason: "Mutating command",
+      risk: "mutating" as const,
+      status: "approved" as const,
+    };
+    const { container, rerender } = renderChat({
+      currentTurn: {
+        id: "turn-approval",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
+        blocks: [tool, approval],
+      },
+    });
+
+    expect(container.querySelector(".approval-card")).toBeNull();
+    expect(screen.getByRole("button", { name: "Run command bun run test Done" })).not.toBeNull();
+
+    rerender(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        currentTurn={{
+          id: "turn-approval",
+          createdAt: new Date("2026-06-24T00:00:30Z"),
+          blocks: [tool, { ...approval, status: "pending" }],
+        }}
+      />
+    );
+
+    expect(container.querySelector(".approval-card")).not.toBeNull();
+  });
+
+  it.each([
+    "denied",
+    "auto_denied",
+    "timed_out",
+  ] as const)("surfaces Denied on the collapsed tool row when an approval resolves as %s", (approvalStatus) => {
+    const { container } = renderChat({
+      currentTurn: {
+        id: `turn-${approvalStatus}`,
+        createdAt: new Date("2026-06-24T00:00:30Z"),
+        blocks: [
+          {
+            kind: "tool",
+            id: "tool-cmd",
+            name: "run_shell_command",
+            arguments: { program: "rm", args: ["-rf", "build"] },
+            result: JSON.stringify({
+              success: false,
+              exit_code: -1,
+              stdout: "",
+              stderr: "",
+              truncated: false,
+              needs_approval: true,
+              reason: "approval_denied",
+              message:
+                "Approval denied for `rm -rf build`. The user did not authorize this command.",
+            }),
+            status: "completed",
+          },
+          {
+            kind: "approval",
+            id: "approval-denied",
+            toolName: "run_shell_command",
+            approvalKind: "command",
+            title: "Allow destructive command?",
+            summary: "rm -rf build",
+            reason: "Destructive command",
+            risk: "destructive",
+            status: approvalStatus,
+          },
+        ],
+      },
+    });
+
+    expect(container.querySelector(".approval-card")).toBeNull();
+    expect(screen.getByRole("button", { name: "Run command rm -rf build Denied" })).not.toBeNull();
+    expect(screen.getByText("Denied")).not.toBeNull();
+  });
+
+  it("drops stale pending approvals from finalized messages and ignores resolved approvals before coalescing", () => {
+    const resolvedApproval = {
+      kind: "approval" as const,
+      id: "approval-resolved",
+      toolName: "run_shell_command",
+      approvalKind: "command" as const,
+      title: "Allow mutating command?",
+      summary: "bun run test",
+      reason: "Mutating command",
+      risk: "mutating" as const,
+      status: "approved" as const,
+    };
+    const { container, rerender } = renderChat({
+      isThinking: true,
+      currentTurn: {
+        id: "turn-thinking-fallback",
+        createdAt: new Date("2026-06-24T00:00:30Z"),
+        blocks: [resolvedApproval],
+      },
+    });
+
+    expect(screen.getByText("Thinking...")).not.toBeNull();
+    expect(container.querySelector(".approval-card")).toBeNull();
+    expect(screen.queryByTestId("inline-tool-activity-list")).toBeNull();
+
+    rerender(
+      <ChatView
+        messages={[
+          userMessage,
+          {
+            id: "turn-finalized-stale-approval",
+            role: "agent",
+            content: "Failed before decision.",
+            error: "Completion failed.",
+            timestamp: new Date("2026-06-24T00:01:00Z"),
+            blocks: [
+              { kind: "text", id: "t1", text: "Failed before decision." },
+              { ...resolvedApproval, id: "approval-stale-pending", status: "pending" },
+            ],
+          },
+        ]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        currentTurn={null}
+      />
+    );
+
+    expect(container.querySelector(".approval-card")).toBeNull();
+    expect(screen.queryByText("Awaiting your decision")).toBeNull();
+  });
+
+  it("shows a cancelled tool in a finalized turn", () => {
+    renderChat({
+      messages: [
+        userMessage,
+        {
+          id: "turn-cancelled",
+          role: "agent",
+          content: "Stream cancelled by user.",
+          timestamp: new Date("2026-06-24T00:01:00Z"),
+          blocks: [
+            {
+              kind: "tool",
+              id: "tool-cmd",
+              name: "run_shell_command",
+              arguments: { program: "bun", args: ["run", "test"] },
+              status: "cancelled",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: /run command.*cancelled/i })).not.toBeNull();
+    expect(screen.getByText("Cancelled")).not.toBeNull();
+    expect(screen.queryByText("Waiting for tool result...")).toBeNull();
+  });
+
   it("renders historical text-only sessions without stale tool rows", () => {
     renderChat({
       messages: [
@@ -596,5 +775,135 @@ describe("ChatView scroll following", () => {
     );
 
     expect(scrollContainer.scrollTop).toBe(1200);
+  });
+});
+
+describe("ChatView history loading", () => {
+  it("shows skeleton rows instead of the empty state while history loads", () => {
+    render(
+      <ChatView
+        messages={[]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        currentTurn={null}
+        historyLoading={true}
+      />
+    );
+
+    expect(screen.getByTestId("chat-history-skeleton")).toBeTruthy();
+    expect(screen.queryByText("What can I help you with?")).toBeNull();
+  });
+
+  it("renders an earlier-history sentinel that loads more on click", () => {
+    const onLoadEarlier = vi.fn();
+    render(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        hasMoreHistory={true}
+        onLoadEarlier={onLoadEarlier}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("chat-earlier-sentinel"));
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not count live-turn growth when anchoring an earlier page", () => {
+    const messages = [userMessage];
+    const { container, rerender } = render(
+      <ChatView
+        messages={messages}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "live",
+          createdAt: new Date(),
+          blocks: [{ kind: "text", id: "live-text", text: "start" }],
+        }}
+        hasMoreHistory={true}
+      />
+    );
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 400, scrollTop: 300 });
+    fireEvent.scroll(scrollContainer);
+    defineScrollMetrics(scrollContainer, { scrollHeight: 1300, clientHeight: 400, scrollTop: 300 });
+    rerender(
+      <ChatView
+        messages={messages}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "live",
+          createdAt: new Date(),
+          blocks: [{ kind: "text", id: "live-text", text: "more live text" }],
+        }}
+        hasMoreHistory={true}
+      />
+    );
+    const older: Message = {
+      id: "older",
+      role: "user",
+      content: "Earlier page",
+      timestamp: new Date(),
+    };
+    defineScrollMetrics(scrollContainer, { scrollHeight: 1700, clientHeight: 400, scrollTop: 300 });
+    rerender(
+      <ChatView
+        messages={[older, userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "live",
+          createdAt: new Date(),
+          blocks: [{ kind: "text", id: "live-text", text: "more live text" }],
+        }}
+        hasMoreHistory={true}
+      />
+    );
+    expect(scrollContainer.scrollTop).toBe(700);
+  });
+
+  it("anchors the viewport on the same message when earlier history prepends", () => {
+    const { container, rerender } = render(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        hasMoreHistory={true}
+      />
+    );
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1000,
+      clientHeight: 400,
+      scrollTop: 300,
+    });
+    fireEvent.scroll(scrollContainer);
+
+    const older: Message = {
+      id: "m-older",
+      role: "user",
+      content: "Earlier page",
+      timestamp: new Date("2026-06-23T00:00:00Z"),
+    };
+    // The feed grew by the prepended page's height.
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1400,
+      clientHeight: 400,
+      scrollTop: 300,
+    });
+    rerender(
+      <ChatView
+        messages={[older, userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        hasMoreHistory={false}
+      />
+    );
+
+    // scrollTop shifted by the added 400px — the same message stays in view.
+    expect(scrollContainer.scrollTop).toBe(700);
   });
 });

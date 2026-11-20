@@ -27,6 +27,8 @@ interface TaskRailProps {
   workspaceNames: Record<string, string>;
   activeWorkspaceId?: string;
   onSelect: (session: Session) => void;
+  /** Fired on hover/focus intent so a click can resolve instantly. */
+  onPrefetchSession?: (session: Session) => void;
   onNewTask: () => void;
   onOpenHistory: () => void;
   collapsed?: boolean;
@@ -67,6 +69,7 @@ export function TaskRail({
   workspaceNames,
   activeWorkspaceId,
   onSelect,
+  onPrefetchSession,
   onNewTask,
   onOpenHistory,
   collapsed = false,
@@ -154,6 +157,8 @@ export function TaskRail({
           type="button"
           className={`task-rail-row is-${activity.state}${isActive ? " is-active" : ""}${activity.needsYou ? " is-needs-you" : ""}`}
           onClick={() => onSelect(session)}
+          onPointerEnter={() => onPrefetchSession?.(session)}
+          onFocus={() => onPrefetchSession?.(session)}
           aria-current={isActive ? "true" : undefined}
           title={`${title} — ${project}${stateTitle}`}
         >

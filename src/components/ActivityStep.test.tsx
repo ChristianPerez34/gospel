@@ -164,6 +164,15 @@ describe("ActivityStep", () => {
     expect(screen.queryByText("Running")).toBeNull();
   });
 
+  it("renders a visible Denied badge and error status dot on collapsed denied steps", () => {
+    const { container } = renderStep(readFileCard("denied"));
+
+    const button = screen.getByRole("button", { name: "Read file src/lib.rs Denied" });
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByText("Denied")).not.toBeNull();
+    expect(container.querySelector(".activity-step-dot")?.className).toContain("bg-status-error");
+  });
+
   it("shows a pass count and renders each pass when steps are grouped", () => {
     renderStep(groupedReadCard());
 

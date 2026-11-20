@@ -22,6 +22,8 @@ interface CommandCenterProps {
   liveTurnsBySession: Record<string, CurrentTurn | null>;
   workspaces: Workspace[];
   onSelect: (session: Session) => void;
+  /** Fired on hover/focus intent so a click can resolve instantly. */
+  onPrefetchSession?: (session: Session) => void;
   onNewTask: () => void;
   onManageWorkspaces: () => void;
 }
@@ -34,6 +36,7 @@ export function CommandCenter({
   liveTurnsBySession,
   workspaces,
   onSelect,
+  onPrefetchSession,
   onNewTask,
   onManageWorkspaces,
 }: CommandCenterProps) {
@@ -57,6 +60,17 @@ export function CommandCenter({
     workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ??
     session.workspaceId ??
     "Unscoped";
+  const activeCards = sessions
+    .filter((session) => {
+      const state = activityFor(activityBySession, session.id).state;
+      return state === "running" || state === "needs-approval";
+    })
+    // Needs-you first, like the list below: human-blocked work leads.
+    .sort(
+      (a, b) =>
+        Number(activityFor(activityBySession, b.id).needsYou) -
+        Number(activityFor(activityBySession, a.id).needsYou)
+    );
   const query = search.trim().toLowerCase();
   const visible = sessions.filter((session) => {
     const activity = activityFor(activityBySession, session.id);
@@ -109,6 +123,55 @@ export function CommandCenter({
       </section>
 
       <section className="command-task-section" aria-label="Task overview">
+        {activeCards.length > 0 && (
+          <div className="running-cards">
+            <div className="running-cards-head">
+              <h2>Active now</h2>
+              <span>needs-you first — click a card to open full detail</span>
+            </div>
+            <div className="running-card-grid">
+              {activeCards.map((session) => {
+                const activity = activityFor(activityBySession, session.id);
+                const preview = sessionActivityPreview(session, liveTurnsBySession[session.id])
+                  .replace(/\s+/g, " ")
+                  .slice(0, 140);
+                return (
+                  <button
+                    key={session.id}
+                    type="button"
+                    className={`running-card is-${activity.state}`}
+                    onClick={() => onSelect(session)}
+                    onPointerEnter={() => onPrefetchSession?.(session)}
+                    onFocus={() => onPrefetchSession?.(session)}
+                    aria-label={`Open ${session.title || "Untitled"} in ${projectName(session)}, ${ACTIVITY_LABELS[activity.state].toLowerCase()}`}
+                  >
+                    <span className="running-card-top">
+                      <span className={`task-status is-${activity.state}`}>
+                        <span className="live-dot" />
+                        {ACTIVITY_LABELS[activity.state]}
+                      </span>
+                      <span className="running-card-age">
+                        {activity.state === "running" && activity.runStartedAt !== undefined
+                          ? formatElapsed(now - activity.runStartedAt)
+                          : formatRelativeTime(session.timestamp, now)}
+                      </span>
+                    </span>
+                    <strong>{session.title || "Untitled"}</strong>
+                    <span className="running-card-preview">{preview}</span>
+                    <span className="running-card-meta">
+                      <span>
+                        {projectName(session)} · {sessionModelLabel(session)}
+                      </span>
+                      <span aria-hidden="true">
+                        {activity.needsYou ? "Open to review ↗" : "Open ↗"}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {sessions.length > 0 && (
           <>
             <div className="command-task-toolbar">
@@ -179,6 +242,8 @@ export function CommandCenter({
                       type="button"
                       className={`command-task-row is-${activity.state}`}
                       onClick={() => onSelect(session)}
+                      onPointerEnter={() => onPrefetchSession?.(session)}
+                      onFocus={() => onPrefetchSession?.(session)}
                       aria-label={`Open ${session.title || "Untitled"} in ${projectName(session)}`}
                     >
                       <span className="command-task-content">
@@ -257,6 +322,7 @@ export function LiveTaskMonitor({
   liveTurnsBySession,
   workspaces,
   onSelect,
+  onPrefetchSession,
   onNewTask,
   onManageWorkspaces,
   activeSessionId,
@@ -291,6 +357,8 @@ export function LiveTaskMonitor({
             type="button"
             key={session.id}
             onClick={() => onSelect(session)}
+            onPointerEnter={() => onPrefetchSession?.(session)}
+            onFocus={() => onPrefetchSession?.(session)}
             className="live-task-item"
           >
             <span className="live-task-project">
@@ -300,9 +368,16 @@ export function LiveTaskMonitor({
                 "Unscoped"}
             </span>
             <strong>{session.title || "Untitled"}</strong>
-            <span className={`task-status is-${activity.state}`}>
-              <span className="live-dot" />
-              {ACTIVITY_LABELS[activity.state]}
+            <span className="live-task-statusrow">
+              <span className={`task-status is-${activity.state}`}>
+                <span className="live-dot" />
+                {ACTIVITY_LABELS[activity.state]}
+              </span>
+              <span className="live-task-age">
+                {activity.state === "running" && activity.runStartedAt !== undefined
+                  ? formatElapsed(Date.now() - activity.runStartedAt)
+                  : formatRelativeTime(session.timestamp, Date.now())}
+              </span>
             </span>
             <span className="live-task-preview">
               {sessionActivityPreview(session, liveTurnsBySession[session.id])

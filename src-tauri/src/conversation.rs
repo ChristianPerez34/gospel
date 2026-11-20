@@ -35,6 +35,12 @@ impl ConversationStore {
         Some(history)
     }
 
+    pub fn seed_history(&mut self, session_id: &str, messages: Vec<Message>) {
+        if !self.conversations.contains_key(session_id) {
+            self.store_history(session_id, messages);
+        }
+    }
+
     pub fn store_history(&mut self, session_id: &str, new_messages: Vec<Message>) {
         if !self.conversations.contains_key(session_id)
             && self.conversations.len() >= MAX_CONVERSATIONS
@@ -504,6 +510,22 @@ mod tests {
         let mut store = ConversationStore::new();
         let history = store.get_history("non-existent-session");
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn seeding_history_does_not_replace_a_newer_or_intentionally_empty_entry() {
+        let mut store = ConversationStore::new();
+        store.seed_history("fresh", vec![make_user_message("persisted")]);
+        assert_eq!(
+            store.get_history("fresh"),
+            vec![make_user_message("persisted")]
+        );
+        store.store_history("fresh", vec![make_user_message("newer")]);
+        store.seed_history("fresh", vec![make_user_message("stale")]);
+        assert_eq!(store.get_history("fresh"), vec![make_user_message("newer")]);
+        store.store_history("empty", Vec::new());
+        store.seed_history("empty", vec![make_user_message("stale")]);
+        assert_eq!(store.get_history_if_present("empty"), Some(Vec::new()));
     }
 
     #[test]

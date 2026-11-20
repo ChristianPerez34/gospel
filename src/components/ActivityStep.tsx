@@ -282,6 +282,8 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
 
   const accentClass = TYPE_ACCENT[card.type] || TYPE_ACCENT.file;
   const isRunning = card.status === "calling";
+  const isDenied = card.status === "denied";
+  const isCancelled = card.status === "cancelled";
   const groupCount = card.groupCount ?? 0;
   const subagent = card.subagent;
   const subagentStepCount = subagent?.stepCount ?? 0;
@@ -300,7 +302,9 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
   if (subagentStepCount > 0) {
     ariaLabelParts.push(`${subagentStepCount} agent ${subagentStepCount === 1 ? "step" : "steps"}`);
   }
-  ariaLabelParts.push(isRunning ? "Running" : "Done");
+  ariaLabelParts.push(
+    isRunning ? "Running" : isDenied ? "Denied" : isCancelled ? "Cancelled" : "Done"
+  );
   const ariaLabel = ariaLabelParts.join(" ");
 
   useEffect(() => {
@@ -322,7 +326,9 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
             "activity-step-dot h-2 w-2 shrink-0 rounded-full",
             isRunning
               ? "bg-accent-action animate-pulse motion-reduce:animate-none"
-              : "bg-text-muted"
+              : isDenied
+                ? "bg-status-error"
+                : "bg-text-muted"
           )}
           aria-hidden="true"
         />
@@ -347,6 +353,8 @@ export function ActivityStep({ card, className }: ActivityStepProps) {
               {card.target}
             </span>
           )}
+          {isDenied && <span className="shrink-0 text-caption text-status-error">Denied</span>}
+          {isCancelled && <span className="shrink-0 text-caption text-text-muted">Cancelled</span>}
           {groupCount > 1 && (
             <span className="shrink-0 rounded-sm bg-surface-overlay px-1 font-mono text-caption text-text-muted">
               {groupCount}×

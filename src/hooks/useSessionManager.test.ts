@@ -516,6 +516,8 @@ describe("useSessionManager", () => {
                 ],
               },
             ]),
+            transcript_start: 0,
+            transcript_total: 2,
           };
         }
 
@@ -541,7 +543,7 @@ describe("useSessionManager", () => {
       });
 
       expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
-      expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-target" });
+      expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-target", tail: 40 });
       expect(result.current.activeSessionId).toBe("s-target");
       expect(result.current.messages.map((m) => m.content)).toEqual([
         "older in other workspace",
@@ -557,6 +559,106 @@ describe("useSessionManager", () => {
         },
       ]);
       expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("waits to fetch other-workspace history and skips prefetch until the switch succeeds", async () => {
+      let finishSwitch: ((value: boolean) => void) | undefined;
+      let switched = false;
+      const onSwitchWorkspace = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSwitch = (value) => {
+              switched = value;
+              resolve(value);
+            };
+          })
+      );
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") {
+          if (!switched) throw new Error("Wrong active workspace");
+          return {
+            id: "s-other",
+            display_transcript: JSON.stringify([{ role: "user", content: "restored" }]),
+            transcript_start: 0,
+            transcript_total: 1,
+          };
+        }
+        return undefined;
+      });
+      const target = makeSession({
+        id: "s-other",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+      });
+
+      act(() => result.current.prefetchSession(target));
+      expect(invoke).not.toHaveBeenCalledWith("get_session", expect.anything());
+      act(() => {
+        void result.current.handleSessionSelect(target);
+      });
+      expect(result.current.activeSessionId).toBe("s-other");
+      expect(result.current.historyLoading).toBe(true);
+      expect(invoke).not.toHaveBeenCalledWith("get_session", expect.anything());
+      await act(async () => {
+        finishSwitch?.(true);
+      });
+      expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-other", tail: 40 });
+      expect(result.current.messages.map((message) => message.content)).toEqual(["restored"]);
+    });
+
+    it("waits for an existing switch when selecting another session in the same workspace", async () => {
+      let finishSwitch: ((value: boolean) => void) | undefined;
+      const onSwitchWorkspace = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSwitch = resolve;
+          })
+      );
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+      });
+      const first = makeSession({
+        id: "first",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      const second = makeSession({
+        id: "second",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+        cmd === "get_session"
+          ? {
+              id: "second",
+              display_transcript: JSON.stringify([{ role: "user", content: "second" }]),
+              transcript_start: 0,
+              transcript_total: 1,
+            }
+          : undefined
+      );
+
+      act(() => {
+        void result.current.handleSessionSelect(first);
+      });
+      act(() => {
+        void result.current.handleSessionSelect(second);
+      });
+      expect(invoke).not.toHaveBeenCalledWith("get_session", expect.anything());
+      await act(async () => {
+        finishSwitch?.(true);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledTimes(1);
+      expect(result.current.activeSessionId).toBe("second");
+      expect(result.current.messages.map((message) => message.content)).toEqual(["second"]);
     });
 
     it("reports an error when workspace switch fails", async () => {
@@ -587,6 +689,120 @@ describe("useSessionManager", () => {
       expect(result.current.messages).toEqual([]);
     });
 
+    it("keeps the latest selection when a prior workspace switch completes late", async () => {
+      const resolvers: Record<string, (value: boolean) => void> = {};
+      let backendWorkspace = "ws-active";
+      const onSwitchWorkspace = vi.fn(
+        (workspaceId: string) =>
+          new Promise<boolean>((resolve) => {
+            resolvers[workspaceId] = (value) => {
+              if (value) backendWorkspace = workspaceId;
+              resolve(value);
+            };
+          })
+      );
+      vi.mocked(invoke).mockImplementation(async (cmd, args) => {
+        if (cmd !== "get_session") return undefined;
+        const id = (args as { sessionId: string }).sessionId;
+        if (id === "second" && backendWorkspace !== "ws-third") throw new Error("Wrong workspace");
+        return {
+          id,
+          display_transcript: JSON.stringify([{ role: "user", content: id }]),
+          transcript_start: 0,
+          transcript_total: 1,
+        };
+      });
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+      });
+      const first = makeSession({
+        id: "first",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      const second = makeSession({
+        id: "second",
+        workspaceId: "ws-third",
+        messages: [],
+        backendCreated: true,
+      });
+      act(() => {
+        void result.current.handleSessionSelect(first);
+      });
+      act(() => {
+        void result.current.handleSessionSelect(second);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolvers["ws-other"]?.(true);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-third");
+      await act(async () => {
+        resolvers["ws-third"]?.(true);
+      });
+      expect(backendWorkspace).toBe("ws-third");
+      expect(result.current.activeSessionId).toBe("second");
+      expect(result.current.messages.map((message) => message.content)).toEqual(["second"]);
+    });
+
+    it("rechecks the pending workspace before skipping a switch", async () => {
+      let resolveFirstSwitch: ((value: boolean) => void) | undefined;
+      const onSwitchWorkspace = vi.fn().mockImplementation((targetId: string) => {
+        if (targetId === "ws-other") {
+          return new Promise<boolean>((resolve) => {
+            resolveFirstSwitch = resolve;
+          });
+        }
+        return Promise.resolve(true);
+      });
+      const onError = vi.fn();
+
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+        onError,
+      });
+
+      const sessionOther = makeSession({
+        id: "s-other",
+        title: "Other WS Session",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+
+      const sessionActive = makeSession({
+        id: "s-active",
+        title: "Active WS Session",
+        workspaceId: "ws-active",
+        messages: [],
+        backendCreated: true,
+      });
+
+      // 1. Select session in ws-other: triggers switch to ws-other (which stays pending)
+      act(() => {
+        void result.current.handleSessionSelect(sessionOther);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
+
+      // 2. Selecting ws-active while the first switch is pending queues the
+      // switch back, so an older request cannot override the newest selection.
+      act(() => {
+        void result.current.handleSessionSelect(sessionActive);
+      });
+      expect(result.current.activeSessionId).toBe("s-active");
+      expect(onSwitchWorkspace).not.toHaveBeenCalledWith("ws-active");
+
+      await act(async () => {
+        resolveFirstSwitch?.(true);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-active");
+      expect(result.current.activeSessionId).toBe("s-active");
+      expect(onError).not.toHaveBeenCalled();
+    });
+
     it("handleSessionSelect hydrates a backend-created session via get_session so the next turn continues prior history", async () => {
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
         if (cmd === "list_sessions") return [];
@@ -597,6 +813,8 @@ describe("useSessionManager", () => {
               { role: "user", content: "earlier prompt" },
               { role: "agent", content: "earlier reply" },
             ]),
+            transcript_start: 0,
+            transcript_total: 2,
           };
         }
         return undefined;
@@ -617,6 +835,7 @@ describe("useSessionManager", () => {
 
       expect(invoke).toHaveBeenCalledWith("get_session", {
         sessionId: "s-restored",
+        tail: 40,
       });
       expect(result.current.activeSessionId).toBe("s-restored");
       expect(result.current.messages.map((m) => m.content)).toEqual([
@@ -679,6 +898,317 @@ describe("useSessionManager", () => {
 
       expect(result.current.activeSessionId).toBeNull();
       expect(result.current.messages).toEqual([]);
+    });
+  });
+
+  describe("session history loading", () => {
+    const coldSession = (id: string) =>
+      makeSession({ id, title: `Session ${id}`, messages: [], backendCreated: true });
+
+    it("blocks sending until a session switch and its initial history finish loading", async () => {
+      let finishSwitch: ((value: boolean) => void) | undefined;
+      let finishPage: ((value: unknown) => void) | undefined;
+      const onSwitchWorkspace = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSwitch = resolve;
+          })
+      );
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session")
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        return undefined;
+      });
+      const target = makeSession({
+        id: "s-cold",
+        workspaceId: "other",
+        messages: [],
+        backendCreated: true,
+      });
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "current",
+        onSwitchWorkspace,
+        initialSessions: [target],
+      });
+      act(() => {
+        void result.current.handleSessionSelect(target);
+      });
+      await act(async () => {
+        await result.current.handleSend("too early");
+      });
+      expect(invoke).not.toHaveBeenCalledWith("complete_streaming", expect.anything());
+      expect(result.current.messages).toEqual([]);
+      await act(async () => {
+        finishSwitch?.(true);
+      });
+      await act(async () => {
+        await result.current.handleSend("still too early");
+      });
+      expect(invoke).not.toHaveBeenCalledWith("complete_streaming", expect.anything());
+      await act(async () => {
+        finishPage?.({
+          id: "s-cold",
+          display_transcript: "[]",
+          transcript_start: 0,
+          transcript_total: 0,
+        });
+      });
+      await act(async () => {
+        await result.current.handleSend("ready");
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({ prompt: "ready", sessionId: "s-cold" })
+      );
+    });
+
+    it("merges a background completion with the history fetched while it was running", async () => {
+      let finishPage: ((value: unknown) => void) | undefined;
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session")
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        if (cmd === "complete_streaming") return "run-active";
+        return undefined;
+      });
+      const target = makeSession({
+        id: "s-cold",
+        messages: [{ id: "prompt", role: "user", content: "new prompt", timestamp: new Date() }],
+        backendCreated: true,
+      });
+      const { result } = renderSessionManager({ initialSessions: [target] });
+      await act(async () => {
+        await result.current.handleSessionSelect(target);
+      });
+      await act(async () => {
+        await result.current.handleSend("new prompt");
+      });
+      act(() => {
+        result.current.handleNewSession();
+      });
+      const cold = { ...target, messages: [] };
+      act(() => {
+        void result.current.handleSessionSelect(cold);
+      });
+      await act(async () => {
+        triggerEvent("llm-done", { response: "new reply" });
+        finishPage?.({
+          id: "s-cold",
+          display_transcript: JSON.stringify([{ role: "user", content: "old history" }]),
+          transcript_start: 0,
+          transcript_total: 1,
+        });
+      });
+      expect(result.current.messages.map((message) => message.content)).toEqual([
+        "old history",
+        "new reply",
+      ]);
+    });
+
+    it("clears history loading when starting a new session", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") return new Promise(() => {});
+        return undefined;
+      });
+      const { result } = renderSessionManager();
+      act(() => {
+        void result.current.handleSessionSelect(coldSession("s-cold"));
+      });
+      expect(result.current.historyLoading).toBe(true);
+      act(() => result.current.handleNewSession());
+      expect(result.current.historyLoading).toBe(false);
+      await act(async () => {
+        await result.current.handleSend("start fresh");
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({ prompt: "start fresh" })
+      );
+    });
+
+    it("applies the selection immediately while the first page loads", async () => {
+      let resolveGet: ((value: unknown) => void) | undefined;
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") {
+          return new Promise((resolve) => {
+            resolveGet = resolve;
+          });
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      act(() => {
+        void result.current.handleSessionSelect(coldSession("s-cold"));
+      });
+
+      // Same frame: the selection and loading state land before the fetch.
+      expect(result.current.activeSessionId).toBe("s-cold");
+      expect(result.current.messages).toEqual([]);
+      expect(result.current.historyLoading).toBe(true);
+
+      await act(async () => {
+        resolveGet?.({
+          id: "s-cold",
+          display_transcript: JSON.stringify([{ role: "user", content: "tail" }]),
+          transcript_start: 0,
+          transcript_total: 1,
+        });
+      });
+
+      expect(result.current.historyLoading).toBe(false);
+      expect(result.current.messages.map((m) => m.content)).toEqual(["tail"]);
+      expect(result.current.hasMoreHistory).toBe(false);
+    });
+
+    it("prefetchSession warms the transcript so selecting it does not refetch", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") {
+          return {
+            id: "s-warm",
+            display_transcript: JSON.stringify([{ role: "user", content: "prefetched" }]),
+            transcript_start: 0,
+            transcript_total: 1,
+          };
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+      const target = coldSession("s-warm");
+
+      await act(async () => {
+        result.current.prefetchSession(target);
+        await Promise.resolve();
+      });
+      expect(invoke).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await result.current.handleSessionSelect(target);
+      });
+
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(result.current.messages.map((m) => m.content)).toEqual(["prefetched"]);
+      expect(result.current.historyLoading).toBe(false);
+    });
+
+    it("refreshes LRU recency in history cache so accessed entries are not prematurely evicted", async () => {
+      const getSessionCalls: string[] = [];
+      vi.mocked(invoke).mockImplementation(async (...callArgs: Parameters<typeof invoke>) => {
+        const [cmd, args] = callArgs as [string, { sessionId: string } | undefined];
+        if (cmd === "get_session" && args) {
+          getSessionCalls.push(args.sessionId);
+          return {
+            id: args.sessionId,
+            display_transcript: JSON.stringify([
+              { role: "user", content: `msg-${args.sessionId}` },
+            ]),
+            transcript_start: 0,
+            transcript_total: 1,
+          };
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      // Prefetch 25 sessions (s-0 .. s-24): fills the cache to HISTORY_CACHE_LIMIT (25)
+      for (let i = 0; i < 25; i++) {
+        await act(async () => {
+          result.current.prefetchSession(coldSession(`s-${i}`));
+          await Promise.resolve();
+        });
+      }
+      expect(getSessionCalls.length).toBe(25);
+
+      // Re-access s-0 by prefetching it again: refreshes LRU recency
+      await act(async () => {
+        result.current.prefetchSession(coldSession("s-0"));
+        await Promise.resolve();
+      });
+      expect(getSessionCalls.length).toBe(25);
+
+      // Prefetch 26th session (s-25): evicts the least recently used entry (s-1, not s-0)
+      await act(async () => {
+        result.current.prefetchSession(coldSession("s-25"));
+        await Promise.resolve();
+      });
+      expect(getSessionCalls.length).toBe(26);
+
+      // Selecting s-0 should resolve from cache without refetching
+      await act(async () => {
+        await result.current.handleSessionSelect(coldSession("s-0"));
+      });
+      expect(getSessionCalls.length).toBe(26);
+
+      // Selecting s-1 was evicted, so it must refetch
+      await act(async () => {
+        await result.current.handleSessionSelect(coldSession("s-1"));
+      });
+      expect(getSessionCalls.length).toBe(27);
+    });
+
+    it("loadEarlierMessages prepends the previous page via the before cursor", async () => {
+      vi.mocked(invoke).mockImplementation(async (...callArgs: Parameters<typeof invoke>) => {
+        const [cmd, args] = callArgs as [string, Record<string, unknown> | undefined];
+        if (cmd === "get_session") {
+          if (args?.before === 3) {
+            return {
+              id: "s-paged",
+              display_transcript: JSON.stringify([
+                { role: "user", content: "older-0" },
+                { role: "user", content: "older-1" },
+                { role: "user", content: "older-2" },
+              ]),
+              transcript_start: 0,
+              transcript_total: 6,
+            };
+          }
+          return {
+            id: "s-paged",
+            display_transcript: JSON.stringify([
+              { role: "user", content: "tail-3" },
+              { role: "agent", content: "tail-4" },
+              { role: "agent", content: "tail-5" },
+            ]),
+            transcript_start: 3,
+            transcript_total: 6,
+          };
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSessionSelect(coldSession("s-paged"));
+      });
+
+      expect(result.current.messages.map((m) => m.content)).toEqual(["tail-3", "tail-4", "tail-5"]);
+      expect(result.current.hasMoreHistory).toBe(true);
+
+      await act(async () => {
+        await result.current.loadEarlierMessages();
+      });
+
+      expect(invoke).toHaveBeenCalledWith("get_session", {
+        sessionId: "s-paged",
+        tail: 40,
+        before: 3,
+      });
+      expect(result.current.messages.map((m) => m.content)).toEqual([
+        "older-0",
+        "older-1",
+        "older-2",
+        "tail-3",
+        "tail-4",
+        "tail-5",
+      ]);
+      expect(result.current.hasMoreHistory).toBe(false);
     });
   });
 
@@ -1384,7 +1914,7 @@ describe("useSessionManager", () => {
           kind: "tool",
           id: "tool-1",
           name: "read_file",
-          status: "calling",
+          status: "cancelled",
         },
       ]);
     });
@@ -1445,6 +1975,8 @@ describe("useSessionManager", () => {
           return {
             id: "s-other",
             display_transcript: JSON.stringify([{ role: "user", content: "other workspace msg" }]),
+            transcript_start: 0,
+            transcript_total: 1,
           };
         }
         return undefined;

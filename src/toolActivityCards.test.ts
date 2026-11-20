@@ -486,6 +486,135 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(steps[1].groupCount).toBe(2);
   });
 
+  it("preserves cancellation when identical tool calls are grouped", () => {
+    const [step] = toolActivitiesToTimelineSteps([
+      { id: "done", name: "read_file", arguments: { path: "file.txt" }, status: "completed" },
+      { id: "cancelled", name: "read_file", arguments: { path: "file.txt" }, status: "cancelled" },
+    ]);
+
+    expect(step.groupCount).toBe(2);
+    expect(step.status).toBe("cancelled");
+  });
+
+  it.each([
+    {
+      name: "run_shell_command",
+      args: { program: "rm", args: ["-rf", "dist"] },
+      expectedSummary: "Run command",
+      expectedTarget: "rm -rf dist",
+      result: {
+        success: false,
+        exit_code: -1,
+        reason: "approval_denied",
+        message: "Approval denied for `rm -rf dist`.",
+      },
+      message: "Approval denied for `rm -rf dist`.",
+    },
+    {
+      name: "run_skill_script",
+      args: { skill: "demo", script: "run.sh" },
+      expectedSummary: "Skill script",
+      expectedTarget: "demo/run.sh",
+      result: { success: false, reason: "approval_denied", error: "Execution denied by user" },
+      message: "Execution denied by user",
+    },
+    {
+      name: "read_file",
+      args: { path: "/etc/hosts" },
+      expectedSummary: "Read file",
+      expectedTarget: "/etc/hosts",
+      result: {
+        success: false,
+        path: "/etc/hosts",
+        reason: "approval_denied",
+        message: "External file access was denied or timed out.",
+      },
+      message: "External file access was denied or timed out.",
+    },
+    {
+      name: "mcp_github__create_issue_0123456789abcdef",
+      args: { title: "Bug" },
+      expectedSummary: "MCP tool",
+      expectedTarget: "mcp://srv-github/create.issue",
+      result: {
+        success: false,
+        reason: "approval_denied",
+        rule: "mcp://srv-github/create.issue",
+        message: "The MCP tool call was denied.",
+      },
+      message: "The MCP tool call was denied.",
+    },
+  ])("marks $name as denied and keeps the target and denial details", ({
+    name,
+    args,
+    expectedSummary,
+    expectedTarget,
+    result,
+    message,
+  }) => {
+    const [card] = toolActivitiesToActionCards([
+      {
+        id: "denied",
+        name,
+        arguments: args,
+        result: JSON.stringify(result),
+        status: "completed",
+      },
+    ]);
+
+    expect(card.status).toBe("denied");
+    expect(card.summary).toBe(expectedSummary);
+    expect(card.target).toBe(expectedTarget);
+    expect(JSON.stringify(card.sections)).toContain("approval_denied");
+    expect(JSON.stringify(card.sections)).toContain(message);
+  });
+
+  it("does not label a guessed MCP target as an approval rule", () => {
+    const [card] = toolActivitiesToActionCards([
+      {
+        id: "mcp-ok",
+        name: "mcp_linear__update_issue_fedcba9876543210",
+        result: JSON.stringify({ ok: true }),
+        status: "completed",
+      },
+    ]);
+    expect(card.sections).toContainEqual({
+      type: "fields",
+      title: "MCP tool",
+      fields: [{ label: "Target", value: "linear/update_issue" }],
+    });
+    expect(JSON.stringify(card.sections)).not.toContain('"label":"Rule"');
+  });
+
+  it("derives a display target from hashed MCP tool names and preserves denial when grouped", () => {
+    const [step] = toolActivitiesToTimelineSteps([
+      {
+        id: "mcp-ok",
+        name: "mcp_linear__update_issue_fedcba9876543210",
+        arguments: { id: "LIN-1" },
+        result: JSON.stringify({ ok: true }),
+        status: "completed",
+      },
+      {
+        id: "mcp-denied",
+        name: "mcp_linear__update_issue_fedcba9876543210",
+        arguments: { id: "LIN-2" },
+        result: JSON.stringify({
+          success: false,
+          reason: "approval_denied",
+          rule: "mcp://server-uuid/update.issue",
+          message: "The MCP tool call was denied.",
+        }),
+        status: "completed",
+      },
+    ]);
+
+    expect(step.summary).toBe("MCP tool");
+    expect(step.target).toBe("linear/update_issue");
+    expect(step.groupCount).toBe(2);
+    expect(step.status).toBe("denied");
+  });
+
   it("quotes program paths and arguments containing quotes or backslashes", () => {
     const [card] = toolActivitiesToActionCards([
       {

@@ -1,6 +1,6 @@
 [package]
 name = "gospel"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 description = "Desktop harness for LLM-powered coding agents"
 authors = ["Christian Perez Villanueva"]
 edition = "2021"
@@ -41,6 +41,7 @@ scraper = "0.24"
 tracing = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"

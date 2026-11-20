@@ -22,8 +22,8 @@ Test the packaged app rather than the development server:
 - Confirm the documented Gatekeeper override works and the app launches.
 - Add a workspace and confirm it remains available after restarting the app.
 - Configure a provider, restart, and confirm its credential remains available in `~/.config/gospel/credentials.json`.
-- Send a prompt in read-only mode and confirm workspace tools cannot edit files.
-- Approve one harmless edit or command and deny another to exercise both approval paths.
+- In Ask mode, request a harmless mutating shell or git command and confirm it prompts for approval.
+- Approve the command, then deny another to exercise both approval paths.
 - Confirm the app reports the intended version and does not require a font or UI network request.
 
 ## Distribution Constraints

@@ -2774,13 +2774,44 @@ async fn generate_session_title(
         .map_err(|error| error.to_string())
 }
 
+/// A page of a session's Display Transcript. `transcript_start` is the index of
+/// the first returned entry within the full transcript; `transcript_total` is
+/// the full entry count. The UI requests earlier entries with `before`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionTranscriptPage {
+    pub id: String,
+    pub display_transcript: String,
+    pub transcript_start: usize,
+    pub transcript_total: usize,
+}
+
+/// Slices a Display Transcript JSON array into a `tail`-sized window ending at
+/// `before` (exclusive; defaults to the end). Returns `(page_json, start, total)`.
+fn slice_display_transcript(
+    raw: &str,
+    tail: Option<u32>,
+    before: Option<u32>,
+) -> (String, usize, usize) {
+    let entries = parse_display_transcript(raw);
+    let total = entries.len();
+    let end = before.map(|b| (b as usize).min(total)).unwrap_or(total);
+    let start = tail
+        .map(|t| end.saturating_sub(t as usize))
+        .unwrap_or(0);
+    let page =
+        serde_json::to_string(&entries[start..end]).unwrap_or_else(|_| "[]".to_string());
+    (page, start, total)
+}
+
 #[tauri::command]
 fn get_session(
     session_store: tauri::State<'_, SessionStoreState>,
     conversation_state: tauri::State<'_, ConversationState>,
     app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
-) -> Result<SessionDetail, String> {
+    tail: Option<u32>,
+    before: Option<u32>,
+) -> Result<SessionTranscriptPage, String> {
     let detail = match &session_store.store {
         Some(store) => authorized_session_detail(store, &session_id, app_config.inner())?,
         None => {
@@ -2793,25 +2824,36 @@ fn get_session(
 
     // Hydrate the in-memory conversation store with the persisted Model History
     // so a subsequent `complete_streaming` call can continue the conversation
-    // with prior turns visible to the LLM, not just the UI transcript.
-    if let Some(model_history_json) = detail.model_history.as_deref() {
-        match model_history::parse_model_history(model_history_json) {
-            Ok(messages) if !messages.is_empty() => {
-                let mut store = conversation_state.store.lock().unwrap();
-                store.store_history(&session_id, messages);
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to parse model history for session {}: {}",
-                    session_id,
-                    e
-                );
+    // with prior turns visible to the LLM, not just the UI transcript. Only the
+    // first page seeds a missing cache entry; an existing entry may already
+    // contain newer history from an in-flight turn.
+    if before.is_none() {
+        if let Some(model_history_json) = detail.model_history.as_deref() {
+            match model_history::parse_model_history(model_history_json) {
+                Ok(messages) if !messages.is_empty() => {
+                    let mut store = conversation_state.store.lock().unwrap();
+                    store.seed_history(&session_id, messages);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse model history for session {}: {}",
+                        session_id,
+                        e
+                    );
+                }
             }
         }
     }
 
-    Ok(detail)
+    let (display_transcript, transcript_start, transcript_total) =
+        slice_display_transcript(&detail.display_transcript, tail, before);
+    Ok(SessionTranscriptPage {
+        id: detail.id,
+        display_transcript,
+        transcript_start,
+        transcript_total,
+    })
 }
 
 #[tauri::command]
@@ -3785,6 +3827,7 @@ pub fn run() {
         .manage(mcp_runtime::McpRuntime::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             set_api_key,
             delete_api_key,
@@ -4286,6 +4329,44 @@ mod session_export {
             }
         ])
         .to_string()
+    }
+
+    #[test]
+    fn slice_display_transcript_returns_tail_and_earlier_pages() {
+        let raw = serde_json::json!([
+            {"role": "user", "content": "e0"},
+            {"role": "assistant", "content": "e1"},
+            {"role": "user", "content": "e2"},
+            {"role": "assistant", "content": "e3"},
+            {"role": "user", "content": "e4"},
+        ])
+        .to_string();
+
+        // First page: the last two entries.
+        let (page, start, total) = slice_display_transcript(&raw, Some(2), None);
+        assert_eq!((start, total), (3, 5));
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&page).unwrap();
+        assert_eq!(entries[0]["content"], "e3");
+        assert_eq!(entries[1]["content"], "e4");
+
+        // Earlier page: the two entries before index 3.
+        let (page, start, total) = slice_display_transcript(&raw, Some(2), Some(3));
+        assert_eq!((start, total), (1, 5));
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&page).unwrap();
+        assert_eq!(entries[0]["content"], "e1");
+        assert_eq!(entries[1]["content"], "e2");
+
+        // Tail larger than the range clamps to the start of the transcript.
+        let (page, start, _) = slice_display_transcript(&raw, Some(50), Some(1));
+        assert_eq!(start, 0);
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&page).unwrap();
+        assert_eq!(entries.len(), 1);
+
+        // No paging returns everything.
+        let (page, start, total) = slice_display_transcript(&raw, None, None);
+        assert_eq!((start, total), (0, 5));
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&page).unwrap();
+        assert_eq!(entries.len(), 5);
     }
 
     #[test]

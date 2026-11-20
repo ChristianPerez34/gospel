@@ -614,7 +614,8 @@ describe("AppShell task flow", () => {
     await within(screen.getByRole("main")).findByText("Working in the background");
     fireEvent.click(screen.getByRole("button", { name: "Gospel command center" }));
     const overview = screen.getByRole("main", { name: "Command center" });
-    expect(await within(overview).findByText("Working in the background")).toBeDefined();
+    // The running session surfaces in both the Running-now card and the task row.
+    expect(await within(overview).findAllByText("Working in the background")).toHaveLength(2);
     expect(within(within(overview).getByRole("list")).getByText("Running")).toBeDefined();
     expect(screen.queryByRole("textbox", { name: "Message input" })).toBeNull();
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "cancel_streaming")).toBe(false);

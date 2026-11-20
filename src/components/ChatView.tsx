@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { codePlugin } from "@/lib/markdown";
 import {
@@ -27,6 +27,12 @@ interface ChatViewProps extends MessageActionCallbacks {
   isThinking: boolean;
   currentTurn?: CurrentTurn | null;
   onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<void>;
+  /** First transcript page still loading; the feed shows skeleton rows. */
+  historyLoading?: boolean;
+  /** Older transcript pages exist; a top sentinel loads them on scroll-up. */
+  hasMoreHistory?: boolean;
+  earlierHistoryLoading?: boolean;
+  onLoadEarlier?: () => void;
 }
 
 interface AgentTurnBlockProps extends MessageActionCallbacks {
@@ -39,8 +45,19 @@ interface AgentTurnBlockProps extends MessageActionCallbacks {
 type TextTurnBlock = Extract<TurnBlock, { kind: "text" }>;
 type ToolTurnBlock = Extract<TurnBlock, { kind: "tool" }>;
 type ApprovalTurnBlock = Extract<TurnBlock, { kind: "approval" }>;
+type PendingApprovalTurnBlock = ApprovalTurnBlock & { status: "pending" };
 type ReasoningTurnBlock = Extract<TurnBlock, { kind: "reasoning" }>;
 type ActivityTurnBlock = ToolTurnBlock | ApprovalTurnBlock;
+
+function isPendingApprovalBlock(block: TurnBlock): block is PendingApprovalTurnBlock {
+  return block.kind === "approval" && block.status === "pending";
+}
+
+function isRenderedTurnBlock(block: TurnBlock, isLive: boolean): boolean {
+  if (block.kind === "reasoning") return isLive;
+  if (block.kind === "approval") return isLive && isPendingApprovalBlock(block);
+  return true;
+}
 
 type TurnSegment =
   | { kind: "text"; block: TextTurnBlock }
@@ -89,6 +106,69 @@ function isNearBottom(element: HTMLElement) {
   return distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
 }
 
+/** Placeholder rows matching the feed's column geometry while a session's
+ * first transcript page loads. */
+function HistorySkeleton() {
+  return (
+    <div className="flex flex-col gap-5" data-testid="chat-history-skeleton" aria-hidden="true">
+      <div className="flex items-start gap-2.5 animate-pulse motion-reduce:animate-none">
+        <span className="w-[22px] h-[22px] rounded-[6px] bg-surface-overlay shrink-0" />
+        <span className="h-3.5 mt-1 rounded-[6px] bg-surface-elevated border border-surface-overlay w-[58%]" />
+      </div>
+      <div className="flex items-start gap-2.5 animate-pulse motion-reduce:animate-none [animation-delay:0.15s]">
+        <span className="w-[22px] h-[22px] rounded-[6px] bg-surface-overlay shrink-0" />
+        <span className="h-3.5 mt-1 rounded-[6px] bg-surface-elevated border border-surface-overlay w-[42%]" />
+      </div>
+      <div className="flex items-start gap-2.5 animate-pulse motion-reduce:animate-none [animation-delay:0.3s]">
+        <span className="w-[22px] h-[22px] rounded-[6px] bg-surface-overlay shrink-0" />
+        <span className="h-3.5 mt-1 rounded-[6px] bg-surface-elevated border border-surface-overlay w-[34%]" />
+      </div>
+    </div>
+  );
+}
+
+/** Top-of-feed affordance: auto-loads earlier transcript pages as it nears
+ * the viewport, and doubles as an explicit button. */
+function EarlierHistorySentinel({
+  loading,
+  onVisible,
+}: {
+  loading?: boolean;
+  onVisible?: () => void;
+}) {
+  const sentinelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const element = sentinelRef.current;
+    if (!element || !onVisible || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) onVisible();
+      },
+      // Preload before the edge so history lands before the eye does.
+      {
+        root: element.closest<HTMLElement>(".chat-view"),
+        rootMargin: "240px 0px 0px 0px",
+      }
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [onVisible]);
+
+  return (
+    <button
+      type="button"
+      ref={sentinelRef}
+      className="chat-earlier"
+      onClick={onVisible}
+      disabled={loading}
+      data-testid="chat-earlier-sentinel"
+    >
+      {loading ? "Loading earlier messages…" : "Earlier messages"}
+    </button>
+  );
+}
+
 function ErrorBlock({ message }: { message: string }) {
   return (
     <div
@@ -132,16 +212,15 @@ function ToolTimeline({
     () => blocks.filter((b): b is ToolTurnBlock => b.kind === "tool"),
     [blocks]
   );
-  const approvalBlocks = useMemo(
-    () => blocks.filter((b): b is ApprovalTurnBlock => b.kind === "approval"),
-    [blocks]
-  );
+  // Resolved cards are dropped: the matching tool call already shows the
+  // action and its outcome, so keeping both reads as a duplicate.
+  const pendingApprovalBlocks = useMemo(() => blocks.filter(isPendingApprovalBlock), [blocks]);
   const steps = useMemo(
     () => toolActivitiesToTimelineSteps(toolBlocks.map(toolBlockToActivity)),
     [toolBlocks]
   );
 
-  if (steps.length === 0 && approvalBlocks.length === 0) return null;
+  if (steps.length === 0 && pendingApprovalBlocks.length === 0) return null;
 
   return (
     <div
@@ -152,7 +231,7 @@ function ToolTimeline({
         {steps.map((step) => (
           <ActivityStep card={step} key={step.id} />
         ))}
-        {approvalBlocks.map((block) => (
+        {pendingApprovalBlocks.map((block) => (
           <ApprovalCard key={block.id} block={block} onResolve={onResolveApproval} />
         ))}
       </ol>
@@ -273,19 +352,15 @@ function AgentTurnBlock({
     (message?.content
       ? [{ kind: "text" as const, id: `${turnId}-legacy-text`, text: message.content }]
       : []);
-  // Reasoning is ephemeral and must never appear in finalized agent
-  // messages. Live turns keep reasoning blocks so the user can see them
-  // stream in real time, but the moment a turn is finalized, we drop
-  // them from the displayed blocks. We also defend in depth against any
-  // historical message that somehow still contains one.
-  const blocks = currentTurn
-    ? liveBlocks
-    : liveBlocks.filter((block) => block.kind !== "reasoning");
+  const isLive = Boolean(currentTurn);
+  // Reasoning is ephemeral and approval cards are live-only prompts while
+  // pending: drop resolved approvals before segment coalescing and strip any
+  // leftover reasoning or approval blocks from finalized messages.
+  const blocks = liveBlocks.filter((block) => isRenderedTurnBlock(block, isLive));
   const visibleBlocks =
     blocks.length > 0 || !isThinking
       ? blocks
       : [{ kind: "text" as const, id: `${turnId}-thinking`, text: "Thinking..." }];
-  const isLive = Boolean(currentTurn);
   const toolBlocks = visibleBlocks.filter((block): block is ToolTurnBlock => block.kind === "tool");
   const showActions = Boolean(message && !currentTurn);
   const segments = useMemo(() => coalesceBlocks(visibleBlocks), [visibleBlocks]);
@@ -335,10 +410,14 @@ export function ChatView({
   onRetry,
   onFork,
   actionsDisabled,
+  historyLoading = false,
+  hasMoreHistory,
+  earlierHistoryLoading = false,
+  onLoadEarlier,
 }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const shouldFollowRef = useRef(true);
-  const isEmpty = messages.length === 0 && !currentTurn && !isThinking;
+  const isEmpty = messages.length === 0 && !currentTurn && !isThinking && !historyLoading;
   const visibleTurns = useMemo(() => {
     const turns: Array<
       | { type: "message"; message: Message }
@@ -355,10 +434,14 @@ export function ChatView({
     }
     return turns;
   }, [messages, currentTurn, isThinking]);
+  const firstMessageIdRef = useRef<string | null>(null);
+  const lastScrollHeightRef = useRef(0);
   const updateShouldFollow = useCallback(() => {
     const element = scrollContainerRef.current;
     if (!element) return;
     shouldFollowRef.current = isNearBottom(element);
+    // Keep the prepend anchor's height baseline fresh between commits.
+    lastScrollHeightRef.current = element.scrollHeight;
   }, []);
   const scrollToBottom = useCallback(() => {
     const element = scrollContainerRef.current;
@@ -377,6 +460,26 @@ export function ChatView({
   useLayoutEffect(() => {
     shouldFollowRef.current = true;
   }, [lastUserMessageId]);
+
+  // Scroll anchoring for prepends: when an earlier-history page lands above the
+  // previously first message, shift scrollTop by the added height so the viewport
+  // holds on the same message instead of jumping.
+  useLayoutEffect(() => {
+    const element = scrollContainerRef.current;
+    const firstId = messages[0]?.id ?? null;
+    const previousId = firstMessageIdRef.current;
+    if (
+      element &&
+      previousId &&
+      firstId !== previousId &&
+      messages.some((m) => m.id === previousId)
+    ) {
+      element.scrollTop += element.scrollHeight - lastScrollHeightRef.current;
+      shouldFollowRef.current = false;
+    }
+    firstMessageIdRef.current = firstId;
+    if (element) lastScrollHeightRef.current = element.scrollHeight;
+  }, [messages, visibleTurns]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: New rendered turns trigger scrolling.
   useLayoutEffect(() => {
@@ -406,6 +509,10 @@ export function ChatView({
       onScroll={updateShouldFollow}
     >
       <div className="chat-feed flex-1 flex flex-col gap-5 py-5 px-8 max-w-full">
+        {hasMoreHistory && (
+          <EarlierHistorySentinel loading={earlierHistoryLoading} onVisible={onLoadEarlier} />
+        )}
+        {historyLoading && <HistorySkeleton />}
         {visibleTurns.map((turn) => {
           if (turn.type === "currentTurn") {
             return (
