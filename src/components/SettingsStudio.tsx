@@ -717,7 +717,7 @@ ${
                 <span className="font-mono text-[10px]">v{appVersion}</span>
               )}
               <span
-                className={`inline-flex items-center gap-1.5 text-status-success font-mono text-[10px] ${isNavCollapsed ? "mx-auto" : ""}`}
+                className={`inline-flex items-center gap-1.5 text-status-success font-mono text-[10px] ${isNavCollapsed ? "mx-auto" : "ml-auto"}`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-status-success inline-block animate-pulse" />
                 {!isNavCollapsed && "Harness Live"}

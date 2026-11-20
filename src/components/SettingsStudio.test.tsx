@@ -59,6 +59,7 @@ describe("SettingsStudio app version", () => {
 
     renderStudio([], vi.fn(), "appearance");
 
+    expect(screen.getByText("Harness Live").className).toContain("ml-auto");
     expect(await screen.findByText("v0.1.0-alpha.42")).toBeTruthy();
     expect(screen.queryByText("v0.1.0-alpha.1")).toBeNull();
   });
@@ -78,6 +79,7 @@ describe("SettingsStudio app version", () => {
     );
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.queryByText("v0.1.0-alpha.1")).toBeNull();
+    expect(screen.getByText("Harness Live").className).toContain("ml-auto");
   });
 });
 
