@@ -22,6 +22,8 @@ interface CommandCenterProps {
   liveTurnsBySession: Record<string, CurrentTurn | null>;
   workspaces: Workspace[];
   onSelect: (session: Session) => void;
+  /** Fired on hover/focus intent so a click can resolve instantly. */
+  onPrefetchSession?: (session: Session) => void;
   onNewTask: () => void;
   onManageWorkspaces: () => void;
 }
@@ -34,6 +36,7 @@ export function CommandCenter({
   liveTurnsBySession,
   workspaces,
   onSelect,
+  onPrefetchSession,
   onNewTask,
   onManageWorkspaces,
 }: CommandCenterProps) {
@@ -138,6 +141,8 @@ export function CommandCenter({
                     type="button"
                     className={`running-card is-${activity.state}`}
                     onClick={() => onSelect(session)}
+                    onPointerEnter={() => onPrefetchSession?.(session)}
+                    onFocus={() => onPrefetchSession?.(session)}
                     aria-label={`Open ${session.title || "Untitled"} in ${projectName(session)}, ${ACTIVITY_LABELS[activity.state].toLowerCase()}`}
                   >
                     <span className="running-card-top">
@@ -237,6 +242,8 @@ export function CommandCenter({
                       type="button"
                       className={`command-task-row is-${activity.state}`}
                       onClick={() => onSelect(session)}
+                      onPointerEnter={() => onPrefetchSession?.(session)}
+                      onFocus={() => onPrefetchSession?.(session)}
                       aria-label={`Open ${session.title || "Untitled"} in ${projectName(session)}`}
                     >
                       <span className="command-task-content">
@@ -315,6 +322,7 @@ export function LiveTaskMonitor({
   liveTurnsBySession,
   workspaces,
   onSelect,
+  onPrefetchSession,
   onNewTask,
   onManageWorkspaces,
   activeSessionId,
@@ -349,6 +357,8 @@ export function LiveTaskMonitor({
             type="button"
             key={session.id}
             onClick={() => onSelect(session)}
+            onPointerEnter={() => onPrefetchSession?.(session)}
+            onFocus={() => onPrefetchSession?.(session)}
             className="live-task-item"
           >
             <span className="live-task-project">

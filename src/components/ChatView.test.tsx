@@ -777,3 +777,78 @@ describe("ChatView scroll following", () => {
     expect(scrollContainer.scrollTop).toBe(1200);
   });
 });
+
+describe("ChatView history loading", () => {
+  it("shows skeleton rows instead of the empty state while history loads", () => {
+    render(
+      <ChatView
+        messages={[]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        currentTurn={null}
+        historyLoading={true}
+      />
+    );
+
+    expect(screen.getByTestId("chat-history-skeleton")).toBeTruthy();
+    expect(screen.queryByText("What can I help you with?")).toBeNull();
+  });
+
+  it("renders an earlier-history sentinel that loads more on click", () => {
+    const onLoadEarlier = vi.fn();
+    render(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        hasMoreHistory={true}
+        onLoadEarlier={onLoadEarlier}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("chat-earlier-sentinel"));
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1);
+  });
+
+  it("anchors the viewport on the same message when earlier history prepends", () => {
+    const { container, rerender } = render(
+      <ChatView
+        messages={[userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        hasMoreHistory={true}
+      />
+    );
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1000,
+      clientHeight: 400,
+      scrollTop: 300,
+    });
+    fireEvent.scroll(scrollContainer);
+
+    const older: Message = {
+      id: "m-older",
+      role: "user",
+      content: "Earlier page",
+      timestamp: new Date("2026-06-23T00:00:00Z"),
+    };
+    // The feed grew by the prepended page's height.
+    defineScrollMetrics(scrollContainer, {
+      scrollHeight: 1400,
+      clientHeight: 400,
+      scrollTop: 300,
+    });
+    rerender(
+      <ChatView
+        messages={[older, userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={false}
+        hasMoreHistory={false}
+      />
+    );
+
+    // scrollTop shifted by the added 400px — the same message stays in view.
+    expect(scrollContainer.scrollTop).toBe(700);
+  });
+});

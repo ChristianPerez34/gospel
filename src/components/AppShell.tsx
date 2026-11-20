@@ -509,6 +509,20 @@ export function AppShell() {
     runStartedAtBySession: session.runStartedAtBySession,
   });
   const needsYouCount = allSessions.filter((item) => activityBySession[item.id]?.needsYou).length;
+
+  // Warm the most likely next opens so selecting them resolves instantly.
+  // Deferred past first paint; prefetchSession only targets sessions whose
+  // history is not already in memory.
+  useEffect(() => {
+    const cold = allSessions
+      .filter((item) => item.backendCreated && item.messages.length === 0)
+      .slice(0, 5);
+    if (cold.length === 0) return;
+    const timer = setTimeout(() => {
+      for (const item of cold) session.prefetchSession(item);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [allSessions, session.prefetchSession]);
   const nextNeedsYouCandidate = nextSessionNeedingYou(
     railOrderRef.current,
     activityBySession,
@@ -1094,6 +1108,7 @@ export function AppShell() {
           workspaceNames={workspaceNames}
           activeWorkspaceId={activeWorkspace?.id}
           onSelect={selectTask}
+          onPrefetchSession={session.prefetchSession}
           onNewTask={newTask}
           onWorkspaceSwitch={() => {
             if (creatingTaskRef.current) return;
@@ -1138,6 +1153,7 @@ export function AppShell() {
                 liveTurnsBySession={liveTurns}
                 workspaces={workspaces}
                 onSelect={selectTask}
+                onPrefetchSession={session.prefetchSession}
                 onNewTask={newTask}
                 onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
               />
@@ -1163,6 +1179,10 @@ export function AppShell() {
                 onRetry={session.retryMessage}
                 onFork={session.forkMessage}
                 actionsDisabled={session.isStreaming || session.messageActionsPending}
+                historyLoading={session.historyLoading}
+                hasMoreHistory={session.hasMoreHistory}
+                earlierHistoryLoading={session.earlierHistoryLoading}
+                onLoadEarlier={session.loadEarlierMessages}
               />
             )}
             {!overviewOpen && session.activeSessionId && (
@@ -1201,6 +1221,7 @@ export function AppShell() {
               workspaces={workspaces}
               activeSessionId={session.activeSessionId}
               onSelect={selectTask}
+              onPrefetchSession={session.prefetchSession}
               onNewTask={newTask}
               onManageWorkspaces={() => setWorkspaceSwitcherOpen(true)}
             />
@@ -1220,6 +1241,7 @@ export function AppShell() {
           selectTask(s);
           closeSessionDrawer();
         }}
+        onPrefetchSession={session.prefetchSession}
         onArchiveSessions={(items) => {
           void handleArchiveSessions(items);
         }}

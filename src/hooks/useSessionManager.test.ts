@@ -516,6 +516,8 @@ describe("useSessionManager", () => {
                 ],
               },
             ]),
+            transcript_start: 0,
+            transcript_total: 2,
           };
         }
 
@@ -541,7 +543,7 @@ describe("useSessionManager", () => {
       });
 
       expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
-      expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-target" });
+      expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-target", tail: 40 });
       expect(result.current.activeSessionId).toBe("s-target");
       expect(result.current.messages.map((m) => m.content)).toEqual([
         "older in other workspace",
@@ -597,6 +599,8 @@ describe("useSessionManager", () => {
               { role: "user", content: "earlier prompt" },
               { role: "agent", content: "earlier reply" },
             ]),
+            transcript_start: 0,
+            transcript_total: 2,
           };
         }
         return undefined;
@@ -617,6 +621,7 @@ describe("useSessionManager", () => {
 
       expect(invoke).toHaveBeenCalledWith("get_session", {
         sessionId: "s-restored",
+        tail: 40,
       });
       expect(result.current.activeSessionId).toBe("s-restored");
       expect(result.current.messages.map((m) => m.content)).toEqual([
@@ -679,6 +684,137 @@ describe("useSessionManager", () => {
 
       expect(result.current.activeSessionId).toBeNull();
       expect(result.current.messages).toEqual([]);
+    });
+  });
+
+  describe("session history loading", () => {
+    const coldSession = (id: string) =>
+      makeSession({ id, title: `Session ${id}`, messages: [], backendCreated: true });
+
+    it("applies the selection immediately while the first page loads", async () => {
+      let resolveGet: ((value: unknown) => void) | undefined;
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") {
+          return new Promise((resolve) => {
+            resolveGet = resolve;
+          });
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      act(() => {
+        void result.current.handleSessionSelect(coldSession("s-cold"));
+      });
+
+      // Same frame: the selection and loading state land before the fetch.
+      expect(result.current.activeSessionId).toBe("s-cold");
+      expect(result.current.messages).toEqual([]);
+      expect(result.current.historyLoading).toBe(true);
+
+      await act(async () => {
+        resolveGet?.({
+          id: "s-cold",
+          display_transcript: JSON.stringify([{ role: "user", content: "tail" }]),
+          transcript_start: 0,
+          transcript_total: 1,
+        });
+      });
+
+      expect(result.current.historyLoading).toBe(false);
+      expect(result.current.messages.map((m) => m.content)).toEqual(["tail"]);
+      expect(result.current.hasMoreHistory).toBe(false);
+    });
+
+    it("prefetchSession warms the transcript so selecting it does not refetch", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") {
+          return {
+            id: "s-warm",
+            display_transcript: JSON.stringify([{ role: "user", content: "prefetched" }]),
+            transcript_start: 0,
+            transcript_total: 1,
+          };
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+      const target = coldSession("s-warm");
+
+      await act(async () => {
+        result.current.prefetchSession(target);
+        await Promise.resolve();
+      });
+      expect(invoke).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await result.current.handleSessionSelect(target);
+      });
+
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(result.current.messages.map((m) => m.content)).toEqual(["prefetched"]);
+      expect(result.current.historyLoading).toBe(false);
+    });
+
+    it("loadEarlierMessages prepends the previous page via the before cursor", async () => {
+      vi.mocked(invoke).mockImplementation(async (...callArgs: Parameters<typeof invoke>) => {
+        const [cmd, args] = callArgs as [string, Record<string, unknown> | undefined];
+        if (cmd === "get_session") {
+          if (args?.before === 3) {
+            return {
+              id: "s-paged",
+              display_transcript: JSON.stringify([
+                { role: "user", content: "older-0" },
+                { role: "user", content: "older-1" },
+                { role: "user", content: "older-2" },
+              ]),
+              transcript_start: 0,
+              transcript_total: 6,
+            };
+          }
+          return {
+            id: "s-paged",
+            display_transcript: JSON.stringify([
+              { role: "user", content: "tail-3" },
+              { role: "agent", content: "tail-4" },
+              { role: "agent", content: "tail-5" },
+            ]),
+            transcript_start: 3,
+            transcript_total: 6,
+          };
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      await act(async () => {
+        await result.current.handleSessionSelect(coldSession("s-paged"));
+      });
+
+      expect(result.current.messages.map((m) => m.content)).toEqual(["tail-3", "tail-4", "tail-5"]);
+      expect(result.current.hasMoreHistory).toBe(true);
+
+      await act(async () => {
+        await result.current.loadEarlierMessages();
+      });
+
+      expect(invoke).toHaveBeenCalledWith("get_session", {
+        sessionId: "s-paged",
+        tail: 40,
+        before: 3,
+      });
+      expect(result.current.messages.map((m) => m.content)).toEqual([
+        "older-0",
+        "older-1",
+        "older-2",
+        "tail-3",
+        "tail-4",
+        "tail-5",
+      ]);
+      expect(result.current.hasMoreHistory).toBe(false);
     });
   });
 
@@ -1445,6 +1581,8 @@ describe("useSessionManager", () => {
           return {
             id: "s-other",
             display_transcript: JSON.stringify([{ role: "user", content: "other workspace msg" }]),
+            transcript_start: 0,
+            transcript_total: 1,
           };
         }
         return undefined;

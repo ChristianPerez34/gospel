@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { codePlugin } from "@/lib/markdown";
 import {
@@ -27,6 +27,12 @@ interface ChatViewProps extends MessageActionCallbacks {
   isThinking: boolean;
   currentTurn?: CurrentTurn | null;
   onResolveApproval?: (id: string, decision: ApprovalDecision) => Promise<void>;
+  /** First transcript page still loading; the feed shows skeleton rows. */
+  historyLoading?: boolean;
+  /** Older transcript pages exist; a top sentinel loads them on scroll-up. */
+  hasMoreHistory?: boolean;
+  earlierHistoryLoading?: boolean;
+  onLoadEarlier?: () => void;
 }
 
 interface AgentTurnBlockProps extends MessageActionCallbacks {
@@ -59,6 +65,17 @@ type TurnSegment =
   | { kind: "tools"; blocks: ActivityTurnBlock[] };
 
 const AUTO_FOLLOW_THRESHOLD_PX = 64;
+
+type VisibleTurn =
+  | { type: "message"; message: Message }
+  | { type: "currentTurn"; currentTurn: CurrentTurn }
+  | { type: "thinking" };
+
+function turnKey(turn: VisibleTurn): string {
+  if (turn.type === "message") return `m-${turn.message.id}`;
+  if (turn.type === "currentTurn") return `t-${turn.currentTurn.id}`;
+  return "thinking";
+}
 
 function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
   return {
@@ -98,6 +115,66 @@ function coalesceBlocks(blocks: TurnBlock[]): TurnSegment[] {
 function isNearBottom(element: HTMLElement) {
   const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
   return distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
+}
+
+/** Placeholder rows matching the feed's column geometry while a session's
+ * first transcript page loads. */
+function HistorySkeleton() {
+  return (
+    <div className="chat-skeleton" data-testid="chat-history-skeleton" aria-hidden="true">
+      <div className="chat-skeleton-row">
+        <span className="chat-skeleton-avatar" />
+        <span className="chat-skeleton-line is-wide" />
+      </div>
+      <div className="chat-skeleton-row">
+        <span className="chat-skeleton-avatar" />
+        <span className="chat-skeleton-line" />
+      </div>
+      <div className="chat-skeleton-row">
+        <span className="chat-skeleton-avatar" />
+        <span className="chat-skeleton-line is-medium" />
+      </div>
+    </div>
+  );
+}
+
+/** Top-of-feed affordance: auto-loads earlier transcript pages as it nears
+ * the viewport, and doubles as an explicit button. */
+function EarlierHistorySentinel({
+  loading,
+  onVisible,
+}: {
+  loading?: boolean;
+  onVisible?: () => void;
+}) {
+  const sentinelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const element = sentinelRef.current;
+    if (!element || !onVisible || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) onVisible();
+      },
+      // Preload before the edge so history lands before the eye does.
+      { rootMargin: "240px 0px 0px 0px" }
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [onVisible]);
+
+  return (
+    <button
+      type="button"
+      ref={sentinelRef}
+      className="chat-earlier"
+      onClick={onVisible}
+      disabled={loading}
+      data-testid="chat-earlier-sentinel"
+    >
+      {loading ? "Loading earlier messages…" : "Earlier messages"}
+    </button>
+  );
 }
 
 function ErrorBlock({ message }: { message: string }) {
@@ -341,10 +418,14 @@ export function ChatView({
   onRetry,
   onFork,
   actionsDisabled,
+  historyLoading = false,
+  hasMoreHistory,
+  earlierHistoryLoading = false,
+  onLoadEarlier,
 }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const shouldFollowRef = useRef(true);
-  const isEmpty = messages.length === 0 && !currentTurn && !isThinking;
+  const isEmpty = messages.length === 0 && !currentTurn && !isThinking && !historyLoading;
   const visibleTurns = useMemo(() => {
     const turns: Array<
       | { type: "message"; message: Message }
@@ -361,10 +442,14 @@ export function ChatView({
     }
     return turns;
   }, [messages, currentTurn, isThinking]);
+  const firstTurnKeyRef = useRef<string | null>(null);
+  const lastScrollHeightRef = useRef(0);
   const updateShouldFollow = useCallback(() => {
     const element = scrollContainerRef.current;
     if (!element) return;
     shouldFollowRef.current = isNearBottom(element);
+    // Keep the prepend anchor's height baseline fresh between commits.
+    lastScrollHeightRef.current = element.scrollHeight;
   }, []);
   const scrollToBottom = useCallback(() => {
     const element = scrollContainerRef.current;
@@ -383,6 +468,27 @@ export function ChatView({
   useLayoutEffect(() => {
     shouldFollowRef.current = true;
   }, [lastUserMessageId]);
+
+  // Scroll anchoring for prepends: when an earlier-history page lands above the
+  // previously first turn, shift scrollTop by the added height so the viewport
+  // holds on the same message instead of jumping. Runs before the follow
+  // effect; a prepend while at top leaves shouldFollow false anyway.
+  useLayoutEffect(() => {
+    const element = scrollContainerRef.current;
+    const firstKey = visibleTurns[0] ? turnKey(visibleTurns[0]) : null;
+    const previousKey = firstTurnKeyRef.current;
+    if (
+      element &&
+      previousKey &&
+      firstKey !== previousKey &&
+      visibleTurns.some((turn) => turnKey(turn) === previousKey)
+    ) {
+      element.scrollTop += element.scrollHeight - lastScrollHeightRef.current;
+      shouldFollowRef.current = false;
+    }
+    firstTurnKeyRef.current = firstKey;
+    if (element) lastScrollHeightRef.current = element.scrollHeight;
+  }, [visibleTurns]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: New rendered turns trigger scrolling.
   useLayoutEffect(() => {
@@ -412,6 +518,10 @@ export function ChatView({
       onScroll={updateShouldFollow}
     >
       <div className="chat-feed flex-1 flex flex-col gap-5 py-5 px-8 max-w-full">
+        {hasMoreHistory && (
+          <EarlierHistorySentinel loading={earlierHistoryLoading} onVisible={onLoadEarlier} />
+        )}
+        {historyLoading && <HistorySkeleton />}
         {visibleTurns.map((turn) => {
           if (turn.type === "currentTurn") {
             return (
