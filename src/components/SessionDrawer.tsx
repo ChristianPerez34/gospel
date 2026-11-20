@@ -9,6 +9,8 @@ interface SessionDrawerProps {
   activeSessionId?: string;
   activeWorkspaceId?: string;
   onSelect: (session: Session) => void;
+  /** Fired on hover/focus intent so a click can resolve instantly. */
+  onPrefetchSession?: (session: Session) => void;
   onNewSession: () => void;
   onClose: () => void;
   showArchived?: boolean;
@@ -68,6 +70,7 @@ export function SessionDrawer({
   activeSessionId,
   activeWorkspaceId,
   onSelect,
+  onPrefetchSession,
   onNewSession,
   onClose,
   showArchived = false,
@@ -487,6 +490,8 @@ export function SessionDrawer({
                         type="button"
                         className="session-row-main"
                         onClick={() => onSelect(session)}
+                        onPointerEnter={() => onPrefetchSession?.(session)}
+                        onFocus={() => onPrefetchSession?.(session)}
                         aria-current={isActive ? "true" : undefined}
                       >
                         {rowContent}

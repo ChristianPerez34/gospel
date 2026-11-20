@@ -1058,6 +1058,32 @@ summary,
   border-radius: 6px;
 }
 
+.chat-earlier {
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--surface-overlay);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-earlier:hover:not(:disabled) {
+    color: var(--text-secondary);
+    border-color: var(--surface-line, var(--surface-overlay));
+  }
+}
+
+.chat-earlier:disabled {
+  cursor: default;
+}
+
 .activity-step {
   position: relative;
 }

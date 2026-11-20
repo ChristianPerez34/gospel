@@ -71,6 +71,18 @@ export interface UseSessionManagerResult {
   statusBySession: Record<string, AgentStatus>;
   /** Epoch ms when each streaming session's current run started. */
   runStartedAtBySession: Record<string, number>;
+  /** The focused session's first transcript page is still loading. */
+  historyLoading: boolean;
+  /** An earlier-history page is being prepended to the focused session. */
+  earlierHistoryLoading: boolean;
+  /** Whether the focused session has older transcript pages to load.
+   * `undefined` for sessions that were never paged (drafts, local-only,
+   * sessions created in this app lifetime). */
+  hasMoreHistory: boolean | undefined;
+  loadEarlierMessages: () => Promise<void>;
+  /** Begins fetching a session's first transcript page on intent signals
+   * (hover/focus) so the eventual select resolves instantly. */
+  prefetchSession: (session: Session) => void;
   createTask: (title: string, workspaceId: string) => Promise<Session>;
   messageActionsPending: boolean;
   retryMessage: (messageId: string) => Promise<void>;
@@ -89,6 +101,47 @@ export interface UseSessionManagerResult {
 
 function isRunningStatus(status: AgentStatus): boolean {
   return status === "thinking" || status === "acting";
+}
+
+/** Transcript entries loaded per fetch; older pages prepend on scroll-up. */
+const HISTORY_PAGE_SIZE = 40;
+const HISTORY_CACHE_LIMIT = 25;
+
+interface SessionTranscriptPage {
+  id: string;
+  display_transcript: string;
+  transcript_start: number;
+  transcript_total: number;
+}
+
+function transcriptPageToMessages(
+  sessionId: string,
+  timestamp: Date,
+  page: SessionTranscriptPage
+): Message[] {
+  const transcript = JSON.parse(page.display_transcript) as Array<{
+    role: string;
+    content: string;
+    blocks?: TurnBlock[];
+  }>;
+  return transcript.map((msg, i) => {
+    const role = msg.role === "user" ? ("user" as const) : ("agent" as const);
+    // Legacy assistant entries without `blocks` synthesize a single
+    // text block from `content` so the renderer has a uniform model.
+    const blocks: TurnBlock[] | undefined =
+      msg.blocks && msg.blocks.length > 0
+        ? msg.blocks
+        : role === "agent"
+          ? [{ kind: "text", id: `text-0`, text: msg.content }]
+          : undefined;
+    return {
+      id: `m-${sessionId}-${page.transcript_start + i}-${msg.role}`,
+      role,
+      content: msg.content,
+      timestamp,
+      blocks,
+    };
+  });
 }
 
 /** A draft has no run of its own, so it must not inherit the spinner of the
@@ -124,9 +177,23 @@ export function useSessionManager({
   const [runStartedAtBySession, setRunStartedAtBySession] = useState<Record<string, number>>({});
   const statusRef = useRef(status);
   statusRef.current = status;
+  const sessionsRef = useRef(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
   const latestSelectedSessionRef = useRef<string | null>(null);
   const skipNextWorkspaceResetRef = useRef<string | null>(null);
+  const pendingWorkspaceSwitchRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [earlierHistoryLoading, setEarlierHistoryLoading] = useState(false);
+  const earlierLoadingRef = useRef(false);
+  /** In-flight/resolved first transcript pages, keyed by session. Lets hover
+   * prefetch feed the same promise a later click awaits. */
+  const historyCacheRef = useRef(new Map<string, Promise<SessionTranscriptPage>>());
+  const [historyCursors, setHistoryCursors] = useState<Record<string, number>>({});
+  const historyCursorsRef = useRef(historyCursors);
+  historyCursorsRef.current = historyCursors;
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
 
@@ -142,6 +209,16 @@ export function useSessionManager({
     if (!workspaceChanged) return;
 
     prevWorkspaceRef.current = activeWorkspaceId;
+
+    // If another workspace switch initiated by session selection is still in flight
+    // towards a different target, do not reset the view — wait until the final target lands.
+    if (
+      pendingWorkspaceSwitchRef.current &&
+      pendingWorkspaceSwitchRef.current !== activeWorkspaceId
+    ) {
+      return;
+    }
+
     if (
       skipNextWorkspaceResetRef.current &&
       skipNextWorkspaceResetRef.current === activeWorkspaceId
@@ -192,6 +269,9 @@ export function useSessionManager({
         return;
       }
       setUnreadSessionIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
+      // A prefetched transcript may now be missing this turn; the appended
+      // messages are newer than any cached page.
+      historyCacheRef.current.delete(sessionId);
       onSessionsChange((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -489,107 +569,197 @@ export function useSessionManager({
     ]
   );
 
+  /** Fetches (or reuses a prefetched) first transcript page. Records history
+   * metadata so "load earlier" knows whether more pages exist. */
+  const requestFirstPage = useCallback((session: Session) => {
+    const cached = historyCacheRef.current.get(session.id);
+    if (cached) {
+      // Re-insert to refresh recency for LRU eviction
+      historyCacheRef.current.delete(session.id);
+      historyCacheRef.current.set(session.id, cached);
+      return cached;
+    }
+    const pending = invoke<SessionTranscriptPage>("get_session", {
+      sessionId: session.id,
+      tail: HISTORY_PAGE_SIZE,
+    })
+      .then((page) => {
+        if (!page) return page;
+        setHistoryCursors((prev) =>
+          prev[session.id] !== undefined ? prev : { ...prev, [session.id]: page.transcript_start }
+        );
+        return page;
+      })
+      .catch((error) => {
+        historyCacheRef.current.delete(session.id);
+        throw error;
+      });
+    const cache = historyCacheRef.current;
+    cache.set(session.id, pending);
+    // Bound the cache; Map iteration order is insertion order.
+    while (cache.size > HISTORY_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+    return pending;
+  }, []);
+
+  const prefetchSession = useCallback(
+    (session: Session) => {
+      if (!session.backendCreated || session.messages.length > 0) return;
+      void requestFirstPage(session).catch(() => {});
+    },
+    [requestFirstPage]
+  );
+
+  const loadEarlierMessages = useCallback(async () => {
+    const sessionId = activeSessionIdRef.current;
+    if (!sessionId || earlierLoadingRef.current) return;
+    const nextBefore = historyCursorsRef.current[sessionId];
+    if (nextBefore === undefined || nextBefore <= 0) return;
+    earlierLoadingRef.current = true;
+    setEarlierHistoryLoading(true);
+    try {
+      const page = await invoke<SessionTranscriptPage>("get_session", {
+        sessionId,
+        tail: HISTORY_PAGE_SIZE,
+        before: nextBefore,
+      });
+      const timestamp =
+        sessionsRef.current.find((item) => item.id === sessionId)?.timestamp ?? new Date();
+      const older = transcriptPageToMessages(sessionId, new Date(timestamp), page);
+      const prepend = (prev: Message[]) => {
+        const known = new Set(prev.map((m) => m.id));
+        return [...older.filter((m) => !known.has(m.id)), ...prev];
+      };
+      if (activeSessionIdRef.current === sessionId) setMessages(prepend);
+      onSessionsChange((prev) =>
+        prev.map((item) =>
+          item.id === sessionId ? { ...item, messages: prepend(item.messages) } : item
+        )
+      );
+      setHistoryCursors((prev) => ({ ...prev, [sessionId]: page.transcript_start }));
+    } catch (e) {
+      onError?.(`Unable to load earlier messages: ${e}`);
+    } finally {
+      earlierLoadingRef.current = false;
+      setEarlierHistoryLoading(false);
+    }
+  }, [onError, onSessionsChange]);
+
   const handleSessionSelect = useCallback(
     async (session: Session) => {
       const selectionId = session.id;
       latestSelectedSessionRef.current = selectionId;
+      const previousSessionId = activeSessionIdRef.current;
+
+      // Selection applies in the same frame: the rail highlight and the chat
+      // pane respond before any history loads.
+      setActiveSessionId(selectionId);
+      activeSessionIdRef.current = selectionId;
+      setUnreadSessionIds((prev) => prev.filter((id) => id !== selectionId));
+      setMessages(session.messages);
+      // Restore that task's last known status so running tasks show live
+      // while viewed and idle tasks do not inherit the previous spinner.
+      // The live turn itself is restored by the stream hook's focus switch.
+      setStatus((current) => {
+        const known = statusBySession[selectionId];
+        if (known) return known;
+        // If the previous view was streaming but this task has no known
+        // status, fall back to connected/idle instead of the stale spinner.
+        if (current === "thinking" || current === "acting") return "connected";
+        return current;
+      });
+
+      const currentWorkspace = pendingWorkspaceSwitchRef.current ?? activeWorkspaceId;
+      const needsWorkspaceSwitch = Boolean(
+        onSwitchWorkspace && session.workspaceId && session.workspaceId !== currentWorkspace
+      );
+      const needsTranscript = Boolean(session.backendCreated && session.messages.length === 0);
+      setHistoryLoading(needsTranscript);
+      // The transcript fetch starts alongside the workspace switch — they are
+      // independent, so neither should wait on the other.
+      const transcriptPromise = needsTranscript ? requestFirstPage(session) : null;
 
       try {
-        const selectedSession = session;
-
-        if (
-          onSwitchWorkspace &&
-          selectedSession.workspaceId &&
-          selectedSession.workspaceId !== activeWorkspaceId
-        ) {
-          skipNextWorkspaceResetRef.current = selectedSession.workspaceId;
-          const switched = await onSwitchWorkspace(selectedSession.workspaceId);
+        if (needsWorkspaceSwitch && onSwitchWorkspace && session.workspaceId) {
+          pendingWorkspaceSwitchRef.current = session.workspaceId;
+          skipNextWorkspaceResetRef.current = session.workspaceId;
+          let switched = false;
+          try {
+            switched = await onSwitchWorkspace(session.workspaceId);
+          } finally {
+            if (pendingWorkspaceSwitchRef.current === session.workspaceId) {
+              pendingWorkspaceSwitchRef.current = null;
+            }
+          }
           if (!switched) {
             skipNextWorkspaceResetRef.current = null;
+            if (latestSelectedSessionRef.current !== selectionId) return;
+            // Roll back the optimistic selection.
+            const previous = sessionsRef.current.find((item) => item.id === previousSessionId);
+            setActiveSessionId(previousSessionId);
+            activeSessionIdRef.current = previousSessionId;
+            setMessages(previous?.messages ?? []);
+            setHistoryLoading(false);
             onError?.("Unable to switch workspace for this session.");
             return;
           }
         }
 
-        // If session was backend-created and has no local messages, load from backend
-        if (selectedSession.backendCreated && selectedSession.messages.length === 0) {
-          try {
-            const detail = await invoke<{
-              id: string;
-              display_transcript: string;
-            }>("get_session", { sessionId: selectedSession.id });
-
-            if (latestSelectedSessionRef.current !== selectionId) return;
-
-            setUnreadSessionIds((prev) => prev.filter((id) => id !== selectedSession.id));
-            const transcript = JSON.parse(detail.display_transcript) as Array<{
-              role: string;
-              content: string;
-              blocks?: TurnBlock[];
-            }>;
-            const loadedMessages: Message[] = transcript.map((msg, i) => {
-              const role = msg.role === "user" ? ("user" as const) : ("agent" as const);
-              // Legacy assistant entries without `blocks` synthesize a single
-              // text block from `content` so the renderer has a uniform model.
-              const blocks: TurnBlock[] | undefined =
-                msg.blocks && msg.blocks.length > 0
-                  ? msg.blocks
-                  : role === "agent"
-                    ? [{ kind: "text", id: `text-0`, text: msg.content }]
-                    : undefined;
-              return {
-                id: `m-${selectedSession.id}-${i}-${msg.role}`,
-                role,
-                content: msg.content,
-                timestamp: new Date(selectedSession.timestamp),
-                blocks,
-              };
-            });
-
-            setActiveSessionId(selectedSession.id);
-            activeSessionIdRef.current = selectedSession.id;
-            setMessages(loadedMessages);
-            const knownLoaded = statusBySession[selectedSession.id];
-            if (knownLoaded) setStatus(knownLoaded);
-            onSessionsChange((prev) => {
-              const updated = {
-                ...selectedSession,
-                messages: loadedMessages,
-              };
-              if (!prev.some((s) => s.id === selectedSession.id)) {
-                return [updated, ...prev];
-              }
-              return prev.map((s) => (s.id === selectedSession.id ? updated : s));
-            });
-            return;
-          } catch (e) {
-            if (latestSelectedSessionRef.current !== selectionId) return;
-            console.warn("Failed to load session detail from backend:", e);
-          }
+        if (!transcriptPromise) {
+          if (latestSelectedSessionRef.current === selectionId) setHistoryLoading(false);
+          return;
         }
 
-        if (latestSelectedSessionRef.current !== selectionId) return;
-        setUnreadSessionIds((prev) => prev.filter((id) => id !== selectedSession.id));
-        setActiveSessionId(selectedSession.id);
-        activeSessionIdRef.current = selectedSession.id;
-        setMessages(selectedSession.messages);
-        // Restore that task's last known status so running tasks show live
-        // while viewed and idle tasks do not inherit the previous spinner.
-        // The live turn itself is restored by the stream hook's focus switch.
-        setStatus((current) => {
-          const known = statusBySession[selectedSession.id];
-          if (known) return known;
-          // If the previous view was streaming but this task has no known
-          // status, fall back to connected/idle instead of the stale spinner.
-          if (current === "thinking" || current === "acting") return "connected";
-          return current;
-        });
+        try {
+          const page = await transcriptPromise;
+          if (latestSelectedSessionRef.current !== selectionId || !page) return;
+          const loadedMessages = transcriptPageToMessages(
+            selectionId,
+            new Date(session.timestamp),
+            page
+          );
+          // A background turn may have finished while the page was in flight;
+          // streamed-in messages are newer than the fetched snapshot.
+          const freshest = sessionsRef.current.find((item) => item.id === selectionId);
+          const finalMessages =
+            freshest && freshest.messages.length > 0 ? freshest.messages : loadedMessages;
+          setMessages(finalMessages);
+          onSessionsChange((prev) => {
+            if (!prev.some((item) => item.id === selectionId)) {
+              return [{ ...session, messages: finalMessages }, ...prev];
+            }
+            return prev.map((item) =>
+              item.id === selectionId
+                ? {
+                    ...item,
+                    messages: item.messages.length > 0 ? item.messages : loadedMessages,
+                  }
+                : item
+            );
+          });
+        } catch (e) {
+          if (latestSelectedSessionRef.current !== selectionId) return;
+          console.warn("Failed to load session detail from backend:", e);
+        } finally {
+          if (latestSelectedSessionRef.current === selectionId) setHistoryLoading(false);
+        }
       } catch (e) {
         if (latestSelectedSessionRef.current !== selectionId) return;
+        setHistoryLoading(false);
         onError?.(`Unable to open session: ${e}`);
       }
     },
-    [activeWorkspaceId, onError, onSessionsChange, onSwitchWorkspace, statusBySession]
+    [
+      activeWorkspaceId,
+      onError,
+      onSessionsChange,
+      onSwitchWorkspace,
+      requestFirstPage,
+      statusBySession,
+    ]
   );
 
   const runMessageAction = useCallback(
@@ -770,15 +940,22 @@ export function useSessionManager({
       if (!selectedModel || !selectedModelAvailable) {
         throw new Error("Select an available model before creating a task.");
       }
-      if (workspaceId !== activeWorkspaceId) {
+      const currentWorkspace = pendingWorkspaceSwitchRef.current ?? activeWorkspaceId;
+      if (workspaceId !== currentWorkspace) {
         if (!onSwitchWorkspace) throw new Error("Unable to switch to the selected workspace.");
+        pendingWorkspaceSwitchRef.current = workspaceId;
         skipNextWorkspaceResetRef.current = workspaceId;
+        let switched = false;
         try {
-          if (!(await onSwitchWorkspace(workspaceId)))
-            throw new Error("Unable to switch to the selected workspace.");
-        } catch (error) {
+          switched = await onSwitchWorkspace(workspaceId);
+        } finally {
+          if (pendingWorkspaceSwitchRef.current === workspaceId) {
+            pendingWorkspaceSwitchRef.current = null;
+          }
+        }
+        if (!switched) {
           skipNextWorkspaceResetRef.current = null;
-          throw error;
+          throw new Error("Unable to switch to the selected workspace.");
         }
       }
       const record = await invoke<{ id: string }>("create_session", {
@@ -821,6 +998,9 @@ export function useSessionManager({
     ]
   );
 
+  const cursor = activeSessionId ? historyCursors[activeSessionId] : undefined;
+  const hasMoreHistory = cursor !== undefined ? cursor > 0 : undefined;
+
   return {
     sessions,
     activeSessionId,
@@ -834,6 +1014,11 @@ export function useSessionManager({
     liveTurnsBySession,
     statusBySession,
     runStartedAtBySession,
+    historyLoading,
+    earlierHistoryLoading,
+    hasMoreHistory,
+    loadEarlierMessages,
+    prefetchSession,
     createTask,
     messageActionsPending,
     retryMessage,
