@@ -561,6 +561,106 @@ describe("useSessionManager", () => {
       expect(onError).not.toHaveBeenCalled();
     });
 
+    it("waits to fetch other-workspace history and skips prefetch until the switch succeeds", async () => {
+      let finishSwitch: ((value: boolean) => void) | undefined;
+      let switched = false;
+      const onSwitchWorkspace = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSwitch = (value) => {
+              switched = value;
+              resolve(value);
+            };
+          })
+      );
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") {
+          if (!switched) throw new Error("Wrong active workspace");
+          return {
+            id: "s-other",
+            display_transcript: JSON.stringify([{ role: "user", content: "restored" }]),
+            transcript_start: 0,
+            transcript_total: 1,
+          };
+        }
+        return undefined;
+      });
+      const target = makeSession({
+        id: "s-other",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+      });
+
+      act(() => result.current.prefetchSession(target));
+      expect(invoke).not.toHaveBeenCalledWith("get_session", expect.anything());
+      act(() => {
+        void result.current.handleSessionSelect(target);
+      });
+      expect(result.current.activeSessionId).toBe("s-other");
+      expect(result.current.historyLoading).toBe(true);
+      expect(invoke).not.toHaveBeenCalledWith("get_session", expect.anything());
+      await act(async () => {
+        finishSwitch?.(true);
+      });
+      expect(invoke).toHaveBeenCalledWith("get_session", { sessionId: "s-other", tail: 40 });
+      expect(result.current.messages.map((message) => message.content)).toEqual(["restored"]);
+    });
+
+    it("waits for an existing switch when selecting another session in the same workspace", async () => {
+      let finishSwitch: ((value: boolean) => void) | undefined;
+      const onSwitchWorkspace = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSwitch = resolve;
+          })
+      );
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+      });
+      const first = makeSession({
+        id: "first",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      const second = makeSession({
+        id: "second",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+        cmd === "get_session"
+          ? {
+              id: "second",
+              display_transcript: JSON.stringify([{ role: "user", content: "second" }]),
+              transcript_start: 0,
+              transcript_total: 1,
+            }
+          : undefined
+      );
+
+      act(() => {
+        void result.current.handleSessionSelect(first);
+      });
+      act(() => {
+        void result.current.handleSessionSelect(second);
+      });
+      expect(invoke).not.toHaveBeenCalledWith("get_session", expect.anything());
+      await act(async () => {
+        finishSwitch?.(true);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledTimes(1);
+      expect(result.current.activeSessionId).toBe("second");
+      expect(result.current.messages.map((message) => message.content)).toEqual(["second"]);
+    });
+
     it("reports an error when workspace switch fails", async () => {
       const onSwitchWorkspace = vi.fn().mockResolvedValue(false);
       const onError = vi.fn();
@@ -587,6 +687,64 @@ describe("useSessionManager", () => {
       expect(onError).toHaveBeenCalledWith("Unable to switch workspace for this session.");
       expect(result.current.activeSessionId).toBeNull();
       expect(result.current.messages).toEqual([]);
+    });
+
+    it("keeps the latest selection when a prior workspace switch completes late", async () => {
+      const resolvers: Record<string, (value: boolean) => void> = {};
+      let backendWorkspace = "ws-active";
+      const onSwitchWorkspace = vi.fn(
+        (workspaceId: string) =>
+          new Promise<boolean>((resolve) => {
+            resolvers[workspaceId] = (value) => {
+              if (value) backendWorkspace = workspaceId;
+              resolve(value);
+            };
+          })
+      );
+      vi.mocked(invoke).mockImplementation(async (cmd, args) => {
+        if (cmd !== "get_session") return undefined;
+        const id = (args as { sessionId: string }).sessionId;
+        if (id === "second" && backendWorkspace !== "ws-third") throw new Error("Wrong workspace");
+        return {
+          id,
+          display_transcript: JSON.stringify([{ role: "user", content: id }]),
+          transcript_start: 0,
+          transcript_total: 1,
+        };
+      });
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+      });
+      const first = makeSession({
+        id: "first",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+      const second = makeSession({
+        id: "second",
+        workspaceId: "ws-third",
+        messages: [],
+        backendCreated: true,
+      });
+      act(() => {
+        void result.current.handleSessionSelect(first);
+      });
+      act(() => {
+        void result.current.handleSessionSelect(second);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolvers["ws-other"]?.(true);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-third");
+      await act(async () => {
+        resolvers["ws-third"]?.(true);
+      });
+      expect(backendWorkspace).toBe("ws-third");
+      expect(result.current.activeSessionId).toBe("second");
+      expect(result.current.messages.map((message) => message.content)).toEqual(["second"]);
     });
 
     it("rechecks the pending workspace before skipping a switch", async () => {
@@ -629,20 +787,18 @@ describe("useSessionManager", () => {
       });
       expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
 
-      // 2. While switch to ws-other is in flight, select session in ws-active:
-      // Because pending target is ws-other, it must trigger switch back to ws-active!
-      await act(async () => {
-        await result.current.handleSessionSelect(sessionActive);
+      // 2. Selecting ws-active while the first switch is pending queues the
+      // switch back, so an older request cannot override the newest selection.
+      act(() => {
+        void result.current.handleSessionSelect(sessionActive);
       });
-
-      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-active");
       expect(result.current.activeSessionId).toBe("s-active");
+      expect(onSwitchWorkspace).not.toHaveBeenCalledWith("ws-active");
 
-      // 3. Resolve the first switch
       await act(async () => {
         resolveFirstSwitch?.(true);
       });
-
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-active");
       expect(result.current.activeSessionId).toBe("s-active");
       expect(onError).not.toHaveBeenCalled();
     });

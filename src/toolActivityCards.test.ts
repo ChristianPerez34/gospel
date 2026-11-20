@@ -569,7 +569,24 @@ describe("toolActivitiesToActionCards review tools", () => {
     expect(JSON.stringify(card.sections)).toContain(message);
   });
 
-  it("derives an mcp:// target from hashed MCP tool names and preserves denial when grouped", () => {
+  it("does not label a guessed MCP target as an approval rule", () => {
+    const [card] = toolActivitiesToActionCards([
+      {
+        id: "mcp-ok",
+        name: "mcp_linear__update_issue_fedcba9876543210",
+        result: JSON.stringify({ ok: true }),
+        status: "completed",
+      },
+    ]);
+    expect(card.sections).toContainEqual({
+      type: "fields",
+      title: "MCP tool",
+      fields: [{ label: "Target", value: "linear/update_issue" }],
+    });
+    expect(JSON.stringify(card.sections)).not.toContain('"label":"Rule"');
+  });
+
+  it("derives a display target from hashed MCP tool names and preserves denial when grouped", () => {
     const [step] = toolActivitiesToTimelineSteps([
       {
         id: "mcp-ok",
@@ -592,7 +609,7 @@ describe("toolActivitiesToActionCards review tools", () => {
     ]);
 
     expect(step.summary).toBe("MCP tool");
-    expect(step.target).toBe("mcp://linear/update_issue");
+    expect(step.target).toBe("linear/update_issue");
     expect(step.groupCount).toBe(2);
     expect(step.status).toBe("denied");
   });

@@ -181,7 +181,7 @@ function mcpToolTarget(
   const explicitRule = displayValue(result?.rule);
   if (explicitRule) return explicitRule;
   const parsed = parseMcpToolName(activity.name);
-  return parsed ? `mcp://${parsed.server}/${parsed.tool}` : undefined;
+  return parsed ? `${parsed.server}/${parsed.tool}` : undefined;
 }
 
 function toolTarget(activity: ToolCallActivity): string | undefined {
@@ -611,7 +611,9 @@ function fallbackCard(activity: ToolCallActivity): Partial<ActionCard> {
   const result = resultRecord(activity);
   const mcpTarget = mcpToolTarget(activity, result);
   const sections = [
-    mcpTarget ? fieldsSection("MCP tool", [field("Rule", mcpTarget)]) : undefined,
+    mcpTarget
+      ? fieldsSection("MCP tool", [field(result?.rule ? "Rule" : "Target", mcpTarget)])
+      : undefined,
     textSection("Arguments", formatValue(activity.arguments), true),
     ...failureSection(result),
     textSection("Result", formatValue(activity.result), true),

@@ -1,6 +1,6 @@
 [package]
 name = "gospel"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 description = "Desktop harness for LLM-powered coding agents"
 authors = ["Christian Perez Villanueva"]
 edition = "2021"

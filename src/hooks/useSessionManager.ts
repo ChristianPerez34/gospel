@@ -184,6 +184,7 @@ export function useSessionManager({
   const latestSelectedSessionRef = useRef<string | null>(null);
   const skipNextWorkspaceResetRef = useRef<string | null>(null);
   const pendingWorkspaceSwitchRef = useRef<string | null>(null);
+  const pendingWorkspaceSwitchPromiseRef = useRef<Promise<boolean> | null>(null);
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [earlierHistoryLoading, setEarlierHistoryLoading] = useState(false);
@@ -607,10 +608,16 @@ export function useSessionManager({
 
   const prefetchSession = useCallback(
     (session: Session) => {
-      if (!session.backendCreated || session.messages.length > 0) return;
+      if (
+        !session.backendCreated ||
+        session.messages.length > 0 ||
+        pendingWorkspaceSwitchRef.current ||
+        session.workspaceId !== activeWorkspaceId
+      )
+        return;
       void requestFirstPage(session).catch(() => {});
     },
-    [requestFirstPage]
+    [activeWorkspaceId, requestFirstPage]
   );
 
   const loadEarlierMessages = useCallback(async () => {
@@ -648,6 +655,29 @@ export function useSessionManager({
     }
   }, [onError, onSessionsChange]);
 
+  const switchToWorkspace = useCallback(
+    (workspaceId: string): Promise<boolean> | null => {
+      const pending = pendingWorkspaceSwitchPromiseRef.current;
+      const currentWorkspace = pendingWorkspaceSwitchRef.current ?? activeWorkspaceId;
+      if (workspaceId === currentWorkspace) return pending;
+      if (!onSwitchWorkspace) return Promise.resolve(false);
+      pendingWorkspaceSwitchRef.current = workspaceId;
+      skipNextWorkspaceResetRef.current = workspaceId;
+      const request = pending
+        ? pending.catch(() => false).then(() => onSwitchWorkspace(workspaceId))
+        : onSwitchWorkspace(workspaceId);
+      const tracked = request.finally(() => {
+        if (pendingWorkspaceSwitchPromiseRef.current === tracked) {
+          pendingWorkspaceSwitchRef.current = null;
+          pendingWorkspaceSwitchPromiseRef.current = null;
+        }
+      });
+      pendingWorkspaceSwitchPromiseRef.current = tracked;
+      return tracked;
+    },
+    [activeWorkspaceId, onSwitchWorkspace]
+  );
+
   const handleSessionSelect = useCallback(
     async (session: Session) => {
       const selectionId = session.id;
@@ -672,31 +702,18 @@ export function useSessionManager({
         return current;
       });
 
-      const currentWorkspace = pendingWorkspaceSwitchRef.current ?? activeWorkspaceId;
-      const needsWorkspaceSwitch = Boolean(
-        onSwitchWorkspace && session.workspaceId && session.workspaceId !== currentWorkspace
-      );
       const needsTranscript = Boolean(session.backendCreated && session.messages.length === 0);
       setHistoryLoading(needsTranscript);
-      // The transcript fetch starts alongside the workspace switch — they are
-      // independent, so neither should wait on the other.
-      const transcriptPromise = needsTranscript ? requestFirstPage(session) : null;
-
       try {
-        if (needsWorkspaceSwitch && onSwitchWorkspace && session.workspaceId) {
-          pendingWorkspaceSwitchRef.current = session.workspaceId;
-          skipNextWorkspaceResetRef.current = session.workspaceId;
-          let switched = false;
-          try {
-            switched = await onSwitchWorkspace(session.workspaceId);
-          } finally {
-            if (pendingWorkspaceSwitchRef.current === session.workspaceId) {
-              pendingWorkspaceSwitchRef.current = null;
-            }
-          }
+        const switchPromise =
+          session.workspaceId && onSwitchWorkspace
+            ? switchToWorkspace(session.workspaceId)
+            : pendingWorkspaceSwitchPromiseRef.current;
+        if (switchPromise) {
+          const switched = await switchPromise;
+          if (latestSelectedSessionRef.current !== selectionId) return;
           if (!switched) {
             skipNextWorkspaceResetRef.current = null;
-            if (latestSelectedSessionRef.current !== selectionId) return;
             // Roll back the optimistic selection.
             const previous = sessionsRef.current.find((item) => item.id === previousSessionId);
             setActiveSessionId(previousSessionId);
@@ -708,13 +725,13 @@ export function useSessionManager({
           }
         }
 
-        if (!transcriptPromise) {
+        if (!needsTranscript) {
           if (latestSelectedSessionRef.current === selectionId) setHistoryLoading(false);
           return;
         }
 
         try {
-          const page = await transcriptPromise;
+          const page = await requestFirstPage(session);
           if (latestSelectedSessionRef.current !== selectionId || !page) return;
           const loadedMessages = transcriptPageToMessages(
             selectionId,
@@ -753,12 +770,12 @@ export function useSessionManager({
       }
     },
     [
-      activeWorkspaceId,
       onError,
       onSessionsChange,
       onSwitchWorkspace,
       requestFirstPage,
       statusBySession,
+      switchToWorkspace,
     ]
   );
 
@@ -940,23 +957,10 @@ export function useSessionManager({
       if (!selectedModel || !selectedModelAvailable) {
         throw new Error("Select an available model before creating a task.");
       }
-      const currentWorkspace = pendingWorkspaceSwitchRef.current ?? activeWorkspaceId;
-      if (workspaceId !== currentWorkspace) {
-        if (!onSwitchWorkspace) throw new Error("Unable to switch to the selected workspace.");
-        pendingWorkspaceSwitchRef.current = workspaceId;
-        skipNextWorkspaceResetRef.current = workspaceId;
-        let switched = false;
-        try {
-          switched = await onSwitchWorkspace(workspaceId);
-        } finally {
-          if (pendingWorkspaceSwitchRef.current === workspaceId) {
-            pendingWorkspaceSwitchRef.current = null;
-          }
-        }
-        if (!switched) {
-          skipNextWorkspaceResetRef.current = null;
-          throw new Error("Unable to switch to the selected workspace.");
-        }
+      const switchPromise = switchToWorkspace(workspaceId);
+      if (switchPromise && !(await switchPromise)) {
+        skipNextWorkspaceResetRef.current = null;
+        throw new Error("Unable to switch to the selected workspace.");
       }
       const record = await invoke<{ id: string }>("create_session", {
         title: title.trim(),
@@ -988,14 +992,7 @@ export function useSessionManager({
       setStatus("connected");
       return task;
     },
-    [
-      activeWorkspaceId,
-      agentId,
-      onSessionsChange,
-      onSwitchWorkspace,
-      selectedModel,
-      selectedModelAvailable,
-    ]
+    [agentId, onSessionsChange, selectedModel, selectedModelAvailable, switchToWorkspace]
   );
 
   const cursor = activeSessionId ? historyCursors[activeSessionId] : undefined;
