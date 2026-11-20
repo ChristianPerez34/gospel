@@ -509,20 +509,6 @@ export function AppShell() {
     runStartedAtBySession: session.runStartedAtBySession,
   });
   const needsYouCount = allSessions.filter((item) => activityBySession[item.id]?.needsYou).length;
-
-  // Warm the most likely next opens so selecting them resolves instantly.
-  // Deferred past first paint; prefetchSession only targets sessions whose
-  // history is not already in memory.
-  useEffect(() => {
-    const cold = allSessions
-      .filter((item) => item.backendCreated && item.messages.length === 0)
-      .slice(0, 5);
-    if (cold.length === 0) return;
-    const timer = setTimeout(() => {
-      for (const item of cold) session.prefetchSession(item);
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [allSessions, session.prefetchSession]);
   const nextNeedsYouCandidate = nextSessionNeedingYou(
     railOrderRef.current,
     activityBySession,

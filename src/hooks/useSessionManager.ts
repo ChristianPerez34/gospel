@@ -114,12 +114,6 @@ interface SessionTranscriptPage {
   transcript_total: number;
 }
 
-interface HistoryMeta {
-  /** Index of the next earlier page boundary (`before` cursor). */
-  nextBefore: number;
-  hasMore: boolean;
-}
-
 function transcriptPageToMessages(
   sessionId: string,
   timestamp: Date,
@@ -197,11 +191,9 @@ export function useSessionManager({
   /** In-flight/resolved first transcript pages, keyed by session. Lets hover
    * prefetch feed the same promise a later click awaits. */
   const historyCacheRef = useRef(new Map<string, Promise<SessionTranscriptPage>>());
-  const [historyMeta, setHistoryMeta] = useState<Record<string, HistoryMeta>>({});
-  const historyMetaRef = useRef(historyMeta);
-  useEffect(() => {
-    historyMetaRef.current = historyMeta;
-  }, [historyMeta]);
+  const [historyCursors, setHistoryCursors] = useState<Record<string, number>>({});
+  const historyCursorsRef = useRef(historyCursors);
+  historyCursorsRef.current = historyCursors;
 
   const prevWorkspaceRef = useRef(activeWorkspaceId);
 
@@ -593,16 +585,8 @@ export function useSessionManager({
     })
       .then((page) => {
         if (!page) return page;
-        setHistoryMeta((prev) =>
-          prev[session.id]
-            ? prev
-            : {
-                ...prev,
-                [session.id]: {
-                  nextBefore: page.transcript_start,
-                  hasMore: page.transcript_start > 0,
-                },
-              }
+        setHistoryCursors((prev) =>
+          prev[session.id] !== undefined ? prev : { ...prev, [session.id]: page.transcript_start }
         );
         return page;
       })
@@ -632,15 +616,15 @@ export function useSessionManager({
   const loadEarlierMessages = useCallback(async () => {
     const sessionId = activeSessionIdRef.current;
     if (!sessionId || earlierLoadingRef.current) return;
-    const meta = historyMetaRef.current[sessionId];
-    if (!meta?.hasMore || meta.nextBefore <= 0) return;
+    const nextBefore = historyCursorsRef.current[sessionId];
+    if (nextBefore === undefined || nextBefore <= 0) return;
     earlierLoadingRef.current = true;
     setEarlierHistoryLoading(true);
     try {
       const page = await invoke<SessionTranscriptPage>("get_session", {
         sessionId,
         tail: HISTORY_PAGE_SIZE,
-        before: meta.nextBefore,
+        before: nextBefore,
       });
       const timestamp =
         sessionsRef.current.find((item) => item.id === sessionId)?.timestamp ?? new Date();
@@ -655,13 +639,7 @@ export function useSessionManager({
           item.id === sessionId ? { ...item, messages: prepend(item.messages) } : item
         )
       );
-      setHistoryMeta((prev) => ({
-        ...prev,
-        [sessionId]: {
-          nextBefore: page.transcript_start,
-          hasMore: page.transcript_start > 0,
-        },
-      }));
+      setHistoryCursors((prev) => ({ ...prev, [sessionId]: page.transcript_start }));
     } catch (e) {
       onError?.(`Unable to load earlier messages: ${e}`);
     } finally {
@@ -1020,7 +998,8 @@ export function useSessionManager({
     ]
   );
 
-  const hasMoreHistory = activeSessionId ? historyMeta[activeSessionId]?.hasMore : undefined;
+  const cursor = activeSessionId ? historyCursors[activeSessionId] : undefined;
+  const hasMoreHistory = cursor !== undefined ? cursor > 0 : undefined;
 
   return {
     sessions,

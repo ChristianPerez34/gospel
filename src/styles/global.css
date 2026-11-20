@@ -1058,52 +1058,6 @@ summary,
   border-radius: 6px;
 }
 
-.chat-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.chat-skeleton-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-.chat-skeleton-row:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.chat-skeleton-row:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-.chat-skeleton-avatar {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--surface-overlay);
-  flex-shrink: 0;
-}
-
-.chat-skeleton-line {
-  height: 14px;
-  margin-top: 4px;
-  border-radius: 6px;
-  background: var(--surface-elevated);
-  border: 1px solid var(--surface-overlay);
-  width: 42%;
-}
-
-.chat-skeleton-line.is-wide {
-  width: 58%;
-}
-
-.chat-skeleton-line.is-medium {
-  width: 34%;
-}
-
 .chat-earlier {
   align-self: center;
   font-family: var(--font-mono);
@@ -1128,12 +1082,6 @@ summary,
 
 .chat-earlier:disabled {
   cursor: default;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chat-skeleton-row {
-    animation: none;
-  }
 }
 
 .activity-step {

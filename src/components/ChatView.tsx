@@ -66,17 +66,6 @@ type TurnSegment =
 
 const AUTO_FOLLOW_THRESHOLD_PX = 64;
 
-type VisibleTurn =
-  | { type: "message"; message: Message }
-  | { type: "currentTurn"; currentTurn: CurrentTurn }
-  | { type: "thinking" };
-
-function turnKey(turn: VisibleTurn): string {
-  if (turn.type === "message") return `m-${turn.message.id}`;
-  if (turn.type === "currentTurn") return `t-${turn.currentTurn.id}`;
-  return "thinking";
-}
-
 function toolBlockToActivity(block: ToolTurnBlock): ToolCallActivity {
   return {
     id: block.id,
@@ -121,18 +110,18 @@ function isNearBottom(element: HTMLElement) {
  * first transcript page loads. */
 function HistorySkeleton() {
   return (
-    <div className="chat-skeleton" data-testid="chat-history-skeleton" aria-hidden="true">
-      <div className="chat-skeleton-row">
-        <span className="chat-skeleton-avatar" />
-        <span className="chat-skeleton-line is-wide" />
+    <div className="flex flex-col gap-5" data-testid="chat-history-skeleton" aria-hidden="true">
+      <div className="flex items-start gap-2.5 animate-pulse motion-reduce:animate-none">
+        <span className="w-[22px] h-[22px] rounded-[6px] bg-surface-overlay shrink-0" />
+        <span className="h-3.5 mt-1 rounded-[6px] bg-surface-elevated border border-surface-overlay w-[58%]" />
       </div>
-      <div className="chat-skeleton-row">
-        <span className="chat-skeleton-avatar" />
-        <span className="chat-skeleton-line" />
+      <div className="flex items-start gap-2.5 animate-pulse motion-reduce:animate-none [animation-delay:0.15s]">
+        <span className="w-[22px] h-[22px] rounded-[6px] bg-surface-overlay shrink-0" />
+        <span className="h-3.5 mt-1 rounded-[6px] bg-surface-elevated border border-surface-overlay w-[42%]" />
       </div>
-      <div className="chat-skeleton-row">
-        <span className="chat-skeleton-avatar" />
-        <span className="chat-skeleton-line is-medium" />
+      <div className="flex items-start gap-2.5 animate-pulse motion-reduce:animate-none [animation-delay:0.3s]">
+        <span className="w-[22px] h-[22px] rounded-[6px] bg-surface-overlay shrink-0" />
+        <span className="h-3.5 mt-1 rounded-[6px] bg-surface-elevated border border-surface-overlay w-[34%]" />
       </div>
     </div>
   );
@@ -445,7 +434,7 @@ export function ChatView({
     }
     return turns;
   }, [messages, currentTurn, isThinking]);
-  const firstTurnKeyRef = useRef<string | null>(null);
+  const firstMessageIdRef = useRef<string | null>(null);
   const lastScrollHeightRef = useRef(0);
   const updateShouldFollow = useCallback(() => {
     const element = scrollContainerRef.current;
@@ -473,25 +462,24 @@ export function ChatView({
   }, [lastUserMessageId]);
 
   // Scroll anchoring for prepends: when an earlier-history page lands above the
-  // previously first turn, shift scrollTop by the added height so the viewport
-  // holds on the same message instead of jumping. Runs before the follow
-  // effect; a prepend while at top leaves shouldFollow false anyway.
+  // previously first message, shift scrollTop by the added height so the viewport
+  // holds on the same message instead of jumping.
   useLayoutEffect(() => {
     const element = scrollContainerRef.current;
-    const firstKey = visibleTurns[0] ? turnKey(visibleTurns[0]) : null;
-    const previousKey = firstTurnKeyRef.current;
+    const firstId = messages[0]?.id ?? null;
+    const previousId = firstMessageIdRef.current;
     if (
       element &&
-      previousKey &&
-      firstKey !== previousKey &&
-      visibleTurns.some((turn) => turnKey(turn) === previousKey)
+      previousId &&
+      firstId !== previousId &&
+      messages.some((m) => m.id === previousId)
     ) {
       element.scrollTop += element.scrollHeight - lastScrollHeightRef.current;
       shouldFollowRef.current = false;
     }
-    firstTurnKeyRef.current = firstKey;
+    firstMessageIdRef.current = firstId;
     if (element) lastScrollHeightRef.current = element.scrollHeight;
-  }, [visibleTurns]);
+  }, [messages]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: New rendered turns trigger scrolling.
   useLayoutEffect(() => {
