@@ -602,6 +602,7 @@ describe("toolActivitiesToActionCards review tools", () => {
         result: JSON.stringify({
           success: false,
           reason: "approval_denied",
+          rule: "mcp://server-uuid/update.issue",
           message: "The MCP tool call was denied.",
         }),
         status: "completed",

@@ -479,7 +479,7 @@ export function ChatView({
     }
     firstMessageIdRef.current = firstId;
     if (element) lastScrollHeightRef.current = element.scrollHeight;
-  }, [messages]);
+  }, [messages, visibleTurns]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: New rendered turns trigger scrolling.
   useLayoutEffect(() => {

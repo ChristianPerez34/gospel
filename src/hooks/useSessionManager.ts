@@ -187,6 +187,11 @@ export function useSessionManager({
   const pendingWorkspaceSwitchPromiseRef = useRef<Promise<boolean> | null>(null);
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const historyLoadingRef = useRef(false);
+  const setHistoryPending = useCallback((pending: boolean) => {
+    historyLoadingRef.current = pending;
+    setHistoryLoading(pending);
+  }, []);
   const [earlierHistoryLoading, setEarlierHistoryLoading] = useState(false);
   const earlierLoadingRef = useRef(false);
   /** In-flight/resolved first transcript pages, keyed by session. Lets hover
@@ -233,8 +238,9 @@ export function useSessionManager({
     setActiveSessionId(null);
     activeSessionIdRef.current = null;
     setMessages([]);
+    setHistoryPending(false);
     setStatus(draftStatus);
-  }, [activeWorkspaceId]);
+  }, [activeWorkspaceId, setHistoryPending]);
 
   const handleModelVariantWarning = useCallback(
     (warning: ModelVariantWarningPayload) => {
@@ -423,7 +429,12 @@ export function useSessionManager({
       invokedSkill?: { name: string; args?: string },
       delegatedAgent?: { name: string; task: string }
     ) => {
-      if (messageActionPendingRef.current) return;
+      if (
+        messageActionPendingRef.current ||
+        historyLoadingRef.current ||
+        pendingWorkspaceSwitchRef.current
+      )
+        return;
       if (!selectedModel || !selectedModelAvailable) {
         onError?.("Select an available model before sending.", {
           label: "Open Settings",
@@ -703,12 +714,12 @@ export function useSessionManager({
       });
 
       const needsTranscript = Boolean(session.backendCreated && session.messages.length === 0);
-      setHistoryLoading(needsTranscript);
       try {
         const switchPromise =
           session.workspaceId && onSwitchWorkspace
             ? switchToWorkspace(session.workspaceId)
             : pendingWorkspaceSwitchPromiseRef.current;
+        setHistoryPending(needsTranscript || Boolean(switchPromise));
         if (switchPromise) {
           const switched = await switchPromise;
           if (latestSelectedSessionRef.current !== selectionId) return;
@@ -719,14 +730,14 @@ export function useSessionManager({
             setActiveSessionId(previousSessionId);
             activeSessionIdRef.current = previousSessionId;
             setMessages(previous?.messages ?? []);
-            setHistoryLoading(false);
+            setHistoryPending(false);
             onError?.("Unable to switch workspace for this session.");
             return;
           }
         }
 
         if (!needsTranscript) {
-          if (latestSelectedSessionRef.current === selectionId) setHistoryLoading(false);
+          if (latestSelectedSessionRef.current === selectionId) setHistoryPending(false);
           return;
         }
 
@@ -741,8 +752,23 @@ export function useSessionManager({
           // A background turn may have finished while the page was in flight;
           // streamed-in messages are newer than the fetched snapshot.
           const freshest = sessionsRef.current.find((item) => item.id === selectionId);
-          const finalMessages =
-            freshest && freshest.messages.length > 0 ? freshest.messages : loadedMessages;
+          const recentMessages = freshest?.messages ?? [];
+          const knownIds = new Set(loadedMessages.map((message) => message.id));
+          // ponytail: live messages have no persisted IDs; matching text may
+          // collapse identical repeated turns. Persist stable IDs to remove the heuristic.
+          let overlap = Math.min(loadedMessages.length, recentMessages.length);
+          while (
+            overlap > 0 &&
+            !recentMessages.slice(0, overlap).every((message, index) => {
+              const loaded = loadedMessages[loadedMessages.length - overlap + index];
+              return loaded.role === message.role && loaded.content === message.content;
+            })
+          )
+            overlap -= 1;
+          const finalMessages = [
+            ...loadedMessages,
+            ...recentMessages.slice(overlap).filter((message) => !knownIds.has(message.id)),
+          ];
           setMessages(finalMessages);
           onSessionsChange((prev) => {
             if (!prev.some((item) => item.id === selectionId)) {
@@ -752,7 +778,7 @@ export function useSessionManager({
               item.id === selectionId
                 ? {
                     ...item,
-                    messages: item.messages.length > 0 ? item.messages : loadedMessages,
+                    messages: finalMessages,
                   }
                 : item
             );
@@ -761,11 +787,11 @@ export function useSessionManager({
           if (latestSelectedSessionRef.current !== selectionId) return;
           console.warn("Failed to load session detail from backend:", e);
         } finally {
-          if (latestSelectedSessionRef.current === selectionId) setHistoryLoading(false);
+          if (latestSelectedSessionRef.current === selectionId) setHistoryPending(false);
         }
       } catch (e) {
         if (latestSelectedSessionRef.current !== selectionId) return;
-        setHistoryLoading(false);
+        setHistoryPending(false);
         onError?.(`Unable to open session: ${e}`);
       }
     },
@@ -774,6 +800,7 @@ export function useSessionManager({
       onSessionsChange,
       onSwitchWorkspace,
       requestFirstPage,
+      setHistoryPending,
       statusBySession,
       switchToWorkspace,
     ]
@@ -781,7 +808,13 @@ export function useSessionManager({
 
   const runMessageAction = useCallback(
     async (messageId: string, fork: boolean) => {
-      if (messageActionPendingRef.current || isRunningStatus(statusRef.current)) return;
+      if (
+        messageActionPendingRef.current ||
+        historyLoadingRef.current ||
+        pendingWorkspaceSwitchRef.current ||
+        isRunningStatus(statusRef.current)
+      )
+        return;
       const source = sessions.find((item) => item.id === activeSessionId);
       const index = messages.findIndex(
         (message) => message.id === messageId && message.role === "agent"
@@ -945,11 +978,12 @@ export function useSessionManager({
     setActiveSessionId(null);
     activeSessionIdRef.current = null;
     setMessages([]);
+    setHistoryPending(false);
     setStatus(draftStatus);
     // A running session keeps going in the background: the stream hook stashes
     // its live turn when focus moves to the draft. Resetting here would drop it.
     if (!leavingRun) resetStream();
-  }, [resetStream]);
+  }, [resetStream, setHistoryPending]);
 
   const createTask = useCallback(
     async (title: string, workspaceId: string): Promise<Session> => {
@@ -989,10 +1023,18 @@ export function useSessionManager({
       setActiveSessionId(task.id);
       activeSessionIdRef.current = task.id;
       setMessages([]);
+      setHistoryPending(false);
       setStatus("connected");
       return task;
     },
-    [agentId, onSessionsChange, selectedModel, selectedModelAvailable, switchToWorkspace]
+    [
+      agentId,
+      onSessionsChange,
+      selectedModel,
+      selectedModelAvailable,
+      setHistoryPending,
+      switchToWorkspace,
+    ]
   );
 
   const cursor = activeSessionId ? historyCursors[activeSessionId] : undefined;

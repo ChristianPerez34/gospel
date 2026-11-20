@@ -2825,14 +2825,14 @@ fn get_session(
     // Hydrate the in-memory conversation store with the persisted Model History
     // so a subsequent `complete_streaming` call can continue the conversation
     // with prior turns visible to the LLM, not just the UI transcript. Only the
-    // first page hydrates; earlier-page fetches must not re-seed a session whose
-    // history may already have advanced (e.g. an in-flight turn).
+    // first page seeds a missing cache entry; an existing entry may already
+    // contain newer history from an in-flight turn.
     if before.is_none() {
         if let Some(model_history_json) = detail.model_history.as_deref() {
             match model_history::parse_model_history(model_history_json) {
                 Ok(messages) if !messages.is_empty() => {
                     let mut store = conversation_state.store.lock().unwrap();
-                    store.store_history(&session_id, messages);
+                    store.seed_history(&session_id, messages);
                 }
                 Ok(_) => {}
                 Err(e) => {

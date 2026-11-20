@@ -30,10 +30,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
-- Session history loads after switching to the session’s workspace, and rapid workspace switches keep the latest selection.
-- MCP tool cards distinguish display targets from approval rules.
+- Session history loads after switching to the session’s workspace, preserves newer turns during loading, and keeps the latest selection during rapid workspace switches.
+- MCP tool cards distinguish display targets from approval rules and group repeated calls consistently.
 - Code-block copy actions use the native clipboard in the desktop app.
-- Resolved approvals no longer duplicate tool activity, and denied and cancelled tool calls remain visible.
+- Resolved approvals no longer duplicate tool activity, and denied, interrupted, and cancelled tool calls show their final states.
 - Response verification no longer gives up with "Agent reached its 6 model-call limit" when it checks several files. It is now bounded only by its 90-second deadline and loop guard, and a timeout reports as a verification timeout.
 - ChatGPT now lists every model the signed-in plan offers, including GPT-6 and GPT-6.1, instead of a fixed list that stopped at GPT-5.6. Offline fallback lists for ChatGPT and Anthropic now follow Rig's bundled catalog.
 - Session history stays visible after restarts and when several workspaces are registered. Listing history only runs archive maintenance for the active workspace, and a workspace that fails to load no longer hides history from the others.

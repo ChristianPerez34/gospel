@@ -743,6 +743,7 @@ export function toolActivitiesToActionCards(activities: ToolCallActivity[]): Act
 }
 
 function groupKey(activity: ToolCallActivity, card: ActionCard): string | null {
+  if (parseMcpToolName(activity.name)) return activity.name;
   if (!card.target) return null;
   return `${activity.name}::${card.target}`;
 }

@@ -905,6 +905,130 @@ describe("useSessionManager", () => {
     const coldSession = (id: string) =>
       makeSession({ id, title: `Session ${id}`, messages: [], backendCreated: true });
 
+    it("blocks sending until a session switch and its initial history finish loading", async () => {
+      let finishSwitch: ((value: boolean) => void) | undefined;
+      let finishPage: ((value: unknown) => void) | undefined;
+      const onSwitchWorkspace = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSwitch = resolve;
+          })
+      );
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session")
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        return undefined;
+      });
+      const target = makeSession({
+        id: "s-cold",
+        workspaceId: "other",
+        messages: [],
+        backendCreated: true,
+      });
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "current",
+        onSwitchWorkspace,
+        initialSessions: [target],
+      });
+      act(() => {
+        void result.current.handleSessionSelect(target);
+      });
+      await act(async () => {
+        await result.current.handleSend("too early");
+      });
+      expect(invoke).not.toHaveBeenCalledWith("complete_streaming", expect.anything());
+      expect(result.current.messages).toEqual([]);
+      await act(async () => {
+        finishSwitch?.(true);
+      });
+      await act(async () => {
+        await result.current.handleSend("still too early");
+      });
+      expect(invoke).not.toHaveBeenCalledWith("complete_streaming", expect.anything());
+      await act(async () => {
+        finishPage?.({
+          id: "s-cold",
+          display_transcript: "[]",
+          transcript_start: 0,
+          transcript_total: 0,
+        });
+      });
+      await act(async () => {
+        await result.current.handleSend("ready");
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({ prompt: "ready", sessionId: "s-cold" })
+      );
+    });
+
+    it("merges a background completion with the history fetched while it was running", async () => {
+      let finishPage: ((value: unknown) => void) | undefined;
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session")
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        if (cmd === "complete_streaming") return "run-active";
+        return undefined;
+      });
+      const target = makeSession({
+        id: "s-cold",
+        messages: [{ id: "prompt", role: "user", content: "new prompt", timestamp: new Date() }],
+        backendCreated: true,
+      });
+      const { result } = renderSessionManager({ initialSessions: [target] });
+      await act(async () => {
+        await result.current.handleSessionSelect(target);
+      });
+      await act(async () => {
+        await result.current.handleSend("new prompt");
+      });
+      act(() => {
+        result.current.handleNewSession();
+      });
+      const cold = { ...target, messages: [] };
+      act(() => {
+        void result.current.handleSessionSelect(cold);
+      });
+      await act(async () => {
+        triggerEvent("llm-done", { response: "new reply" });
+        finishPage?.({
+          id: "s-cold",
+          display_transcript: JSON.stringify([{ role: "user", content: "old history" }]),
+          transcript_start: 0,
+          transcript_total: 1,
+        });
+      });
+      expect(result.current.messages.map((message) => message.content)).toEqual([
+        "old history",
+        "new reply",
+      ]);
+    });
+
+    it("clears history loading when starting a new session", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "get_session") return new Promise(() => {});
+        return undefined;
+      });
+      const { result } = renderSessionManager();
+      act(() => {
+        void result.current.handleSessionSelect(coldSession("s-cold"));
+      });
+      expect(result.current.historyLoading).toBe(true);
+      act(() => result.current.handleNewSession());
+      expect(result.current.historyLoading).toBe(false);
+      await act(async () => {
+        await result.current.handleSend("start fresh");
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        "complete_streaming",
+        expect.objectContaining({ prompt: "start fresh" })
+      );
+    });
+
     it("applies the selection immediately while the first page loads", async () => {
       let resolveGet: ((value: unknown) => void) | undefined;
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
@@ -1790,7 +1914,7 @@ describe("useSessionManager", () => {
           kind: "tool",
           id: "tool-1",
           name: "read_file",
-          status: "calling",
+          status: "cancelled",
         },
       ]);
     });

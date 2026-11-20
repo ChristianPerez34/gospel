@@ -1164,7 +1164,9 @@ export function AppShell() {
                 onResolveApproval={session.resolveApproval}
                 onRetry={session.retryMessage}
                 onFork={session.forkMessage}
-                actionsDisabled={session.isStreaming || session.messageActionsPending}
+                actionsDisabled={
+                  session.isStreaming || session.messageActionsPending || session.historyLoading
+                }
                 historyLoading={session.historyLoading}
                 hasMoreHistory={session.hasMoreHistory}
                 earlierHistoryLoading={session.earlierHistoryLoading}
@@ -1189,7 +1191,10 @@ export function AppShell() {
                 onCancelStream={() => void session.cancelStream()}
                 isStreaming={session.isStreaming}
                 disabled={
-                  session.isStreaming || session.messageActionsPending || models.length === 0
+                  session.isStreaming ||
+                  session.messageActionsPending ||
+                  session.historyLoading ||
+                  models.length === 0
                 }
                 unavailableMessage={models.length === 0 ? noModels.title : "Connecting..."}
                 unavailableDetail={noModels.detail}

@@ -177,9 +177,21 @@ function finalizedTurnBlocks(blocks: TurnBlock[]): TurnBlock[] {
 }
 
 function cancelledTurnBlocks(blocks: TurnBlock[]): TurnBlock[] {
-  return finalizedTurnBlocks(blocks).map((block) =>
-    block.kind === "tool" && block.status === "calling" ? { ...block, status: "cancelled" } : block
-  );
+  return finalizedTurnBlocks(blocks).map((block) => {
+    if (block.kind !== "tool") return block;
+    return {
+      ...block,
+      status: block.status === "calling" ? "cancelled" : block.status,
+      subagent: block.subagent
+        ? {
+            ...block.subagent,
+            steps: block.subagent.steps.map((step) =>
+              step.status === "calling" ? { ...step, status: "cancelled" } : step
+            ),
+          }
+        : undefined,
+    };
+  });
 }
 
 function hasApproval(turn: CurrentTurn | null, id: string): boolean {
@@ -782,7 +794,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
                 const finalTurn = backgroundTurnsRef.current.get(sessionId);
                 const messageId = finalTurn?.id ?? generateTurnId();
                 const rawBlocks = finalTurn?.blocks ?? [];
-                const blocks = finalizedTurnBlocks(rawBlocks);
+                const blocks = cancelledTurnBlocks(rawBlocks);
                 const derivedContent = joinTextBlocks(blocks);
                 if (err?.message || derivedContent || blocks.length > 0) {
                   const message: Message = {
@@ -826,7 +838,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               } = resolveCompletionSession(runId);
               const messageId = finalTurn?.id ?? generateTurnId();
               const rawBlocks = finalTurn?.blocks ?? [];
-              const blocks = finalizedTurnBlocks(rawBlocks);
+              const blocks = cancelledTurnBlocks(rawBlocks);
               const derivedContent = joinTextBlocks(blocks);
 
               if (err?.message || derivedContent || blocks.length > 0) {

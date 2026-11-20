@@ -810,6 +810,61 @@ describe("ChatView history loading", () => {
     expect(onLoadEarlier).toHaveBeenCalledTimes(1);
   });
 
+  it("does not count live-turn growth when anchoring an earlier page", () => {
+    const messages = [userMessage];
+    const { container, rerender } = render(
+      <ChatView
+        messages={messages}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "live",
+          createdAt: new Date(),
+          blocks: [{ kind: "text", id: "live-text", text: "start" }],
+        }}
+        hasMoreHistory={true}
+      />
+    );
+    const scrollContainer = chatView(container);
+    defineScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 400, scrollTop: 300 });
+    fireEvent.scroll(scrollContainer);
+    defineScrollMetrics(scrollContainer, { scrollHeight: 1300, clientHeight: 400, scrollTop: 300 });
+    rerender(
+      <ChatView
+        messages={messages}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "live",
+          createdAt: new Date(),
+          blocks: [{ kind: "text", id: "live-text", text: "more live text" }],
+        }}
+        hasMoreHistory={true}
+      />
+    );
+    const older: Message = {
+      id: "older",
+      role: "user",
+      content: "Earlier page",
+      timestamp: new Date(),
+    };
+    defineScrollMetrics(scrollContainer, { scrollHeight: 1700, clientHeight: 400, scrollTop: 300 });
+    rerender(
+      <ChatView
+        messages={[older, userMessage]}
+        workspacePath="/workspace/gospel"
+        isThinking={true}
+        currentTurn={{
+          id: "live",
+          createdAt: new Date(),
+          blocks: [{ kind: "text", id: "live-text", text: "more live text" }],
+        }}
+        hasMoreHistory={true}
+      />
+    );
+    expect(scrollContainer.scrollTop).toBe(700);
+  });
+
   it("anchors the viewport on the same message when earlier history prepends", () => {
     const { container, rerender } = render(
       <ChatView
