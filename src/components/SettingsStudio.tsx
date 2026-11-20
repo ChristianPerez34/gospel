@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Activity,
   AlertTriangle,
@@ -201,6 +202,7 @@ export function SettingsStudio({
   onRunArchiveMaintenance,
   archivePolicySaving = false,
 }: SettingsStudioProps) {
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [personaFilter, setPersonaFilter] = useState<PersonaFilter>("all");
   const [selectedCategory, setSelectedCategory] = useState<SettingsCategory>(initialCategory);
   const [searchQuery, setSearchQuery] = useState("");
@@ -221,6 +223,18 @@ export function SettingsStudio({
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch((error) => console.warn("Failed to load app version:", error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     openerRef.current =
@@ -699,7 +713,9 @@ ${
 
             {/* Bottom Status Footnote */}
             <div className="p-3 border-t border-white/[0.04] text-[11px] text-text-muted flex items-center justify-between">
-              {!isNavCollapsed && <span className="font-mono text-[10px]">v0.1.0-alpha.1</span>}
+              {!isNavCollapsed && appVersion && (
+                <span className="font-mono text-[10px]">v{appVersion}</span>
+              )}
               <span
                 className={`inline-flex items-center gap-1.5 text-status-success font-mono text-[10px] ${isNavCollapsed ? "mx-auto" : ""}`}
               >
