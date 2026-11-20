@@ -589,6 +589,64 @@ describe("useSessionManager", () => {
       expect(result.current.messages).toEqual([]);
     });
 
+    it("rechecks the pending workspace before skipping a switch", async () => {
+      let resolveFirstSwitch: ((value: boolean) => void) | undefined;
+      const onSwitchWorkspace = vi.fn().mockImplementation((targetId: string) => {
+        if (targetId === "ws-other") {
+          return new Promise<boolean>((resolve) => {
+            resolveFirstSwitch = resolve;
+          });
+        }
+        return Promise.resolve(true);
+      });
+      const onError = vi.fn();
+
+      const { result } = renderSessionManager({
+        activeWorkspaceId: "ws-active",
+        onSwitchWorkspace,
+        onError,
+      });
+
+      const sessionOther = makeSession({
+        id: "s-other",
+        title: "Other WS Session",
+        workspaceId: "ws-other",
+        messages: [],
+        backendCreated: true,
+      });
+
+      const sessionActive = makeSession({
+        id: "s-active",
+        title: "Active WS Session",
+        workspaceId: "ws-active",
+        messages: [],
+        backendCreated: true,
+      });
+
+      // 1. Select session in ws-other: triggers switch to ws-other (which stays pending)
+      act(() => {
+        void result.current.handleSessionSelect(sessionOther);
+      });
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-other");
+
+      // 2. While switch to ws-other is in flight, select session in ws-active:
+      // Because pending target is ws-other, it must trigger switch back to ws-active!
+      await act(async () => {
+        await result.current.handleSessionSelect(sessionActive);
+      });
+
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("ws-active");
+      expect(result.current.activeSessionId).toBe("s-active");
+
+      // 3. Resolve the first switch
+      await act(async () => {
+        resolveFirstSwitch?.(true);
+      });
+
+      expect(result.current.activeSessionId).toBe("s-active");
+      expect(onError).not.toHaveBeenCalled();
+    });
+
     it("handleSessionSelect hydrates a backend-created session via get_session so the next turn continues prior history", async () => {
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
         if (cmd === "list_sessions") return [];
@@ -756,6 +814,62 @@ describe("useSessionManager", () => {
       expect(invoke).toHaveBeenCalledTimes(1);
       expect(result.current.messages.map((m) => m.content)).toEqual(["prefetched"]);
       expect(result.current.historyLoading).toBe(false);
+    });
+
+    it("refreshes LRU recency in history cache so accessed entries are not prematurely evicted", async () => {
+      const getSessionCalls: string[] = [];
+      vi.mocked(invoke).mockImplementation(async (...callArgs: Parameters<typeof invoke>) => {
+        const [cmd, args] = callArgs as [string, { sessionId: string } | undefined];
+        if (cmd === "get_session" && args) {
+          getSessionCalls.push(args.sessionId);
+          return {
+            id: args.sessionId,
+            display_transcript: JSON.stringify([
+              { role: "user", content: `msg-${args.sessionId}` },
+            ]),
+            transcript_start: 0,
+            transcript_total: 1,
+          };
+        }
+        return undefined;
+      });
+
+      const { result } = renderSessionManager();
+
+      // Prefetch 25 sessions (s-0 .. s-24): fills the cache to HISTORY_CACHE_LIMIT (25)
+      for (let i = 0; i < 25; i++) {
+        await act(async () => {
+          result.current.prefetchSession(coldSession(`s-${i}`));
+          await Promise.resolve();
+        });
+      }
+      expect(getSessionCalls.length).toBe(25);
+
+      // Re-access s-0 by prefetching it again: refreshes LRU recency
+      await act(async () => {
+        result.current.prefetchSession(coldSession("s-0"));
+        await Promise.resolve();
+      });
+      expect(getSessionCalls.length).toBe(25);
+
+      // Prefetch 26th session (s-25): evicts the least recently used entry (s-1, not s-0)
+      await act(async () => {
+        result.current.prefetchSession(coldSession("s-25"));
+        await Promise.resolve();
+      });
+      expect(getSessionCalls.length).toBe(26);
+
+      // Selecting s-0 should resolve from cache without refetching
+      await act(async () => {
+        await result.current.handleSessionSelect(coldSession("s-0"));
+      });
+      expect(getSessionCalls.length).toBe(26);
+
+      // Selecting s-1 was evicted, so it must refetch
+      await act(async () => {
+        await result.current.handleSessionSelect(coldSession("s-1"));
+      });
+      expect(getSessionCalls.length).toBe(27);
     });
 
     it("loadEarlierMessages prepends the previous page via the before cursor", async () => {

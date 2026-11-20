@@ -157,7 +157,10 @@ function EarlierHistorySentinel({
         if (entries.some((entry) => entry.isIntersecting)) onVisible();
       },
       // Preload before the edge so history lands before the eye does.
-      { rootMargin: "240px 0px 0px 0px" }
+      {
+        root: element.closest<HTMLElement>(".chat-view"),
+        rootMargin: "240px 0px 0px 0px",
+      }
     );
     observer.observe(element);
     return () => observer.disconnect();
