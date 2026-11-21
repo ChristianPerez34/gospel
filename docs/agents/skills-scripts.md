@@ -15,7 +15,7 @@ The interpreter is determined by reading the first line of the script:
 
 ## Approval
 
-`run_skill_script` goes through the same command approval as `run_shell_command`, as a mutating request outside the workspace. Ask mode prompts for every script run and never offers Always Allow. Auto mode runs scripts without a prompt unless the script command matches a user-saved deny rule.
+`run_skill_script` goes through the same command approval as `run_shell_command`, as a mutating request. Runs with an active workspace are workspace-scoped, so Ask mode offers Always Allow like other workspace mutating commands; unscoped runs prompt every time. Auto mode runs scripts without a prompt unless the script command matches a user-saved deny rule.
 
 ## Timeout
 
