@@ -244,13 +244,17 @@ impl Tool for RunSkillScriptTool {
 
         let (command_label, reason) =
             build_script_approval_label(&args.skill, &args.script, Some(&resolved.interpreter));
+        // Skill scripts run with the workspace as cwd when one is active, so
+        // mark them workspace-scoped to allow "Always Allow" like other
+        // workspace mutating commands. Unscoped runs stay non-scoped.
+        // ponytail: cwd-scoped, not arg-scanned; full path-escape check if scripts ever take args.
         let approved = approval
             .request_approval(CommandApprovalRequest {
                 tool_name: Self::NAME,
                 command_label,
                 reason,
                 risk: CommandRisk::Mutating,
-                workspace_scoped: false,
+                workspace_scoped: self.workspace_path.is_some(),
             })
             .await;
 
@@ -1926,6 +1930,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].tool_name, "run_skill_script");
         assert_eq!(requests[0].risk, CommandRisk::Mutating);
+        assert!(requests[0].workspace_scoped);
     }
 
     #[cfg(unix)]
