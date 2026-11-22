@@ -1401,10 +1401,16 @@ mod tests {
 
     #[test]
     fn variants_follow_rig_catalog_effort_levels() {
-        let chatgpt_model = ModelRegistry::model_info("chatgpt", "gpt-5.4-pro");
+        let chatgpt_model = ModelRegistry::model_info("chatgpt", "gpt-6.2-sol");
         assert_eq!(
             variant_ids(&chatgpt_model),
-            vec!["reasoning-medium", "reasoning-high", "reasoning-extra-high"]
+            vec![
+                "reasoning-low",
+                "reasoning-medium",
+                "reasoning-high",
+                "reasoning-extra-high",
+                "reasoning-max"
+            ]
         );
 
         let anthropic_model = ModelRegistry::model_info("anthropic", "claude-opus-4-6");
@@ -1479,7 +1485,7 @@ mod tests {
     fn chatgpt_reasoning_variant_resolves_to_rig_effort() {
         let resolved = ModelRegistry::resolve_model_variant(
             "chatgpt",
-            "gpt-5.4-pro",
+            "gpt-6.2-sol",
             Some("reasoning-extra-high"),
         );
 
@@ -1645,6 +1651,8 @@ mod tests {
     #[test]
     fn test_chatgpt_subscription_models_follow_the_rig_catalog() {
         for model in [
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
             "gpt-6.1-sol",
             "gpt-6.1-terra",
             "gpt-6-sol",
@@ -1653,10 +1661,6 @@ mod tests {
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
         ] {
             assert!(
                 ModelRegistry::is_chatgpt_subscription_model(model),
@@ -1705,8 +1709,15 @@ mod tests {
     fn test_chatgpt_fallback_comes_from_the_catalog_newest_first() {
         let models = ModelRegistry::models_for_provider("chatgpt");
 
-        assert_eq!(models.first(), Some(&"gpt-6.1-terra"));
-        for model in ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol"] {
+        assert_eq!(models.first(), Some(&"gpt-6.2-astra"));
+        for model in [
+            "gpt-6.2-sol",
+            "gpt-6.1-terra",
+            "gpt-6.1-sol",
+            "gpt-6-sol",
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+        ] {
             assert!(models.contains(&model), "missing {model}");
         }
         assert!(!models.contains(&"gpt-5.4-pro"));

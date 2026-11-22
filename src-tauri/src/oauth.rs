@@ -112,7 +112,7 @@ fn start_github_copilot(
 ) -> Pin<Box<dyn Future<Output = Result<OauthChallenge, String>> + Send>> {
     Box::pin(async move {
         start_registered_oauth_flow(app, "github_copilot", "GitHub Copilot", |on_prompt| {
-            let handler = rig::providers::copilot::auth::DeviceCodeHandler::new(move |prompt| {
+            let handler = rig::providers::auth::DeviceCodeHandler::new(move |prompt| {
                 on_prompt(OauthChallenge::DeviceCode {
                     verification_url: prompt.verification_uri,
                     user_code: prompt.user_code,
