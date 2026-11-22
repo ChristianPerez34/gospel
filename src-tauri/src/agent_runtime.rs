@@ -5,6 +5,7 @@
 //! retries, 1s doubling, provider Retry-After honored up to 60s). Loop
 //! guards, stream events, and history stay Gospel-owned.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -17,8 +18,9 @@ use rig::completion::{
     ToolDefinition,
 };
 use rig::error::{ErrorReport, ProviderError};
+use rig::message::ToolResultContent;
 use rig::streaming::{Item as StreamItem, PartKind, StreamEvent as ProviderEvent};
-use rig::tool::{RegisteredTool, ToolContext, ToolExecutionError, ToolResult, ToolSet};
+use rig::tool::{RegisteredTool, ToolContext, ToolExecutionError, ToolOutput, ToolResult, ToolSet};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use crate::harness_profile::{HarnessRunGuards, LoopDetector, LoopStatus};
@@ -63,7 +65,7 @@ fn retry_wait(error: &ProviderError, retries: u32) -> Option<Duration> {
         return None;
     }
     let mut report = ErrorReport::from(error);
-    // Rig 0.46 does not recognize this gateway code yet.
+    // Rig 0.47 does not recognize this gateway code yet.
     if report.code.as_deref() == Some("upstream_error")
         && !report.refusal
         && report
@@ -253,6 +255,39 @@ where
             });
             Some(LlmError::ControlledStop(stop_message))
         }
+    }
+}
+
+/// Redacts secrets from model-visible tool output while preserving disposition.
+fn redact_tool_result(result: ToolResult) -> ToolResult {
+    let content = result.output().as_content();
+    let mut changed = false;
+    let redacted: Vec<_> = content
+        .iter()
+        .map(|block| match block {
+            ToolResultContent::Text(said) => match rig::redact::text(&said.text) {
+                Cow::Owned(redacted) => {
+                    changed = true;
+                    ToolResultContent::text(redacted)
+                }
+                Cow::Borrowed(_) => block.clone(),
+            },
+            ToolResultContent::Json { value } => {
+                let mut value = value.clone();
+                if rig::redact::json(&mut value) {
+                    changed = true;
+                }
+                ToolResultContent::json(value)
+            }
+            ToolResultContent::Image(_) => block.clone(),
+        })
+        .collect();
+    if !changed {
+        return result;
+    }
+    match ToolOutput::content(redacted) {
+        Ok(output) => result.with_output(output),
+        Err(_) => result,
     }
 }
 
@@ -463,7 +498,7 @@ where
                     catalog.names(),
                 ))),
             };
-            let output = rig::redact::tool_result(&output).unwrap_or(output);
+            let output = redact_tool_result(output);
             let result = llm::tool_result_summary(output.output().as_content());
             if name == "source_edit" && llm::source_edit_result_changed(&result) {
                 source_edit_succeeded = true;

@@ -1,7 +1,7 @@
 //! Keep Gospel's credential locations while adapting Rig's token-store API.
 
 use rig::error::BoxError;
-use rig::providers::chatgpt::auth::{FileTokenStore, StoreLock, TokenStore};
+use rig::providers::auth::{FileTokenStore, StoreLock, TokenStore};
 use rig::wasm_compat::WasmBoxedFuture;
 
 pub(crate) struct ProviderTokenStore;

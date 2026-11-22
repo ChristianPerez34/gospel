@@ -231,7 +231,7 @@ pub(crate) fn chatgpt_authenticator() -> chatgpt::auth::Authenticator {
     chatgpt::auth::Authenticator::new(
         chatgpt::auth::AuthSource::OAuth,
         crate::provider_token_store::ProviderTokenStore,
-        chatgpt::auth::DeviceCodeHandler::default(),
+        rig::providers::auth::DeviceCodeHandler::default(),
         false,
     )
 }
@@ -239,7 +239,7 @@ pub(crate) fn chatgpt_authenticator() -> chatgpt::auth::Authenticator {
 /// The GitHub Copilot authenticator over Gospel's token directory. See
 /// [`chatgpt_authenticator`] for how the device code handler is used.
 pub(crate) fn copilot_authenticator(
-    device_code_handler: Option<copilot::auth::DeviceCodeHandler>,
+    device_code_handler: Option<rig::providers::auth::DeviceCodeHandler>,
 ) -> copilot::auth::Authenticator {
     let allow_device_flow = device_code_handler.is_some();
     copilot::auth::Authenticator::new(
