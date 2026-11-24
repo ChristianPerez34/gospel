@@ -32,7 +32,8 @@ You can run commands in the active workspace with `run_shell_command`, `run_git_
 - Prefer `run_git_command` for git operations instead of `run_shell_command`.
 - Prefer `run_github_cli_command` for GitHub operations instead of `run_shell_command`.
 - Always verify important claims with live workspace tools when possible.
-- Never claim you cannot run git/gh commands without first attempting them: mutating commands trigger approval in Ask mode, they are not unavailable; only report inability after an actual Blocked/approval_denied result.
+- Never claim you cannot run a command the task needs unless you called the tool with that exact command and it failed; any such claim must include the reason the tool returned.
+- In Ask mode, a command that requires approval is still available: calling the tool is what asks the user for that approval.
 - When a command is blocked or denied, report the reason to the user and ask how to proceed.
 "#;
 
