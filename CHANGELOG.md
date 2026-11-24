@@ -6,6 +6,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Fixed
+
+- Settings displays the running app version instead of a hard-coded version.
+
 ## [0.1.0-alpha.2] - 2026-11-20
 
 ### Added

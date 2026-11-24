@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { mockIPC } from "@tauri-apps/api/mocks";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderConfig } from "./ProviderSelector";
@@ -47,6 +48,40 @@ function renderStudio(
   );
   return onProvidersChange;
 }
+
+describe("SettingsStudio app version", () => {
+  it("shows the version reported by the running app", async () => {
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === "list_skills") return [];
+      return undefined;
+    });
+    mockIPC((command) => (command === "plugin:app|version" ? "0.1.0-alpha.42" : undefined));
+
+    renderStudio([], vi.fn(), "appearance");
+
+    expect(screen.getByText("Harness Live").className).toContain("ml-auto");
+    expect(await screen.findByText("v0.1.0-alpha.42")).toBeTruthy();
+    expect(screen.queryByText("v0.1.0-alpha.1")).toBeNull();
+  });
+
+  it("keeps settings usable when the app version cannot be read", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockInvoke.mockImplementation(async (command) => (command === "list_skills" ? [] : undefined));
+    mockIPC((command) => {
+      if (command === "plugin:app|version") throw new Error("Version unavailable");
+      return undefined;
+    });
+
+    renderStudio([], vi.fn(), "appearance");
+
+    await waitFor(() =>
+      expect(warning).toHaveBeenCalledWith("Failed to load app version:", expect.any(Error))
+    );
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.queryByText("v0.1.0-alpha.1")).toBeNull();
+    expect(screen.getByText("Harness Live").className).toContain("ml-auto");
+  });
+});
 
 describe("SettingsStudio providers category", () => {
   it("lists a custom provider only in the custom panel, never in the built-in list", async () => {

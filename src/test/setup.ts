@@ -1,3 +1,4 @@
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, vi } from "vitest";
 
 // Shim vi.mocked for environments where it is missing
@@ -24,8 +25,10 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockIPC(() => undefined);
 });
 
 afterEach(() => {
+  clearMocks();
   vi.restoreAllMocks();
 });

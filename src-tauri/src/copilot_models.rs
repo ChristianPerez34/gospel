@@ -1,5 +1,5 @@
-use rig::http_client::HttpClientExt;
-use rig::providers::{copilot::model_listing::Models, openai::OpenAIConfig};
+use rig::http_client::{Bytes, HttpClientExt};
+use rig::providers::openai::{wire::Models, OpenAIConfig};
 use rig::wire::{Mode, Wire};
 
 use crate::models::{ModelInfo, ModelRegistry};
@@ -15,9 +15,9 @@ pub(crate) async fn fetch_models(
     .encode(None, Mode::Unary)
     .map_err(|error| format!("failed to build GitHub Copilot model request: {error}"))?
     .request
-    .map(|_| Vec::<u8>::new());
+    .map(|_| Bytes::new());
     let response = http
-        .send::<_, Vec<u8>>(request)
+        .send(request)
         .await
         .map_err(|error| format!("failed to list GitHub Copilot models: {error}"))?;
     if !response.status().is_success() {
@@ -104,7 +104,7 @@ pub(crate) async fn fetch_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::http_client::StatusCode;
+    use rig::http_client::{HeaderMap, StatusCode};
     use rig::test_utils::RecordingHttpClient;
     use serde_json::json;
 
@@ -216,16 +216,18 @@ mod tests {
             let http = RecordingHttpClient::new(body.as_bytes().to_vec());
             assert!(fetch_models(&config, &http).await.is_err());
         }
-        let http = RecordingHttpClient::with_error_response(
+        let http = RecordingHttpClient::with_error_response_headers(
             StatusCode::UNAUTHORIZED,
             br#"{"data": []}"#.to_vec(),
+            HeaderMap::new(),
         );
         let err = fetch_models(&config, &http).await.unwrap_err();
         assert!(err.contains("401"));
 
-        let http = RecordingHttpClient::with_error_response(
+        let http = RecordingHttpClient::with_error_response_headers(
             StatusCode::FORBIDDEN,
             br#"{"message": "organization policy blocks Copilot"}"#.to_vec(),
+            HeaderMap::new(),
         );
         let err = fetch_models(&config, &http).await.unwrap_err();
         assert!(err.contains("403"));
