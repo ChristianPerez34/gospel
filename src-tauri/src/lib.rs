@@ -1285,16 +1285,16 @@ impl TauriSessionTurnAdapters<'_> {
         user_prompt: &str,
         error: &LlmError,
     ) -> Result<(), String> {
-        session_turn::persist_failed_turn(
-            self,
-            self,
-            session_id,
-            &conversation::transcript::FailedTurn {
+        let Some(store) = self.session_store_state.store.as_ref() else {
+            return Ok(());
+        };
+        crate::conversation::Conversation::for_session(store, session_id)
+            .record_failure(conversation::transcript::FailedTurn {
                 display_prompt: user_prompt,
                 model_prompt: user_prompt,
                 error,
-            },
-        )
+            })
+            .map_err(|failure| failure.to_string())
     }
 }
 
@@ -1643,6 +1643,7 @@ async fn complete_streaming(
     let memory = session_turn::NoOpMemory;
     let turn_future = session_turn::run_streaming_turn(
         session_turn::StreamingTurnDependencies {
+            store: session_store_state.store.as_ref(),
             workspace: &adapters,
             credentials: &adapters,
             sessions: &adapters,

@@ -59,6 +59,9 @@ pub struct StreamingTurnRequest {
 pub type SessionTurnFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub struct StreamingTurnDependencies<'a> {
+    /// The concrete Session Store backing the Conversation. `None` only in
+    /// degraded/local-only operation, where nothing is persisted.
+    pub store: Option<&'a crate::session_store::SessionStore>,
     pub workspace: &'a dyn SessionTurnWorkspace,
     pub credentials: &'a dyn SessionTurnCredentials,
     pub sessions: &'a dyn SessionTurnSessions,
@@ -120,42 +123,6 @@ pub trait SessionTurnConversation: Send + Sync {
     /// `None` means the session has no in-memory entry, not an empty history.
     fn cached_history(&self, session_id: &str) -> Option<Vec<Message>>;
     fn store_history(&self, session_id: &str, history: Vec<Message>);
-}
-
-
-/// The in-memory Model History for a session, rehydrated from the persisted
-/// snapshot when the cache has no entry (e.g. after eviction or restart).
-pub fn load_chat_history(
-    sessions: &dyn SessionTurnSessions,
-    conversation: &dyn SessionTurnConversation,
-    session_id: Option<&str>,
-) -> Vec<Message> {
-    let Some(sid) = session_id else {
-        return Vec::new();
-    };
-    if let Some(history) = conversation.cached_history(sid) {
-        return history;
-    }
-    let Some(raw) = sessions
-        .persisted_snapshot(sid)
-        .and_then(|snapshot| snapshot.model_history)
-    else {
-        return Vec::new();
-    };
-    match crate::conversation::parse_model_history(&raw) {
-        Ok(history) => {
-            conversation.store_history(sid, history);
-            conversation.cached_history(sid).unwrap_or_default()
-        }
-        Err(error) => {
-            tracing::warn!(
-                "Failed to parse model history for session {}: {}",
-                sid,
-                error
-            );
-            Vec::new()
-        }
-    }
 }
 
 pub trait SessionTurnSkills: Send + Sync {
@@ -474,11 +441,15 @@ pub async fn run_streaming_turn(
             .map_err(|e| LlmError::ProviderError(e).to_dto())?;
     }
 
-    let chat_history = load_chat_history(
-        deps.sessions,
-        deps.conversation,
-        request.session_id.as_deref(),
-    );
+    let chat_history = request
+        .session_id
+        .as_deref()
+        .and_then(|sid| {
+            deps.store.map(|store| {
+                crate::conversation::Conversation::for_session(store, sid).continuation()
+            })
+        })
+        .unwrap_or_default();
 
     let all_skills = deps.skills.load_skills(workspace_path.as_deref());
     let session_agent = match request.agent_id.as_deref() {
@@ -767,35 +738,20 @@ pub async fn run_streaming_turn(
                 .trim()
                 .is_empty()
                 .then_some(EMPTY_RESPONSE_FALLBACK);
-            if let Some(sid) = &request.session_id {
-                if let Some(persistence) =
-                    successful_turn_persistence(stream_result.history.as_deref(), fallback)
+            if let (Some(sid), Some(store)) = (&request.session_id, deps.store) {
+                match crate::conversation::Conversation::for_session(store, sid)
+                    .record_success(&stream_result)
                 {
-                    let display_transcript = merge_display_transcripts(
-                        deps.sessions
-                            .persisted_snapshot(sid)
-                            .map(|snapshot| snapshot.display_transcript)
-                            .as_deref()
-                            .unwrap_or("[]"),
-                        &persistence.display_transcript,
-                    );
-                    if let Err(e) = deps.sessions.persist_turn(
-                        sid,
-                        &display_transcript,
-                        persistence.model_history.as_deref(),
-                    ) {
-                        tracing::warn!("Failed to persist session {}: {}", sid, e);
-                    } else {
-                        if let Err(e) = deps.sessions.update_status(sid, "active") {
-                            tracing::warn!("Failed to update session {} status: {}", sid, e);
-                        }
-                        deps.conversation
-                            .store_history(sid, persistence.history.clone());
+                    Ok(Some(display_transcript)) => {
                         deps.memory.schedule_ingest(MemoryIngestJobRequest {
-                            display_transcript: display_transcript.clone(),
+                            display_transcript,
                             session_id: sid.clone(),
                             workspace_id: workspace_resolution.workspace_id.clone(),
                         });
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to persist session {}: {}", sid, e);
                     }
                 }
             }
@@ -834,10 +790,12 @@ pub async fn run_streaming_turn(
                     model_prompt: &prompt_preparation.effective_prompt,
                     error: &e,
                 };
-                if let Err(error) =
-                    persist_failed_turn(deps.sessions, deps.conversation, sid, &failed_turn)
-                {
-                    tracing::warn!("Failed to persist failed session {} turn: {}", sid, error);
+                if let Some(store) = deps.store {
+                    if let Err(error) = crate::conversation::Conversation::for_session(store, sid)
+                        .record_failure(failed_turn)
+                    {
+                        tracing::warn!("Failed to persist failed session {} turn: {}", sid, error);
+                    }
                 }
             }
             deps.events.emit_error(&run_id, &e);
@@ -951,33 +909,6 @@ fn append_unresolved_notes(prompt: String, unresolved_notes: &[SessionNote]) -> 
         prompt,
         concerns_text.join("\n")
     )
-}
-
-/// Record a failed turn in the persisted session and refresh the cached Model
-/// History from the same result, so the cache and SQLite cannot diverge.
-pub fn persist_failed_turn(
-    sessions: &dyn SessionTurnSessions,
-    conversation: &dyn SessionTurnConversation,
-    session_id: &str,
-    turn: &FailedTurn<'_>,
-) -> Result<(), String> {
-    let Some(snapshot) = sessions.persisted_snapshot(session_id) else {
-        return Ok(());
-    };
-    let persistence = failure_turn_persistence(
-        &snapshot.display_transcript,
-        snapshot.model_history.as_deref(),
-        turn,
-    );
-    sessions.persist_turn(
-        session_id,
-        &persistence.display_transcript,
-        persistence.model_history.as_deref(),
-    )?;
-    if let Some(history) = persistence.history {
-        conversation.store_history(session_id, history);
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1567,6 +1498,7 @@ mod tests {
         emitted_errors: Mutex<Vec<(String, String)>>,
         verifications: Mutex<Vec<VerificationJobRequest>>,
         persist_result: Mutex<Result<(), String>>,
+        store: Option<crate::session_store::SessionStore>,
         recalled_section: Option<String>,
         recall_error: Option<String>,
         recall_requests: Mutex<Vec<MemoryRecallRequest>>,
@@ -1601,6 +1533,7 @@ mod tests {
                 emitted_errors: Mutex::new(Vec::new()),
                 verifications: Mutex::new(Vec::new()),
                 persist_result: Mutex::new(Ok(())),
+                store: None,
                 recalled_section: None,
                 recall_error: None,
                 recall_requests: Mutex::new(Vec::new()),
@@ -1608,8 +1541,38 @@ mod tests {
             }
         }
 
+        /// Seed a real in-memory Session Store with one Session row plus any
+        /// prior persisted turn state, and hand it to the turn under test.
+        fn seed_store(
+            &mut self,
+            session_id: &str,
+            display_transcript: &str,
+            model_history: Option<&str>,
+        ) {
+            let store = crate::session_store::SessionStore::in_memory_for_test().unwrap();
+            store.insert_session_with_id_for_test(session_id);
+            if display_transcript != "[]" || model_history.is_some() {
+                store
+                    .persist_turn(session_id, display_transcript, model_history)
+                    .unwrap();
+            }
+            self.store = Some(store);
+        }
+
+        /// What actually landed in SQLite for the Session — the re-mounted
+        /// replacement for the old fake persistence recordings.
+        fn stored_detail(&self, session_id: &str) -> crate::session_store::SessionDetail {
+            self.store
+                .as_ref()
+                .unwrap()
+                .get_session(session_id)
+                .unwrap()
+                .unwrap()
+        }
+
         fn deps(&self) -> StreamingTurnDependencies<'_> {
             StreamingTurnDependencies {
+                store: self.store.as_ref(),
                 workspace: self,
                 credentials: self,
                 sessions: self,
@@ -2491,59 +2454,9 @@ mod tests {
     }
 
     #[test]
-    fn chat_history_prefers_the_in_memory_cache() {
-        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Err(
-            LlmError::ProviderError("unused".to_string()),
-        ));
-        adapters.cached_history = Some(vec![user_message("cached")]);
-        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
-            display_transcript: "[]".to_string(),
-            model_history: Some(serde_json::to_string(&vec![user_message("stored")]).unwrap()),
-        });
-
-        let history = load_chat_history(&adapters, &adapters, Some("session-1"));
-
-        assert_eq!(history, vec![user_message("cached")]);
-        assert!(adapters.stored_histories.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn chat_history_rehydrates_persisted_model_history_on_cache_miss() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
-            "unused".to_string(),
-        )));
-        let stored = vec![user_message("before"), assistant_message("answer")];
-        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
-            display_transcript: "[]".to_string(),
-            model_history: Some(serde_json::to_string(&stored).unwrap()),
-        });
-
-        let history = load_chat_history(&adapters, &adapters, Some("session-1"));
-
-        assert_eq!(history, stored);
-        let stored_histories = adapters.stored_histories.lock().unwrap();
-        assert_eq!(
-            stored_histories.as_slice(),
-            &[("session-1".to_string(), stored)]
-        );
-    }
-
-    #[test]
-    fn chat_history_is_empty_when_persisted_model_history_is_unparsable() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
-            "unused".to_string(),
-        )));
-        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
-            display_transcript: "[]".to_string(),
-            model_history: Some("not json".to_string()),
-        });
-
-        assert!(load_chat_history(&adapters, &adapters, Some("session-1")).is_empty());
-        assert!(load_chat_history(&adapters, &adapters, None).is_empty());
-        assert!(adapters.stored_histories.lock().unwrap().is_empty());
-    }
-
-    #[test]
+        #[test]
+        #[test]
+        #[test]
     fn provider_failure_appends_error_and_failed_prompt_to_history() {
         let mut history = vec![user_message("before"), assistant_message("answer")];
         let existing_history = serde_json::to_string(&history).unwrap();
@@ -3108,7 +3021,7 @@ mod tests {
             user_message("write code"),
             assistant_message("```rust\nfn main() {}\n```"),
         ];
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
             full_response: "```rust\nfn main() {}\n```".to_string(),
             history: Some(history.clone()),
             source_edit_succeeded: false,
@@ -3116,6 +3029,7 @@ mod tests {
             response_tokens: 6,
             tool_calls: 1,
         }));
+        adapters.seed_store("session-1", "[]", None);
 
         let result = run_streaming_turn(
             adapters.deps(),
@@ -3204,17 +3118,9 @@ mod tests {
             "```rust\nfn main() {}\n```".to_string()
         );
 
-        let stored_histories = adapters.stored_histories.lock().unwrap();
-        assert_eq!(stored_histories.len(), 1);
-        assert_eq!(stored_histories[0].0, "session-1");
-        assert_eq!(stored_histories[0].1, history);
-        drop(stored_histories);
-
-        let persisted_turns = adapters.persisted_turns.lock().unwrap();
-        assert_eq!(persisted_turns.len(), 1);
-        assert_eq!(persisted_turns[0].session_id, "session-1");
+        let persisted = adapters.stored_detail("session-1");
         let display: serde_json::Value =
-            serde_json::from_str(&persisted_turns[0].display_transcript).unwrap();
+            serde_json::from_str(&persisted.display_transcript).unwrap();
         assert_eq!(
             display,
             json!([
@@ -3229,13 +3135,11 @@ mod tests {
             ])
         );
         let model_history: Vec<Message> =
-            serde_json::from_str(persisted_turns[0].model_history.as_ref().unwrap()).unwrap();
+            serde_json::from_str(persisted.model_history.as_ref().unwrap()).unwrap();
         assert_eq!(model_history, history);
-        drop(persisted_turns);
-
         assert_eq!(
-            *adapters.statuses.lock().unwrap(),
-            vec![("session-1".to_string(), "active".to_string())]
+            persisted.status, "active",
+            "persist_turn activates the draft in the same write"
         );
 
         let verifications = adapters.verifications.lock().unwrap();
@@ -3382,15 +3286,16 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_turn_failure_persists_controlled_stop_with_failed_prompt() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ControlledStop(
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ControlledStop(
             "Agent stopped".to_string(),
         )));
         let prior_history = vec![user_message("before"), assistant_message("answer")];
         let prior_history_json = serde_json::to_string(&prior_history).unwrap();
-        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
-            display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
-            model_history: Some(prior_history_json),
-        });
+        adapters.seed_store(
+            "session-1",
+            r#"[{"role":"user","content":"hi"}]"#,
+            Some(&prior_history_json),
+        );
 
         let err = run_streaming_turn(
             adapters.deps(),
@@ -3429,11 +3334,9 @@ mod tests {
         assert!(adapters.done_responses.lock().unwrap().is_empty());
         assert!(adapters.verifications.lock().unwrap().is_empty());
 
-        let persisted_turns = adapters.persisted_turns.lock().unwrap();
-        assert_eq!(persisted_turns.len(), 1);
-        assert_eq!(persisted_turns[0].session_id, "session-1");
+        let persisted = adapters.stored_detail("session-1");
         let model_history: Vec<Message> =
-            serde_json::from_str(persisted_turns[0].model_history.as_deref().unwrap()).unwrap();
+            serde_json::from_str(persisted.model_history.as_deref().unwrap()).unwrap();
         assert_eq!(
             model_history,
             vec![
@@ -3443,16 +3346,11 @@ mod tests {
             ]
         );
         let display: serde_json::Value =
-            serde_json::from_str(&persisted_turns[0].display_transcript).unwrap();
+            serde_json::from_str(&persisted.display_transcript).unwrap();
         assert_eq!(display[0], json!({ "role": "user", "content": "hi" }));
         assert_eq!(display[1]["content"], "Agent stopped");
         assert_eq!(display[1]["error"], false);
         assert_eq!(display[1]["controlled_stop"], true);
-        // The first entry is the cache-miss rehydration before the turn.
-        let stored_histories = adapters.stored_histories.lock().unwrap();
-        assert_eq!(stored_histories.len(), 2);
-        assert_eq!(stored_histories[1].0, "session-1");
-        assert_eq!(stored_histories[1].1, model_history);
         assert!(adapters.ingests.lock().unwrap().is_empty());
     }
 
@@ -3533,10 +3431,11 @@ mod tests {
 
     #[tokio::test]
     async fn textless_turn_emits_and_persists_the_fallback_without_touching_model_history() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
             "do the task",
             "",
         )));
+        adapters.seed_store("session-1", "[]", None);
 
         let result = run_streaming_turn(
             adapters.deps(),
@@ -3551,12 +3450,12 @@ mod tests {
             adapters.done_responses.lock().unwrap()[0].1,
             EMPTY_RESPONSE_FALLBACK
         );
-        let persisted_turns = adapters.persisted_turns.lock().unwrap();
+        let persisted = adapters.stored_detail("session-1");
         let display: serde_json::Value =
-            serde_json::from_str(&persisted_turns[0].display_transcript).unwrap();
+            serde_json::from_str(&persisted.display_transcript).unwrap();
         assert_eq!(display[1]["content"], EMPTY_RESPONSE_FALLBACK);
         let model_history: Vec<Message> =
-            serde_json::from_str(persisted_turns[0].model_history.as_deref().unwrap()).unwrap();
+            serde_json::from_str(persisted.model_history.as_deref().unwrap()).unwrap();
         assert_eq!(
             model_history,
             vec![user_message("do the task"), assistant_message("")]
@@ -3565,61 +3464,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_turn_caches_exactly_the_persisted_model_history() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
-            "boom".to_string(),
-        )));
-        // The cache is stale relative to SQLite; the persisted copy must win.
-        let mut adapters = adapters;
-        adapters.cached_history = Some(vec![user_message("stale")]);
-        let stored = vec![user_message("before"), assistant_message("answer")];
-        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
-            display_transcript: r#"[{"role":"user","content":"before"}]"#.to_string(),
-            model_history: Some(serde_json::to_string(&stored).unwrap()),
-        });
-
-        run_streaming_turn(
-            adapters.deps(),
-            streaming_request("run-fail-cache", "next", Some("session-1")),
-        )
-        .await
-        .unwrap_err();
-
-        let persisted_turns = adapters.persisted_turns.lock().unwrap();
-        let persisted: Vec<Message> =
-            serde_json::from_str(persisted_turns[0].model_history.as_deref().unwrap()).unwrap();
-        let stored_histories = adapters.stored_histories.lock().unwrap();
-        assert_eq!(stored_histories.len(), 1);
-        assert_eq!(stored_histories[0].1, persisted);
-        assert_eq!(persisted.last(), Some(&user_message("next")));
-    }
-
-    #[tokio::test]
-    async fn failed_turn_without_a_persisted_session_leaves_the_cache_alone() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ControlledStop(
-            "cancelled".to_string(),
-        )));
-
-        run_streaming_turn(
-            adapters.deps(),
-            streaming_request("run-no-session", "hi", Some("session-1")),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(adapters.persisted_turns.lock().unwrap().is_empty());
-        assert!(adapters.stored_histories.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn failed_delegated_turn_keeps_the_effective_prompt_in_model_history() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
             "boom".to_string(),
         )));
-        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
-            display_transcript: "[]".to_string(),
-            model_history: Some("[]".to_string()),
-        });
+        adapters.seed_store("session-1", "[]", Some("[]"));
         let mut request =
             streaming_request("run-delegated-fail", "original prompt", Some("session-1"));
         request.delegated_agent = Some(DelegatedAgentRequest {
@@ -3633,12 +3482,12 @@ mod tests {
 
         let sent_prompt = adapters.stream_requests.lock().unwrap()[0].prompt.clone();
         assert!(sent_prompt.contains("Delegated report from @missing"));
-        let persisted_turns = adapters.persisted_turns.lock().unwrap();
+        let persisted = adapters.stored_detail("session-1");
         let model_history: Vec<Message> =
-            serde_json::from_str(persisted_turns[0].model_history.as_deref().unwrap()).unwrap();
+            serde_json::from_str(persisted.model_history.as_deref().unwrap()).unwrap();
         assert_eq!(model_history, vec![user_message(&sent_prompt)]);
         let display: serde_json::Value =
-            serde_json::from_str(&persisted_turns[0].display_transcript).unwrap();
+            serde_json::from_str(&persisted.display_transcript).unwrap();
         assert_eq!(
             display[0],
             json!({"role": "user", "content": "original prompt"})
@@ -3823,10 +3672,11 @@ mod tests {
 
     #[tokio::test]
     async fn successful_persist_schedules_memory_ingest_once() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
             "write code",
             "```rust\nfn main() {}\n```",
         )));
+        adapters.seed_store("session-1", "[]", None);
 
         let result = run_streaming_turn(
             adapters.deps(),
@@ -3907,10 +3757,11 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_turn_recalls_and_schedules_memory_ingest() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
             "inspect",
             "looks fine",
         )));
+        adapters.seed_store("session-1", "[]", None);
 
         let result = run_streaming_turn(
             adapters.deps(),
@@ -3938,6 +3789,7 @@ mod tests {
             successful_history_turn("hello", "hi there"),
         ));
         adapters.active_workspace = None;
+        adapters.seed_store("session-1", "[]", None);
 
         let result = run_streaming_turn(
             adapters.deps(),

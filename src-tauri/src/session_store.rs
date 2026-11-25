@@ -275,6 +275,16 @@ impl SessionStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn insert_session_with_id_for_test(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title, provider, model, status) VALUES (?1, 't', 'p', 'm', 'draft')",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_updated_at_for_test(&self, session_id: &str, modifier: &str) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
