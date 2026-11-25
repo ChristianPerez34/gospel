@@ -515,7 +515,7 @@ mod tests {
 
         // Sessions store Model History as JSON between turns.
         let stored = serde_json::to_string(&first.history.unwrap()).unwrap();
-        let restored = crate::model_history::parse_model_history(&stored).unwrap();
+        let restored = crate::conversation::parse_model_history(&stored).unwrap();
 
         let second_http = sse_replies(&[FINAL_TURN]);
         crate::agent_runtime::run(

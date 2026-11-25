@@ -574,3 +574,28 @@ mod tests {
         assert_eq!(s2, "authorization: Bearer  [REDACTED]");
     }
 }
+
+/// Tool arguments as they may be shown in the UI and transcripts: `source_edit`
+/// replacement text is redacted because it can carry large or sensitive snippets.
+pub(crate) fn observable_tool_arguments(name: &str, arguments: &serde_json::Value) -> serde_json::Value {
+    if name != "source_edit" {
+        return arguments.clone();
+    }
+
+    let mut redacted = arguments.clone();
+    if let serde_json::Value::Object(map) = &mut redacted {
+        if map.contains_key("old_text") {
+            map.insert(
+                "old_text".to_string(),
+                serde_json::Value::String("[REDACTED]".to_string()),
+            );
+        }
+        if map.contains_key("new_text") {
+            map.insert(
+                "new_text".to_string(),
+                serde_json::Value::String("[REDACTED]".to_string()),
+            );
+        }
+    }
+    redacted
+}
