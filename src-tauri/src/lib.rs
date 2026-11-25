@@ -2774,6 +2774,7 @@ async fn generate_session_title(
 }
 
 #[allow(unused_imports)] // transitional re-export shim; dies when consumers migrate in step 3
+use crate::conversation::ExportFormat;
 use crate::conversation::projection::{
     parse_display_transcript, project_debug, project_transcript, slice_display_transcript,
 };
@@ -2798,8 +2799,8 @@ fn get_session(
     tail: Option<u32>,
     before: Option<u32>,
 ) -> Result<SessionTranscriptPage, String> {
-    let detail = match &session_store.store {
-        Some(store) => authorized_session_detail(store, &session_id, app_config.inner())?,
+    let store = match &session_store.store {
+        Some(store) => store,
         None => {
             return Err(session_store
                 .init_warning
@@ -2807,6 +2808,7 @@ fn get_session(
                 .unwrap_or_else(|| "Session store is unavailable".to_string()));
         }
     };
+    let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
 
     // Hydrate the in-memory conversation store with the persisted Model History
     // so a subsequent `complete_streaming` call can continue the conversation
@@ -2832,20 +2834,21 @@ fn get_session(
         }
     }
 
-    let (display_transcript, transcript_start, transcript_total) =
-        slice_display_transcript(&detail.display_transcript, tail, before);
+    let conversation = crate::conversation::Conversation::for_session(store, &session_id);
+    let page = conversation
+        .transcript_page(crate::conversation::TranscriptPageRequest { tail, before })
+        .map_err(|error| error.to_string())?;
     Ok(SessionTranscriptPage {
         id: detail.id,
-        display_transcript,
-        transcript_start,
-        transcript_total,
+        display_transcript: page.entries_json,
+        transcript_start: page.start,
+        transcript_total: page.total,
     })
 }
 
 #[tauri::command]
 fn run_session_message_action(
     session_store: tauri::State<'_, SessionStoreState>,
-    conversation_state: tauri::State<'_, ConversationState>,
     app_config: tauri::State<'_, AppConfigState>,
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     request: session_actions::MessageActionRequest,
@@ -2855,78 +2858,29 @@ fn run_session_message_action(
         .as_ref()
         .ok_or("Session store is unavailable")?;
     streaming_handles.mutate_if_idle([request.session_id.as_str()], || {
-        let source = authorized_session_detail(store, &request.session_id, app_config.inner())?;
-        session_actions::validate_turn_count(
-            source.model_history.as_deref(),
-            request.expected_user_turns,
-            (!request.fork && request.failed_response).then_some(request.turn_count),
-        )?;
-        let fork_turn_index = match request.fork {
-            true => Some(
-                request
-                    .turn_count
-                    .checked_sub(1)
-                    .ok_or("No user turn to fork")?,
-            ),
-            false => None,
-        };
-        let history = if let Some(turn_index) = fork_turn_index {
-            session_actions::history_through_response(
-                source.model_history.as_deref(),
-                turn_index,
-                &request.response_text,
-            )?
-        } else {
-            session_actions::history_before_turn(
-                source.model_history.as_deref(),
-                request.turn_count,
-            )?
-        };
-        let persistence = session_turn::successful_turn_persistence(Some(&history), None)
-            .ok_or("Unable to prepare conversation history")?;
-        let model_history = persistence
-            .model_history
-            .as_deref()
-            .ok_or("Unable to save conversation history")?;
-        // A retried prompt stays in the saved transcript (unlike model
-        // history, which the new turn re-extends itself) so a failed or
-        // abandoned retry cannot silently drop it from the user's record.
-        // Both transcript slices preserve turns pruned from Model History.
-        let display_transcript = if let Some(turn_index) = fork_turn_index {
-            session_actions::transcript_through_response(
-                &source.display_transcript,
-                turn_index,
-                &request.response_text,
-            )?
-        } else {
-            session_actions::transcript_through_prompt(
-                &source.display_transcript,
-                request.turn_count,
-                &request.retry_prompt,
-            )?
-        };
+        // Workspace authorization stays at the command layer; the
+        // Conversation owns every history-shaped consequence of the action.
+        authorized_session_detail(store, &request.session_id, app_config.inner())?;
+        let conversation = crate::conversation::Conversation::for_session(store, &request.session_id);
         let detail = if request.fork {
-            store
-                .fork_session(&request.session_id, &display_transcript, model_history)
-                .map_err(|error| error.to_string())?
+            let prompt_index = request
+                .turn_count
+                .checked_sub(1)
+                .ok_or("No user turn to fork")?;
+            conversation.fork(crate::conversation::ForkTarget {
+                prompt_index,
+                expected_user_turns: request.expected_user_turns,
+                response_text: &request.response_text,
+            })
         } else {
-            store
-                .persist_turn(
-                    &request.session_id,
-                    &display_transcript,
-                    Some(model_history),
-                )
-                .map_err(|error| error.to_string())?;
-            store
-                .get_session(&request.session_id)
-                .map_err(|error| error.to_string())?
-                .ok_or("Session not found")?
-        };
-        conversation_state
-            .store
-            .lock()
-            .unwrap()
-            .store_history(&detail.id, history);
+            conversation.retry(crate::conversation::RetryTarget {
+                prompt_index: request.turn_count,
+                expected_user_turns: request.expected_user_turns,
+                failed_response: request.failed_response,
+                prompt: &request.retry_prompt,
+            })
+        }
+        .map_err(|error| error.to_string())?;
         Ok(detail)
     })
 }
@@ -3298,14 +3252,6 @@ fn cleanup_stale_drafts(
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ExportFormat {
-    Transcript,
-    Debug,
-    Internal,
-}
-
 #[tauri::command]
 fn export_session(
     session_store: tauri::State<'_, SessionStoreState>,
@@ -3317,11 +3263,16 @@ fn export_session(
         Some(store) => {
             let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
 
-            match format {
-                ExportFormat::Transcript => Ok(project_transcript(&detail.display_transcript)),
-                ExportFormat::Debug => Ok(project_debug(&detail.display_transcript)),
-                ExportFormat::Internal => {
-                    // Full internal: Display Transcript + Model History
+            let conversation = crate::conversation::Conversation::for_session(store, &session_id);
+            match conversation
+                .export_projection(format)
+                .map_err(|error| error.to_string())?
+            {
+                crate::conversation::ExportProjection::Transcript(text) => Ok(text),
+                crate::conversation::ExportProjection::Debug(text) => Ok(text),
+                crate::conversation::ExportProjection::Internal(history) => {
+                    // The command adds the metadata envelope; the history
+                    // shapes inside are the Conversation's projection.
                     let export = serde_json::json!({
                         "session": {
                             "id": detail.id,
@@ -3333,10 +3284,8 @@ fn export_session(
                             "created_at": detail.created_at,
                             "updated_at": detail.updated_at,
                         },
-                        "display_transcript": serde_json::from_str::<serde_json::Value>(&detail.display_transcript)
-                            .unwrap_or(serde_json::json!([])),
-                        "model_history": detail.model_history.as_ref()
-                            .and_then(|h| serde_json::from_str::<serde_json::Value>(h).ok()),
+                        "display_transcript": history.display_transcript,
+                        "model_history": history.model_history,
                     });
                     serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
                 }
