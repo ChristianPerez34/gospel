@@ -65,7 +65,6 @@ pub struct StreamingTurnDependencies<'a> {
     pub workspace: &'a dyn SessionTurnWorkspace,
     pub credentials: &'a dyn SessionTurnCredentials,
     pub sessions: &'a dyn SessionTurnSessions,
-    pub conversation: &'a dyn SessionTurnConversation,
     pub skills: &'a dyn SessionTurnSkills,
     pub agents: &'a dyn SessionTurnAgents,
     pub llm: &'a dyn SessionTurnLlm,
@@ -93,15 +92,6 @@ pub trait SessionTurnSessions: Send + Sync {
 
     fn unresolved_notes(&self, session_id: &str) -> Vec<SessionNote>;
 
-    fn persisted_snapshot(&self, session_id: &str) -> Option<SessionSnapshot>;
-
-    fn persist_turn(
-        &self,
-        session_id: &str,
-        display_transcript: &str,
-        model_history: Option<&str>,
-    ) -> Result<(), String>;
-
     fn update_model_selection(
         &self,
         session_id: &str,
@@ -110,19 +100,6 @@ pub trait SessionTurnSessions: Send + Sync {
         variant: Option<&str>,
     ) -> Result<(), String>;
 
-    fn update_status(&self, session_id: &str, status: &str) -> Result<(), String>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionSnapshot {
-    pub display_transcript: String,
-    pub model_history: Option<String>,
-}
-
-pub trait SessionTurnConversation: Send + Sync {
-    /// `None` means the session has no in-memory entry, not an empty history.
-    fn cached_history(&self, session_id: &str) -> Option<Vec<Message>>;
-    fn store_history(&self, session_id: &str, history: Vec<Message>);
 }
 
 pub trait SessionTurnSkills: Send + Sync {
@@ -1450,13 +1427,7 @@ mod tests {
         },
     }
 
-    #[derive(Debug)]
-    struct PersistedTurn {
-        session_id: String,
-        display_transcript: String,
-        model_history: Option<String>,
-    }
-
+    
     #[derive(Debug)]
     struct CapturedStreamRequest {
         provider: String,
@@ -1481,11 +1452,6 @@ mod tests {
         api_key: String,
         validated_bindings: Mutex<Vec<(String, Option<String>)>>,
         unresolved_notes: Vec<SessionNote>,
-        persisted_snapshot: Mutex<Option<SessionSnapshot>>,
-        persisted_turns: Mutex<Vec<PersistedTurn>>,
-        statuses: Mutex<Vec<(String, String)>>,
-        cached_history: Option<Vec<Message>>,
-        stored_histories: Mutex<Vec<(String, Vec<Message>)>>,
         skills: Vec<Skill>,
         agents: Vec<AgentDefinition>,
         stream_result: Mutex<Option<Result<StreamCompletionResult, LlmError>>>,
@@ -1497,7 +1463,6 @@ mod tests {
         done_responses: Mutex<Vec<(String, String)>>,
         emitted_errors: Mutex<Vec<(String, String)>>,
         verifications: Mutex<Vec<VerificationJobRequest>>,
-        persist_result: Mutex<Result<(), String>>,
         store: Option<crate::session_store::SessionStore>,
         recalled_section: Option<String>,
         recall_error: Option<String>,
@@ -1516,11 +1481,6 @@ mod tests {
                 api_key: "api-key".to_string(),
                 validated_bindings: Mutex::new(Vec::new()),
                 unresolved_notes: Vec::new(),
-                persisted_snapshot: Mutex::new(None),
-                persisted_turns: Mutex::new(Vec::new()),
-                statuses: Mutex::new(Vec::new()),
-                cached_history: None,
-                stored_histories: Mutex::new(Vec::new()),
                 skills: Vec::new(),
                 agents: Vec::new(),
                 stream_result: Mutex::new(Some(result)),
@@ -1532,7 +1492,6 @@ mod tests {
                 done_responses: Mutex::new(Vec::new()),
                 emitted_errors: Mutex::new(Vec::new()),
                 verifications: Mutex::new(Vec::new()),
-                persist_result: Mutex::new(Ok(())),
                 store: None,
                 recalled_section: None,
                 recall_error: None,
@@ -1576,7 +1535,6 @@ mod tests {
                 workspace: self,
                 credentials: self,
                 sessions: self,
-                conversation: self,
                 skills: self,
                 agents: self,
                 llm: self,
@@ -1620,25 +1578,6 @@ mod tests {
             self.unresolved_notes.clone()
         }
 
-        fn persisted_snapshot(&self, _session_id: &str) -> Option<SessionSnapshot> {
-            self.persisted_snapshot.lock().unwrap().clone()
-        }
-
-        fn persist_turn(
-            &self,
-            session_id: &str,
-            display_transcript: &str,
-            model_history: Option<&str>,
-        ) -> Result<(), String> {
-            self.persist_result.lock().unwrap().clone()?;
-            self.persisted_turns.lock().unwrap().push(PersistedTurn {
-                session_id: session_id.to_string(),
-                display_transcript: display_transcript.to_string(),
-                model_history: model_history.map(str::to_string),
-            });
-            Ok(())
-        }
-
         fn update_model_selection(
             &self,
             session_id: &str,
@@ -1655,34 +1594,9 @@ mod tests {
             Ok(())
         }
 
-        fn update_status(&self, session_id: &str, status: &str) -> Result<(), String> {
-            self.statuses
-                .lock()
-                .unwrap()
-                .push((session_id.to_string(), status.to_string()));
-            Ok(())
-        }
     }
 
-    impl SessionTurnConversation for FakeSessionTurnAdapters {
-        fn cached_history(&self, _session_id: &str) -> Option<Vec<Message>> {
-            self.stored_histories
-                .lock()
-                .unwrap()
-                .last()
-                .map(|(_, history)| history.clone())
-                .or_else(|| self.cached_history.clone())
-        }
-
-        fn store_history(&self, session_id: &str, history: Vec<Message>) {
-            self.stored_histories
-                .lock()
-                .unwrap()
-                .push((session_id.to_string(), history));
-        }
-    }
-
-    impl SessionTurnSkills for FakeSessionTurnAdapters {
+        impl SessionTurnSkills for FakeSessionTurnAdapters {
         fn load_skills(&self, _workspace_path: Option<&Path>) -> Vec<Skill> {
             self.skills.clone()
         }
@@ -3710,11 +3624,13 @@ mod tests {
 
     #[tokio::test]
     async fn persist_failure_does_not_schedule_memory_ingest() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(successful_history_turn(
             "write code",
             "```rust\nfn main() {}\n```",
         )));
-        *adapters.persist_result.lock().unwrap() = Err("disk full".to_string());
+        // A store without the session row makes every persist fail; the turn
+        // still completes but no Memory ingest may be scheduled.
+        adapters.store = Some(crate::session_store::SessionStore::in_memory_for_test().unwrap());
 
         let result = run_streaming_turn(
             adapters.deps(),
@@ -3727,22 +3643,28 @@ mod tests {
 
         assert_eq!(adapters.recall_requests.lock().unwrap().len(), 1);
         assert!(adapters.ingests.lock().unwrap().is_empty());
-        assert!(adapters.statuses.lock().unwrap().is_empty());
-        assert!(adapters.persisted_turns.lock().unwrap().is_empty());
+        assert!(adapters
+            .store
+            .as_ref()
+            .unwrap()
+            .get_session("session-1")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn provider_failure_does_not_schedule_memory_ingest() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Err(LlmError::ProviderError(
             "boom".to_string(),
         )));
         let model_history =
             serde_json::to_string(&vec![user_message("prior"), assistant_message("answer")])
                 .unwrap();
-        *adapters.persisted_snapshot.lock().unwrap() = Some(SessionSnapshot {
-            display_transcript: r#"[{"role":"user","content":"hi"}]"#.to_string(),
-            model_history: Some(model_history),
-        });
+        adapters.seed_store(
+            "session-1",
+            r#"[{"role":"user","content":"hi"}]"#,
+            Some(&model_history),
+        );
 
         let err = run_streaming_turn(
             adapters.deps(),
@@ -3815,7 +3737,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_stream_without_model_history_does_not_schedule_memory_ingest() {
-        let adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
+        let mut adapters = FakeSessionTurnAdapters::with_stream_result(Ok(StreamCompletionResult {
             full_response: "done".to_string(),
             history: None,
             source_edit_succeeded: false,
@@ -3823,6 +3745,7 @@ mod tests {
             response_tokens: 1,
             tool_calls: 0,
         }));
+        adapters.seed_store("session-1", "[]", None);
 
         let result = run_streaming_turn(
             adapters.deps(),
@@ -3835,7 +3758,11 @@ mod tests {
 
         assert_eq!(adapters.recall_requests.lock().unwrap().len(), 1);
         assert!(adapters.ingests.lock().unwrap().is_empty());
-        assert!(adapters.persisted_turns.lock().unwrap().is_empty());
+        assert_eq!(
+            adapters.stored_detail("session-1").model_history,
+            None,
+            "nothing is persisted without provider history"
+        );
     }
 
     #[tokio::test]

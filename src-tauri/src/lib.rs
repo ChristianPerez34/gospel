@@ -1325,29 +1325,6 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn persisted_snapshot(&self, session_id: &str) -> Option<session_turn::SessionSnapshot> {
-        let store = self.session_store_state.store.as_ref()?;
-        let detail = store.get_session(session_id).ok().flatten()?;
-        Some(session_turn::SessionSnapshot {
-            display_transcript: detail.display_transcript,
-            model_history: detail.model_history,
-        })
-    }
-
-    fn persist_turn(
-        &self,
-        session_id: &str,
-        display_transcript: &str,
-        model_history: Option<&str>,
-    ) -> Result<(), String> {
-        match &self.session_store_state.store {
-            Some(store) => store
-                .persist_turn(session_id, display_transcript, model_history)
-                .map_err(|e| e.to_string()),
-            None => Err("session store unavailable".to_string()),
-        }
-    }
-
     fn update_model_selection(
         &self,
         session_id: &str,
@@ -1363,26 +1340,6 @@ impl session_turn::SessionTurnSessions for TauriSessionTurnAdapters<'_> {
         }
     }
 
-    fn update_status(&self, session_id: &str, status: &str) -> Result<(), String> {
-        match &self.session_store_state.store {
-            Some(store) => store
-                .update_status(session_id, status)
-                .map_err(|e| e.to_string()),
-            None => Err("session store unavailable".to_string()),
-        }
-    }
-}
-
-impl session_turn::SessionTurnConversation for TauriSessionTurnAdapters<'_> {
-    fn cached_history(&self, session_id: &str) -> Option<Vec<rig::completion::message::Message>> {
-        let mut store = self.conversation_state.store.lock().unwrap();
-        store.get_history_if_present(session_id)
-    }
-
-    fn store_history(&self, session_id: &str, history: Vec<rig::completion::message::Message>) {
-        let mut store = self.conversation_state.store.lock().unwrap();
-        store.store_history(session_id, history);
-    }
 }
 
 impl session_turn::SessionTurnSkills for TauriSessionTurnAdapters<'_> {
@@ -1647,7 +1604,6 @@ async fn complete_streaming(
             workspace: &adapters,
             credentials: &adapters,
             sessions: &adapters,
-            conversation: &adapters,
             skills: &adapters,
             agents: &adapters,
             llm: &adapters,
