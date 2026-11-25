@@ -5,9 +5,14 @@
 //! authorization, in-flight-turn guards, cancellation, and Session Turn Events
 //! stay outside.
 
+use super::migration::parse_model_history;
 use super::projection;
+use super::pruning::prune_history_for_storage;
 use super::slicing;
+use super::transcript::{self, merge_display_transcripts, successful_turn_persistence, FailedTurn, EMPTY_RESPONSE_FALLBACK};
+use crate::llm::StreamCompletionResult;
 use crate::session_store::{SessionDetail, SessionStore, SessionStoreError};
+use rig::completion::message::Message;
 
 /// One Session's Conversation, borrowed over the Session Store.
 ///
@@ -82,6 +87,97 @@ impl<'store> Conversation<'store> {
 
     fn detail(&self) -> Result<Option<SessionDetail>, ConversationError> {
         Ok(self.store.get_session(&self.session_id)?)
+    }
+
+    /// Load the provider-native continuation for a new Session Turn: read the
+    /// row, run legacy migration, then prune — without writing either back.
+    /// Deliberately total: a missing row, missing history, unreadable row, or
+    /// malformed history yields an empty continuation after logging, matching
+    /// the previous cache-miss behavior. Consecutive user messages survive.
+    pub(crate) fn continuation(&self) -> Vec<Message> {
+        let detail = match self.detail() {
+            Ok(Some(detail)) => detail,
+            Ok(None) => return Vec::new(),
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to read session {} for continuation: {}",
+                    self.session_id,
+                    error
+                );
+                return Vec::new();
+            }
+        };
+        let Some(raw) = detail.model_history.as_deref() else {
+            return Vec::new();
+        };
+        match parse_model_history(raw) {
+            Ok(messages) => prune_history_for_storage(messages),
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to parse model history for session {}: {}",
+                    self.session_id,
+                    error
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Persist a successfully completed Session Turn. `completion` must be the
+    /// exact result returned by the agent runtime; its history is the full
+    /// continuation plus this Turn's exchange. The empty-response fallback is
+    /// a Display Transcript rule and never enters Model History.
+    ///
+    /// Returns the merged Display Transcript for Memory ingest, or `None`
+    /// when nothing was written (no persistable history, or the row is gone).
+    pub(crate) fn record_success(
+        &self,
+        completion: &StreamCompletionResult,
+    ) -> Result<Option<String>, ConversationError> {
+        let fallback = completion
+            .full_response
+            .trim()
+            .is_empty()
+            .then_some(EMPTY_RESPONSE_FALLBACK);
+        let Some(persistence) =
+            successful_turn_persistence(completion.history.as_deref(), fallback)
+        else {
+            return Ok(None);
+        };
+        let existing = self
+            .detail()?
+            .map(|detail| detail.display_transcript)
+            .unwrap_or_else(|| "[]".to_string());
+        let display_transcript =
+            merge_display_transcripts(&existing, &persistence.display_transcript);
+        self.store.persist_turn(
+            &self.session_id,
+            &display_transcript,
+            persistence.model_history.as_deref(),
+        )?;
+        Ok(Some(display_transcript))
+    }
+
+    /// Persist a provider/runtime failure or a Controlled Stop. Only the
+    /// effective prompt is appended to Model History, as one plain user
+    /// message; partial output and tool activity from the failed run are never
+    /// written. A missing row is a no-op; malformed persisted history is left
+    /// unchanged and the failure row becomes display-only.
+    pub(crate) fn record_failure(&self, turn: FailedTurn<'_>) -> Result<(), ConversationError> {
+        let Some(detail) = self.detail()? else {
+            return Ok(());
+        };
+        let persistence = transcript::failure_turn_persistence(
+            &detail.display_transcript,
+            detail.model_history.as_deref(),
+            &turn,
+        );
+        self.store.persist_turn(
+            &self.session_id,
+            &persistence.display_transcript,
+            persistence.model_history.as_deref(),
+        )?;
+        Ok(())
     }
 
     /// Prepare a Retry: validate the optimistic turn count, truncate Model
