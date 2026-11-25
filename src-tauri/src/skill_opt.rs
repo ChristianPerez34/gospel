@@ -72,7 +72,7 @@ impl std::error::Error for ApplyEditsError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarvestedTranscript {
     pub session_id: String,
-    pub display_transcript: String,
+    pub entries: Vec<crate::conversation::SkillHarvestEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -576,46 +576,34 @@ pub fn harvest_skill_tasks(
     let mut tasks = Vec::new();
 
     for transcript in transcripts {
-        let entries =
-            serde_json::from_str::<Vec<Value>>(&transcript.display_transcript).unwrap_or_default();
         let mut pending: Option<SkillTask> = None;
 
-        for entry in entries {
-            let role = entry.get("role").and_then(Value::as_str).unwrap_or("");
-            if role == "user" {
-                if let Some(task) = pending.take() {
-                    tasks.push(task);
+        for entry in &transcript.entries {
+            match entry {
+                crate::conversation::SkillHarvestEntry::User { content } => {
+                    if let Some(task) = pending.take() {
+                        tasks.push(task);
+                    }
+                    let Some(captures) = slash.captures(content.trim()) else {
+                        continue;
+                    };
+                    if captures.get(1).map(|m| m.as_str()) != Some(skill_name) {
+                        continue;
+                    }
+                    let prompt = captures
+                        .get(2)
+                        .map(|m| m.as_str().trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| content.trim().to_string());
+                    pending = Some(SkillTask {
+                        session_id: transcript.session_id.clone(),
+                        prompt,
+                        tool_names: Vec::new(),
+                    });
                 }
-                let content = entry.get("content").and_then(Value::as_str).unwrap_or("");
-                let Some(captures) = slash.captures(content.trim()) else {
-                    continue;
-                };
-                if captures.get(1).map(|m| m.as_str()) != Some(skill_name) {
-                    continue;
-                }
-                let prompt = captures
-                    .get(2)
-                    .map(|m| m.as_str().trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| content.trim().to_string());
-                pending = Some(SkillTask {
-                    session_id: transcript.session_id.clone(),
-                    prompt,
-                    tool_names: Vec::new(),
-                });
-            } else if role == "assistant" {
-                if let Some(task) = pending.as_mut() {
-                    if let Some(blocks) = entry.get("blocks").and_then(Value::as_array) {
-                        for block in blocks {
-                            if block.get("kind").and_then(Value::as_str) != Some("tool") {
-                                continue;
-                            }
-                            if let Some(name) = block.get("name").and_then(Value::as_str) {
-                                if !name.is_empty() {
-                                    task.tool_names.push(name.to_string());
-                                }
-                            }
-                        }
+                crate::conversation::SkillHarvestEntry::Assistant { tool_names } => {
+                    if let Some(task) = pending.as_mut() {
+                        task.tool_names.extend(tool_names.iter().cloned());
                     }
                 }
             }
@@ -1296,30 +1284,26 @@ mod tests {
 
     #[test]
     fn harvest_keeps_invoked_prompts_and_tool_names_without_arguments() {
-        let transcript = serde_json::json!([
-            {"role": "user", "content": "/tdd add a failing test"},
-            {
-                "role": "assistant",
-                "content": "writing it",
-                "blocks": [
-                    {
-                        "kind": "tool",
-                        "name": "source_edit",
-                        "arguments": {"old_text": "secret old", "new_text": "secret new"},
-                        "result": "secret result"
-                    }
-                ]
+        let entries = vec![
+            crate::conversation::SkillHarvestEntry::User {
+                content: "/tdd add a failing test".to_string(),
             },
-            {"role": "user", "content": "/diagnose flaky stream"},
-            {"role": "user", "content": "please use tdd without a slash"}
-        ])
-        .to_string();
+            crate::conversation::SkillHarvestEntry::Assistant {
+                tool_names: vec!["source_edit".to_string()],
+            },
+            crate::conversation::SkillHarvestEntry::User {
+                content: "/diagnose flaky stream".to_string(),
+            },
+            crate::conversation::SkillHarvestEntry::User {
+                content: "please use tdd without a slash".to_string(),
+            },
+        ];
 
         let tasks = harvest_skill_tasks(
             "tdd",
             &[HarvestedTranscript {
                 session_id: "session-1".to_string(),
-                display_transcript: transcript,
+                entries,
             }],
         );
 

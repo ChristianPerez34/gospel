@@ -2232,12 +2232,14 @@ fn harvest_workspace_skill_tasks(
         let Some(store) = session_store.store.as_ref() else {
             break;
         };
-        let Ok(Some(detail)) = store.get_session(&record.id) else {
+        let Ok(entries) = crate::conversation::Conversation::for_session(store, &record.id)
+            .skill_harvest_entries()
+        else {
             continue;
         };
         transcripts.push(skill_opt::HarvestedTranscript {
-            session_id: detail.id,
-            display_transcript: detail.display_transcript,
+            session_id: record.id.clone(),
+            entries,
         });
     }
 

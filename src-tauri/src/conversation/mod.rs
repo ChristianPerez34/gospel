@@ -7,7 +7,7 @@ pub(crate) mod projection;
 pub(crate) mod slicing;
 pub(crate) mod transcript;
 
-pub(crate) use interface::{Conversation, ExportFormat, ForkTarget, RetryTarget};
+pub(crate) use interface::{Conversation, ExportFormat, ForkTarget, RetryTarget, SkillHarvestEntry};
 #[cfg(test)]
 pub(crate) use interface::ConversationError;
 pub(crate) use migration::parse_model_history;

@@ -77,6 +77,16 @@ pub(crate) enum ExportFormat {
     Internal,
 }
 
+/// One transcript entry in the exact form skill harvesting consumes: user
+/// text as displayed, or the ordered non-empty tool names of one assistant
+/// entry. Entries of other roles are dropped; malformed transcripts yield an
+/// empty feed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SkillHarvestEntry {
+    User { content: String },
+    Assistant { tool_names: Vec<String> },
+}
+
 impl<'store> Conversation<'store> {
     pub(crate) fn for_session(store: &'store SessionStore, session_id: &str) -> Self {
         Self {
@@ -273,5 +283,46 @@ impl<'store> Conversation<'store> {
                 .as_ref()
                 .and_then(|history| serde_json::from_str(history).ok()),
         ))
+    }
+
+    /// Read the Display Transcript as the typed feed skill harvesting
+    /// consumes, keeping transcript JSON shape out of skill_opt. Assistant
+    /// entries are present even with no tool names so ordering between user
+    /// turns is preserved.
+    pub(crate) fn skill_harvest_entries(
+        &self,
+    ) -> Result<Vec<SkillHarvestEntry>, ConversationError> {
+        let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
+        let entries = projection::parse_display_transcript(&detail.display_transcript);
+        let mut feed = Vec::new();
+        for entry in &entries {
+            match entry.get("role").and_then(|role| role.as_str()) {
+                Some("user") => feed.push(SkillHarvestEntry::User {
+                    content: entry
+                        .get("content")
+                        .and_then(|content| content.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                }),
+                Some("assistant") => {
+                    let mut tool_names = Vec::new();
+                    if let Some(blocks) = entry.get("blocks").and_then(|b| b.as_array()) {
+                        for block in blocks {
+                            if block.get("kind").and_then(|kind| kind.as_str()) != Some("tool") {
+                                continue;
+                            }
+                            if let Some(name) = block.get("name").and_then(|name| name.as_str()) {
+                                if !name.is_empty() {
+                                    tool_names.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                    feed.push(SkillHarvestEntry::Assistant { tool_names });
+                }
+                _ => {}
+            }
+        }
+        Ok(feed)
     }
 }

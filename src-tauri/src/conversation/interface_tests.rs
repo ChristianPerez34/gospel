@@ -461,3 +461,20 @@ fn continuation_is_empty_for_missing_or_malformed_history() {
     store.persist_turn(&record.id, "[]", Some("garbage")).unwrap();
     assert!(conv(&store, &record.id).continuation().is_empty());
 }
+
+#[test]
+fn skill_harvest_entries_expose_user_text_and_tool_names() {
+    let (store, id) = store_and_conversation();
+    conv(&store, &id)
+        .record_success(&completion("a1", exchange("/skill do a thing", "a1")))
+        .unwrap();
+    let entries = conv(&store, &id).skill_harvest_entries().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0],
+        SkillHarvestEntry::User {
+            content: "/skill do a thing".to_string()
+        }
+    );
+    assert!(matches!(entries[1], SkillHarvestEntry::Assistant { .. }));
+}
