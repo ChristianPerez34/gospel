@@ -7,7 +7,9 @@ pub(crate) mod projection;
 pub(crate) mod slicing;
 pub(crate) mod transcript;
 
-pub(crate) use interface::{Conversation, ConversationError, ExportFormat, ExportProjection, FailedTurn, ForkTarget, RetryTarget, SkillHarvestEntry, TranscriptPage, TranscriptPageRequest};
+pub(crate) use interface::{Conversation, ExportFormat, ForkTarget, RetryTarget};
+#[cfg(test)]
+pub(crate) use interface::ConversationError;
 pub(crate) use migration::parse_model_history;
 pub(crate) use pruning::prune_history_for_storage;
 #[cfg(test)]
@@ -73,6 +75,13 @@ impl ConversationStore {
             .entry(session_id.to_string())
             .or_default();
         *entry = new_messages;
+    }
+
+    pub(crate) fn remove_history(&mut self, session_id: &str) {
+        self.conversations.remove(session_id);
+        if let Some(pos) = self.access_order.iter().position(|id| id == session_id) {
+            self.access_order.remove(pos);
+        }
     }
 }
 

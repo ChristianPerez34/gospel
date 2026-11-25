@@ -5,18 +5,9 @@
 //! authorization, in-flight-turn guards, cancellation, and Session Turn Events
 //! stay outside.
 
-use super::migration::parse_model_history;
 use super::projection;
-use super::pruning::prune_history_for_storage;
 use super::slicing;
-use super::transcript::{
-    self, merge_display_transcripts, successful_turn_persistence, EMPTY_RESPONSE_FALLBACK,
-};
-use crate::llm::StreamCompletionResult;
 use crate::session_store::{SessionDetail, SessionStore, SessionStoreError};
-use rig::completion::message::Message;
-
-pub(crate) use super::transcript::FailedTurn;
 
 /// One Session's Conversation, borrowed over the Session Store.
 ///
@@ -49,8 +40,6 @@ pub(crate) enum ConversationError {
     UnwriteableDisplayTranscript(String),
     #[error("Unable to save conversation history")]
     UnwriteableModelHistory,
-    #[error("No user turn to fork")]
-    NoUserTurn,
 }
 
 /// Selection for a Retry. `prompt_index` is the zero-based position of the
@@ -74,19 +63,6 @@ pub(crate) struct ForkTarget<'a> {
     pub response_text: &'a str,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TranscriptPageRequest {
-    pub tail: Option<u32>,
-    pub before: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct TranscriptPage {
-    pub entries_json: String,
-    pub start: usize,
-    pub total: usize,
-}
-
 /// Export formats understood by the Conversation. Also the Tauri wire type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -94,32 +70,6 @@ pub(crate) enum ExportFormat {
     Transcript,
     Debug,
     Internal,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ExportProjection {
-    Transcript(String),
-    Debug(String),
-    Internal(InternalHistoryExport),
-}
-
-/// The history portion of an Internal export: stored shapes, neither migrated
-/// nor pruned. Session metadata is added by the caller; it is not part of the
-/// Conversation.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct InternalHistoryExport {
-    pub display_transcript: serde_json::Value,
-    pub model_history: Option<serde_json::Value>,
-}
-
-/// One transcript entry in the exact form skill harvesting consumes: user
-/// text as displayed, or the ordered non-empty tool names of one assistant
-/// entry. Entries of other roles are dropped; malformed transcripts yield an
-/// empty feed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SkillHarvestEntry {
-    User { content: String },
-    Assistant { tool_names: Vec<String> },
 }
 
 impl<'store> Conversation<'store> {
@@ -134,97 +84,6 @@ impl<'store> Conversation<'store> {
         Ok(self.store.get_session(&self.session_id)?)
     }
 
-    /// Load the provider-native continuation for a new Session Turn: read the
-    /// row, run legacy migration, then prune — without writing either back.
-    /// Deliberately total: a missing row, missing history, unreadable row, or
-    /// malformed history yields an empty continuation after logging, matching
-    /// the previous cache-miss behavior. Consecutive user messages survive.
-    pub(crate) fn continuation(&self) -> Vec<Message> {
-        let detail = match self.detail() {
-            Ok(Some(detail)) => detail,
-            Ok(None) => return Vec::new(),
-            Err(error) => {
-                tracing::warn!(
-                    "Failed to read session {} for continuation: {}",
-                    self.session_id,
-                    error
-                );
-                return Vec::new();
-            }
-        };
-        let Some(raw) = detail.model_history.as_deref() else {
-            return Vec::new();
-        };
-        match parse_model_history(raw) {
-            Ok(messages) => prune_history_for_storage(messages),
-            Err(error) => {
-                tracing::warn!(
-                    "Failed to parse model history for session {}: {}",
-                    self.session_id,
-                    error
-                );
-                Vec::new()
-            }
-        }
-    }
-
-    /// Persist a successfully completed Session Turn. `completion` must be the
-    /// exact result returned by the agent runtime; its history is the full
-    /// continuation plus this Turn's exchange. The empty-response fallback is
-    /// a Display Transcript rule and never enters Model History.
-    ///
-    /// Returns the merged Display Transcript for Memory ingest, or `None`
-    /// when nothing was written (no persistable history, or the row is gone).
-    pub(crate) fn record_success(
-        &self,
-        completion: &StreamCompletionResult,
-    ) -> Result<Option<String>, ConversationError> {
-        let fallback = completion
-            .full_response
-            .trim()
-            .is_empty()
-            .then_some(EMPTY_RESPONSE_FALLBACK);
-        let Some(persistence) =
-            successful_turn_persistence(completion.history.as_deref(), fallback)
-        else {
-            return Ok(None);
-        };
-        let existing = self
-            .detail()?
-            .map(|detail| detail.display_transcript)
-            .unwrap_or_else(|| "[]".to_string());
-        let display_transcript =
-            merge_display_transcripts(&existing, &persistence.display_transcript);
-        self.store.persist_turn(
-            &self.session_id,
-            &display_transcript,
-            persistence.model_history.as_deref(),
-        )?;
-        Ok(Some(display_transcript))
-    }
-
-    /// Persist a provider/runtime failure or a Controlled Stop. Only the
-    /// effective prompt is appended to Model History, as one plain user
-    /// message; partial output and tool activity from the failed run are never
-    /// written. A missing row is a no-op; malformed persisted history is left
-    /// unchanged and the failure row becomes display-only.
-    pub(crate) fn record_failure(&self, turn: FailedTurn<'_>) -> Result<(), ConversationError> {
-        let Some(detail) = self.detail()? else {
-            return Ok(());
-        };
-        let persistence = transcript::failure_turn_persistence(
-            &detail.display_transcript,
-            detail.model_history.as_deref(),
-            &turn,
-        );
-        self.store.persist_turn(
-            &self.session_id,
-            &persistence.display_transcript,
-            persistence.model_history.as_deref(),
-        )?;
-        Ok(())
-    }
-
     /// Prepare a Retry: validate the optimistic turn count, truncate Model
     /// History immediately before the selected prompt, and truncate the
     /// Display Transcript through it — the retried prompt deliberately stays
@@ -236,18 +95,15 @@ impl<'store> Conversation<'store> {
             raw_history,
             target.expected_user_turns,
             target.failed_response.then_some(target.prompt_index),
-        )
-        .map_err(classify_slice_error)?;
-        let history = slicing::history_before_turn(raw_history, target.prompt_index)
-            .map_err(classify_slice_error)?;
+        )?;
+        let history = slicing::history_before_turn(raw_history, target.prompt_index)?;
         let model_history =
             serde_json::to_string(&history).map_err(|_| ConversationError::UnwriteableModelHistory)?;
         let display_transcript = slicing::transcript_through_prompt(
             &detail.display_transcript,
             target.prompt_index,
             target.prompt,
-        )
-        .map_err(classify_slice_error)?;
+        )?;
         self.store.persist_turn(
             &self.session_id,
             &display_transcript,
@@ -264,19 +120,19 @@ impl<'store> Conversation<'store> {
     pub(crate) fn fork(&self, target: ForkTarget<'_>) -> Result<SessionDetail, ConversationError> {
         let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
         let raw_history = detail.model_history.as_deref();
-        slicing::validate_turn_count(raw_history, target.expected_user_turns, None)
-            .map_err(classify_slice_error)?;
-        let history =
-            slicing::history_through_response(raw_history, target.prompt_index, target.response_text)
-                .map_err(classify_slice_error)?;
+        slicing::validate_turn_count(raw_history, target.expected_user_turns, None)?;
+        let history = slicing::history_through_response(
+            raw_history,
+            target.prompt_index,
+            target.response_text,
+        )?;
         let model_history =
             serde_json::to_string(&history).map_err(|_| ConversationError::UnwriteableModelHistory)?;
         let display_transcript = slicing::transcript_through_response(
             &detail.display_transcript,
             target.prompt_index,
             target.response_text,
-        )
-        .map_err(classify_slice_error)?;
+        )?;
         Ok(self.store.fork_session(
             &self.session_id,
             &display_transcript,
@@ -289,108 +145,37 @@ impl<'store> Conversation<'store> {
     /// pages as empty. Never touches Model History.
     pub(crate) fn transcript_page(
         &self,
-        request: TranscriptPageRequest,
-    ) -> Result<TranscriptPage, ConversationError> {
+        tail: Option<u32>,
+        before: Option<u32>,
+    ) -> Result<(String, usize, usize), ConversationError> {
         let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
-        let (entries_json, start, total) = projection::slice_display_transcript(
+        Ok(projection::slice_display_transcript(
             &detail.display_transcript,
-            request.tail,
-            request.before,
-        );
-        Ok(TranscriptPage {
-            entries_json,
-            start,
-            total,
-        })
+            tail,
+            before,
+        ))
     }
 
-    /// Project the Conversation for export. Transcript and Debug are final
-    /// redacted documents; Internal returns the stored history shapes only —
-    /// the caller adds Session metadata to the outer envelope.
-    pub(crate) fn export_projection(
-        &self,
-        format: ExportFormat,
-    ) -> Result<ExportProjection, ConversationError> {
+    pub(crate) fn export_transcript(&self) -> Result<String, ConversationError> {
         let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
-        Ok(match format {
-            ExportFormat::Transcript => {
-                ExportProjection::Transcript(projection::project_transcript(
-                    &detail.display_transcript,
-                ))
-            }
-            ExportFormat::Debug => {
-                ExportProjection::Debug(projection::project_debug(&detail.display_transcript))
-            }
-            ExportFormat::Internal => ExportProjection::Internal(InternalHistoryExport {
-                display_transcript: serde_json::from_str(&detail.display_transcript)
-                    .unwrap_or(serde_json::json!([])),
-                model_history: detail
-                    .model_history
-                    .as_ref()
-                    .and_then(|history| serde_json::from_str(history).ok()),
-            }),
-        })
+        Ok(projection::project_transcript(&detail.display_transcript))
     }
 
-    /// Read the Display Transcript as the typed feed skill harvesting
-    /// consumes, keeping transcript JSON shape out of skill_opt. Assistant
-    /// entries are present even with no tool names so ordering between user
-    /// turns is preserved.
-    pub(crate) fn skill_harvest_entries(
-        &self,
-    ) -> Result<Vec<SkillHarvestEntry>, ConversationError> {
+    pub(crate) fn export_debug(&self) -> Result<String, ConversationError> {
         let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
-        let entries = projection::parse_display_transcript(&detail.display_transcript);
-        let mut feed = Vec::new();
-        for entry in &entries {
-            match entry.get("role").and_then(|role| role.as_str()) {
-                Some("user") => feed.push(SkillHarvestEntry::User {
-                    content: entry
-                        .get("content")
-                        .and_then(|content| content.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                }),
-                Some("assistant") => {
-                    let mut tool_names = Vec::new();
-                    if let Some(blocks) = entry.get("blocks").and_then(|b| b.as_array()) {
-                        for block in blocks {
-                            if block.get("kind").and_then(|kind| kind.as_str()) != Some("tool") {
-                                continue;
-                            }
-                            if let Some(name) = block.get("name").and_then(|name| name.as_str()) {
-                                if !name.is_empty() {
-                                    tool_names.push(name.to_string());
-                                }
-                            }
-                        }
-                    }
-                    feed.push(SkillHarvestEntry::Assistant { tool_names });
-                }
-                _ => {}
-            }
-        }
-        Ok(feed)
+        Ok(projection::project_debug(&detail.display_transcript))
     }
-}
 
-/// Map the slicing layer's user-facing strings onto structured errors. The
-/// strings themselves are the wire contract; classification only chooses the
-/// variant.
-fn classify_slice_error(error: String) -> ConversationError {
-    if error.starts_with("The saved conversation has changed") {
-        ConversationError::Stale
-    } else if error.starts_with("This response is no longer available") {
-        ConversationError::TurnUnavailable
-    } else if error.starts_with("This response does not match") {
-        ConversationError::ResponseMismatch
-    } else if error.starts_with("Unable to read conversation history") {
-        ConversationError::InvalidModelHistory(error)
-    } else if error.starts_with("Unable to read conversation transcript") {
-        ConversationError::InvalidDisplayTranscript(error)
-    } else if error.starts_with("Unable to save conversation transcript") {
-        ConversationError::UnwriteableDisplayTranscript(error)
-    } else {
-        ConversationError::InvalidModelHistory(error)
+    pub(crate) fn internal_history(
+        &self,
+    ) -> Result<(serde_json::Value, Option<serde_json::Value>), ConversationError> {
+        let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
+        Ok((
+            serde_json::from_str(&detail.display_transcript).unwrap_or(serde_json::json!([])),
+            detail
+                .model_history
+                .as_ref()
+                .and_then(|history| serde_json::from_str(history).ok()),
+        ))
     }
 }

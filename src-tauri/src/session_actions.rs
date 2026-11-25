@@ -1,10 +1,3 @@
-#[allow(unused_imports)] // transitional re-export shim; dies when consumers migrate in step 3
-pub(crate) use crate::conversation::slicing::{
-    history_before_turn, history_through_response, transcript_through_prompt,
-    transcript_through_response, validate_turn_count,
-};
-
-
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageActionRequest {
@@ -19,7 +12,10 @@ pub struct MessageActionRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::conversation::slicing::{
+        history_before_turn, history_through_response, transcript_through_prompt,
+        transcript_through_response, validate_turn_count,
+    };
     use rig::completion::message::Message;
     use serde_json::json;
 

@@ -21,12 +21,12 @@ use std::{
     pin::Pin,
 };
 
-#[allow(unused_imports)] // transitional re-export shim; dies when consumers migrate in step 3
-pub(crate) use crate::conversation::transcript::{
-    build_display_transcript, failure_turn_persistence, merge_display_transcripts,
-    successful_turn_persistence, FailedTurn, FailureTurnPersistence, SuccessfulTurnPersistence,
+use crate::conversation::transcript::{
+    failure_turn_persistence, merge_display_transcripts, successful_turn_persistence, FailedTurn,
     EMPTY_RESPONSE_FALLBACK,
 };
+#[cfg(test)]
+use crate::conversation::transcript::build_display_transcript;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct InvokedSkillRequest {

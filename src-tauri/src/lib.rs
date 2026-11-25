@@ -1289,7 +1289,7 @@ impl TauriSessionTurnAdapters<'_> {
             self,
             self,
             session_id,
-            &session_turn::FailedTurn {
+            &conversation::transcript::FailedTurn {
                 display_prompt: user_prompt,
                 model_prompt: user_prompt,
                 error,
@@ -2773,11 +2773,9 @@ async fn generate_session_title(
         .map_err(|error| error.to_string())
 }
 
-#[allow(unused_imports)] // transitional re-export shim; dies when consumers migrate in step 3
 use crate::conversation::ExportFormat;
-use crate::conversation::projection::{
-    parse_display_transcript, project_debug, project_transcript, slice_display_transcript,
-};
+#[cfg(test)]
+use crate::conversation::projection::{project_debug, project_transcript, slice_display_transcript};
 
 /// A page of a session's Display Transcript. `transcript_start` is the index of
 /// the first returned entry within the full transcript; `transcript_total` is
@@ -2835,20 +2833,66 @@ fn get_session(
     }
 
     let conversation = crate::conversation::Conversation::for_session(store, &session_id);
-    let page = conversation
-        .transcript_page(crate::conversation::TranscriptPageRequest { tail, before })
+    let (display_transcript, transcript_start, transcript_total) = conversation
+        .transcript_page(tail, before)
         .map_err(|error| error.to_string())?;
     Ok(SessionTranscriptPage {
         id: detail.id,
-        display_transcript: page.entries_json,
-        transcript_start: page.start,
-        transcript_total: page.total,
+        display_transcript,
+        transcript_start,
+        transcript_total,
+    })
+}
+
+fn run_session_message_action_in(
+    store: &SessionStore,
+    conversation_state: &ConversationState,
+    app_config: &AppConfigState,
+    streaming_handles: &StreamingRunHandles,
+    request: session_actions::MessageActionRequest,
+) -> Result<SessionDetail, String> {
+    streaming_handles.mutate_if_idle([request.session_id.as_str()], || {
+        // Workspace authorization stays at the command layer; the
+        // Conversation owns every history-shaped consequence of the action.
+        validate_session_access(store, &request.session_id, app_config)?;
+        let conversation = crate::conversation::Conversation::for_session(store, &request.session_id);
+        if request.fork {
+            let prompt_index = request
+                .turn_count
+                .checked_sub(1)
+                .ok_or("No user turn to fork")?;
+            conversation
+                .fork(crate::conversation::ForkTarget {
+                    prompt_index,
+                    expected_user_turns: request.expected_user_turns,
+                    response_text: &request.response_text,
+                })
+                .map_err(|error| error.to_string())
+        } else {
+            let detail = conversation
+                .retry(crate::conversation::RetryTarget {
+                    prompt_index: request.turn_count,
+                    expected_user_turns: request.expected_user_turns,
+                    failed_response: request.failed_response,
+                    prompt: &request.retry_prompt,
+                })
+                .map_err(|error| error.to_string())?;
+            // While ConversationStore still fronts load_chat_history, a retry must
+            // drop the cached pre-retry history so the next turn rehydrates from SQLite.
+            conversation_state
+                .store
+                .lock()
+                .unwrap()
+                .remove_history(&request.session_id);
+            Ok(detail)
+        }
     })
 }
 
 #[tauri::command]
 fn run_session_message_action(
     session_store: tauri::State<'_, SessionStoreState>,
+    conversation_state: tauri::State<'_, ConversationState>,
     app_config: tauri::State<'_, AppConfigState>,
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     request: session_actions::MessageActionRequest,
@@ -2857,32 +2901,13 @@ fn run_session_message_action(
         .store
         .as_ref()
         .ok_or("Session store is unavailable")?;
-    streaming_handles.mutate_if_idle([request.session_id.as_str()], || {
-        // Workspace authorization stays at the command layer; the
-        // Conversation owns every history-shaped consequence of the action.
-        authorized_session_detail(store, &request.session_id, app_config.inner())?;
-        let conversation = crate::conversation::Conversation::for_session(store, &request.session_id);
-        let detail = if request.fork {
-            let prompt_index = request
-                .turn_count
-                .checked_sub(1)
-                .ok_or("No user turn to fork")?;
-            conversation.fork(crate::conversation::ForkTarget {
-                prompt_index,
-                expected_user_turns: request.expected_user_turns,
-                response_text: &request.response_text,
-            })
-        } else {
-            conversation.retry(crate::conversation::RetryTarget {
-                prompt_index: request.turn_count,
-                expected_user_turns: request.expected_user_turns,
-                failed_response: request.failed_response,
-                prompt: &request.retry_prompt,
-            })
-        }
-        .map_err(|error| error.to_string())?;
-        Ok(detail)
-    })
+    run_session_message_action_in(
+        store,
+        conversation_state.inner(),
+        app_config.inner(),
+        streaming_handles.inner(),
+        request,
+    )
 }
 
 #[tauri::command]
@@ -3261,16 +3286,24 @@ fn export_session(
 ) -> Result<String, String> {
     match &session_store.store {
         Some(store) => {
-            let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
+            validate_session_access(store, &session_id, app_config.inner())?;
 
             let conversation = crate::conversation::Conversation::for_session(store, &session_id);
-            match conversation
-                .export_projection(format)
-                .map_err(|error| error.to_string())?
-            {
-                crate::conversation::ExportProjection::Transcript(text) => Ok(text),
-                crate::conversation::ExportProjection::Debug(text) => Ok(text),
-                crate::conversation::ExportProjection::Internal(history) => {
+            match format {
+                ExportFormat::Transcript => conversation
+                    .export_transcript()
+                    .map_err(|error| error.to_string()),
+                ExportFormat::Debug => conversation
+                    .export_debug()
+                    .map_err(|error| error.to_string()),
+                ExportFormat::Internal => {
+                    let (display_transcript, model_history) = conversation
+                        .internal_history()
+                        .map_err(|error| error.to_string())?;
+                    let detail = store
+                        .get_session(&session_id)
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| format!("Session not found: {}", session_id))?;
                     // The command adds the metadata envelope; the history
                     // shapes inside are the Conversation's projection.
                     let export = serde_json::json!({
@@ -3284,8 +3317,8 @@ fn export_session(
                             "created_at": detail.created_at,
                             "updated_at": detail.updated_at,
                         },
-                        "display_transcript": history.display_transcript,
-                        "model_history": history.model_history,
+                        "display_transcript": display_transcript,
+                        "model_history": model_history,
                     });
                     serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
                 }
@@ -4725,5 +4758,85 @@ mod custom_provider_command_tests {
             .available_models
             .iter()
             .any(|model| model.provider == id && model.model == "llama-3"));
+    }
+}
+
+#[cfg(test)]
+mod session_message_action_tests {
+    use super::*;
+    use crate::app_config::AppConfigStore;
+    use rig::completion::message::Message;
+
+    #[test]
+    fn retry_evicts_cached_history_so_next_turn_rehydrates_truncated_history() {
+        let session_store = SessionStore::in_memory_for_test().unwrap();
+        let app_config = AppConfigState {
+            store: Some(AppConfigStore::in_memory_for_test().unwrap()),
+            init_warning: None,
+        };
+        let conversation_state = ConversationState {
+            store: Mutex::new(ConversationStore::new()),
+        };
+        let streaming_handles = StreamingRunHandles::new();
+
+        let session = session_store
+            .create_session("Chat", "openai", "gpt-4", None)
+            .unwrap();
+        let full_history = vec![
+            Message::user("first"),
+            Message::assistant("answer 1"),
+            Message::user("second"),
+            Message::assistant("answer 2"),
+        ];
+        let transcript = serde_json::json!([
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer 1", "blocks": []},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "answer 2", "blocks": []},
+        ])
+        .to_string();
+        session_store
+            .persist_turn(
+                &session.id,
+                &transcript,
+                Some(&serde_json::to_string(&full_history).unwrap()),
+            )
+            .unwrap();
+        conversation_state
+            .store
+            .lock()
+            .unwrap()
+            .seed_history(&session.id, full_history.clone());
+
+        let detail = run_session_message_action_in(
+            &session_store,
+            &conversation_state,
+            &app_config,
+            &streaming_handles,
+            session_actions::MessageActionRequest {
+                session_id: session.id.clone(),
+                turn_count: 1,
+                fork: false,
+                response_text: "answer 2".to_string(),
+                expected_user_turns: 2,
+                failed_response: false,
+                retry_prompt: "second".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(detail.id, session.id);
+        assert_eq!(
+            conversation_state
+                .store
+                .lock()
+                .unwrap()
+                .get_history_if_present(&session.id),
+            None
+        );
+        assert_eq!(
+            conversation::parse_model_history(detail.model_history.as_deref().unwrap()).unwrap(),
+            full_history[..2]
+        );
     }
 }

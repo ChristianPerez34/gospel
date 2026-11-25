@@ -1,9 +1,10 @@
+use super::interface::ConversationError;
 use crate::conversation::parse_model_history;
 use rig::completion::message::{AssistantContent, Message, UserContent};
 
-fn parse_history(raw_history: Option<&str>) -> Result<Vec<Message>, String> {
+fn parse_history(raw_history: Option<&str>) -> Result<Vec<Message>, ConversationError> {
     parse_model_history(raw_history.unwrap_or("[]"))
-        .map_err(|error| format!("Unable to read conversation history: {error}"))
+        .map_err(|error| ConversationError::InvalidModelHistory(error.to_string()))
 }
 
 /// Indices of messages that open a user turn: a User message containing text.
@@ -30,14 +31,14 @@ pub(crate) fn validate_turn_count(
     raw_history: Option<&str>,
     expected: usize,
     retry_turn: Option<usize>,
-) -> Result<(), String> {
+) -> Result<(), ConversationError> {
     let actual = turn_starts(&parse_history(raw_history)?).len();
     // Legacy failed turns may not have reached model-history persistence.
     // Otherwise fail closed when pruning or another view changed the history.
     if actual == expected || (retry_turn == Some(actual) && expected == actual + 1) {
         Ok(())
     } else {
-        Err("The saved conversation has changed. Reopen the task and try again.".into())
+        Err(ConversationError::Stale)
     }
 }
 
@@ -45,11 +46,11 @@ pub(crate) fn validate_turn_count(
 pub(crate) fn history_before_turn(
     raw_history: Option<&str>,
     turn_index: usize,
-) -> Result<Vec<Message>, String> {
+) -> Result<Vec<Message>, ConversationError> {
     let history = parse_history(raw_history)?;
     let starts = turn_starts(&history);
     if turn_index > starts.len() {
-        return Err("This response is no longer available in the saved conversation.".into());
+        return Err(ConversationError::TurnUnavailable);
     }
     let end = starts.get(turn_index).copied().unwrap_or(history.len());
     Ok(history[..end].to_vec())
@@ -64,9 +65,9 @@ pub(crate) fn transcript_through_prompt(
     raw_transcript: &str,
     prompt_index: usize,
     prompt: &str,
-) -> Result<String, String> {
+) -> Result<String, ConversationError> {
     let mut entries: Vec<serde_json::Value> = serde_json::from_str(raw_transcript)
-        .map_err(|error| format!("Unable to read conversation transcript: {error}"))?;
+        .map_err(|error| ConversationError::InvalidDisplayTranscript(error.to_string()))?;
     match entries
         .iter()
         .enumerate()
@@ -87,7 +88,7 @@ pub(crate) fn transcript_through_prompt(
         }
     }
     serde_json::to_string(&entries)
-        .map_err(|error| format!("Unable to save conversation transcript: {error}"))
+        .map_err(|error| ConversationError::UnwriteableDisplayTranscript(error.to_string()))
 }
 
 /// Transcript prefix through the assistant response to the `prompt_index`-th
@@ -98,16 +99,16 @@ pub(crate) fn transcript_through_response(
     raw_transcript: &str,
     prompt_index: usize,
     response: &str,
-) -> Result<String, String> {
+) -> Result<String, ConversationError> {
     let mut entries: Vec<serde_json::Value> = serde_json::from_str(raw_transcript)
-        .map_err(|error| format!("Unable to read conversation transcript: {error}"))?;
+        .map_err(|error| ConversationError::InvalidDisplayTranscript(error.to_string()))?;
     let turn_start = entries
         .iter()
         .enumerate()
         .filter(|(_, entry)| entry.get("role").and_then(|role| role.as_str()) == Some("user"))
         .map(|(index, _)| index)
         .nth(prompt_index)
-        .ok_or("This response is no longer available in the saved conversation.")?;
+        .ok_or(ConversationError::TurnUnavailable)?;
     let turn_end = entries[turn_start + 1..]
         .iter()
         .position(|entry| entry.get("role").and_then(|role| role.as_str()) == Some("user"))
@@ -126,24 +127,21 @@ pub(crate) fn transcript_through_response(
         if normalize(text) == target || normalize(&accumulated) == target {
             entries.truncate(index + 1);
             return serde_json::to_string(&entries)
-                .map_err(|error| format!("Unable to save conversation transcript: {error}"));
+                .map_err(|error| ConversationError::UnwriteableDisplayTranscript(error.to_string()));
         }
     }
-    Err(
-        "This response does not match the saved conversation. Reopen the task and try again."
-            .into(),
-    )
+    Err(ConversationError::ResponseMismatch)
 }
 
 pub(crate) fn history_through_response(
     raw_history: Option<&str>,
     turn_index: usize,
     response: &str,
-) -> Result<Vec<Message>, String> {
+) -> Result<Vec<Message>, ConversationError> {
     let history = parse_history(raw_history)?;
     let starts = turn_starts(&history);
     if turn_index + 1 > starts.len() {
-        return Err("This response is no longer available in the saved conversation.".into());
+        return Err(ConversationError::TurnUnavailable);
     }
     let start = starts[turn_index];
     let end_bound = starts.get(turn_index + 1).copied().unwrap_or(history.len());
@@ -185,8 +183,5 @@ pub(crate) fn history_through_response(
             return Ok(history);
         }
     }
-    Err(
-        "This response does not match the saved conversation. Reopen the task and try again."
-            .into(),
-    )
+    Err(ConversationError::ResponseMismatch)
 }

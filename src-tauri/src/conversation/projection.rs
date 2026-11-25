@@ -98,29 +98,13 @@ pub(crate) fn project_debug(raw: &str) -> String {
                     .filter_map(|block| {
                         let b_obj = block.as_object()?;
                         let mut dbg = serde_json::Map::new();
-                        if let Some(kind) = b_obj.get("kind").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "kind".to_string(),
-                                serde_json::Value::String(project_debug_metadata(kind)),
-                            );
-                        }
-                        if let Some(id) = b_obj.get("id").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "id".to_string(),
-                                serde_json::Value::String(project_debug_metadata(id)),
-                            );
-                        }
-                        if let Some(name) = b_obj.get("name").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "name".to_string(),
-                                serde_json::Value::String(project_debug_metadata(name)),
-                            );
-                        }
-                        if let Some(status) = b_obj.get("status").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "status".to_string(),
-                                serde_json::Value::String(project_debug_metadata(status)),
-                            );
+                        for key in ["kind", "id", "name", "status"] {
+                            if let Some(value) = b_obj.get(key).and_then(|v| v.as_str()) {
+                                dbg.insert(
+                                    key.to_string(),
+                                    serde_json::Value::String(project_debug_metadata(value)),
+                                );
+                            }
                         }
                         if let Some(result) = b_obj.get("result").and_then(|v| v.as_str()) {
                             let byte_len = result.len();
