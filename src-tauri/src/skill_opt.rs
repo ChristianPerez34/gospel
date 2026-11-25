@@ -5,7 +5,6 @@ use crate::skills::SkillFrontmatter;
 use crate::verification::VerificationStatus;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;

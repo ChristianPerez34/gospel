@@ -21,9 +21,10 @@ use std::{
     pin::Pin,
 };
 
+use crate::conversation::transcript::{FailedTurn, EMPTY_RESPONSE_FALLBACK};
+#[cfg(test)]
 use crate::conversation::transcript::{
-    failure_turn_persistence, merge_display_transcripts, successful_turn_persistence, FailedTurn,
-    EMPTY_RESPONSE_FALLBACK,
+    failure_turn_persistence, merge_display_transcripts, successful_turn_persistence,
 };
 #[cfg(test)]
 use crate::conversation::transcript::build_display_transcript;
@@ -2368,9 +2369,6 @@ mod tests {
     }
 
     #[test]
-        #[test]
-        #[test]
-        #[test]
     fn provider_failure_appends_error_and_failed_prompt_to_history() {
         let mut history = vec![user_message("before"), assistant_message("answer")];
         let existing_history = serde_json::to_string(&history).unwrap();
