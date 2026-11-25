@@ -1,9 +1,13 @@
+pub(crate) mod interface;
+#[cfg(test)]
+mod interface_tests;
 pub(crate) mod migration;
 pub(crate) mod pruning;
 pub(crate) mod projection;
 pub(crate) mod slicing;
 pub(crate) mod transcript;
 
+pub(crate) use interface::{Conversation, ConversationError, ExportFormat, ExportProjection, FailedTurn, ForkTarget, RetryTarget, SkillHarvestEntry, TranscriptPage, TranscriptPageRequest};
 pub(crate) use migration::parse_model_history;
 pub(crate) use pruning::prune_history_for_storage;
 #[cfg(test)]
