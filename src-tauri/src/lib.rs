@@ -71,7 +71,6 @@ use approval_broker::{
     ApprovalBroker, ApprovalDecision, ApprovalEventEmitter, ApprovalPolicyPayload, ApprovalRequest,
     ApprovalResolution, AutonomyMode,
 };
-use conversation::{ConversationState, ConversationStore};
 use futures::{stream, StreamExt};
 use llm::LlmError;
 use models::{ModelInfo, ModelRegistry};
@@ -1193,7 +1192,6 @@ mod workspace_validation_tests {
 struct TauriSessionTurnAdapters<'a> {
     app: &'a tauri::AppHandle,
     app_config: &'a AppConfigState,
-    conversation_state: &'a ConversationState,
     session_store_state: &'a SessionStoreState,
     trace_state: &'a TraceState,
     skill_cache: &'a SkillCache,
@@ -1561,7 +1559,6 @@ impl session_turn::SessionTurnVerification for TauriSessionTurnAdapters<'_> {
 async fn complete_streaming(
     app: tauri::AppHandle,
     app_config: tauri::State<'_, AppConfigState>,
-    conversation_state: tauri::State<'_, ConversationState>,
     session_store_state: tauri::State<'_, SessionStoreState>,
     trace_state: tauri::State<'_, TraceState>,
     skill_cache: tauri::State<'_, SkillCache>,
@@ -1583,7 +1580,6 @@ async fn complete_streaming(
     let adapters = TauriSessionTurnAdapters {
         app: &app,
         app_config: app_config.inner(),
-        conversation_state: conversation_state.inner(),
         session_store_state: session_store_state.inner(),
         trace_state: trace_state.inner(),
         skill_cache: skill_cache.inner(),
@@ -2748,7 +2744,6 @@ pub struct SessionTranscriptPage {
 #[tauri::command]
 fn get_session(
     session_store: tauri::State<'_, SessionStoreState>,
-    conversation_state: tauri::State<'_, ConversationState>,
     app_config: tauri::State<'_, AppConfigState>,
     session_id: String,
     tail: Option<u32>,
@@ -2765,30 +2760,6 @@ fn get_session(
     };
     let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
 
-    // Hydrate the in-memory conversation store with the persisted Model History
-    // so a subsequent `complete_streaming` call can continue the conversation
-    // with prior turns visible to the LLM, not just the UI transcript. Only the
-    // first page seeds a missing cache entry; an existing entry may already
-    // contain newer history from an in-flight turn.
-    if before.is_none() {
-        if let Some(model_history_json) = detail.model_history.as_deref() {
-            match conversation::parse_model_history(model_history_json) {
-                Ok(messages) if !messages.is_empty() => {
-                    let mut store = conversation_state.store.lock().unwrap();
-                    store.seed_history(&session_id, messages);
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse model history for session {}: {}",
-                        session_id,
-                        e
-                    );
-                }
-            }
-        }
-    }
-
     let conversation = crate::conversation::Conversation::for_session(store, &session_id);
     let (display_transcript, transcript_start, transcript_total) = conversation
         .transcript_page(tail, before)
@@ -2803,7 +2774,6 @@ fn get_session(
 
 fn run_session_message_action_in(
     store: &SessionStore,
-    conversation_state: &ConversationState,
     app_config: &AppConfigState,
     streaming_handles: &StreamingRunHandles,
     request: session_actions::MessageActionRequest,
@@ -2834,13 +2804,6 @@ fn run_session_message_action_in(
                     prompt: &request.retry_prompt,
                 })
                 .map_err(|error| error.to_string())?;
-            // While ConversationStore still fronts load_chat_history, a retry must
-            // drop the cached pre-retry history so the next turn rehydrates from SQLite.
-            conversation_state
-                .store
-                .lock()
-                .unwrap()
-                .remove_history(&request.session_id);
             Ok(detail)
         }
     })
@@ -2849,7 +2812,6 @@ fn run_session_message_action_in(
 #[tauri::command]
 fn run_session_message_action(
     session_store: tauri::State<'_, SessionStoreState>,
-    conversation_state: tauri::State<'_, ConversationState>,
     app_config: tauri::State<'_, AppConfigState>,
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
     request: session_actions::MessageActionRequest,
@@ -2860,7 +2822,6 @@ fn run_session_message_action(
         .ok_or("Session store is unavailable")?;
     run_session_message_action_in(
         store,
-        conversation_state.inner(),
         app_config.inner(),
         streaming_handles.inner(),
         request,
@@ -3615,9 +3576,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(app_config_state)
-        .manage(ConversationState {
-            store: std::sync::Mutex::new(ConversationStore::new()),
-        })
         .manage(session_store_state)
         .manage(trace_state)
         .manage(SkillCache::new())
@@ -4725,14 +4683,11 @@ mod session_message_action_tests {
     use rig::completion::message::Message;
 
     #[test]
-    fn retry_evicts_cached_history_so_next_turn_rehydrates_truncated_history() {
+    fn retry_through_the_command_truncates_the_persisted_history() {
         let session_store = SessionStore::in_memory_for_test().unwrap();
         let app_config = AppConfigState {
             store: Some(AppConfigStore::in_memory_for_test().unwrap()),
             init_warning: None,
-        };
-        let conversation_state = ConversationState {
-            store: Mutex::new(ConversationStore::new()),
         };
         let streaming_handles = StreamingRunHandles::new();
 
@@ -4759,15 +4714,9 @@ mod session_message_action_tests {
                 Some(&serde_json::to_string(&full_history).unwrap()),
             )
             .unwrap();
-        conversation_state
-            .store
-            .lock()
-            .unwrap()
-            .seed_history(&session.id, full_history.clone());
 
         let detail = run_session_message_action_in(
             &session_store,
-            &conversation_state,
             &app_config,
             &streaming_handles,
             session_actions::MessageActionRequest {
@@ -4784,16 +4733,9 @@ mod session_message_action_tests {
 
         assert_eq!(detail.id, session.id);
         assert_eq!(
-            conversation_state
-                .store
-                .lock()
-                .unwrap()
-                .get_history_if_present(&session.id),
-            None
-        );
-        assert_eq!(
             conversation::parse_model_history(detail.model_history.as_deref().unwrap()).unwrap(),
-            full_history[..2]
+            full_history[..2],
+            "the retried turn and everything after it leave Model History"
         );
     }
 }
