@@ -20,7 +20,6 @@ mod llm;
 pub mod mcp;
 mod mcp_credentials;
 mod mcp_runtime;
-mod model_history;
 mod models;
 mod oauth;
 mod provider_client;
@@ -1290,7 +1289,7 @@ impl TauriSessionTurnAdapters<'_> {
             self,
             self,
             session_id,
-            &session_turn::FailedTurn {
+            &conversation::transcript::FailedTurn {
                 display_prompt: user_prompt,
                 model_prompt: user_prompt,
                 error,
@@ -2774,6 +2773,10 @@ async fn generate_session_title(
         .map_err(|error| error.to_string())
 }
 
+use crate::conversation::ExportFormat;
+#[cfg(test)]
+use crate::conversation::projection::{project_debug, project_transcript, slice_display_transcript};
+
 /// A page of a session's Display Transcript. `transcript_start` is the index of
 /// the first returned entry within the full transcript; `transcript_total` is
 /// the full entry count. The UI requests earlier entries with `before`.
@@ -2785,24 +2788,6 @@ pub struct SessionTranscriptPage {
     pub transcript_total: usize,
 }
 
-/// Slices a Display Transcript JSON array into a `tail`-sized window ending at
-/// `before` (exclusive; defaults to the end). Returns `(page_json, start, total)`.
-fn slice_display_transcript(
-    raw: &str,
-    tail: Option<u32>,
-    before: Option<u32>,
-) -> (String, usize, usize) {
-    let entries = parse_display_transcript(raw);
-    let total = entries.len();
-    let end = before.map(|b| (b as usize).min(total)).unwrap_or(total);
-    let start = tail
-        .map(|t| end.saturating_sub(t as usize))
-        .unwrap_or(0);
-    let page =
-        serde_json::to_string(&entries[start..end]).unwrap_or_else(|_| "[]".to_string());
-    (page, start, total)
-}
-
 #[tauri::command]
 fn get_session(
     session_store: tauri::State<'_, SessionStoreState>,
@@ -2812,8 +2797,8 @@ fn get_session(
     tail: Option<u32>,
     before: Option<u32>,
 ) -> Result<SessionTranscriptPage, String> {
-    let detail = match &session_store.store {
-        Some(store) => authorized_session_detail(store, &session_id, app_config.inner())?,
+    let store = match &session_store.store {
+        Some(store) => store,
         None => {
             return Err(session_store
                 .init_warning
@@ -2821,6 +2806,7 @@ fn get_session(
                 .unwrap_or_else(|| "Session store is unavailable".to_string()));
         }
     };
+    let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
 
     // Hydrate the in-memory conversation store with the persisted Model History
     // so a subsequent `complete_streaming` call can continue the conversation
@@ -2829,7 +2815,7 @@ fn get_session(
     // contain newer history from an in-flight turn.
     if before.is_none() {
         if let Some(model_history_json) = detail.model_history.as_deref() {
-            match model_history::parse_model_history(model_history_json) {
+            match conversation::parse_model_history(model_history_json) {
                 Ok(messages) if !messages.is_empty() => {
                     let mut store = conversation_state.store.lock().unwrap();
                     store.seed_history(&session_id, messages);
@@ -2846,13 +2832,60 @@ fn get_session(
         }
     }
 
-    let (display_transcript, transcript_start, transcript_total) =
-        slice_display_transcript(&detail.display_transcript, tail, before);
+    let conversation = crate::conversation::Conversation::for_session(store, &session_id);
+    let (display_transcript, transcript_start, transcript_total) = conversation
+        .transcript_page(tail, before)
+        .map_err(|error| error.to_string())?;
     Ok(SessionTranscriptPage {
         id: detail.id,
         display_transcript,
         transcript_start,
         transcript_total,
+    })
+}
+
+fn run_session_message_action_in(
+    store: &SessionStore,
+    conversation_state: &ConversationState,
+    app_config: &AppConfigState,
+    streaming_handles: &StreamingRunHandles,
+    request: session_actions::MessageActionRequest,
+) -> Result<SessionDetail, String> {
+    streaming_handles.mutate_if_idle([request.session_id.as_str()], || {
+        // Workspace authorization stays at the command layer; the
+        // Conversation owns every history-shaped consequence of the action.
+        validate_session_access(store, &request.session_id, app_config)?;
+        let conversation = crate::conversation::Conversation::for_session(store, &request.session_id);
+        if request.fork {
+            let prompt_index = request
+                .turn_count
+                .checked_sub(1)
+                .ok_or("No user turn to fork")?;
+            conversation
+                .fork(crate::conversation::ForkTarget {
+                    prompt_index,
+                    expected_user_turns: request.expected_user_turns,
+                    response_text: &request.response_text,
+                })
+                .map_err(|error| error.to_string())
+        } else {
+            let detail = conversation
+                .retry(crate::conversation::RetryTarget {
+                    prompt_index: request.turn_count,
+                    expected_user_turns: request.expected_user_turns,
+                    failed_response: request.failed_response,
+                    prompt: &request.retry_prompt,
+                })
+                .map_err(|error| error.to_string())?;
+            // While ConversationStore still fronts load_chat_history, a retry must
+            // drop the cached pre-retry history so the next turn rehydrates from SQLite.
+            conversation_state
+                .store
+                .lock()
+                .unwrap()
+                .remove_history(&request.session_id);
+            Ok(detail)
+        }
     })
 }
 
@@ -2868,81 +2901,13 @@ fn run_session_message_action(
         .store
         .as_ref()
         .ok_or("Session store is unavailable")?;
-    streaming_handles.mutate_if_idle([request.session_id.as_str()], || {
-        let source = authorized_session_detail(store, &request.session_id, app_config.inner())?;
-        session_actions::validate_turn_count(
-            source.model_history.as_deref(),
-            request.expected_user_turns,
-            (!request.fork && request.failed_response).then_some(request.turn_count),
-        )?;
-        let fork_turn_index = match request.fork {
-            true => Some(
-                request
-                    .turn_count
-                    .checked_sub(1)
-                    .ok_or("No user turn to fork")?,
-            ),
-            false => None,
-        };
-        let history = if let Some(turn_index) = fork_turn_index {
-            session_actions::history_through_response(
-                source.model_history.as_deref(),
-                turn_index,
-                &request.response_text,
-            )?
-        } else {
-            session_actions::history_before_turn(
-                source.model_history.as_deref(),
-                request.turn_count,
-            )?
-        };
-        let persistence = session_turn::successful_turn_persistence(Some(&history), None)
-            .ok_or("Unable to prepare conversation history")?;
-        let model_history = persistence
-            .model_history
-            .as_deref()
-            .ok_or("Unable to save conversation history")?;
-        // A retried prompt stays in the saved transcript (unlike model
-        // history, which the new turn re-extends itself) so a failed or
-        // abandoned retry cannot silently drop it from the user's record.
-        // Both transcript slices preserve turns pruned from Model History.
-        let display_transcript = if let Some(turn_index) = fork_turn_index {
-            session_actions::transcript_through_response(
-                &source.display_transcript,
-                turn_index,
-                &request.response_text,
-            )?
-        } else {
-            session_actions::transcript_through_prompt(
-                &source.display_transcript,
-                request.turn_count,
-                &request.retry_prompt,
-            )?
-        };
-        let detail = if request.fork {
-            store
-                .fork_session(&request.session_id, &display_transcript, model_history)
-                .map_err(|error| error.to_string())?
-        } else {
-            store
-                .persist_turn(
-                    &request.session_id,
-                    &display_transcript,
-                    Some(model_history),
-                )
-                .map_err(|error| error.to_string())?;
-            store
-                .get_session(&request.session_id)
-                .map_err(|error| error.to_string())?
-                .ok_or("Session not found")?
-        };
-        conversation_state
-            .store
-            .lock()
-            .unwrap()
-            .store_history(&detail.id, history);
-        Ok(detail)
-    })
+    run_session_message_action_in(
+        store,
+        conversation_state.inner(),
+        app_config.inner(),
+        streaming_handles.inner(),
+        request,
+    )
 }
 
 #[tauri::command]
@@ -3312,139 +3277,6 @@ fn cleanup_stale_drafts(
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ExportFormat {
-    Transcript,
-    Debug,
-    Internal,
-}
-
-const DEBUG_EXPORT_METADATA_MAX_BYTES: usize = 200;
-
-fn project_debug_metadata(value: &str) -> String {
-    let redacted = trace::redacted_text(value);
-    text_utils::truncate_text_bytes(&redacted, DEBUG_EXPORT_METADATA_MAX_BYTES).0
-}
-
-/// Parse the persisted Display Transcript JSON into an array of entries. A
-/// malformed or legacy payload yields an empty array rather than the raw
-/// string, so exports never fall back to returning unprojected input.
-fn parse_display_transcript(raw: &str) -> Vec<serde_json::Value> {
-    serde_json::from_str::<Vec<serde_json::Value>>(raw).unwrap_or_default()
-}
-
-fn project_shared_export_fields(
-    entry: &serde_json::Map<String, serde_json::Value>,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let role = entry.get("role").and_then(|value| value.as_str())?;
-    if role != "user" && role != "assistant" {
-        return None;
-    }
-
-    let mut projected = serde_json::Map::new();
-    projected.insert(
-        "role".to_string(),
-        serde_json::Value::String(role.to_string()),
-    );
-    if let Some(content) = entry.get("content").and_then(|value| value.as_str()) {
-        projected.insert(
-            "content".to_string(),
-            serde_json::Value::String(content.to_string()),
-        );
-    }
-    if let Some(error) = entry.get("error").and_then(|value| value.as_bool()) {
-        projected.insert("error".to_string(), serde_json::Value::Bool(error));
-    }
-    if let Some(controlled_stop) = entry
-        .get("controlled_stop")
-        .and_then(|value| value.as_bool())
-    {
-        projected.insert(
-            "controlled_stop".to_string(),
-            serde_json::Value::Bool(controlled_stop),
-        );
-    }
-    Some(projected)
-}
-
-/// Safe-to-share Transcript projection. Preserves only user/assistant text and
-/// existing user-visible error/controlled-stop status metadata. Removes tool
-/// blocks, tool IDs, tool names, arguments, and raw tool results.
-fn project_transcript(raw: &str) -> String {
-    let entries = parse_display_transcript(raw);
-    let projected: Vec<serde_json::Value> = entries
-        .iter()
-        .filter_map(|entry| {
-            let obj = entry.as_object()?;
-            project_shared_export_fields(obj).map(serde_json::Value::Object)
-        })
-        .collect();
-    serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
-}
-
-/// Bounded diagnostic Debug projection. Preserves the ordered action shape for
-/// diagnostics but never exports raw tool arguments or result bodies. Tool
-/// identity (name, id), status, and a bounded result-length marker are kept.
-fn project_debug(raw: &str) -> String {
-    let entries = parse_display_transcript(raw);
-    let projected: Vec<serde_json::Value> = entries
-        .iter()
-        .filter_map(|entry| {
-            let obj = entry.as_object()?;
-            let mut out = project_shared_export_fields(obj)?;
-            if let Some(blocks) = obj.get("blocks").and_then(|b| b.as_array()) {
-                let debug_blocks: Vec<serde_json::Value> = blocks
-                    .iter()
-                    .filter_map(|block| {
-                        let b_obj = block.as_object()?;
-                        let mut dbg = serde_json::Map::new();
-                        if let Some(kind) = b_obj.get("kind").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "kind".to_string(),
-                                serde_json::Value::String(project_debug_metadata(kind)),
-                            );
-                        }
-                        if let Some(id) = b_obj.get("id").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "id".to_string(),
-                                serde_json::Value::String(project_debug_metadata(id)),
-                            );
-                        }
-                        if let Some(name) = b_obj.get("name").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "name".to_string(),
-                                serde_json::Value::String(project_debug_metadata(name)),
-                            );
-                        }
-                        if let Some(status) = b_obj.get("status").and_then(|v| v.as_str()) {
-                            dbg.insert(
-                                "status".to_string(),
-                                serde_json::Value::String(project_debug_metadata(status)),
-                            );
-                        }
-                        if let Some(result) = b_obj.get("result").and_then(|v| v.as_str()) {
-                            let byte_len = result.len();
-                            dbg.insert(
-                                "result".to_string(),
-                                serde_json::Value::String(format!("[redacted: {byte_len} bytes]")),
-                            );
-                        }
-                        if dbg.is_empty() {
-                            None
-                        } else {
-                            Some(serde_json::Value::Object(dbg))
-                        }
-                    })
-                    .collect();
-                out.insert("blocks".to_string(), serde_json::Value::Array(debug_blocks));
-            }
-            Some(serde_json::Value::Object(out))
-        })
-        .collect();
-    serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
-}
-
 #[tauri::command]
 fn export_session(
     session_store: tauri::State<'_, SessionStoreState>,
@@ -3454,13 +3286,26 @@ fn export_session(
 ) -> Result<String, String> {
     match &session_store.store {
         Some(store) => {
-            let detail = authorized_session_detail(store, &session_id, app_config.inner())?;
+            validate_session_access(store, &session_id, app_config.inner())?;
 
+            let conversation = crate::conversation::Conversation::for_session(store, &session_id);
             match format {
-                ExportFormat::Transcript => Ok(project_transcript(&detail.display_transcript)),
-                ExportFormat::Debug => Ok(project_debug(&detail.display_transcript)),
+                ExportFormat::Transcript => conversation
+                    .export_transcript()
+                    .map_err(|error| error.to_string()),
+                ExportFormat::Debug => conversation
+                    .export_debug()
+                    .map_err(|error| error.to_string()),
                 ExportFormat::Internal => {
-                    // Full internal: Display Transcript + Model History
+                    let (display_transcript, model_history) = conversation
+                        .internal_history()
+                        .map_err(|error| error.to_string())?;
+                    let detail = store
+                        .get_session(&session_id)
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+                    // The command adds the metadata envelope; the history
+                    // shapes inside are the Conversation's projection.
                     let export = serde_json::json!({
                         "session": {
                             "id": detail.id,
@@ -3472,10 +3317,8 @@ fn export_session(
                             "created_at": detail.created_at,
                             "updated_at": detail.updated_at,
                         },
-                        "display_transcript": serde_json::from_str::<serde_json::Value>(&detail.display_transcript)
-                            .unwrap_or(serde_json::json!([])),
-                        "model_history": detail.model_history.as_ref()
-                            .and_then(|h| serde_json::from_str::<serde_json::Value>(h).ok()),
+                        "display_transcript": display_transcript,
+                        "model_history": model_history,
                     });
                     serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
                 }
@@ -4915,5 +4758,85 @@ mod custom_provider_command_tests {
             .available_models
             .iter()
             .any(|model| model.provider == id && model.model == "llama-3"));
+    }
+}
+
+#[cfg(test)]
+mod session_message_action_tests {
+    use super::*;
+    use crate::app_config::AppConfigStore;
+    use rig::completion::message::Message;
+
+    #[test]
+    fn retry_evicts_cached_history_so_next_turn_rehydrates_truncated_history() {
+        let session_store = SessionStore::in_memory_for_test().unwrap();
+        let app_config = AppConfigState {
+            store: Some(AppConfigStore::in_memory_for_test().unwrap()),
+            init_warning: None,
+        };
+        let conversation_state = ConversationState {
+            store: Mutex::new(ConversationStore::new()),
+        };
+        let streaming_handles = StreamingRunHandles::new();
+
+        let session = session_store
+            .create_session("Chat", "openai", "gpt-4", None)
+            .unwrap();
+        let full_history = vec![
+            Message::user("first"),
+            Message::assistant("answer 1"),
+            Message::user("second"),
+            Message::assistant("answer 2"),
+        ];
+        let transcript = serde_json::json!([
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer 1", "blocks": []},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "answer 2", "blocks": []},
+        ])
+        .to_string();
+        session_store
+            .persist_turn(
+                &session.id,
+                &transcript,
+                Some(&serde_json::to_string(&full_history).unwrap()),
+            )
+            .unwrap();
+        conversation_state
+            .store
+            .lock()
+            .unwrap()
+            .seed_history(&session.id, full_history.clone());
+
+        let detail = run_session_message_action_in(
+            &session_store,
+            &conversation_state,
+            &app_config,
+            &streaming_handles,
+            session_actions::MessageActionRequest {
+                session_id: session.id.clone(),
+                turn_count: 1,
+                fork: false,
+                response_text: "answer 2".to_string(),
+                expected_user_turns: 2,
+                failed_response: false,
+                retry_prompt: "second".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(detail.id, session.id);
+        assert_eq!(
+            conversation_state
+                .store
+                .lock()
+                .unwrap()
+                .get_history_if_present(&session.id),
+            None
+        );
+        assert_eq!(
+            conversation::parse_model_history(detail.model_history.as_deref().unwrap()).unwrap(),
+            full_history[..2]
+        );
     }
 }
