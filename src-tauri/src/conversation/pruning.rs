@@ -156,3 +156,315 @@ pub(crate) fn serialized_history_bytes(messages: &[Message]) -> usize {
         .map(|bytes| bytes.len())
         .unwrap_or(usize::MAX)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::completion::message::{AssistantContent, AssistantMessage, CallId, ToolCall, ToolFunction, ToolName, ToolResultContent, UserContent};
+
+    /// The cache died with the Conversation deepening; what these tests exercise
+    /// is purely the pruning pipeline that ran inside it. This harness is a
+    /// trivial passthrough so the cases survive verbatim.
+    struct PruneOnlyStore(Vec<Message>);
+
+    impl PruneOnlyStore {
+        fn new() -> Self {
+            Self(Vec::new())
+        }
+
+        fn store_history(&mut self, _session_id: &str, messages: Vec<Message>) {
+            self.0 = prune_history_for_storage(messages);
+        }
+
+        fn get_history(&mut self, _session_id: &str) -> Vec<Message> {
+            self.0.clone()
+        }
+
+        fn get_history_if_present(&mut self, _session_id: &str) -> Option<Vec<Message>> {
+            Some(self.0.clone())
+        }
+    }
+
+    fn make_user_message(text: &str) -> Message {
+        Message::user(text)
+    }
+
+fn make_tool_result_message(id: &str, text: &str) -> Message {
+        Message::tool_result(
+            CallId::from_wire(id),
+            ToolName::new("read_file").unwrap(),
+            text,
+        )
+    }
+
+fn make_tool_call_message(id: &str) -> Message {
+        Message::Assistant(AssistantMessage::new(vec![AssistantContent::ToolCall(
+            ToolCall {
+                id: CallId::from_wire(id),
+                function: ToolFunction::new(
+                    ToolName::new("read_file").unwrap(),
+                    serde_json::json!({}),
+                ),
+                native: None,
+            },
+        )]))
+    }
+
+fn make_assistant_message(text: &str) -> Message {
+        Message::assistant(text)
+    }
+
+fn make_tool_calls_message(ids: &[&str]) -> Message {
+        Message::Assistant(AssistantMessage::new(
+            ids.iter()
+                .map(|id| {
+                    AssistantContent::ToolCall(ToolCall {
+                        id: CallId::from_wire(*id),
+                        function: ToolFunction::new(
+                            ToolName::new("read_file").unwrap(),
+                            serde_json::json!({}),
+                        ),
+                        native: None,
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    #[test]
+    fn count_pruning_never_splits_a_multi_call_batch() {
+        let mut store = PruneOnlyStore::new();
+        // 52 messages: the count cap would cut between the two results.
+        let mut messages = vec![
+            make_tool_calls_message(&["a", "b"]),
+            make_tool_result_message("a", "first"),
+            make_tool_result_message("b", "second"),
+        ];
+        for i in 0..24 {
+            messages.push(make_user_message(&format!("request {i}")));
+            messages.push(make_assistant_message("Done."));
+        }
+        messages.push(make_user_message("last"));
+
+        store.store_history("s1", messages);
+        let history = store.get_history("s1");
+
+        assert!(history.len() <= MAX_MESSAGES_PER_CONVERSATION);
+        assert!(rig::conversation::pairing::validate(&history).is_ok());
+        assert_eq!(history[0], make_user_message("request 0"));
+    }
+
+#[test]
+    fn byte_pruning_keeps_tool_calls_paired() {
+        let mut store = PruneOnlyStore::new();
+        let payload = "x".repeat(MAX_TOOL_RESULT_BYTES - 512);
+        let mut messages = Vec::new();
+        for i in 0..15 {
+            let id = format!("call-{i}");
+            messages.push(make_user_message(&format!("request {i}")));
+            messages.push(make_tool_calls_message(&[&id]));
+            messages.push(make_tool_result_message(&id, &payload));
+        }
+        assert!(serialized_history_bytes(&messages) > MAX_HISTORY_BYTES);
+
+        store.store_history("s1", messages);
+        let history = store.get_history("s1");
+
+        assert!(!history.is_empty());
+        assert!(serialized_history_bytes(&history) <= MAX_HISTORY_BYTES);
+        assert!(rig::conversation::pairing::validate(&history).is_ok());
+    }
+
+#[test]
+    fn pruning_drops_history_made_only_of_orphaned_results() {
+        let mut store = PruneOnlyStore::new();
+        store.store_history(
+            "s1",
+            vec![
+                make_tool_result_message("gone-1", "stale"),
+                make_tool_result_message("gone-2", "stale"),
+            ],
+        );
+
+        assert_eq!(store.get_history_if_present("s1"), Some(Vec::new()));
+    }
+
+#[test]
+    fn message_cap_drops_oldest() {
+        let mut store = PruneOnlyStore::new();
+        let mut msgs = vec![];
+        for i in 0..60 {
+            msgs.push(make_user_message(&format!("msg {}", i)));
+        }
+        store.store_history("s1", msgs);
+        let retrieved = store.get_history("s1");
+        assert_eq!(retrieved.len(), 50);
+    }
+
+#[test]
+    fn large_tool_results_are_truncated_before_storage() {
+        let mut store = PruneOnlyStore::new();
+        let oversized = "a".repeat(MAX_TOOL_RESULT_BYTES * 2);
+        store.store_history(
+            "s1",
+            vec![
+                make_tool_call_message("tool-1"),
+                make_tool_result_message("tool-1", &oversized),
+            ],
+        );
+
+        let retrieved = store.get_history("s1");
+        let Message::User { content } = &retrieved[1] else {
+            panic!("expected user message");
+        };
+        let Some(UserContent::ToolResult(tool_result)) = content.iter().next() else {
+            panic!("expected tool result content");
+        };
+        let Some(ToolResultContent::Text(text)) = tool_result.content.first() else {
+            panic!("expected tool result text");
+        };
+
+        assert!(text.text.len() <= MAX_TOOL_RESULT_BYTES);
+        assert!(text.text.contains("[truncated]"));
+    }
+
+#[test]
+    fn byte_cap_drops_oldest_messages() {
+        let mut store = PruneOnlyStore::new();
+        let large = "x".repeat(20 * 1024);
+        let messages = vec![
+            make_user_message(&format!("one-{large}")),
+            make_user_message(&format!("two-{large}")),
+            make_user_message(&format!("three-{large}")),
+            make_user_message(&format!("four-{large}")),
+        ];
+
+        store.store_history("s1", messages);
+        let retrieved = store.get_history("s1");
+
+        assert!(serialized_history_bytes(&retrieved) <= MAX_HISTORY_BYTES);
+        assert!(retrieved.len() < 4);
+        assert_eq!(
+            retrieved.last(),
+            Some(&make_user_message(&format!("four-{large}")))
+        );
+    }
+
+#[test]
+    fn byte_cap_truncates_single_oversized_user_message() {
+        let mut store = PruneOnlyStore::new();
+        let large = "x".repeat(MAX_HISTORY_BYTES * 2);
+
+        store.store_history("s1", vec![make_user_message(&large)]);
+        let retrieved = store.get_history("s1");
+
+        assert_eq!(retrieved.len(), 1);
+        assert!(serialized_history_bytes(&retrieved) <= MAX_HISTORY_BYTES);
+
+        let Message::User { content } = &retrieved[0] else {
+            panic!("expected user message");
+        };
+        let Some(UserContent::Text(text)) = content.iter().next() else {
+            panic!("expected text content");
+        };
+        assert!(text.text.contains("[truncated]"));
+        assert!(text.text.len() < large.len());
+    }
+
+#[test]
+    fn large_json_tool_result_is_demoted_and_truncated_before_storage() {
+        use rig::completion::message::ToolResult;
+
+        let mut store = PruneOnlyStore::new();
+        let large = serde_json::json!({"output": "x".repeat(MAX_HISTORY_BYTES * 2)});
+        let result = Message::User {
+            content: vec![UserContent::ToolResult(ToolResult {
+                call: CallId::from_wire("call_1"),
+                name: ToolName::new("read_file").unwrap(),
+                content: vec![ToolResultContent::Json { value: large }],
+                is_error: false,
+            })],
+        };
+
+        store.store_history("s1", vec![make_tool_call_message("call_1"), result]);
+        let retrieved = store.get_history("s1");
+
+        assert_eq!(retrieved.len(), 2);
+        assert!(serialized_history_bytes(&retrieved) <= MAX_HISTORY_BYTES);
+        let Message::User { content } = &retrieved[1] else {
+            panic!("expected user message");
+        };
+        let Some(UserContent::ToolResult(result)) = content.first() else {
+            panic!("expected tool result");
+        };
+        let Some(ToolResultContent::Text(text)) = result.content.first() else {
+            panic!("expected the trimmed result demoted to text");
+        };
+        assert!(text.text.contains("[truncated]"));
+    }
+
+#[test]
+    fn pruning_repairs_orphaned_tool_results_and_keeps_user_text() {
+        let mut store = PruneOnlyStore::new();
+        store.store_history(
+            "s1",
+            vec![
+                make_tool_result_message("orphan", "stale result"),
+                make_user_message("continue with this request"),
+                make_assistant_message("Done."),
+            ],
+        );
+
+        let history = store.get_history("s1");
+
+        assert_eq!(
+            history,
+            vec![
+                make_user_message("continue with this request"),
+                make_assistant_message("Done."),
+            ]
+        );
+        assert!(rig::conversation::pairing::validate(&history).is_ok());
+    }
+
+#[test]
+    fn count_pruning_keeps_tool_calls_paired() {
+        let mut store = PruneOnlyStore::new();
+        let mut messages = vec![
+            make_user_message("old request"),
+            make_tool_call_message("old-call"),
+            make_tool_result_message("old-call", "done"),
+        ];
+        for i in 0..25 {
+            messages.push(make_user_message(&format!("request {i}")));
+            messages.push(make_assistant_message("Done."));
+        }
+
+        store.store_history("s1", messages);
+        let history = store.get_history("s1");
+
+        assert!(history.len() <= MAX_MESSAGES_PER_CONVERSATION);
+        assert!(rig::conversation::pairing::validate(&history).is_ok());
+    }
+
+#[test]
+    fn oversized_assistant_reasoning_is_truncated_under_history_cap() {
+        use rig::completion::message::Reasoning;
+
+        let mut store = PruneOnlyStore::new();
+        let large = "z".repeat(MAX_HISTORY_BYTES * 2);
+        let message = Message::from(AssistantContent::Reasoning(Reasoning::new(large)));
+
+        store.store_history("s1", vec![message]);
+
+        let retrieved = store.get_history("s1");
+        assert_eq!(retrieved.len(), 1);
+        let Message::Assistant(message) = &retrieved[0] else {
+            panic!("expected assistant message");
+        };
+        let Some(AssistantContent::Reasoning(reasoning)) = message.content.first() else {
+            panic!("expected reasoning content");
+        };
+        assert!(reasoning.text.contains("[truncated]"));
+    }
+}

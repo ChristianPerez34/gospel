@@ -17,7 +17,7 @@ When a turn fails or hits a Controlled Stop, Gospel appends the prompt that was 
 - Model History stores the effective prompt (including delegated reports and verification notes), the same text a successful turn records. The Display Transcript stores the prompt as typed.
 - The failure row in the Display Transcript carries `prompt_in_model_history: true`. Merging a rebuilt Display Transcript uses this flag to match failed turns by position. A failed turn keeps its persisted entries rather than being duplicated by the rebuild.
 - Failure rows without the flag (written before this decision, or when the persisted Model History could not be parsed) are display-only, as under ADR-0005.
-- The in-memory Model History cache is refreshed from the same result that is persisted, so the cache and SQLite agree. If the session has no persisted record, neither is changed.
+- ~~The in-memory Model History cache is refreshed from the same result that is persisted~~ (vacuous since ADR-0019 deleted the cache). If the session has no persisted record, nothing is written.
 
 Successful turns, export, and the separation of the Display Transcript from Model History are unchanged from ADR-0005.
 
