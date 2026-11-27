@@ -1468,23 +1468,20 @@ mod tests {
         headers.insert("x-custom-secret", HeaderValue::from_static("shh"));
         headers.insert("x-request-id", HeaderValue::from_static("req-1"));
 
+        let get = |records: &[HeaderRecord], name: &str| {
+            records
+                .iter()
+                .find(|record| record.name == name)
+                .expect("header record must exist")
+                .value
+                .clone()
+        };
+
         let redacted = redact_response_headers(&headers, Some("X-Custom-Secret"));
-        let custom = redacted
-            .iter()
-            .find(|record| record.name == "x-custom-secret")
-            .expect("custom header record must exist");
-        assert_eq!(custom.value, "[REDACTED]");
-        let request_id = redacted
-            .iter()
-            .find(|record| record.name == "x-request-id")
-            .expect("request-id record must exist");
-        assert_eq!(request_id.value, "req-1");
+        assert_eq!(get(&redacted, "x-custom-secret"), "[REDACTED]");
+        assert_eq!(get(&redacted, "x-request-id"), "req-1");
 
         let plain = redact_response_headers(&headers, None);
-        let custom_plain = plain
-            .iter()
-            .find(|record| record.name == "x-custom-secret")
-            .expect("custom header record must exist");
-        assert_eq!(custom_plain.value, "shh");
+        assert_eq!(get(&plain, "x-custom-secret"), "shh");
     }
 }
