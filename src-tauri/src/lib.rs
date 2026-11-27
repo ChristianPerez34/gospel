@@ -709,6 +709,7 @@ async fn start_mcp_server_oauth(
     }
 
     let flow = mcp_runtime::start_mcp_oauth(&server).await?;
+    mcp_runtime::validate_oauth_auth_url(&flow.auth_url)?;
     app.opener()
         .open_url(&flow.auth_url, None::<String>)
         .map_err(|e| format!("Failed to open browser: {e}"))?;
