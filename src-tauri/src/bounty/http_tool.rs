@@ -340,14 +340,17 @@ fn redact_request_headers(
     records
 }
 
-fn redact_response_headers(headers: &HeaderMap) -> Vec<HeaderRecord> {
+fn redact_response_headers(
+    headers: &HeaderMap,
+    extra_sensitive_header: Option<&str>,
+) -> Vec<HeaderRecord> {
     let mut records: Vec<HeaderRecord> = headers
         .iter()
         .map(|(name, value)| {
             header_record(
                 name.as_str(),
                 value.to_str().unwrap_or("<non-utf8 header value>"),
-                None,
+                extra_sensitive_header,
             )
         })
         .collect();
@@ -777,7 +780,8 @@ impl Tool for BountyHttpTool {
         let method = current_method;
 
         let status = response.status().as_u16();
-        let response_headers = redact_response_headers(response.headers());
+        let response_headers =
+            redact_response_headers(response.headers(), auth_header_name.as_deref());
         let content_type = response
             .headers()
             .get(CONTENT_TYPE)
@@ -823,6 +827,10 @@ impl Tool for BountyHttpTool {
             program: scope.program.clone(),
             method: method.as_str().to_string(),
             url: redact_url(url.as_str()),
+            // Record the configured (initial) request headers, redacted: this
+            // proves which secrets were used, while `redirects` tracks the hops
+            // and `current_headers` (stripped cross-origin) is what left on the
+            // final hop.
             request_headers: redact_request_headers(&headers, auth_header_name.as_deref()),
             request_body: args.body.as_ref().map(|body| redact_body(body)),
             status,
@@ -1452,5 +1460,31 @@ mod tests {
             Some("X-Custom-Secret"),
         );
         assert_eq!(same_origin_headers.len(), 7);
+    }
+
+    #[test]
+    fn redact_response_headers_redacts_custom_auth_profile_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-custom-secret", HeaderValue::from_static("shh"));
+        headers.insert("x-request-id", HeaderValue::from_static("req-1"));
+
+        let redacted = redact_response_headers(&headers, Some("X-Custom-Secret"));
+        let custom = redacted
+            .iter()
+            .find(|record| record.name == "x-custom-secret")
+            .expect("custom header record must exist");
+        assert_eq!(custom.value, "[REDACTED]");
+        let request_id = redacted
+            .iter()
+            .find(|record| record.name == "x-request-id")
+            .expect("request-id record must exist");
+        assert_eq!(request_id.value, "req-1");
+
+        let plain = redact_response_headers(&headers, None);
+        let custom_plain = plain
+            .iter()
+            .find(|record| record.name == "x-custom-secret")
+            .expect("custom header record must exist");
+        assert_eq!(custom_plain.value, "shh");
     }
 }

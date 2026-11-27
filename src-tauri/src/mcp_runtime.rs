@@ -516,10 +516,32 @@ pub(crate) fn validate_oauth_auth_url(raw: &str) -> Result<(), String> {
     if !parsed.has_host() {
         return Err("OAuth authorization URL must include a host.".to_string());
     }
+    if scheme == "http" && !is_loopback_oauth_host(parsed.host_str().unwrap_or_default()) {
+        return Err(
+            "OAuth authorization URL must use https except for local development servers."
+                .to_string(),
+        );
+    }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("OAuth authorization URL must not include embedded credentials.".to_string());
     }
     Ok(())
+}
+
+/// Plain `http` authorization URLs are only acceptable for local development
+/// servers: an OAuth code exchange over the network would leak tokens.
+fn is_loopback_oauth_host(host: &str) -> bool {
+    let lower = host.trim_end_matches('.').to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return true;
+    }
+    let ip_candidate = lower
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(&lower);
+    ip_candidate
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Start OAuth for an HTTP MCP server: discovers the authorization server,
@@ -1110,6 +1132,31 @@ mod tests {
     fn validate_oauth_auth_url_accepts_https_and_http() {
         assert!(validate_oauth_auth_url("https://auth.example.com/authorize?client_id=abc").is_ok());
         assert!(validate_oauth_auth_url("http://127.0.0.1:8080/authorize").is_ok());
+    }
+
+    #[test]
+    fn validate_oauth_auth_url_restricts_plain_http_to_loopback() {
+        for url in [
+            "http://localhost:8080/authorize",
+            "http://localhost/authorize",
+            "http://127.0.0.1:8080/authorize",
+            "http://[::1]:8080/authorize",
+        ] {
+            assert!(
+                validate_oauth_auth_url(url).is_ok(),
+                "expected loopback http URL to be accepted: {url}"
+            );
+        }
+        for url in [
+            "http://example.com/authorize",
+            "http://192.168.1.10/authorize",
+            "http://[fd00::1]/authorize",
+        ] {
+            assert!(
+                validate_oauth_auth_url(url).is_err(),
+                "expected remote http URL to be rejected: {url}"
+            );
+        }
     }
 
     #[test]
