@@ -927,4 +927,57 @@ describe("AppShell task flow", () => {
       expect(editButton().textContent).toBe("Second Rename");
     });
   });
+
+  it("synchronizes autonomy mode between SettingsStudio and TopBar", async () => {
+    let policy = {
+      mode: "ask" as "ask" | "auto",
+      allowed_patterns: [] as string[],
+      reject_patterns: ["rm *"],
+    };
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "create_session") return { id: "autonomy-sync-session" };
+      if (cmd === "get_approval_policy") return policy;
+      if (cmd === "set_autonomy_mode") {
+        const mode = (args as { mode: "ask" | "auto" }).mode;
+        policy = { ...policy, mode };
+        return policy;
+      }
+      return handleCommonInvoke(cmd, args);
+    });
+
+    render(
+      <WorkspacesProvider>
+        <AppShell />
+      </WorkspacesProvider>
+    );
+
+    await openTaskSetup();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Continue to chat" }))
+    );
+
+    const topBarToggle = await screen.findByTestId("topbar-autonomy-toggle");
+    await waitFor(() => {
+      expect(topBarToggle.textContent).toContain("Ask");
+    });
+
+    // Open Settings -> Autonomy & Guardrails -> switch to Auto Mode.
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Autonomy & Guardrails/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto Mode/i }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("set_autonomy_mode", { mode: "auto" });
+      expect(topBarToggle.textContent).toContain("Auto");
+    });
+
+    // Clicking TopBar's autonomy toggle now switches from Auto back to Ask.
+    fireEvent.click(topBarToggle);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenLastCalledWith("set_autonomy_mode", { mode: "ask" });
+      expect(topBarToggle.textContent).toContain("Ask");
+    });
+  });
 });

@@ -1,39 +1,51 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { useAutonomyPolicy } from "./useAutonomyPolicy";
+import { createElement, type ReactNode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AutonomyPolicyProvider, useAutonomyPolicy } from "./useAutonomyPolicy";
 
-vi.mock("@tauri-apps/api/core", () => {
-  let mockPolicy = {
-    mode: "ask",
+const mockState = vi.hoisted(() => ({
+  policy: {
+    mode: "ask" as "ask" | "auto",
     allowed_patterns: [] as string[],
     reject_patterns: ["rm *"],
-  };
+  },
+}));
 
+vi.mock("@tauri-apps/api/core", () => {
   return {
     invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "get_approval_policy") return mockPolicy;
+      if (cmd === "get_approval_policy") return mockState.policy;
       if (cmd === "set_autonomy_mode") {
-        mockPolicy = { ...mockPolicy, mode: args?.mode as "ask" | "auto" };
-        return mockPolicy;
+        mockState.policy = { ...mockState.policy, mode: args?.mode as "ask" | "auto" };
+        return mockState.policy;
       }
       if (cmd === "add_approval_allow_rule") {
-        mockPolicy = {
-          ...mockPolicy,
-          allowed_patterns: [...mockPolicy.allowed_patterns, args?.pattern as string],
+        mockState.policy = {
+          ...mockState.policy,
+          allowed_patterns: [...mockState.policy.allowed_patterns, args?.pattern as string],
         };
-        return mockPolicy;
+        return mockState.policy;
       }
       if (cmd === "add_approval_reject_rule") {
-        mockPolicy = {
-          ...mockPolicy,
-          reject_patterns: [...mockPolicy.reject_patterns, args?.pattern as string],
+        mockState.policy = {
+          ...mockState.policy,
+          reject_patterns: [...mockState.policy.reject_patterns, args?.pattern as string],
         };
-        return mockPolicy;
+        return mockState.policy;
+      }
+      if (cmd === "remove_approval_rule") {
+        const pattern = args?.pattern as string;
+        mockState.policy = {
+          ...mockState.policy,
+          allowed_patterns: mockState.policy.allowed_patterns.filter((p) => p !== pattern),
+          reject_patterns: mockState.policy.reject_patterns.filter((p) => p !== pattern),
+        };
+        return mockState.policy;
       }
       if (cmd === "clear_approval_rules") {
-        mockPolicy = { ...mockPolicy, allowed_patterns: [] };
-        return mockPolicy;
+        mockState.policy = { ...mockState.policy, allowed_patterns: [] };
+        return mockState.policy;
       }
       return null;
     }),
@@ -41,6 +53,14 @@ vi.mock("@tauri-apps/api/core", () => {
 });
 
 describe("useAutonomyPolicy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockState.policy = {
+      mode: "ask",
+      allowed_patterns: [],
+      reject_patterns: ["rm *"],
+    };
+  });
   const ruleKinds = [
     { method: "addAllowRule", command: "add_approval_allow_rule", field: "allowed_patterns" },
     { method: "addRejectRule", command: "add_approval_reject_rule", field: "reject_patterns" },
@@ -121,5 +141,106 @@ describe("useAutonomyPolicy", () => {
       await result.current.clearRules();
     });
     expect(result.current.policy.allowed_patterns).toHaveLength(0);
+  });
+
+  it("shares mode updates across consumers in one provider and fetches policy once", async () => {
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(AutonomyPolicyProvider, null, children);
+
+    const { result } = renderHook(
+      () => ({
+        consumerA: useAutonomyPolicy(),
+        consumerB: useAutonomyPolicy(),
+      }),
+      { wrapper }
+    );
+
+    await act(async () => {});
+
+    const fetchCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "get_approval_policy");
+    expect(fetchCalls).toHaveLength(1);
+    expect(result.current.consumerA.mode).toBe("ask");
+    expect(result.current.consumerB.mode).toBe("ask");
+
+    await act(async () => {
+      await result.current.consumerA.setMode("auto");
+    });
+
+    expect(result.current.consumerA.mode).toBe("auto");
+    expect(result.current.consumerB.mode).toBe("auto");
+  });
+
+  it("propagates rule mutations across consumers in one provider", async () => {
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(AutonomyPolicyProvider, null, children);
+
+    const { result } = renderHook(
+      () => ({
+        consumerA: useAutonomyPolicy(),
+        consumerB: useAutonomyPolicy(),
+      }),
+      { wrapper }
+    );
+
+    await act(async () => {});
+
+    await act(async () => {
+      await result.current.consumerA.addAllowRule("bun run test");
+    });
+    expect(result.current.consumerB.policy.allowed_patterns).toContain("bun run test");
+
+    await act(async () => {
+      await result.current.consumerA.addRejectRule("sudo *");
+    });
+    expect(result.current.consumerB.policy.reject_patterns).toContain("sudo *");
+
+    await act(async () => {
+      await result.current.consumerA.removeRule("sudo *");
+    });
+    expect(result.current.consumerB.policy.reject_patterns).not.toContain("sudo *");
+
+    await act(async () => {
+      await result.current.consumerA.clearRules();
+    });
+    expect(result.current.consumerB.policy.allowed_patterns).toEqual([]);
+  });
+
+  it("reuses the parent context for nested AutonomyPolicyProviders", async () => {
+    let outerPolicy: ReturnType<typeof useAutonomyPolicy> | undefined;
+    let innerPolicy: ReturnType<typeof useAutonomyPolicy> | undefined;
+
+    function OuterConsumer({ children }: { children: ReactNode }) {
+      outerPolicy = useAutonomyPolicy();
+      return createElement(AutonomyPolicyProvider, null, children);
+    }
+
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(AutonomyPolicyProvider, null, createElement(OuterConsumer, null, children));
+
+    renderHook(
+      () => {
+        innerPolicy = useAutonomyPolicy();
+        return innerPolicy;
+      },
+      { wrapper }
+    );
+
+    await act(async () => {});
+
+    const fetchCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "get_approval_policy");
+    expect(fetchCalls).toHaveLength(1);
+    expect(outerPolicy?.mode).toBe("ask");
+    expect(innerPolicy?.mode).toBe("ask");
+
+    await act(async () => {
+      await innerPolicy?.setMode("auto");
+    });
+
+    expect(outerPolicy?.mode).toBe("auto");
+    expect(innerPolicy?.mode).toBe("auto");
   });
 });
