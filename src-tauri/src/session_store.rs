@@ -1130,10 +1130,11 @@ impl SessionStore {
     pub fn import_archived_sessions(
         &self,
         payload: &str,
-        workspace_id_override: Option<&str>,
+        target_workspace_id: Option<&str>,
     ) -> Result<Vec<ArchivedSessionRecord>, SessionStoreError> {
         let export: ArchivedSessionExport = serde_json::from_str(payload)
             .map_err(|e| SessionStoreError::InvalidStatus(e.to_string()))?;
+        let target_workspace_id = target_workspace_id.map(str::to_string);
         let mut imported_ids = Vec::new();
         {
             let mut conn = self.conn.lock().unwrap();
@@ -1153,9 +1154,22 @@ impl SessionStore {
                     )));
                 }
 
-                let target_workspace_id = workspace_id_override
-                    .map(str::to_string)
-                    .or_else(|| session.workspace_id.clone());
+                let existing_archived_ws: Option<Option<String>> = tx
+                    .query_row(
+                        "SELECT workspace_id FROM archived_sessions WHERE id = ?1",
+                        params![session.id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()?;
+                if let Some(existing_ws) = existing_archived_ws {
+                    if existing_ws != target_workspace_id {
+                        return Err(SessionStoreError::InvalidStatus(format!(
+                            "archived session already exists in a different workspace: {}",
+                            session.id
+                        )));
+                    }
+                }
+
                 tx.execute(
                     "INSERT INTO archived_sessions (
                         id, title, provider, model, variant, status, workspace_id,
@@ -2255,6 +2269,91 @@ mod tests {
             store.note_session_id(&note.id).unwrap().as_deref(),
             Some(s.id.as_str())
         );
+    }
+
+    #[test]
+    fn import_archived_sessions_ignores_payload_workspace_id_when_unscoped() {
+        let store = test_store();
+        let s = store
+            .create_session("Scoped", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        store
+            .persist_turn(&s.id, "[{\"role\":\"user\"}]", None)
+            .unwrap();
+        store.archive_session(&s.id).unwrap();
+
+        let export = store
+            .export_archived_sessions(std::slice::from_ref(&s.id))
+            .unwrap();
+        store.delete_archived_session(&s.id).unwrap();
+
+        let imported = store.import_archived_sessions(&export, None).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].workspace_id, None);
+        assert!(store
+            .list_archived_sessions_for_workspace(Some("ws1"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn import_archived_sessions_rejects_cross_workspace_id_collision_without_deleting_notes() {
+        let store = test_store();
+        let s = store
+            .create_session("Protected", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        store
+            .persist_turn(&s.id, "[{\"role\":\"user\"}]", None)
+            .unwrap();
+        let note = store
+            .create_note(&s.id, "verification_concern", "Keep intact", None)
+            .unwrap();
+        store.archive_session(&s.id).unwrap();
+
+        let export = store
+            .export_archived_sessions(std::slice::from_ref(&s.id))
+            .unwrap();
+
+        let err = store
+            .import_archived_sessions(&export, Some("ws2"))
+            .unwrap_err();
+        assert!(matches!(err, SessionStoreError::InvalidStatus(_)));
+
+        let existing = store.get_archived_session_record(&s.id).unwrap().unwrap();
+        assert_eq!(existing.workspace_id.as_deref(), Some("ws1"));
+        let notes = store.list_archived_notes_for_export(&s.id).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, note.id);
+        assert_eq!(notes[0].content, "Keep intact");
+    }
+
+    #[test]
+    fn import_archived_sessions_allows_same_workspace_reimport() {
+        let store = test_store();
+        let s = store
+            .create_session("Idempotent", "openai", "gpt-4", Some("ws1"))
+            .unwrap();
+        store
+            .persist_turn(&s.id, "[{\"role\":\"user\"}]", None)
+            .unwrap();
+        let note = store
+            .create_note(&s.id, "verification_concern", "Preserved", None)
+            .unwrap();
+        store.archive_session(&s.id).unwrap();
+
+        let export = store
+            .export_archived_sessions(std::slice::from_ref(&s.id))
+            .unwrap();
+
+        let reimported = store
+            .import_archived_sessions(&export, Some("ws1"))
+            .unwrap();
+        assert_eq!(reimported.len(), 1);
+        assert_eq!(reimported[0].id, s.id);
+        assert_eq!(reimported[0].workspace_id.as_deref(), Some("ws1"));
+        let notes = store.list_archived_notes_for_export(&s.id).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, note.id);
     }
 
     #[test]

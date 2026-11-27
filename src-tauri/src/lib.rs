@@ -3274,6 +3274,29 @@ fn export_archived_sessions(
     }
 }
 
+fn import_archived_sessions_checked(
+    store: &SessionStore,
+    app_config: &AppConfigState,
+    payload: &str,
+    workspace_id: Option<&str>,
+) -> Result<Vec<ArchivedSessionRecord>, String> {
+    validate_optional_workspace_id_access(workspace_id, app_config)?;
+    let active_ws_id = active_workspace_id(app_config);
+    let authorized_workspace = match (workspace_id, active_ws_id.as_deref()) {
+        (Some(requested), Some(active)) if requested == active => Some(active),
+        (None, None) => None,
+        (Some(_), _) => {
+            return Err("Workspace does not match the active workspace".to_string());
+        }
+        (None, Some(_)) => {
+            return Err("Cannot import unscoped sessions while a workspace is active".to_string());
+        }
+    };
+    store
+        .import_archived_sessions(payload, authorized_workspace)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn import_archived_sessions(
     session_store: tauri::State<'_, SessionStoreState>,
@@ -3281,14 +3304,13 @@ fn import_archived_sessions(
     payload: String,
     workspace_id: Option<String>,
 ) -> Result<Vec<ArchivedSessionRecord>, String> {
-    if let Some(ref workspace_id) = workspace_id {
-        validate_workspace_id_access(workspace_id, app_config.inner())?;
-    }
-
     match &session_store.store {
-        Some(store) => store
-            .import_archived_sessions(&payload, workspace_id.as_deref())
-            .map_err(|e| e.to_string()),
+        Some(store) => import_archived_sessions_checked(
+            store,
+            app_config.inner(),
+            &payload,
+            workspace_id.as_deref(),
+        ),
         None => Err(session_store
             .init_warning
             .clone()
@@ -4515,6 +4537,69 @@ mod session_access {
             authorized_session_detail(&session_store, &second_session.id, &app_state).unwrap_err();
 
         assert!(error.contains("active workspace"));
+    }
+
+    #[test]
+    fn import_archived_sessions_rejects_inactive_workspace_and_unscoped_when_workspace_active() {
+        let (_root, app_state, session_store, first_id, second_id) = setup();
+        let s = session_store
+            .create_session("Archived", "openai", "gpt-4", Some(&first_id))
+            .unwrap();
+        session_store.persist_turn(&s.id, "[]", None).unwrap();
+        session_store.archive_session(&s.id).unwrap();
+        let export = session_store
+            .export_archived_sessions(std::slice::from_ref(&s.id))
+            .unwrap();
+        session_store.delete_archived_session(&s.id).unwrap();
+
+        assert!(import_archived_sessions_checked(
+            &session_store,
+            &app_state,
+            &export,
+            Some(&second_id)
+        )
+        .is_err());
+        assert!(
+            import_archived_sessions_checked(&session_store, &app_state, &export, None).is_err()
+        );
+    }
+
+    #[test]
+    fn import_archived_sessions_allows_active_workspace_and_unscoped_when_no_workspace_active() {
+        let (_root, app_state, session_store, first_id, second_id) = setup();
+        let s = session_store
+            .create_session("Archived", "openai", "gpt-4", Some(&second_id))
+            .unwrap();
+        session_store.persist_turn(&s.id, "[]", None).unwrap();
+        session_store.archive_session(&s.id).unwrap();
+        let export = session_store
+            .export_archived_sessions(std::slice::from_ref(&s.id))
+            .unwrap();
+        session_store.delete_archived_session(&s.id).unwrap();
+
+        let imported_active = import_archived_sessions_checked(
+            &session_store,
+            &app_state,
+            &export,
+            Some(&first_id),
+        )
+        .unwrap();
+        assert_eq!(imported_active.len(), 1);
+        assert_eq!(
+            imported_active[0].workspace_id.as_deref(),
+            Some(first_id.as_str())
+        );
+
+        let unscoped_app_state = AppConfigState {
+            store: Some(AppConfigStore::in_memory_for_test().unwrap()),
+            init_warning: None,
+        };
+        let unscoped_store = SessionStore::in_memory_for_test().unwrap();
+        let imported_unscoped =
+            import_archived_sessions_checked(&unscoped_store, &unscoped_app_state, &export, None)
+                .unwrap();
+        assert_eq!(imported_unscoped.len(), 1);
+        assert_eq!(imported_unscoped[0].workspace_id, None);
     }
 }
 
