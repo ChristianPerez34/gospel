@@ -2,7 +2,7 @@
 //! even when the workspace contains attacker-planted symlinks.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Resolve `path` to its canonical form while preserving resolution errors.
 pub fn canonical(path: &Path) -> io::Result<PathBuf> {
@@ -30,6 +30,17 @@ pub fn validate_existing_ancestors(root: &Path, target: &Path) -> io::Result<()>
             root.display()
         ))
     })?;
+    for component in relative.components() {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            return Err(io::Error::other(format!(
+                "path {} contains forbidden traversal component",
+                target.display()
+            )));
+        }
+    }
     let mut current = root.to_path_buf();
 
     for component in relative.components() {
@@ -69,5 +80,36 @@ mod tests {
             validate_existing_ancestors(&canonical_dir, &canonical_dir.join("missing")).is_ok()
         );
         assert!(!is_within(Path::new(""), &canonical_dir));
+    }
+
+    #[test]
+    fn validate_existing_ancestors_rejects_parent_dir_after_missing_segment() {
+        let dir = TempDir::new().unwrap();
+        let canonical_dir = canonical(dir.path()).expect("canonical tempdir");
+
+        let err = validate_existing_ancestors(
+            &canonical_dir,
+            &canonical_dir.join("missing/../../outside"),
+        )
+        .expect_err("parent dir traversal after missing segment must be rejected");
+        assert!(
+            err.to_string().contains("forbidden traversal component"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_existing_ancestors_rejects_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let canonical_dir = canonical(dir.path()).expect("canonical tempdir");
+        let dangling_link = canonical_dir.join("dangling");
+        symlink(outside.path().join("does_not_exist"), &dangling_link).unwrap();
+
+        assert!(validate_existing_ancestors(&canonical_dir, &dangling_link).is_err());
+        assert!(validate_existing_ancestors(&canonical_dir, &dangling_link.join("child")).is_err());
     }
 }

@@ -6,6 +6,7 @@ use crate::verification::VerificationStatus;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -489,7 +490,8 @@ fn load_rejected_edits(
         .join("skill-opt")
         .join(name)
         .join("rejected.json");
-    let raw = match fs::read_to_string(&path) {
+    let validated = validate_workspace_path(workspace, &path)?;
+    let raw = match fs::read_to_string(&validated) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(SkillOptIoError::Io(error.to_string())),
@@ -680,6 +682,30 @@ pub enum SkillOptIoError {
 
 const SKILL_NAME_PATTERN: &str = r"^[a-zA-Z0-9-]+$";
 
+fn validate_workspace_path(workspace: &Path, target: &Path) -> Result<PathBuf, SkillOptIoError> {
+    let canonical_root = crate::symlink_guard::canonical(workspace)
+        .map_err(|e| SkillOptIoError::Io(e.to_string()))?;
+    let relative = target
+        .strip_prefix(workspace)
+        .or_else(|_| target.strip_prefix(&canonical_root))
+        .map_err(|_| {
+            SkillOptIoError::Io(format!(
+                "path {} is not under workspace root {}",
+                target.display(),
+                workspace.display()
+            ))
+        })?;
+    let rebased = canonical_root.join(relative);
+    crate::symlink_guard::validate_existing_ancestors(&canonical_root, &rebased)
+        .map_err(|e| SkillOptIoError::Io(e.to_string()))?;
+    if fs::symlink_metadata(&rebased).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(SkillOptIoError::Io(
+            "refusing to follow symlink target".to_string(),
+        ));
+    }
+    Ok(rebased)
+}
+
 pub fn stage_skill(
     workspace: &Path,
     name: &str,
@@ -688,10 +714,11 @@ pub fn stage_skill(
     validate_skill_name(name)?;
     validate_skill_document(name, skill_md)?;
     let path = staged_skill_path(workspace, name);
-    if let Some(parent) = path.parent() {
+    let validated = validate_workspace_path(workspace, &path)?;
+    if let Some(parent) = validated.parent() {
         fs::create_dir_all(parent).map_err(|e| SkillOptIoError::Io(e.to_string()))?;
     }
-    atomic_write(&path, skill_md.as_bytes())?;
+    atomic_write(&validated, skill_md.as_bytes())?;
     Ok(path)
 }
 
@@ -724,7 +751,8 @@ fn write_report(
         .join("skill-opt")
         .join(name)
         .join("report.json");
-    if let Some(parent) = path.parent() {
+    let validated = validate_workspace_path(workspace, &path)?;
+    if let Some(parent) = validated.parent() {
         fs::create_dir_all(parent).map_err(|e| SkillOptIoError::Io(e.to_string()))?;
     }
     let payload = serde_json::to_string_pretty(&OptimizationReport {
@@ -732,11 +760,12 @@ fn write_report(
         candidate_mean,
     })
     .map_err(|e| SkillOptIoError::Io(e.to_string()))?;
-    atomic_write(&path, payload.as_bytes())
+    atomic_write(&validated, payload.as_bytes())
 }
 
-fn read_report(skill_dir: &Path) -> Option<OptimizationReport> {
-    let raw = fs::read_to_string(skill_dir.join("report.json")).ok()?;
+fn read_report(workspace: &Path, skill_dir: &Path) -> Option<OptimizationReport> {
+    let validated = validate_workspace_path(workspace, &skill_dir.join("report.json")).ok()?;
+    let raw = fs::read_to_string(validated).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
@@ -803,7 +832,8 @@ fn preview_skill_md(skill_md: &str) -> String {
 
 pub fn list_staged_skills(workspace: &Path) -> Result<Vec<StagedSkillSummary>, SkillOptIoError> {
     let root = workspace.join(".gospel").join("skill-opt");
-    let entries = match fs::read_dir(&root) {
+    let validated_root = validate_workspace_path(workspace, &root)?;
+    let entries = match fs::read_dir(&validated_root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(SkillOptIoError::Io(error.to_string())),
@@ -822,12 +852,15 @@ pub fn list_staged_skills(workspace: &Path) -> Result<Vec<StagedSkillSummary>, S
         if validate_skill_name(&name).is_err() {
             continue;
         }
-        let staged = entry.path().join("SKILL.md").is_file();
-        let has_rejected = entry.path().join("rejected.json").is_file();
+        let staged_path = validate_workspace_path(workspace, &entry.path().join("SKILL.md")).ok();
+        let rejected_path =
+            validate_workspace_path(workspace, &entry.path().join("rejected.json")).ok();
+        let staged = staged_path.as_ref().is_some_and(|p| p.is_file());
+        let has_rejected = rejected_path.as_ref().is_some_and(|p| p.is_file());
         if staged || has_rejected {
-            let report = read_report(&entry.path());
+            let report = read_report(workspace, &entry.path());
             let staged_md = staged
-                .then(|| fs::read_to_string(entry.path().join("SKILL.md")).ok())
+                .then(|| staged_path.as_ref().and_then(|p| fs::read_to_string(p).ok()))
                 .flatten();
             let preview = staged_md.as_deref().map(preview_skill_md);
             let diff = staged_md.as_deref().and_then(|candidate| {
@@ -853,7 +886,8 @@ pub fn list_staged_skills(workspace: &Path) -> Result<Vec<StagedSkillSummary>, S
 pub fn current_skill_document(workspace: &Path, name: &str) -> Result<String, SkillOptIoError> {
     validate_skill_name(name)?;
     let path = discovered_skill_path(workspace, name);
-    let skill_md = fs::read_to_string(&path).map_err(|_| SkillOptIoError::MissingSkill)?;
+    let validated = validate_workspace_path(workspace, &path)?;
+    let skill_md = fs::read_to_string(&validated).map_err(|_| SkillOptIoError::MissingSkill)?;
     validate_skill_document(name, &skill_md)?;
     Ok(skill_md)
 }
@@ -861,13 +895,16 @@ pub fn current_skill_document(workspace: &Path, name: &str) -> Result<String, Sk
 pub fn adopt_skill(workspace: &Path, name: &str) -> Result<PathBuf, SkillOptIoError> {
     validate_skill_name(name)?;
     let staged = staged_skill_path(workspace, name);
-    let skill_md = fs::read_to_string(&staged).map_err(|_| SkillOptIoError::MissingStage)?;
+    let validated_staged = validate_workspace_path(workspace, &staged)?;
+    let skill_md =
+        fs::read_to_string(&validated_staged).map_err(|_| SkillOptIoError::MissingStage)?;
     validate_skill_document(name, &skill_md)?;
     let adopted = discovered_skill_path(workspace, name);
-    if let Some(parent) = adopted.parent() {
+    let validated_adopted = validate_workspace_path(workspace, &adopted)?;
+    if let Some(parent) = validated_adopted.parent() {
         fs::create_dir_all(parent).map_err(|e| SkillOptIoError::Io(e.to_string()))?;
     }
-    atomic_write(&adopted, skill_md.as_bytes())?;
+    atomic_write(&validated_adopted, skill_md.as_bytes())?;
     Ok(adopted)
 }
 
@@ -936,10 +973,11 @@ pub fn record_rejected_edits(
         .join("skill-opt")
         .join(name)
         .join("rejected.json");
-    if let Some(parent) = path.parent() {
+    let validated = validate_workspace_path(workspace, &path)?;
+    if let Some(parent) = validated.parent() {
         fs::create_dir_all(parent).map_err(|e| SkillOptIoError::Io(e.to_string()))?;
     }
-    let mut records: Vec<RejectedEditRecord> = fs::read_to_string(&path)
+    let mut records: Vec<RejectedEditRecord> = fs::read_to_string(&validated)
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
@@ -950,7 +988,7 @@ pub fn record_rejected_edits(
     });
     let payload =
         serde_json::to_string_pretty(&records).map_err(|e| SkillOptIoError::Io(e.to_string()))?;
-    atomic_write(&path, payload.as_bytes())?;
+    atomic_write(&validated, payload.as_bytes())?;
     Ok(path)
 }
 
@@ -958,16 +996,18 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), SkillOptIoError> {
     let parent = path
         .parent()
         .ok_or_else(|| SkillOptIoError::Io("write target has no parent".to_string()))?;
-    let temp_path = parent.join(format!(
-        ".{}.tmp.{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("skill"),
-        std::process::id()
-    ));
-    fs::write(&temp_path, bytes).map_err(|e| SkillOptIoError::Io(e.to_string()))?;
-    fs::rename(&temp_path, path).map_err(|e| {
-        let _ = fs::remove_file(&temp_path);
-        SkillOptIoError::Io(e.to_string())
-    })
+    let mut temp = tempfile::Builder::new()
+        .prefix(".skill-opt-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|e| SkillOptIoError::Io(e.to_string()))?;
+    temp.write_all(bytes)
+        .map_err(|e| SkillOptIoError::Io(e.to_string()))?;
+    temp.flush()
+        .map_err(|e| SkillOptIoError::Io(e.to_string()))?;
+    temp.persist(path)
+        .map_err(|e| SkillOptIoError::Io(e.error.to_string()))?;
+    Ok(())
 }
 
 pub fn apply_edits(
@@ -1993,5 +2033,64 @@ mod tests {
             .path()
             .join(".agents/skills/tdd/SKILL.md")
             .exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_skill_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let skill_opt_root = workspace.path().join(".gospel/skill-opt");
+        std::fs::create_dir_all(&skill_opt_root).unwrap();
+        symlink(outside.path(), skill_opt_root.join("tdd")).unwrap();
+
+        let err = stage_skill(workspace.path(), "tdd", &sample_skill())
+            .expect_err("stage_skill must reject symlinked skill directory");
+        assert!(matches!(err, SkillOptIoError::Io(_)));
+        assert!(!outside.path().join("SKILL.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adopt_skill_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        stage_skill(workspace.path(), "tdd", &sample_skill()).unwrap();
+
+        let skills_root = workspace.path().join(".agents/skills");
+        std::fs::create_dir_all(&skills_root).unwrap();
+        symlink(outside.path(), skills_root.join("tdd")).unwrap();
+
+        let err = adopt_skill(workspace.path(), "tdd")
+            .expect_err("adopt_skill must reject symlinked adoption directory");
+        assert!(matches!(err, SkillOptIoError::Io(_)));
+        assert!(!outside.path().join("SKILL.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn record_rejected_edits_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside-rejected.json");
+        std::fs::write(&outside_file, "sentinel").unwrap();
+
+        let skill_dir = workspace.path().join(".gospel/skill-opt/tdd");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        symlink(&outside_file, skill_dir.join("rejected.json")).unwrap();
+
+        let edits = vec![SkillEdit::Append {
+            text: "harmful rule".to_string(),
+        }];
+        let err = record_rejected_edits(workspace.path(), "tdd", &edits, 0.8, 0.4)
+            .expect_err("record_rejected_edits must reject symlinked rejected.json");
+        assert!(matches!(err, SkillOptIoError::Io(_)));
+        assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "sentinel");
     }
 }
