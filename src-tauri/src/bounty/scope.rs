@@ -256,7 +256,7 @@ fn is_mutating_method(method: &str) -> bool {
 }
 
 fn is_private_host(host: &str) -> bool {
-    let lower = host.to_ascii_lowercase();
+    let lower = host.trim_end_matches('.').to_ascii_lowercase();
     if lower == "localhost"
         || lower.ends_with(".localhost")
         || lower.ends_with(".local")
@@ -265,27 +265,47 @@ fn is_private_host(host: &str) -> bool {
     {
         return true;
     }
-    match lower.parse::<IpAddr>() {
+    let ip_candidate = lower
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(&lower);
+    match ip_candidate.parse::<IpAddr>() {
         Ok(ip) => is_private_ip(ip),
         Err(_) => false,
     }
 }
 
-fn is_private_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_unspecified()
-                || ip.is_documentation()
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || octets[0] == 0
+                || (octets[0] == 100 && (octets[1] & 0b1100_0000) == 64)
+                || octets[0] >= 240
         }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
+        IpAddr::V6(v6) => {
+            if v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast()
+            {
+                return true;
+            }
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_private_ip(IpAddr::V4(mapped));
+            }
+            if let Some(compat) = v6.to_ipv4() {
+                return is_private_ip(IpAddr::V4(compat));
+            }
+            false
         }
     }
 }
@@ -705,5 +725,46 @@ out_of_scope:
             literal.resolve_secret("other"),
             Err(ScopeError::UnsupportedSecretRef { .. })
         ));
+    }
+
+    #[test]
+    fn denies_bracketed_ipv6_mapped_ipv6_and_cgnat_private_hosts() {
+        let scope = parse_scope(
+            r#"
+program: acme
+authorized: true
+in_scope:
+  - host: "[::1]"
+  - host: "[fe80::1]"
+  - host: "[fc00::1]"
+  - host: "[::ffff:127.0.0.1]"
+  - host: "[::ffff:169.254.169.254]"
+  - host: "100.64.0.1"
+"#,
+        );
+        for target in [
+            "https://[::1]/",
+            "https://[fe80::1]/",
+            "https://[fc00::1]/",
+            "https://[::ffff:127.0.0.1]/",
+            "https://[::ffff:169.254.169.254]/",
+            "https://100.64.0.1/",
+        ] {
+            let err = scope
+                .decide("GET", &url(target))
+                .expect_err(&format!("expected {target} to be rejected"));
+            assert!(
+                err.contains("private or local"),
+                "unexpected error for {target}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_private_ip_allows_public_ipv4_and_ipv6() {
+        let public_v4: IpAddr = "93.184.216.34".parse().unwrap();
+        let public_v6: IpAddr = "2606:2800:220:1:248:1893:25c8:1946".parse().unwrap();
+        assert!(!is_private_ip(public_v4));
+        assert!(!is_private_ip(public_v6));
     }
 }

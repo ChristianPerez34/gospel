@@ -763,10 +763,12 @@ fn classify_find_action(args: &[String]) -> Option<CommandSafety> {
     if args.iter().any(|a| a == "-delete") {
         return Some(CommandSafety::Destructive);
     }
-    if args
-        .iter()
-        .any(|a| a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir")
-    {
+    if args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprint" | "-fprint0" | "-fprintf" | "-fls"
+        )
+    }) {
         return Some(CommandSafety::Mutating);
     }
     None
@@ -1041,8 +1043,11 @@ fn candidate_escapes_workspace(candidate: &Path, workspace_canonical: &Path) -> 
         existing_ancestor = parent;
     }
 
-    std::fs::canonicalize(existing_ancestor)
-        .is_ok_and(|canonical| !canonical.starts_with(workspace_canonical))
+    match std::fs::canonicalize(existing_ancestor) {
+        Ok(canonical) => !canonical.starts_with(workspace_canonical),
+        Err(_) => std::fs::symlink_metadata(existing_ancestor)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink()),
+    }
 }
 
 fn path_exists_or_is_symlink(path: &Path) -> bool {
@@ -3144,6 +3149,70 @@ mod tests {
         assert!(output.success, "{output:?}");
         assert!(root.path().join("auto-ran").exists());
         assert_eq!(emitter.requested.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn find_file_writing_flags_require_approval() {
+        let policy = CommandPolicy;
+        for args in [
+            vec![".".to_string(), "-fprint".to_string(), "out.txt".to_string()],
+            vec![
+                ".".to_string(),
+                "-fprint0".to_string(),
+                "out.txt".to_string(),
+            ],
+            vec![
+                ".".to_string(),
+                "-fprintf".to_string(),
+                "out.txt".to_string(),
+                "%p".to_string(),
+            ],
+            vec![".".to_string(), "-fls".to_string(), "out.txt".to_string()],
+        ] {
+            assert_eq!(
+                policy.classify_shell("find", &args, &workspace()),
+                CommandSafety::Mutating,
+                "expected Mutating for find {args:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dangling_symlink_escaping_workspace_is_not_workspace_scoped() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let workspace_canonical = std::fs::canonicalize(root.path()).unwrap();
+        let escape_link = root.path().join("escape_link");
+        symlink(outside.path().join("does_not_exist"), &escape_link).unwrap();
+
+        assert!(candidate_escapes_workspace(
+            &workspace_canonical.join("escape_link"),
+            &workspace_canonical
+        ));
+        assert!(candidate_escapes_workspace(
+            &workspace_canonical.join("escape_link/file"),
+            &workspace_canonical
+        ));
+
+        let workspace_scoped = Arc::new(AtomicBool::new(true));
+        let approval = Arc::new(RecordingScopeApproval {
+            workspace_scoped: workspace_scoped.clone(),
+        });
+        let executor = CommandExecutor::new(root.path().to_path_buf(), Some(approval));
+        let output = executor
+            .run_shell(
+                "touch".to_string(),
+                vec!["escape_link".to_string()],
+                Some(5),
+            )
+            .await
+            .expect("tool should return output");
+
+        assert!(!workspace_scoped.load(Ordering::SeqCst));
+        assert_eq!(output.needs_approval, Some(true));
     }
 
     struct AlwaysApproval {

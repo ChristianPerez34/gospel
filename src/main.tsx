@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { AutonomyPolicyProvider } from "./hooks/useAutonomyPolicy";
 import { WorkspacesProvider } from "./hooks/useWorkspaces";
 import { installClipboardPolyfill } from "./lib/clipboard";
 
@@ -11,8 +12,10 @@ installClipboardPolyfill();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <WorkspacesProvider>
-      <App />
-    </WorkspacesProvider>
+    <AutonomyPolicyProvider>
+      <WorkspacesProvider>
+        <App />
+      </WorkspacesProvider>
+    </AutonomyPolicyProvider>
   </React.StrictMode>
 );

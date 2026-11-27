@@ -502,6 +502,48 @@ pub struct McpOAuthFlow {
     listener: tokio::net::TcpListener,
 }
 
+/// Validate an OAuth authorization URL returned by remote server metadata
+/// before handing it to the OS URL opener.
+pub(crate) fn validate_oauth_auth_url(raw: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(raw)
+        .map_err(|_| "OAuth authorization URL is invalid.".to_string())?;
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "https" | "http") {
+        return Err(format!(
+            "OAuth authorization URL uses disallowed scheme '{scheme}'."
+        ));
+    }
+    if !parsed.has_host() {
+        return Err("OAuth authorization URL must include a host.".to_string());
+    }
+    if scheme == "http" && !is_loopback_oauth_host(parsed.host_str().unwrap_or_default()) {
+        return Err(
+            "OAuth authorization URL must use https except for local development servers."
+                .to_string(),
+        );
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("OAuth authorization URL must not include embedded credentials.".to_string());
+    }
+    Ok(())
+}
+
+/// Plain `http` authorization URLs are only acceptable for local development
+/// servers: an OAuth code exchange over the network would leak tokens.
+fn is_loopback_oauth_host(host: &str) -> bool {
+    let lower = host.trim_end_matches('.').to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return true;
+    }
+    let ip_candidate = lower
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(&lower);
+    ip_candidate
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// Start OAuth for an HTTP MCP server: discovers the authorization server,
 /// registers Gospel as a client dynamically, and binds a loopback redirect
 /// listener. `auth_url` is what to open in the browser.
@@ -533,6 +575,7 @@ pub async fn start_mcp_oauth(server: &McpServer) -> Result<McpOAuthFlow, String>
         .get_authorization_url()
         .await
         .map_err(|e| format!("OAuth setup failed: {e}"))?;
+    validate_oauth_auth_url(&auth_url)?;
     Ok(McpOAuthFlow {
         state,
         auth_url,
@@ -579,34 +622,80 @@ impl McpOAuthFlow {
     }
 }
 
-/// Accept the first loopback request and hand back the full callback URL.
-/// Responds with a plain "close this tab" page.
+/// Accept loopback requests until a valid `/callback` request arrives,
+/// ignoring empty preconnects and returning 404 for non-callback paths.
+/// Responds to the valid callback with a plain "close this tab" page.
 async fn accept_oauth_callback(listener: &tokio::net::TcpListener) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let (mut stream, _peer) = listener
-        .accept()
-        .await
-        .map_err(|e| format!("OAuth callback listener failed: {e}"))?;
-    let mut buffer = vec![0u8; 8192];
-    let n = stream
-        .read(&mut buffer)
-        .await
-        .map_err(|e| format!("OAuth callback read failed: {e}"))?;
-    let request = String::from_utf8_lossy(&buffer[..n]);
-    let request_line = request.lines().next().unwrap_or_default();
-    let path = request_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| "OAuth callback was malformed.".to_string())?
-        .to_string();
-
-    let response = "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: 146\r\nconnection: close\r\n\r\n<!doctype html><title>Gospel sign-in complete</title><body style=\"font-family:system-ui;padding:2rem\">Sign-in complete. You can close this tab and return to Gospel.</body>";
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.shutdown().await;
+    const MAX_REQUEST_BYTES: usize = 8192;
+    const PER_CONNECTION_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    const NOT_FOUND_RESPONSE: &str =
+        "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+    const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: 146\r\nconnection: close\r\n\r\n<!doctype html><title>Gospel sign-in complete</title><body style=\"font-family:system-ui;padding:2rem\">Sign-in complete. You can close this tab and return to Gospel.</body>";
 
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    Ok(format!("http://127.0.0.1:{port}{path}"))
+
+    loop {
+        let (mut stream, _peer) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("OAuth callback listener failed: {e}"))?;
+
+        let read_result = tokio::time::timeout(PER_CONNECTION_READ_TIMEOUT, async {
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let remaining = MAX_REQUEST_BYTES.saturating_sub(buffer.len());
+                if remaining == 0 {
+                    break;
+                }
+                let to_read = remaining.min(chunk.len());
+                match stream.read(&mut chunk[..to_read]).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buffer.extend_from_slice(&chunk[..n]);
+                        if buffer.windows(2).any(|w| w == b"\r\n") || buffer.contains(&b'\n') {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        buffer.clear();
+                        break;
+                    }
+                }
+            }
+            buffer
+        })
+        .await;
+
+        let Ok(buffer) = read_result else {
+            let _ = stream.shutdown().await;
+            continue;
+        };
+        if buffer.is_empty() {
+            let _ = stream.shutdown().await;
+            continue;
+        }
+
+        let request = String::from_utf8_lossy(&buffer);
+        let request_line = request.split(['\r', '\n']).next().unwrap_or_default();
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .filter(|p| *p == "/callback" || p.starts_with("/callback?"));
+
+        let Some(path) = path else {
+            let _ = stream.write_all(NOT_FOUND_RESPONSE.as_bytes()).await;
+            let _ = stream.shutdown().await;
+            continue;
+        };
+
+        let _ = stream.write_all(OK_RESPONSE.as_bytes()).await;
+        let _ = stream.shutdown().await;
+
+        return Ok(format!("http://127.0.0.1:{port}{path}"));
+    }
 }
 
 #[cfg(test)]
@@ -1036,6 +1125,148 @@ mod tests {
         assert_eq!(
             timeout_update.last_error_summary,
             Some("Connection timed out".into())
+        );
+    }
+
+    #[test]
+    fn validate_oauth_auth_url_accepts_https_and_http() {
+        assert!(validate_oauth_auth_url("https://auth.example.com/authorize?client_id=abc").is_ok());
+        assert!(validate_oauth_auth_url("http://127.0.0.1:8080/authorize").is_ok());
+    }
+
+    #[test]
+    fn validate_oauth_auth_url_restricts_plain_http_to_loopback() {
+        for url in [
+            "http://localhost:8080/authorize",
+            "http://localhost/authorize",
+            "http://127.0.0.1:8080/authorize",
+            "http://[::1]:8080/authorize",
+        ] {
+            assert!(
+                validate_oauth_auth_url(url).is_ok(),
+                "expected loopback http URL to be accepted: {url}"
+            );
+        }
+        for url in [
+            "http://example.com/authorize",
+            "http://192.168.1.10/authorize",
+            "http://[fd00::1]/authorize",
+        ] {
+            assert!(
+                validate_oauth_auth_url(url).is_err(),
+                "expected remote http URL to be rejected: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_oauth_auth_url_rejects_unsafe_schemes_and_invalid_urls() {
+        let disallowed = [
+            ("file:///etc/passwd", "file"),
+            ("smb://host/share", "smb"),
+            ("javascript:alert(1)", "javascript"),
+            ("ssh://host", "ssh"),
+        ];
+        for (url, expected_scheme) in disallowed {
+            let err = validate_oauth_auth_url(url)
+                .expect_err(&format!("expected disallowed scheme error for {url}"));
+            assert!(
+                err.contains(expected_scheme),
+                "expected scheme '{expected_scheme}' in error: {err}"
+            );
+        }
+
+        let invalid = [
+            "https://user:pass@example.com/auth",
+            "",
+            "/relative/path",
+        ];
+        for url in invalid {
+            assert!(
+                validate_oauth_auth_url(url).is_err(),
+                "expected error for invalid URL: {url}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_oauth_callback_ignores_empty_preconnect_and_favicon_before_callback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move { accept_oauth_callback(&listener).await });
+
+        // 1. Speculative 0-byte preconnect that closes immediately.
+        {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            drop(stream);
+        }
+
+        // 2. Stray /favicon.ico request should receive 404 and keep listener open.
+        {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            assert!(
+                response.starts_with("HTTP/1.1 404 Not Found\r\n"),
+                "unexpected favicon response: {response}"
+            );
+        }
+
+        // 3. Valid /callback request should receive 200 and complete the accept loop.
+        {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"GET /callback?code=abc&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            assert!(
+                response.starts_with("HTTP/1.1 200 OK\r\n"),
+                "unexpected callback response: {response}"
+            );
+        }
+
+        let callback_url = server.await.unwrap().unwrap();
+        assert_eq!(
+            callback_url,
+            format!("http://127.0.0.1:{}/callback?code=abc&state=xyz", addr.port())
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_oauth_callback_handles_fragmented_request_line() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move { accept_oauth_callback(&listener).await });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(b"GET /call").await.unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        stream
+            .write_all(b"back?code=split HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK\r\n"),
+            "unexpected fragmented callback response: {response}"
+        );
+
+        let callback_url = server.await.unwrap().unwrap();
+        assert_eq!(
+            callback_url,
+            format!("http://127.0.0.1:{}/callback?code=split", addr.port())
         );
     }
 }

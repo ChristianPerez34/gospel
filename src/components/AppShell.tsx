@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgents } from "../hooks/useAgents";
-import { useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
+import { AutonomyPolicyProvider, useAutonomyPolicy } from "../hooks/useAutonomyPolicy";
 import type { ModelVariantWarningPayload } from "../hooks/useChatStream";
 import { useModelAvailability } from "../hooks/useModelAvailability";
 import { useModelPreferences } from "../hooks/useModelPreferences";
@@ -13,6 +13,7 @@ import { useWorkspaces } from "../hooks/useWorkspaces";
 import { noModelCopy } from "../modelAvailabilityCopy";
 import { deriveSessionActivity, nextSessionNeedingYou } from "../sessionActivity";
 import {
+  type ApprovalDecision,
   type ArchivePolicy,
   type ArchiveStats,
   modelOptionId,
@@ -155,7 +156,7 @@ function sameModelSelection(
   );
 }
 
-export function AppShell() {
+function AppShellContent() {
   const [overviewOpen, setOverviewOpen] = useState(true);
   const [creatingTask, setCreatingTask] = useState(false);
   const [taskCreationError, setTaskCreationError] = useState<string | null>(null);
@@ -229,6 +230,7 @@ export function AppShell() {
     mode: autonomyMode,
     setMode: setAutonomyMode,
     policy: autonomyPolicy,
+    refresh: refreshAutonomyPolicy,
   } = useAutonomyPolicy();
 
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -272,6 +274,16 @@ export function AppShell() {
     onOpenSettings: openSettings,
     onModelVariantFallback: handleModelVariantFallback,
   });
+
+  const handleResolveApproval = useCallback(
+    async (id: string, decision: ApprovalDecision) => {
+      await session.resolveApproval(id, decision);
+      if (decision === "always_allow" || decision === "always_deny") {
+        void refreshAutonomyPolicy();
+      }
+    },
+    [refreshAutonomyPolicy, session]
+  );
 
   useEffect(() => {
     const active = sessions.find((item) => item.id === session.activeSessionId);
@@ -1161,7 +1173,7 @@ export function AppShell() {
                 workspacePath={activeWorkspace?.path ?? ""}
                 isThinking={session.isThinking}
                 currentTurn={session.currentTurn}
-                onResolveApproval={session.resolveApproval}
+                onResolveApproval={handleResolveApproval}
                 onRetry={session.retryMessage}
                 onFork={session.forkMessage}
                 actionsDisabled={
@@ -1351,5 +1363,13 @@ export function AppShell() {
       {findingsOpen && <BountyFindingsPanel onClose={() => setFindingsOpen(false)} />}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
+  );
+}
+
+export function AppShell() {
+  return (
+    <AutonomyPolicyProvider>
+      <AppShellContent />
+    </AutonomyPolicyProvider>
   );
 }

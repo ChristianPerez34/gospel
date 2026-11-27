@@ -1,5 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  createElement,
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import type { ApprovalPolicy, AutonomyMode } from "../types";
 
 export interface UseAutonomyPolicyReturn {
@@ -20,9 +30,11 @@ const DEFAULT_POLICY: ApprovalPolicy = {
   reject_patterns: ["rm *", "git push *--force*", "git reset*", "git clean*"],
 };
 
-export function useAutonomyPolicy(): UseAutonomyPolicyReturn {
+const AutonomyPolicyContext = createContext<UseAutonomyPolicyReturn | null>(null);
+
+function useAutonomyPolicyState(enabled: boolean): UseAutonomyPolicyReturn {
   const [policy, setPolicy] = useState<ApprovalPolicy>(DEFAULT_POLICY);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
 
   const refresh = useCallback(async () => {
     try {
@@ -36,9 +48,10 @@ export function useAutonomyPolicy(): UseAutonomyPolicyReturn {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     setLoading(true);
     void refresh().finally(() => setLoading(false));
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   const setMode = useCallback(async (mode: AutonomyMode) => {
     try {
@@ -100,15 +113,33 @@ export function useAutonomyPolicy(): UseAutonomyPolicyReturn {
 
   const safePolicy = policy ?? DEFAULT_POLICY;
 
-  return {
-    policy: safePolicy,
-    mode: safePolicy.mode ?? "ask",
-    loading,
-    setMode,
-    addAllowRule,
-    addRejectRule,
-    removeRule,
-    clearRules,
-    refresh,
-  };
+  return useMemo(
+    () => ({
+      policy: safePolicy,
+      mode: safePolicy.mode ?? "ask",
+      loading,
+      setMode,
+      addAllowRule,
+      addRejectRule,
+      removeRule,
+      clearRules,
+      refresh,
+    }),
+    [safePolicy, loading, setMode, addAllowRule, addRejectRule, removeRule, clearRules, refresh]
+  );
+}
+
+export function AutonomyPolicyProvider({ children }: { children: ReactNode }) {
+  const parent = useContext(AutonomyPolicyContext);
+  const value = useAutonomyPolicyState(parent === null);
+  if (parent !== null) {
+    return createElement(Fragment, null, children);
+  }
+  return createElement(AutonomyPolicyContext.Provider, { value }, children);
+}
+
+export function useAutonomyPolicy(): UseAutonomyPolicyReturn {
+  const context = useContext(AutonomyPolicyContext);
+  const fallback = useAutonomyPolicyState(context === null);
+  return context ?? fallback;
 }
