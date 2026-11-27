@@ -27,6 +27,37 @@ pub enum BountyHttpError {
     Evidence(String),
 }
 
+#[derive(Debug)]
+struct ScopeDnsResolver {
+    allow_private_hosts: bool,
+}
+
+impl reqwest::dns::Resolve for ScopeDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let allow_private_hosts = self.allow_private_hosts;
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if !allow_private_hosts
+                && (addrs.is_empty()
+                    || addrs
+                        .iter()
+                        .any(|addr| super::scope::is_private_ip(addr.ip())))
+            {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "resolved private/local IP for host '{host}' while allow_private_hosts is false"
+                    ),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BountyHttpTool {
     pub scope: Option<Arc<BountyScope>>,
@@ -53,10 +84,14 @@ impl BountyHttpTool {
 
         // Redirects are followed manually so every hop re-passes scope.decide.
         let redirect_policy = reqwest::redirect::Policy::none();
+        let allow_private_hosts = scope.as_ref().is_some_and(|s| s.allow_private_hosts);
 
         let client = reqwest::Client::builder()
             .user_agent("gospel-bounty/0.1")
             .redirect(redirect_policy)
+            .dns_resolver(Arc::new(ScopeDnsResolver {
+                allow_private_hosts,
+            }))
             .timeout(
                 scope
                     .as_ref()
@@ -239,16 +274,9 @@ struct EvidenceRecord {
     duration_ms: u128,
 }
 
-fn header_record(name: &str, value: &str) -> HeaderRecord {
-    HeaderRecord {
-        name: name.to_string(),
-        value: redact_header_value(name, value),
-    }
-}
-
-fn redact_header_value(name: &str, value: &str) -> String {
+fn is_sensitive_header(name: &str, extra_sensitive_header: Option<&str>) -> bool {
     let lower = name.to_ascii_lowercase();
-    if matches!(
+    matches!(
         lower.as_str(),
         "authorization"
             | "cookie"
@@ -256,17 +284,57 @@ fn redact_header_value(name: &str, value: &str) -> String {
             | "proxy-authorization"
             | "x-api-key"
             | "x-auth-token"
-    ) {
+    ) || extra_sensitive_header.is_some_and(|extra| name.eq_ignore_ascii_case(extra))
+}
+
+fn is_same_origin(current_url: &Url, next_url: &Url) -> bool {
+    next_url.scheme().eq_ignore_ascii_case(current_url.scheme())
+        && next_url.host_str().map(str::to_ascii_lowercase)
+            == current_url.host_str().map(str::to_ascii_lowercase)
+        && next_url.port_or_known_default() == current_url.port_or_known_default()
+}
+
+fn strip_sensitive_headers_if_cross_origin(
+    current_url: &Url,
+    next_url: &Url,
+    headers: &mut HashMap<String, String>,
+    extra_sensitive_header: Option<&str>,
+) {
+    if !is_same_origin(current_url, next_url) {
+        headers.retain(|name, _| !is_sensitive_header(name, extra_sensitive_header));
+    }
+}
+
+fn header_record(
+    name: &str,
+    value: &str,
+    extra_sensitive_header: Option<&str>,
+) -> HeaderRecord {
+    HeaderRecord {
+        name: name.to_string(),
+        value: redact_header_value(name, value, extra_sensitive_header),
+    }
+}
+
+fn redact_header_value(
+    name: &str,
+    value: &str,
+    extra_sensitive_header: Option<&str>,
+) -> String {
+    if is_sensitive_header(name, extra_sensitive_header) {
         "[REDACTED]".to_string()
     } else {
         value.to_string()
     }
 }
 
-fn redact_request_headers(headers: &HashMap<String, String>) -> Vec<HeaderRecord> {
+fn redact_request_headers(
+    headers: &HashMap<String, String>,
+    extra_sensitive_header: Option<&str>,
+) -> Vec<HeaderRecord> {
     let mut records: Vec<HeaderRecord> = headers
         .iter()
-        .map(|(name, value)| header_record(name, value))
+        .map(|(name, value)| header_record(name, value, extra_sensitive_header))
         .collect();
     records.sort_by(|a, b| a.name.cmp(&b.name));
     records
@@ -279,6 +347,7 @@ fn redact_response_headers(headers: &HeaderMap) -> Vec<HeaderRecord> {
             header_record(
                 name.as_str(),
                 value.to_str().unwrap_or("<non-utf8 header value>"),
+                None,
             )
         })
         .collect();
@@ -307,8 +376,9 @@ fn build_request_headers(
     user_headers: Option<&HashMap<String, String>>,
     auth_profile: Option<&str>,
     scope: &BountyScope,
-) -> Result<HashMap<String, String>, String> {
+) -> Result<(HashMap<String, String>, Option<String>), String> {
     let mut headers = user_headers.cloned().unwrap_or_default();
+    let mut auth_header_name = None;
     if let Some(profile_name) = auth_profile {
         let profile = scope.auth_profiles.get(profile_name).ok_or_else(|| {
             let available = scope
@@ -329,9 +399,11 @@ fn build_request_headers(
         let (name, value) = profile
             .header_pair(profile_name)
             .map_err(|error| error.to_string())?;
-        headers.insert(name, value);
+        headers.retain(|existing_key, _| !name.eq_ignore_ascii_case(existing_key));
+        headers.insert(name.clone(), value);
+        auth_header_name = Some(name);
     }
-    Ok(headers)
+    Ok((headers, auth_header_name))
 }
 
 fn apply_headers(
@@ -532,12 +604,12 @@ impl Tool for BountyHttpTool {
             });
         }
 
-        let headers = match build_request_headers(
+        let (headers, auth_header_name) = match build_request_headers(
             args.headers.as_ref(),
             args.auth_profile.as_deref(),
             scope,
         ) {
-            Ok(headers) => headers,
+            Ok(result) => result,
             Err(error) => {
                 self.audit(&AuditRecord {
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -687,15 +759,13 @@ impl Tool for BountyHttpTool {
                 ));
                 break response;
             }
-            // Authorization/Cookie must not leak across a host change.
-            if next_url.host_str() != current_url.host_str() {
-                current_headers.retain(|name, _| {
-                    !matches!(
-                        name.to_ascii_lowercase().as_str(),
-                        "authorization" | "cookie"
-                    )
-                });
-            }
+            // Sensitive headers must not leak across a host, scheme, or port change.
+            strip_sensitive_headers_if_cross_origin(
+                &current_url,
+                &next_url,
+                &mut current_headers,
+                auth_header_name.as_deref(),
+            );
             if next_method != current_method {
                 current_body = None;
             }
@@ -753,7 +823,7 @@ impl Tool for BountyHttpTool {
             program: scope.program.clone(),
             method: method.as_str().to_string(),
             url: redact_url(url.as_str()),
-            request_headers: redact_request_headers(&headers),
+            request_headers: redact_request_headers(&headers, auth_header_name.as_deref()),
             request_body: args.body.as_ref().map(|body| redact_body(body)),
             status,
             response_headers: response_headers.clone(),
@@ -1201,5 +1271,186 @@ mod tests {
         assert!(output.redirects.is_empty());
         let requests = server.finish();
         assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn scope_dns_resolver_blocks_private_ips_unless_allowed() {
+        let resolver_denied = ScopeDnsResolver {
+            allow_private_hosts: false,
+        };
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        let err = reqwest::dns::Resolve::resolve(&resolver_denied, name)
+            .await
+            .err()
+            .expect("localhost must be rejected when allow_private_hosts is false");
+        assert!(err.to_string().contains("private/local IP"));
+
+        let resolver_allowed = ScopeDnsResolver {
+            allow_private_hosts: true,
+        };
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        let addrs: Vec<_> = reqwest::dns::Resolve::resolve(&resolver_allowed, name)
+            .await
+            .expect("localhost should resolve when allow_private_hosts is true")
+            .collect();
+        assert!(!addrs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn custom_auth_profile_header_is_redacted_and_stripped_on_cross_origin_redirect() {
+        let variable = format!("GOSPEL_HTTP_CUSTOM_SECRET_{}", std::process::id());
+        std::env::set_var(&variable, "custom-secret-value");
+
+        let server2 = MockServer::start("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        let redirect_response = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/final\r\nContent-Length: 0\r\n\r\n",
+            server2.port
+        );
+        let redirect_response: &'static str = Box::leak(redirect_response.into_boxed_str());
+        let server1 = MockServer::start(redirect_response);
+
+        let workspace = tempdir().unwrap();
+        let path = workspace.path().join(".gospel/bounty/scope.yaml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "program: test\nauthorized: true\nallow_http: true\nallow_private_hosts: true\nfollow_redirects: true\nallowed_ports: [{}, {}]\nin_scope:\n  - host: 127.0.0.1\nauth_profiles:\n  custom:\n    type: header\n    header: X-Custom-Secret\n    secret_ref: env:{variable}\n",
+                server1.port, server2.port
+            ),
+        )
+        .unwrap();
+        let tool = BountyHttpTool::new(workspace.path(), "redirect-secret-run").unwrap();
+
+        let mut user_headers = HashMap::new();
+        user_headers.insert("X-Api-Key".to_string(), "api-key-secret".to_string());
+        user_headers.insert("X-Non-Sensitive".to_string(), "keep-me".to_string());
+
+        let output = tool
+            .call(
+                &mut ToolContext::default(),
+                BountyHttpArgs {
+                    method: "GET".to_string(),
+                    url: server1.url(),
+                    headers: Some(user_headers),
+                    body: None,
+                    auth_profile: Some("custom".to_string()),
+                    content_type: None,
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.status, Some(200));
+
+        let req1 = server1.finish().unwrap().to_ascii_lowercase();
+        assert!(req1.contains("x-custom-secret: custom-secret-value"));
+        assert!(req1.contains("x-api-key: api-key-secret"));
+        assert!(req1.contains("x-non-sensitive: keep-me"));
+
+        let req2 = server2.finish().unwrap().to_ascii_lowercase();
+        assert!(!req2.contains("custom-secret-value"));
+        assert!(!req2.contains("x-custom-secret"));
+        assert!(!req2.contains("api-key-secret"));
+        assert!(!req2.contains("x-api-key"));
+        assert!(req2.contains("x-non-sensitive: keep-me"));
+
+        let evidence_path = workspace
+            .path()
+            .join(".gospel/bounty/runs/redirect-secret-run/evidence")
+            .join(format!("{}.json", output.evidence_id.unwrap()));
+        let evidence = std::fs::read_to_string(evidence_path).unwrap();
+        assert!(!evidence.contains("custom-secret-value"));
+        assert!(!evidence.contains("api-key-secret"));
+        assert!(evidence.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn build_request_headers_replaces_case_insensitive_duplicate_auth_header() {
+        let variable = format!("GOSPEL_HTTP_DUP_AUTH_{}", std::process::id());
+        std::env::set_var(&variable, "fresh-token");
+
+        let workspace = tempdir().unwrap();
+        let path = workspace.path().join(".gospel/bounty/scope.yaml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "program: test\nauthorized: true\nin_scope:\n  - host: example.com\nauth_profiles:\n  user_a:\n    type: bearer\n    secret_ref: env:{variable}\n"
+            ),
+        )
+        .unwrap();
+        let scope = BountyScope::load(workspace.path()).unwrap();
+
+        let mut user_headers = HashMap::new();
+        user_headers.insert("authorization".to_string(), "Bearer stale-token".to_string());
+        user_headers.insert("X-Trace".to_string(), "trace-1".to_string());
+
+        let (headers, auth_header_name) =
+            build_request_headers(Some(&user_headers), Some("user_a"), &scope).unwrap();
+
+        assert_eq!(auth_header_name.as_deref(), Some("Authorization"));
+        assert_eq!(headers.len(), 2);
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer fresh-token")
+        );
+        assert!(!headers.contains_key("authorization"));
+        assert_eq!(headers.get("X-Trace").map(String::as_str), Some("trace-1"));
+    }
+
+    #[test]
+    fn redirect_strips_sensitive_headers_on_scheme_or_port_change() {
+        let make_headers = || {
+            HashMap::from([
+                ("Authorization".to_string(), "Bearer tok".to_string()),
+                ("Cookie".to_string(), "sid=abc".to_string()),
+                ("X-Api-Key".to_string(), "key123".to_string()),
+                ("X-Auth-Token".to_string(), "auth123".to_string()),
+                ("Proxy-Authorization".to_string(), "Basic p".to_string()),
+                ("X-Custom-Secret".to_string(), "custom".to_string()),
+                ("X-Request-Id".to_string(), "req-1".to_string()),
+            ])
+        };
+
+        // Scheme downgrade (https -> http) on same host strips sensitive headers.
+        let mut scheme_headers = make_headers();
+        strip_sensitive_headers_if_cross_origin(
+            &Url::parse("https://example.com/start").unwrap(),
+            &Url::parse("http://example.com/end").unwrap(),
+            &mut scheme_headers,
+            Some("X-Custom-Secret"),
+        );
+        assert_eq!(scheme_headers.len(), 1);
+        assert_eq!(
+            scheme_headers.get("X-Request-Id").map(String::as_str),
+            Some("req-1")
+        );
+
+        // Port change on same host strips sensitive headers.
+        let mut port_headers = make_headers();
+        strip_sensitive_headers_if_cross_origin(
+            &Url::parse("https://example.com:443/start").unwrap(),
+            &Url::parse("https://example.com:8443/end").unwrap(),
+            &mut port_headers,
+            Some("X-Custom-Secret"),
+        );
+        assert_eq!(port_headers.len(), 1);
+        assert_eq!(
+            port_headers.get("X-Request-Id").map(String::as_str),
+            Some("req-1")
+        );
+
+        // Same origin preserves all headers.
+        let mut same_origin_headers = make_headers();
+        strip_sensitive_headers_if_cross_origin(
+            &Url::parse("https://example.com/start").unwrap(),
+            &Url::parse("https://example.com:443/end").unwrap(),
+            &mut same_origin_headers,
+            Some("X-Custom-Secret"),
+        );
+        assert_eq!(same_origin_headers.len(), 7);
     }
 }
