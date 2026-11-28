@@ -7,6 +7,7 @@ if (typeof vi !== "undefined" && !vi.mocked) {
 }
 
 vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: vi.fn(() => true),
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: vi.fn().mockResolvedValue(undefined),
   openPath: vi.fn().mockResolvedValue(undefined),
 }));
 
