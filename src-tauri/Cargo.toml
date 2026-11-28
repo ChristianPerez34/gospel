@@ -32,7 +32,7 @@ rmcp = { version = "3.9", features = [
     "transport-streamable-http-client-reqwest",
     "auth",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util"] }
 dirs = "6"
 thiserror = "2"
 futures = "0.3"

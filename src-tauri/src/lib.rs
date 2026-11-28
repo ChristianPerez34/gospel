@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+mod acp;
 mod app_config;
 mod agents;
 pub mod approval_broker;
@@ -762,6 +763,9 @@ async fn build_model_availability(
     force_refresh: bool,
 ) -> ModelAvailabilitySnapshot {
     let provider_ids = providers::all_provider_ids();
+    if provider_ids.iter().any(|p| providers::is_acp_provider(p)) {
+        let _ = acp::droid::probe_auth_status().await;
+    }
     let mut providers: Vec<Option<ProviderAvailability>> = vec![None; provider_ids.len()];
     let mut fetch_inputs = Vec::new();
     let mut all_models = Vec::new();
@@ -1366,6 +1370,56 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                 .state::<ApprovalBrokerState>()
                 .broker()
                 .expect("approval broker is installed during app setup");
+            if providers::is_acp_provider(request.provider) {
+                if request.custom_profile.is_some() {
+                    return Err(LlmError::ProviderError(
+                        "Factory Droid ACP does not support custom agent profiles with Rig-managed toolsets. Select a non-ACP provider for that agent."
+                            .to_string(),
+                    ));
+                }
+                let (existing_acp_session_id, fallback_context_summary) =
+                    if let (Some(store), Some(sid)) =
+                        (&self.session_store_state.store, request.session_id)
+                    {
+                        let existing_sid = store
+                            .get_session(sid)
+                            .ok()
+                            .flatten()
+                            .and_then(|detail| detail.acp_session_id);
+                        let fallback = if existing_sid.is_none() {
+                            conversation::Conversation::for_session(store, sid)
+                                .acp_seed_context()
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
+                        (existing_sid, fallback)
+                    } else {
+                        (None, None)
+                    };
+                let acp_runs = Arc::clone(&*self.app.state::<Arc<acp::droid::AcpRunRegistry>>());
+                return acp::droid::run_acp_turn(
+                    acp::droid::AcpTurnRequest {
+                        prompt: request.prompt,
+                        model: request.model,
+                        variant: request.variant,
+                        api_key: request.api_key,
+                        workspace: request.workspace.as_ref(),
+                        existing_acp_session_id: existing_acp_session_id.as_deref(),
+                        fallback_context_summary: fallback_context_summary.as_deref(),
+                        matched_skills_section: request.matched_skills_section.as_deref(),
+                        invoked_skill_section: request.invoked_skill_section.as_deref(),
+                        memory_section: request.memory_section.as_deref(),
+                        gospel_session_id: request.session_id,
+                        run_id: request.run_id,
+                        approval_broker: Some(broker),
+                        run_registry: Some(acp_runs),
+                    },
+                    move |event| on_event(session_turn::SessionTurnEvent::from(event)),
+                )
+                .await;
+            }
             let external_path_approval: Arc<dyn ExternalPathApproval> =
                 Arc::new(BrokerExternalPathApproval {
                     broker: broker.clone(),
@@ -1575,6 +1629,10 @@ async fn complete_streaming(
     delegated_agent: Option<session_turn::DelegatedAgentRequest>,
     run_id: String,
 ) -> Result<String, llm::LlmErrorDto> {
+    if providers::is_acp_provider(&provider) && !acp::droid::is_credentialed_sync() {
+        let _ = acp::droid::probe_auth_status().await;
+    }
+
     let (delegate_provider, delegate_model, delegate_api_key) =
         resolve_delegate_completion_config(app_config.inner(), &provider, &model);
 
@@ -1651,8 +1709,10 @@ async fn complete_streaming(
 #[tauri::command]
 fn cancel_streaming(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
+    acp_runs: tauri::State<'_, Arc<acp::droid::AcpRunRegistry>>,
     session_id: String,
 ) -> Result<(), String> {
+    acp_runs.cancel_session(&session_id);
     streaming_handles.cancel(&session_id);
     Ok(())
 }
@@ -1701,7 +1761,10 @@ async fn start_provider_oauth(
 }
 
 #[tauri::command]
-fn is_provider_authenticated(provider: String) -> ApiKeyStatus {
+async fn is_provider_authenticated(provider: String) -> ApiKeyStatus {
+    if providers::is_acp_provider(&provider) {
+        let _ = acp::droid::probe_auth_status().await;
+    }
     ApiKeyStatus {
         configured: keychain::provider_has_credentials(&provider),
     }
@@ -1716,7 +1779,10 @@ fn list_oauth_providers() -> Vec<String> {
 }
 
 #[tauri::command]
-fn logout_provider_oauth(provider: String) -> Result<(), String> {
+async fn logout_provider_oauth(provider: String) -> Result<(), String> {
+    if providers::is_acp_provider(&provider) {
+        return acp::droid::logout().await;
+    }
     provider_credentials::logout_oauth(&provider).map_err(|e| e.to_string())
 }
 
@@ -2276,6 +2342,12 @@ async fn run_skill_selection_replay(
     model: String,
     variant: Option<String>,
 ) -> Result<skill_opt::OptimizationConclusion, String> {
+    if providers::is_acp_provider(&provider) {
+        return Err(
+            "Skill optimization is not supported for Factory Droid ACP yet. Choose a non-ACP model for skill optimization."
+                .to_string(),
+        );
+    }
     let (workspace_path, train, selection) =
         harvest_workspace_skill_tasks(app_config.inner(), session_store.inner(), &skill_name)?;
     let mut tasks = train;
@@ -2325,6 +2397,12 @@ async fn optimize_skill_from_sessions(
     model: String,
     variant: Option<String>,
 ) -> Result<skill_opt::OptimizationConclusion, String> {
+    if providers::is_acp_provider(&provider) {
+        return Err(
+            "Skill optimization is not supported for Factory Droid ACP yet. Choose a non-ACP model for skill optimization."
+                .to_string(),
+        );
+    }
     let (workspace_path, train, selection) =
         harvest_workspace_skill_tasks(app_config.inner(), session_store.inner(), &skill_name)?;
     let mut tasks = train;
@@ -2715,13 +2793,17 @@ async fn generate_session_title(
 
     // The title is metadata: use a separate, tool-free request and retain the
     // persisted excerpt if credentials, the provider, or the deadline fail.
-    let generated = match provider_credentials::api_key_for_rig(&detail.provider) {
-        Ok(api_key) => {
-            llm::generate_session_title(&detail.provider, &detail.model, &api_key, &prompt)
-                .await
-                .unwrap_or_else(|_| fallback.clone())
+    let generated = if providers::is_acp_provider(&detail.provider) {
+        fallback.clone()
+    } else {
+        match provider_credentials::api_key_for_rig(&detail.provider) {
+            Ok(api_key) => {
+                llm::generate_session_title(&detail.provider, &detail.model, &api_key, &prompt)
+                    .await
+                    .unwrap_or_else(|_| fallback.clone())
+            }
+            Err(_) => fallback.clone(),
         }
-        Err(_) => fallback.clone(),
     };
     store
         .update_session_title_if_current(&session_id, &fallback, &generated)
@@ -2813,7 +2895,7 @@ fn run_session_message_action_in(
 }
 
 #[tauri::command]
-fn run_session_message_action(
+async fn run_session_message_action(
     session_store: tauri::State<'_, SessionStoreState>,
     app_config: tauri::State<'_, AppConfigState>,
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
@@ -2823,12 +2905,38 @@ fn run_session_message_action(
         .store
         .as_ref()
         .ok_or("Session store is unavailable")?;
-    run_session_message_action_in(
+    let source_acp_session_id = if request.fork {
+        store
+            .get_session(&request.session_id)
+            .ok()
+            .flatten()
+            .and_then(|detail| detail.acp_session_id)
+    } else {
+        None
+    };
+    let is_latest_fork =
+        request.fork && request.turn_count == request.expected_user_turns;
+    let forked = run_session_message_action_in(
         store,
         app_config.inner(),
         streaming_handles.inner(),
         request,
-    )
+    )?;
+    if is_latest_fork && providers::is_acp_provider(&forked.provider) {
+        if let Some(src_acp_id) = source_acp_session_id {
+            let cwd = app_config
+                .store
+                .as_ref()
+                .and_then(|cfg| cfg.get_active_workspace().ok().flatten())
+                .map(|ws| std::path::PathBuf::from(ws.path));
+            if let Some(forked_acp_id) =
+                acp::droid::fork_acp_session(&src_acp_id, cwd.as_deref()).await
+            {
+                let _ = store.set_acp_session_id(&forked.id, Some(&forked_acp_id));
+            }
+        }
+    }
+    Ok(forked)
 }
 
 #[tauri::command]
@@ -3607,6 +3715,7 @@ pub fn run() {
         .manage(AgentCache::new())
         .manage(ApprovalBrokerState::new())
         .manage(StreamingRunHandles::new())
+        .manage(Arc::new(acp::droid::AcpRunRegistry::new()))
         .manage(mcp_runtime::McpRuntime::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

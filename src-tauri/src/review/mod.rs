@@ -592,6 +592,12 @@ fn ensure_provider_session_with(
     provider: &str,
     has_credentials: fn(&str) -> bool,
 ) -> Result<(), String> {
+    if crate::providers::is_acp_provider(provider) {
+        return Err(
+            "Factory Droid ACP is supported for interactive chat sessions, not automated PR code review."
+                .to_string(),
+        );
+    }
     if !crate::providers::is_oauth_provider(provider) {
         return Ok(());
     }

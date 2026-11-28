@@ -718,7 +718,7 @@ pub async fn run_streaming_turn(
                 .then_some(EMPTY_RESPONSE_FALLBACK);
             if let (Some(sid), Some(store)) = (&request.session_id, deps.store) {
                 match crate::conversation::Conversation::for_session(store, sid)
-                    .record_success(&stream_result)
+                    .record_turn_success(Some(&request.prompt), &stream_result)
                 {
                     Ok(Some(display_transcript)) => {
                         deps.memory.schedule_ingest(MemoryIngestJobRequest {
@@ -1204,6 +1204,9 @@ pub fn verification_job_request(
     run_id: &str,
     source_edit_succeeded: bool,
 ) -> Option<VerificationJobRequest> {
+    if crate::providers::is_acp_provider(provider) {
+        return None;
+    }
     if !turn_requires_verification(response_to_verify, source_edit_succeeded) {
         return None;
     }
@@ -2940,6 +2943,8 @@ mod tests {
             prompt_tokens: 18,
             response_tokens: 6,
             tool_calls: 1,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
         adapters.seed_store("session-1", "[]", None);
 
@@ -3075,6 +3080,8 @@ mod tests {
             prompt_tokens: 1,
             response_tokens: 1,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
 
         let result = run_streaming_turn(
@@ -3127,6 +3134,8 @@ mod tests {
             prompt_tokens: 4,
             response_tokens: 1,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
 
         let result = run_streaming_turn(
@@ -3169,6 +3178,8 @@ mod tests {
             prompt_tokens: 3,
             response_tokens: 3,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
 
         let result = run_streaming_turn(
@@ -3294,6 +3305,8 @@ mod tests {
             prompt_tokens: 4,
             response_tokens: 2,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }
     }
 
@@ -3742,6 +3755,8 @@ mod tests {
             prompt_tokens: 1,
             response_tokens: 1,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
         adapters.seed_store("session-1", "[]", None);
 
@@ -3888,6 +3903,8 @@ mod tests {
                 prompt_tokens: 10,
                 response_tokens: 15,
                 tool_calls: 0,
+                acp_session_id: None,
+                acp_turn_blocks: None,
             };
             Box::pin(async move { Ok(result) })
         }

@@ -33,6 +33,69 @@ pub(crate) fn parse_display_transcript(raw: &str) -> Vec<serde_json::Value> {
     serde_json::from_str::<Vec<serde_json::Value>>(raw).unwrap_or_default()
 }
 
+const MAX_ACP_SEED_BYTES: usize = 24 * 1024;
+
+/// Format prior completed turns for seeding a fresh ACP session when a session
+/// forks at an earlier turn or retries without an active `acp_session_id`.
+/// Strips trailing error/stopped rows and any trailing un-answered retry prompt
+/// so the incoming prompt is not duplicated in the context block.
+pub(crate) fn acp_seed_context(raw: &str) -> Option<String> {
+    let mut entries = parse_display_transcript(raw);
+    while entries.last().is_some_and(|entry| {
+        entry.get("error").and_then(|v| v.as_bool()) == Some(true)
+            || entry.get("controlled_stop").and_then(|v| v.as_bool()) == Some(true)
+    }) {
+        entries.pop();
+    }
+    if entries
+        .last()
+        .is_some_and(|entry| entry.get("role").and_then(|r| r.as_str()) == Some("user"))
+    {
+        entries.pop();
+    }
+
+    let mut sections_rev = Vec::new();
+    let mut total_bytes = 0usize;
+    for entry in entries.iter().rev() {
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
+        let Some(role) = obj.get("role").and_then(|r| r.as_str()) else {
+            continue;
+        };
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        if obj.get("error").and_then(|v| v.as_bool()) == Some(true)
+            || obj.get("controlled_stop").and_then(|v| v.as_bool()) == Some(true)
+        {
+            continue;
+        }
+        let content = obj
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .trim();
+        if content.is_empty() {
+            continue;
+        }
+        let label = if role == "user" { "User" } else { "Assistant" };
+        let formatted = format!("{label}: {content}");
+        let needed = formatted.len() + usize::from(!sections_rev.is_empty()) * 2;
+        if total_bytes + needed > MAX_ACP_SEED_BYTES && !sections_rev.is_empty() {
+            break;
+        }
+        total_bytes += needed;
+        sections_rev.push(formatted);
+    }
+
+    if sections_rev.is_empty() {
+        return None;
+    }
+    sections_rev.reverse();
+    Some(sections_rev.join("\n\n"))
+}
+
 fn project_shared_export_fields(
     entry: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {

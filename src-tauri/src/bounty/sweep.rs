@@ -385,6 +385,13 @@ pub async fn run_sweep(
     request: &SweepRequest<'_>,
     on_event: &(dyn Fn(SessionTurnEvent) + Sync),
 ) -> Result<String, LlmError> {
+    if crate::providers::is_acp_provider(request.lead_provider)
+        || crate::providers::is_acp_provider(request.worker_provider)
+    {
+        return Err(LlmError::ProviderError(
+            "Bug bounty sweeps require a non-ACP provider for lead and worker roles.".to_string(),
+        ));
+    }
     let workspace_path = request.workspace.workspace_path.clone();
     let dir = run_dir(&workspace_path, request.run_id);
     let signals_file = signals_path(&workspace_path, request.run_id);

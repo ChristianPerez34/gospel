@@ -447,6 +447,8 @@ where
                 source_edit_succeeded,
                 prompt_tokens,
                 tool_calls,
+                acp_session_id: None,
+                acp_turn_blocks: None,
             });
         }
 

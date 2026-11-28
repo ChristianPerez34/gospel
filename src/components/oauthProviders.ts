@@ -22,6 +22,11 @@ export const oauthProviders: Record<string, OauthCopy> = {
     button: "Sign in with Grok",
     connecting: "Connecting to Grok...",
   },
+  factory_droid: {
+    prompt: "Sign in with your Factory Droid account (Pro/Plus/Max) via ACP",
+    button: "Sign in with Factory",
+    connecting: "Connecting to Factory Droid...",
+  },
 };
 
 const NEUTRAL_OAUTH_COPY: OauthCopy = {

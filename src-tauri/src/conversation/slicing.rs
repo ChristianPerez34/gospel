@@ -27,12 +27,11 @@ fn turn_starts(history: &[Message]) -> Vec<usize> {
         .collect()
 }
 
-pub(crate) fn validate_turn_count(
-    raw_history: Option<&str>,
+fn check_turn_count(
+    actual: usize,
     expected: usize,
     retry_turn: Option<usize>,
 ) -> Result<(), ConversationError> {
-    let actual = turn_starts(&parse_history(raw_history)?).len();
     // Legacy failed turns may not have reached model-history persistence.
     // Otherwise fail closed when pruning or another view changed the history.
     if actual == expected || (retry_turn == Some(actual) && expected == actual + 1) {
@@ -40,6 +39,29 @@ pub(crate) fn validate_turn_count(
     } else {
         Err(ConversationError::Stale)
     }
+}
+
+pub(crate) fn validate_turn_count(
+    raw_history: Option<&str>,
+    expected: usize,
+    retry_turn: Option<usize>,
+) -> Result<(), ConversationError> {
+    let actual = turn_starts(&parse_history(raw_history)?).len();
+    check_turn_count(actual, expected, retry_turn)
+}
+
+pub(crate) fn validate_display_turn_count(
+    raw_transcript: &str,
+    expected: usize,
+    retry_turn: Option<usize>,
+) -> Result<(), ConversationError> {
+    let entries: Vec<serde_json::Value> = serde_json::from_str(raw_transcript)
+        .map_err(|error| ConversationError::InvalidDisplayTranscript(error.to_string()))?;
+    let actual = entries
+        .iter()
+        .filter(|entry| entry.get("role").and_then(|role| role.as_str()) == Some("user"))
+        .count();
+    check_turn_count(actual, expected, retry_turn)
 }
 
 /// Keep complete user turns, including their tool calls/results.

@@ -140,8 +140,17 @@ impl<'store> Conversation<'store> {
     ///
     /// Returns the merged Display Transcript for Memory ingest, or `None`
     /// when nothing was written (no persistable history, or the row is gone).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn record_success(
         &self,
+        completion: &StreamCompletionResult,
+    ) -> Result<Option<String>, ConversationError> {
+        self.record_turn_success(None, completion)
+    }
+
+    pub(crate) fn record_turn_success(
+        &self,
+        display_prompt: Option<&str>,
         completion: &StreamCompletionResult,
     ) -> Result<Option<String>, ConversationError> {
         let fallback = completion
@@ -149,6 +158,26 @@ impl<'store> Conversation<'store> {
             .trim()
             .is_empty()
             .then_some(EMPTY_RESPONSE_FALLBACK);
+        if let Some(blocks) = completion.acp_turn_blocks.as_deref() {
+            let existing = self
+                .detail()?
+                .map(|detail| detail.display_transcript)
+                .unwrap_or_else(|| "[]".to_string());
+            let display_transcript = transcript::acp_turn_display_transcript(
+                &existing,
+                display_prompt.unwrap_or(""),
+                &completion.full_response,
+                blocks,
+                fallback,
+            );
+            self.store.persist_turn_with_acp(
+                &self.session_id,
+                &display_transcript,
+                None,
+                completion.acp_session_id.as_deref(),
+            )?;
+            return Ok(Some(display_transcript));
+        }
         let Some(persistence) =
             successful_turn_persistence(completion.history.as_deref(), fallback)
         else {
@@ -177,11 +206,20 @@ impl<'store> Conversation<'store> {
         let Some(detail) = self.detail()? else {
             return Ok(());
         };
-        let persistence = transcript::failure_turn_persistence(
-            &detail.display_transcript,
-            detail.model_history.as_deref(),
-            &turn,
-        );
+        let is_acp = crate::providers::is_acp_provider(&detail.provider)
+            && detail.model_history.is_none();
+        let persistence = if is_acp {
+            transcript::failure_turn_persistence_without_model_history(
+                &detail.display_transcript,
+                &turn,
+            )
+        } else {
+            transcript::failure_turn_persistence(
+                &detail.display_transcript,
+                detail.model_history.as_deref(),
+                &turn,
+            )
+        };
         self.store.persist_turn(
             &self.session_id,
             &persistence.display_transcript,
@@ -197,6 +235,25 @@ impl<'store> Conversation<'store> {
     pub(crate) fn retry(&self, target: RetryTarget<'_>) -> Result<SessionDetail, ConversationError> {
         let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
         let raw_history = detail.model_history.as_deref();
+        if crate::providers::is_acp_provider(&detail.provider) && raw_history.is_none() {
+            slicing::validate_display_turn_count(
+                &detail.display_transcript,
+                target.expected_user_turns,
+                target.failed_response.then_some(target.prompt_index),
+            )?;
+            let display_transcript = slicing::transcript_through_prompt(
+                &detail.display_transcript,
+                target.prompt_index,
+                target.prompt,
+            )?;
+            self.store.persist_turn_with_acp(
+                &self.session_id,
+                &display_transcript,
+                None,
+                None,
+            )?;
+            return self.detail()?.ok_or(ConversationError::NotFound);
+        }
         slicing::validate_turn_count(
             raw_history,
             target.expected_user_turns,
@@ -226,6 +283,24 @@ impl<'store> Conversation<'store> {
     pub(crate) fn fork(&self, target: ForkTarget<'_>) -> Result<SessionDetail, ConversationError> {
         let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
         let raw_history = detail.model_history.as_deref();
+        if crate::providers::is_acp_provider(&detail.provider) && raw_history.is_none() {
+            slicing::validate_display_turn_count(
+                &detail.display_transcript,
+                target.expected_user_turns,
+                None,
+            )?;
+            let display_transcript = slicing::transcript_through_response(
+                &detail.display_transcript,
+                target.prompt_index,
+                target.response_text,
+            )?;
+            return Ok(self.store.fork_session_with_acp(
+                &self.session_id,
+                &display_transcript,
+                None,
+                None,
+            )?);
+        }
         slicing::validate_turn_count(raw_history, target.expected_user_turns, None)?;
         let history = slicing::history_through_response(
             raw_history,
@@ -265,6 +340,11 @@ impl<'store> Conversation<'store> {
     pub(crate) fn export_transcript(&self) -> Result<String, ConversationError> {
         let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
         Ok(projection::project_transcript(&detail.display_transcript))
+    }
+
+    pub(crate) fn acp_seed_context(&self) -> Result<Option<String>, ConversationError> {
+        let detail = self.detail()?.ok_or(ConversationError::NotFound)?;
+        Ok(projection::acp_seed_context(&detail.display_transcript))
     }
 
     pub(crate) fn export_debug(&self) -> Result<String, ConversationError> {

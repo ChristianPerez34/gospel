@@ -40,6 +40,7 @@ pub async fn start_provider_oauth(
         "chatgpt" => start_chatgpt(app).await,
         "github_copilot" => start_github_copilot(app).await,
         "grok" => start_grok(app).await,
+        "factory_droid" => start_factory_droid(app).await,
         other => Err(format!("Provider {} does not support OAuth", other)),
     }
 }
@@ -128,6 +129,47 @@ fn start_github_copilot(
                         .await
                         .map(|_| ())
                         .map_err(|e| e.to_string())
+                }
+            })
+        })
+        .await
+    })
+}
+
+fn start_factory_droid(
+    app: tauri::AppHandle,
+) -> Pin<Box<dyn Future<Output = Result<OauthChallenge, String>> + Send>> {
+    Box::pin(async move {
+        let browser_app = app.clone();
+        start_registered_oauth_flow(app, "factory_droid", "Factory Droid", move |on_prompt| {
+            if crate::acp::droid::resolve_droid_binary().is_none() {
+                return Err(
+                    "Factory Droid CLI (`droid`) was not found on PATH. Install Factory CLI (`curl -fsSL https://app.factory.ai/cli | sh`) and try again."
+                        .to_string(),
+                );
+            }
+            let browser_app = browser_app.clone();
+            Ok(move || {
+                let on_prompt = Arc::clone(&on_prompt);
+                let browser_app = browser_app.clone();
+                async move {
+                    crate::acp::droid::authenticate_device_pairing(move |challenge| {
+                        let mapped = match challenge {
+                            OauthChallenge::Browser { authorize_url, .. } => {
+                                let browser_launched = browser_app
+                                    .opener()
+                                    .open_url(&authorize_url, None::<String>)
+                                    .is_ok();
+                                OauthChallenge::Browser {
+                                    authorize_url,
+                                    browser_launched,
+                                }
+                            }
+                            other => other,
+                        };
+                        on_prompt(mapped);
+                    })
+                    .await
                 }
             })
         })

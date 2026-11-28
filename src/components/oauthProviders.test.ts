@@ -72,6 +72,14 @@ describe("oauthCopy", () => {
     });
   });
 
+  it("uses Factory Droid ACP metadata for factory_droid", () => {
+    expect(oauthCopy(provider("factory_droid", "oauth"))).toEqual({
+      prompt: "Sign in with your Factory Droid account (Pro/Plus/Max) via ACP",
+      button: "Sign in with Factory",
+      connecting: "Connecting to Factory Droid...",
+    });
+  });
+
   it("uses provider-neutral copy for unrecognized OAuth ids", () => {
     expect(oauthCopy(provider("new_oauth", "oauth"))).toEqual({
       prompt: "Sign in to continue",

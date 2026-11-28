@@ -71,6 +71,9 @@ pub async fn fetch_models_for_provider(
                 Some(ModelFetchKind::CustomOpenCodeGo) => {
                     fetch_opencode_go_models_impl(api_key.unwrap_or("")).await
                 }
+                Some(ModelFetchKind::AcpFactoryDroid) => {
+                    crate::acp::droid::fetch_models(api_key).await
+                }
                 Some(ModelFetchKind::StaticHardcoded) | None => {
                     Ok(ModelRegistry::hardcoded_models_for(provider_id))
                 }

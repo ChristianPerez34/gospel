@@ -201,6 +201,22 @@ mod tests {
     }
 
     #[test]
+    fn factory_droid_credentials_follow_acp_auth_cache() {
+        crate::acp::droid::set_cached_authenticated(Some(false));
+        assert!(matches!(
+            store_api_key("factory_droid", "should-not-store"),
+            Err(CredentialError::ApiKeyStorageUnsupported(_))
+        ));
+
+        crate::acp::droid::set_cached_authenticated(Some(true));
+        assert!(is_credentialed("factory_droid"));
+        assert_eq!(api_key_for_rig("factory_droid").unwrap(), "");
+        assert!(ensure_inference_ready("factory_droid", "").is_ok());
+
+        crate::acp::droid::set_cached_authenticated(None);
+    }
+
+    #[test]
     fn has_api_key_reflects_saved_key_for_custom_providers() {
         let _lock = crate::keychain::lock_config_home();
         let dir = tempfile::tempdir().unwrap();
