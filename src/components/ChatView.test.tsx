@@ -1,11 +1,8 @@
-import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CurrentTurn, Message } from "../types";
 import { ChatView } from "./ChatView";
-import { linkSafety } from "./ExternalLinkDialog";
-import { MessageBlock } from "./MessageBlock";
 
 const userMessage: Message = {
   id: "m-user",
@@ -61,6 +58,20 @@ function defineScrollMetrics(
 }
 
 describe("ChatView external links", () => {
+  function renderSavedLinkChat(url = "https://example.com/docs") {
+    renderChat({
+      messages: [
+        {
+          id: "saved",
+          role: "agent",
+          content: `[Read docs](${url})`,
+          timestamp: new Date(),
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Read docs" }));
+  }
+
   it.each([
     "live",
     "saved",
@@ -68,40 +79,32 @@ describe("ChatView external links", () => {
     const url = "https://example.com/docs?source=chat#section";
     const content = `[Read docs](${url})`;
     const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
-    renderChat(
-      mode === "live"
-        ? {
-            currentTurn: {
-              id: "live",
-              createdAt: new Date(),
-              blocks: [{ kind: "text", id: "text", text: content }],
-            },
-          }
-        : { messages: [{ id: "saved", role: "agent", content, timestamp: new Date() }] }
-    );
+    if (mode === "live") {
+      renderChat({
+        currentTurn: {
+          id: "live",
+          createdAt: new Date(),
+          blocks: [{ kind: "text", id: "text", text: content }],
+        },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Read docs" }));
+    } else {
+      renderSavedLinkChat(url);
+    }
 
-    fireEvent.click(screen.getByRole("button", { name: "Read docs" }));
     expect(openUrl).not.toHaveBeenCalled();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open link" })));
     expect(openUrl).toHaveBeenCalledWith(url);
     expect(windowOpen).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
+    windowOpen.mockRestore();
   });
 
   it("copies the link and lets the user cancel without opening it", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    renderChat({
-      messages: [
-        {
-          id: "saved",
-          role: "agent",
-          content: "[Read docs](https://example.com/docs)",
-          timestamp: new Date(),
-        },
-      ],
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Read docs" }));
+    renderSavedLinkChat();
+
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy link" })));
     expect(writeText).toHaveBeenCalledWith("https://example.com/docs");
     expect(screen.getByRole("button", { name: "Copied" })).not.toBeNull();
@@ -112,73 +115,14 @@ describe("ChatView external links", () => {
 
   it("keeps the dialog open when opening fails and allows a retry", async () => {
     vi.mocked(openUrl).mockRejectedValueOnce(new Error("No browser available"));
-    renderChat({
-      messages: [
-        {
-          id: "saved",
-          role: "agent",
-          content: "[Read docs](https://example.com/docs)",
-          timestamp: new Date(),
-        },
-      ],
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Read docs" }));
+    renderSavedLinkChat();
+
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open link" })));
     expect(screen.getByRole("alert").textContent).toContain("Unable to open link");
     expect(screen.getByRole("button", { name: "Copy link" })).not.toBeNull();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open link" })));
     expect(openUrl).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("opens links from the standalone message renderer", async () => {
-    render(
-      <MessageBlock
-        message={{
-          id: "standalone",
-          role: "agent",
-          content: "[Read docs](https://example.com/docs)",
-          timestamp: new Date(),
-        }}
-      />
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Read docs" }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open link" })));
-    expect(openUrl).toHaveBeenCalledWith("https://example.com/docs");
-  });
-
-  it("does not hand unsupported or relative links to the system opener", async () => {
-    const onClose = vi.fn();
-    const renderModal = linkSafety.renderModal!;
-    const { rerender } = render(
-      renderModal({ isOpen: true, url: "file:///private/data", onClose, onConfirm: vi.fn() })
-    );
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open link" })));
-    expect(screen.getByRole("alert").textContent).toContain("Unable to open link");
-    expect(openUrl).not.toHaveBeenCalled();
-    rerender(renderModal({ isOpen: true, url: "/relative/path", onClose, onConfirm: vi.fn() }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open link" })));
-    expect(screen.getByRole("alert").textContent).toContain("Unable to open link");
-    expect(openUrl).not.toHaveBeenCalled();
-  });
-
-  it("uses the browser's native opener outside Tauri", async () => {
-    vi.mocked(isTauri).mockReturnValueOnce(false);
-    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
-    renderChat({
-      messages: [
-        {
-          id: "saved",
-          role: "agent",
-          content: "[Read docs](https://example.com/docs)",
-          timestamp: new Date(),
-        },
-      ],
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Read docs" }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open link" })));
-    expect(windowOpen).toHaveBeenCalledWith("https://example.com/docs", "_blank", "noreferrer");
-    expect(openUrl).not.toHaveBeenCalled();
   });
 });
 

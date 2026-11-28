@@ -1,34 +1,48 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { X } from "lucide-react";
-import { useCallback, useId, useRef, useState } from "react";
+import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { LinkSafetyConfig, LinkSafetyModalProps } from "streamdown";
 import { Button } from "@/components/ui/button";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 
-function ExternalLinkDialog({ isOpen, onClose, url }: LinkSafetyModalProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
+const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
+
+function ExternalLinkDialogContent({
+  dialogRef,
+  onClose,
+  url,
+}: {
+  dialogRef: RefObject<HTMLDivElement>;
+  onClose: () => void;
+  url: string;
+}) {
+  const activeRef = useRef(true);
   const titleId = useId();
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [opening, setOpening] = useState(false);
-  const close = useCallback(() => {
-    setError("");
-    setCopied(false);
+
+  useEffect(() => {
+    activeRef.current = true;
+    return () => {
+      activeRef.current = false;
+    };
+  }, []);
+
+  const close = () => {
+    activeRef.current = false;
     onClose();
-  }, [onClose]);
-
-  useFocusTrap({ active: isOpen, containerRef: dialogRef, onEscape: close });
-
-  if (!isOpen) return null;
+  };
 
   const open = async () => {
+    if (opening) return;
     setError("");
     setOpening(true);
     try {
       const { protocol } = new URL(url);
-      if (!["http:", "https:", "mailto:", "tel:"].includes(protocol)) {
+      if (!ALLOWED_PROTOCOLS.has(protocol)) {
         throw new Error("Unsupported link protocol");
       }
       if (isTauri()) {
@@ -36,26 +50,36 @@ function ExternalLinkDialog({ isOpen, onClose, url }: LinkSafetyModalProps) {
       } else {
         window.open(url, "_blank", "noreferrer");
       }
-      close();
+      if (activeRef.current) {
+        close();
+      }
     } catch {
-      setError("Unable to open link. You can copy it instead.");
+      if (activeRef.current) {
+        setError("Unable to open link. You can copy it instead.");
+      }
     } finally {
-      setOpening(false);
+      if (activeRef.current) {
+        setOpening(false);
+      }
     }
   };
 
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setError("");
+      if (activeRef.current) {
+        setCopied(true);
+        setError("");
+      }
     } catch {
-      setError("Unable to copy link.");
+      if (activeRef.current) {
+        setError("Unable to copy link.");
+      }
     }
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center bg-scrim">
       <button
         type="button"
         aria-label="Close link dialog"
@@ -69,7 +93,7 @@ function ExternalLinkDialog({ isOpen, onClose, url }: LinkSafetyModalProps) {
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="relative mx-4 flex w-full max-w-md flex-col gap-4 rounded-xl border bg-background p-6 shadow-lg"
+        className="relative mx-4 flex w-full max-w-md flex-col gap-4 rounded-xl border border-[var(--surface-line)] bg-surface-elevated p-6 text-text-primary shadow-[var(--shadow-dialog)]"
       >
         <Button
           variant="ghost"
@@ -80,11 +104,11 @@ function ExternalLinkDialog({ isOpen, onClose, url }: LinkSafetyModalProps) {
         >
           <X />
         </Button>
-        <h2 id={titleId} className="pr-8 font-semibold text-lg">
+        <h2 id={titleId} className="pr-8 font-semibold text-lg text-text-primary">
           Open external link?
         </h2>
-        <p className="text-muted-foreground text-sm">You're about to visit an external website.</p>
-        <div className="max-h-32 overflow-y-auto break-all rounded-md bg-muted p-3 font-mono text-sm">
+        <p className="text-sm text-text-secondary">You're about to visit an external website.</p>
+        <div className="max-h-32 overflow-y-auto break-all rounded-md border border-[var(--surface-line)] bg-surface-overlay p-3 font-mono text-sm text-text-primary">
           {url}
         </div>
         {error && (
@@ -104,6 +128,16 @@ function ExternalLinkDialog({ isOpen, onClose, url }: LinkSafetyModalProps) {
     </div>,
     document.body
   );
+}
+
+function ExternalLinkDialog({ isOpen, onClose, url }: LinkSafetyModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap({ active: isOpen, containerRef: dialogRef, onEscape: onClose });
+
+  if (!isOpen) return null;
+
+  return <ExternalLinkDialogContent key={url} dialogRef={dialogRef} onClose={onClose} url={url} />;
 }
 
 export const linkSafety: LinkSafetyConfig = {
