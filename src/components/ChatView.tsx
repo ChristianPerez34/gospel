@@ -18,6 +18,7 @@ import type {
 } from "../types";
 import { ActivityStep } from "./ActivityStep";
 import { ApprovalCard } from "./ApprovalCard";
+import { linkSafety } from "./ExternalLinkDialog";
 import { type MessageActionCallbacks, MessageActions } from "./MessageActions";
 import { MessageBlock } from "./MessageBlock";
 
@@ -291,7 +292,7 @@ function AgentTextBlock({ block, live }: { block: TextTurnBlock; live: boolean }
 
   return (
     <div className="agent-text-block ml-16 w-[calc(100%-3.25rem)] max-w-[680px] rounded-lg border border-surface-overlay bg-surface-base px-3 py-3 text-body leading-relaxed text-text-primary break-words prose">
-      <Streamdown animated={live} plugins={{ code: codePlugin }}>
+      <Streamdown animated={live} plugins={{ code: codePlugin }} linkSafety={linkSafety}>
         {block.text}
       </Streamdown>
     </div>

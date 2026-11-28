@@ -1,6 +1,7 @@
 import { Streamdown } from "streamdown";
 import { codePlugin } from "@/lib/markdown";
 import type { Message } from "../types";
+import { linkSafety } from "./ExternalLinkDialog";
 import { MessageActions } from "./MessageActions";
 
 interface MessageBlockProps {
@@ -43,7 +44,9 @@ export function MessageBlock({ message, showActions = true }: MessageBlockProps)
         {isUser ? (
           message.content
         ) : (
-          <Streamdown plugins={{ code: codePlugin }}>{message.content}</Streamdown>
+          <Streamdown plugins={{ code: codePlugin }} linkSafety={linkSafety}>
+            {message.content}
+          </Streamdown>
         )}
       </div>
       {showActions && <MessageActions message={message} />}
