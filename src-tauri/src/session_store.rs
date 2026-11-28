@@ -18,6 +18,8 @@ pub enum SessionStoreError {
     InvalidStatus(String),
     #[error("invalid session title: {0}")]
     InvalidTitle(String),
+    #[error("{0}")]
+    InvalidOperation(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +49,9 @@ pub struct SessionDetail {
     pub display_transcript: String,
     #[serde(skip_serializing)]
     pub model_history: Option<String>,
+    #[serde(skip_serializing)]
+    pub acp_session_id: Option<String>,
+    pub acp_backend: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -77,6 +82,9 @@ pub struct ArchivedSessionDetail {
     pub display_transcript: String,
     #[serde(skip_serializing)]
     pub model_history: Option<String>,
+    #[serde(skip_serializing)]
+    pub acp_session_id: Option<String>,
+    pub acp_backend: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: String,
@@ -127,6 +135,9 @@ pub struct ArchivedSessionExportItem {
     pub display_transcript: String,
     #[serde(skip_serializing)]
     pub model_history: Option<String>,
+    #[serde(default)]
+    pub acp_session_id: Option<String>,
+    pub acp_backend: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: String,
@@ -180,6 +191,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace_id TEXT,
     display_transcript TEXT NOT NULL DEFAULT '[]',
     model_history TEXT,
+    acp_session_id TEXT,
+    acp_backend TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -197,6 +210,8 @@ CREATE TABLE IF NOT EXISTS archived_sessions (
     workspace_id TEXT,
     display_transcript TEXT NOT NULL DEFAULT '[]',
     model_history TEXT,
+    acp_session_id TEXT,
+    acp_backend TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     archived_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -367,8 +382,8 @@ impl SessionStore {
         let row = conn
             .query_row(
                 "SELECT s.id, s.title, s.provider, s.model, s.variant, s.status, s.workspace_id,
-                        s.display_transcript, s.model_history, s.created_at, s.updated_at,
-                        sa.agent_id
+                        s.display_transcript, s.model_history, s.acp_session_id,
+                        s.created_at, s.updated_at, sa.agent_id, s.acp_backend
                  FROM sessions s
                  LEFT JOIN session_agents sa ON sa.session_id = s.id
                  WHERE s.id = ?1",
@@ -384,9 +399,11 @@ impl SessionStore {
                         workspace_id: row.get(6)?,
                         display_transcript: row.get(7)?,
                         model_history: row.get(8)?,
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                        agent_id: row.get(11)?,
+                        acp_session_id: row.get(9)?,
+                        acp_backend: row.get(13)?,
+                        created_at: row.get(10)?,
+                        updated_at: row.get(11)?,
+                        agent_id: row.get(12)?,
                     })
                 },
             )
@@ -635,6 +652,24 @@ impl SessionStore {
         variant: Option<&str>,
     ) -> Result<(), SessionStoreError> {
         let conn = self.conn.lock().unwrap();
+        let (current_provider, display_transcript): (String, String) = conn
+            .query_row(
+                "SELECT provider, display_transcript FROM sessions WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| SessionStoreError::NotFound(id.to_string()))?;
+        let has_turns = serde_json::from_str::<Vec<serde_json::Value>>(&display_transcript)
+            .is_ok_and(|entries| !entries.is_empty());
+        if has_turns
+            && crate::providers::is_acp_provider(&current_provider)
+                != crate::providers::is_acp_provider(provider)
+        {
+            return Err(SessionStoreError::InvalidOperation(
+                "Cannot switch between Factory Droid ACP and other providers after conversation turns exist. Fork or start a new session instead.".to_string(),
+            ));
+        }
         let rows = conn.execute(
             "UPDATE sessions SET provider = ?1, model = ?2, variant = ?3,
                     updated_at = datetime('now')
@@ -704,20 +739,69 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn persist_turn_with_acp(
+        &self,
+        id: &str,
+        display_transcript: &str,
+        model_history: Option<&str>,
+        acp_session_id: Option<&str>,
+    ) -> Result<(), SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE sessions SET display_transcript = ?1, model_history = ?2,
+                    acp_session_id = ?3,
+                    acp_backend = CASE WHEN ?3 IS NULL THEN NULL ELSE COALESCE(acp_backend, ?5) END,
+                    status = 'active', updated_at = datetime('now')
+             WHERE id = ?4",
+            params![display_transcript, model_history, acp_session_id, id, crate::acp::droid::FACTORY_DROID_PROVIDER_ID],
+        )?;
+        if rows == 0 {
+            return Err(SessionStoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn set_acp_session_id(
+        &self,
+        id: &str,
+        acp_session_id: Option<&str>,
+    ) -> Result<(), SessionStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE sessions SET acp_session_id = ?1,
+                    acp_backend = CASE WHEN ?1 IS NULL THEN NULL ELSE COALESCE(acp_backend, ?3) END, updated_at = datetime('now') WHERE id = ?2",
+            params![acp_session_id, id, crate::acp::droid::FACTORY_DROID_PROVIDER_ID],
+        )?;
+        if rows == 0 {
+            return Err(SessionStoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
     pub fn fork_session(
         &self,
         source_id: &str,
         display_transcript: &str,
         model_history: &str,
     ) -> Result<SessionDetail, SessionStoreError> {
+        self.fork_session_with_acp(source_id, display_transcript, Some(model_history), None)
+    }
+
+    pub fn fork_session_with_acp(
+        &self,
+        source_id: &str,
+        display_transcript: &str,
+        model_history: Option<&str>,
+        acp_session_id: Option<&str>,
+    ) -> Result<SessionDetail, SessionStoreError> {
         let id = Uuid::new_v4().to_string();
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
             "INSERT INTO sessions (id, title, provider, model, variant, status, workspace_id,
-                                   display_transcript, model_history)
-             SELECT ?1, title || ' (fork)', provider, model, variant, 'active', workspace_id, ?2, ?3
-             FROM sessions WHERE id = ?4",
-            params![id, display_transcript, model_history, source_id],
+                                   display_transcript, model_history, acp_session_id, acp_backend)
+             SELECT ?1, title || ' (fork)', provider, model, variant, 'active', workspace_id, ?2, ?3, ?4, acp_backend
+             FROM sessions WHERE id = ?5",
+            params![id, display_transcript, model_history, acp_session_id, source_id],
         )?;
         if rows == 0 {
             return Err(SessionStoreError::NotFound(source_id.to_string()));
@@ -772,10 +856,10 @@ impl SessionStore {
             tx.execute(
                 "INSERT INTO archived_sessions (
                     id, title, provider, model, variant, status, workspace_id,
-                    display_transcript, model_history, created_at, updated_at, archived_at
+                    display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at, archived_at
                  )
                  SELECT id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, created_at, updated_at, datetime('now')
+                        display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at, datetime('now')
                  FROM sessions
                  WHERE id = ?1",
                 params![id],
@@ -822,10 +906,10 @@ impl SessionStore {
             tx.execute(
                 "INSERT INTO sessions (
                     id, title, provider, model, variant, status, workspace_id,
-                    display_transcript, model_history, created_at, updated_at
+                    display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at
                  )
                  SELECT id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, created_at, updated_at
+                        display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at
                  FROM archived_sessions
                  WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
@@ -1033,8 +1117,8 @@ impl SessionStore {
         let row = conn
             .query_row(
                 "SELECT id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, created_at, updated_at,
-                        archived_at, deleted_at
+                        display_transcript, model_history, acp_session_id, created_at, updated_at,
+                        archived_at, deleted_at, acp_backend
                  FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
                 |row| {
@@ -1048,10 +1132,12 @@ impl SessionStore {
                         workspace_id: row.get(6)?,
                         display_transcript: row.get(7)?,
                         model_history: row.get(8)?,
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                        archived_at: row.get(11)?,
-                        deleted_at: row.get(12)?,
+                        acp_session_id: row.get(9)?,
+                        acp_backend: row.get(14)?,
+                        created_at: row.get(10)?,
+                        updated_at: row.get(11)?,
+                        archived_at: row.get(12)?,
+                        deleted_at: row.get(13)?,
                     })
                 },
             )
@@ -1105,6 +1191,8 @@ impl SessionStore {
                 workspace_id: detail.workspace_id,
                 display_transcript: detail.display_transcript,
                 model_history: detail.model_history,
+                acp_session_id: detail.acp_session_id,
+                acp_backend: detail.acp_backend,
                 created_at: detail.created_at,
                 updated_at: detail.updated_at,
                 archived_at: detail.archived_at,
@@ -1173,10 +1261,10 @@ impl SessionStore {
                 tx.execute(
                     "INSERT INTO archived_sessions (
                         id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, created_at, updated_at,
+                        display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at,
                         archived_at, deleted_at
                      )
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL)
                      ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         provider = excluded.provider,
@@ -1186,6 +1274,8 @@ impl SessionStore {
                         workspace_id = excluded.workspace_id,
                         display_transcript = excluded.display_transcript,
                         model_history = excluded.model_history,
+                        acp_session_id = excluded.acp_session_id,
+                        acp_backend = excluded.acp_backend,
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at,
                         archived_at = excluded.archived_at,
@@ -1200,6 +1290,8 @@ impl SessionStore {
                         target_workspace_id,
                         session.display_transcript,
                         session.model_history,
+                        session.acp_session_id,
+                        session.acp_backend,
                         session.created_at,
                         session.updated_at,
                         session.archived_at
@@ -1457,6 +1549,30 @@ fn ensure_session_schema_columns(conn: &Connection) -> Result<(), SessionStoreEr
         "archived_sessions",
         "variant",
         "ALTER TABLE archived_sessions ADD COLUMN variant TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "sessions",
+        "acp_session_id",
+        "ALTER TABLE sessions ADD COLUMN acp_session_id TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "archived_sessions",
+        "acp_session_id",
+        "ALTER TABLE archived_sessions ADD COLUMN acp_session_id TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "sessions",
+        "acp_backend",
+        "ALTER TABLE sessions ADD COLUMN acp_backend TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "archived_sessions",
+        "acp_backend",
+        "ALTER TABLE archived_sessions ADD COLUMN acp_backend TEXT",
     )?;
     Ok(())
 }
@@ -2470,5 +2586,125 @@ mod tests {
         .expect("model_history must deserialize into Vec<Message>");
 
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn acp_session_id_persists_through_turns_archive_restore_export_and_import() {
+        let store = test_store();
+        let s = store
+            .create_session("Droid", "factory_droid", "claude-opus-5-5", Some("ws1"))
+            .unwrap();
+        store
+            .persist_turn_with_acp(
+                &s.id,
+                r#"[{"role":"user","content":"hi"},{"role":"assistant","content":"yo","blocks":[]}]"#,
+                None,
+                Some("acp-sess-123"),
+            )
+            .unwrap();
+
+        let detail = store.get_session(&s.id).unwrap().unwrap();
+        assert_eq!(detail.acp_session_id.as_deref(), Some("acp-sess-123"));
+        assert!(detail.model_history.is_none());
+
+        store.archive_session(&s.id).unwrap();
+        let archived = store.get_archived_session(&s.id).unwrap().unwrap();
+        assert_eq!(archived.acp_session_id.as_deref(), Some("acp-sess-123"));
+
+        let exported = store
+            .export_archived_sessions(std::slice::from_ref(&s.id))
+            .unwrap();
+        store.delete_archived_session(&s.id).unwrap();
+        store.import_archived_sessions(&exported, Some("ws1")).unwrap();
+        store.restore_archived_session(&s.id).unwrap();
+
+        let restored_detail = store.get_session(&s.id).unwrap().unwrap();
+        assert_eq!(
+            restored_detail.acp_session_id.as_deref(),
+            Some("acp-sess-123")
+        );
+    }
+
+    #[test]
+    fn update_model_selection_rejects_cross_backend_switch_after_turns_exist() {
+        let store = test_store();
+        let s = store
+            .create_session("Switch Guard", "factory_droid", "auto", None)
+            .unwrap();
+
+        // Draft sessions without turns can still switch backends freely.
+        store
+            .update_model_selection(&s.id, "openai", "gpt-5.2", None)
+            .unwrap();
+        store
+            .update_model_selection(&s.id, "factory_droid", "claude-opus-5-5", None)
+            .unwrap();
+
+        store
+            .persist_turn_with_acp(
+                &s.id,
+                r#"[{"role":"user","content":"hi"},{"role":"assistant","content":"ok","blocks":[]}]"#,
+                None,
+                Some("acp-1"),
+            )
+            .unwrap();
+
+        let err = store
+            .update_model_selection(&s.id, "openai", "gpt-5.2", None)
+            .unwrap_err();
+        assert!(err.to_string().contains("Factory Droid ACP"));
+
+        // Switching models within Factory Droid ACP remains allowed.
+        store
+            .update_model_selection(&s.id, "factory_droid", "claude-sonnet-5", Some("reasoning-high"))
+            .unwrap();
+    }
+
+    #[test]
+    fn ensure_session_schema_columns_migrates_legacy_tables_without_acp_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY NOT NULL,
+                title TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                workspace_id TEXT,
+                display_transcript TEXT NOT NULL DEFAULT '[]',
+                model_history TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE archived_sessions (
+                id TEXT PRIMARY KEY NOT NULL,
+                title TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL,
+                workspace_id TEXT,
+                display_transcript TEXT NOT NULL DEFAULT '[]',
+                model_history TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                archived_at TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at TEXT
+            );",
+        )
+        .unwrap();
+
+        ensure_session_schema_columns(&conn).unwrap();
+
+        let has_col = |table: &str| {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+            let exists = stmt
+                .query_map(params![], |row| row.get::<_, String>(1))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|name| name == "acp_session_id");
+            exists
+        };
+        assert!(has_col("sessions"));
+        assert!(has_col("archived_sessions"));
     }
 }

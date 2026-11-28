@@ -29,6 +29,8 @@ fn completion(text: &str, messages: Vec<Message>) -> StreamCompletionResult {
         prompt_tokens: 0,
         response_tokens: 0,
         tool_calls: 0,
+        acp_session_id: None,
+        acp_turn_blocks: None,
     }
 }
 
@@ -477,4 +479,73 @@ fn skill_harvest_entries_expose_user_text_and_tool_names() {
         }
     );
     assert!(matches!(entries[1], SkillHarvestEntry::Assistant { .. }));
+}
+
+#[test]
+fn acp_record_turn_success_retry_and_fork_work_without_model_history() {
+    let store = SessionStore::in_memory_for_test().unwrap();
+    let s = store
+        .create_session("Droid", "factory_droid", "claude-opus-5-5", None)
+        .unwrap();
+
+    let acp_completion = |reply: &str, sid: &str| StreamCompletionResult {
+        full_response: reply.to_string(),
+        history: None,
+        source_edit_succeeded: false,
+        prompt_tokens: 1,
+        response_tokens: 1,
+        tool_calls: 1,
+        acp_session_id: Some(sid.to_string()),
+        acp_turn_blocks: Some(vec![
+            serde_json::json!({"kind": "tool", "id": "t1", "name": "read_file", "arguments": {}, "status": "completed"}),
+            serde_json::json!({"kind": "text", "id": "text-0", "text": reply}),
+        ]),
+    };
+
+    conv(&store, &s.id)
+        .record_turn_success(Some("first question"), &acp_completion("first answer", "acp-1"))
+        .unwrap();
+    conv(&store, &s.id)
+        .record_turn_success(Some("second question"), &acp_completion("second answer", "acp-1"))
+        .unwrap();
+
+    let after = detail(&store, &s.id);
+    assert_eq!(after.acp_session_id.as_deref(), Some("acp-1"));
+    assert!(after.model_history.is_none());
+    let harvested = conv(&store, &s.id).skill_harvest_entries().unwrap();
+    assert_eq!(harvested.len(), 4);
+
+    let forked = conv(&store, &s.id)
+        .fork(ForkTarget {
+            prompt_index: 0,
+            expected_user_turns: 2,
+            response_text: "first answer",
+        })
+        .unwrap();
+    assert!(forked.model_history.is_none());
+    assert!(forked.acp_session_id.is_none());
+    assert_eq!(transcript_entries(&store, &forked.id).len(), 2);
+
+    let retried = conv(&store, &s.id)
+        .retry(RetryTarget {
+            prompt_index: 1,
+            prompt: "second question",
+            expected_user_turns: 2,
+            failed_response: false,
+        })
+        .unwrap();
+    assert!(retried.acp_session_id.is_none());
+    assert!(retried.model_history.is_none());
+    let retried_entries = transcript_entries(&store, &s.id);
+    assert_eq!(retried_entries.len(), 3);
+    assert_eq!(retried_entries[2]["content"], "second question");
+
+    // Re-running the retried turn must not duplicate the trailing user entry.
+    conv(&store, &s.id)
+        .record_turn_success(Some("second question"), &acp_completion("better answer", "acp-2"))
+        .unwrap();
+    let final_entries = transcript_entries(&store, &s.id);
+    assert_eq!(final_entries.len(), 4);
+    assert_eq!(final_entries[3]["content"], "better answer");
+    assert_eq!(detail(&store, &s.id).acp_session_id.as_deref(), Some("acp-2"));
 }

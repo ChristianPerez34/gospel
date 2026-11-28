@@ -1984,7 +1984,7 @@ fn source_edit_failure(reason: &str, message: &str, path: Option<String>) -> Sou
     }
 }
 
-fn source_edit_blocked_path_reason(path: &Path) -> Option<String> {
+pub(crate) fn source_edit_blocked_path_reason(path: &Path) -> Option<String> {
     let rendered = display_rel_path(path);
     if rendered == ".gospel" || rendered.starts_with(".gospel/") {
         return Some(

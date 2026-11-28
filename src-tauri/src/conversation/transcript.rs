@@ -306,10 +306,71 @@ fn add_fallback_response(display: &mut Vec<serde_json::Value>, response: &str) {
     }
 }
 
+pub(crate) fn acp_turn_display_transcript(
+    existing_display_transcript: &str,
+    display_prompt: &str,
+    assistant_response: &str,
+    blocks: &[serde_json::Value],
+    fallback: Option<&str>,
+) -> String {
+    let mut entries: Vec<serde_json::Value> =
+        serde_json::from_str(existing_display_transcript).unwrap_or_default();
+    if !display_prompt.is_empty()
+        && !entries.last().is_some_and(|entry| {
+            transcript_entry_role(entry) == Some("user")
+                && entry.get("content").and_then(|content| content.as_str()) == Some(display_prompt)
+        })
+    {
+        entries.push(json!({
+            "role": "user",
+            "content": display_prompt,
+        }));
+    }
+    let content = fallback.unwrap_or(assistant_response);
+    let mut assistant_blocks = blocks.to_vec();
+    let has_text_block = assistant_blocks.iter().any(|block| {
+        block.get("kind").and_then(|kind| kind.as_str()) == Some("text")
+            && block
+                .get("text")
+                .and_then(|text| text.as_str())
+                .is_some_and(|text| !text.trim().is_empty())
+    });
+    if !has_text_block && !content.trim().is_empty() {
+        let id = format!("text-{}", assistant_blocks.len());
+        assistant_blocks.push(json!({
+            "kind": "text",
+            "id": id,
+            "text": content,
+        }));
+    }
+    entries.push(json!({
+        "role": "assistant",
+        "content": content,
+        "blocks": assistant_blocks,
+    }));
+    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+pub(crate) fn failure_turn_persistence_without_model_history(
+    existing_display_transcript: &str,
+    turn: &FailedTurn<'_>,
+) -> FailureTurnPersistence {
+    failure_turn_persistence_impl(existing_display_transcript, None, turn, false)
+}
+
 pub(crate) fn failure_turn_persistence(
     existing_display_transcript: &str,
     existing_model_history: Option<&str>,
     turn: &FailedTurn<'_>,
+) -> FailureTurnPersistence {
+    failure_turn_persistence_impl(existing_display_transcript, existing_model_history, turn, true)
+}
+
+fn failure_turn_persistence_impl(
+    existing_display_transcript: &str,
+    existing_model_history: Option<&str>,
+    turn: &FailedTurn<'_>,
+    persist_model_history: bool,
 ) -> FailureTurnPersistence {
     let mut transcript: Vec<serde_json::Value> =
         serde_json::from_str(existing_display_transcript).unwrap_or_default();
@@ -318,26 +379,34 @@ pub(crate) fn failure_turn_persistence(
         error => (format!("Error: {}", error.to_dto().message), false),
     };
 
-    let history = match existing_model_history {
-        Some(raw) => match crate::conversation::parse_model_history(raw) {
-            Ok(history) => Some(history),
-            Err(error) => {
-                tracing::warn!("Failed to append failed prompt to model history: {}", error);
-                None
-            }
-        },
-        None => Some(Vec::new()),
-    }
-    .map(|mut history| {
-        history.push(Message::user(turn.model_prompt));
-        history
-    });
-    let appended = history
-        .as_ref()
-        .and_then(|history| serde_json::to_string(history).ok());
-    let prompt_in_model_history = appended.is_some();
-    let history = history.filter(|_| prompt_in_model_history);
-    let model_history = appended.or_else(|| existing_model_history.map(str::to_string));
+    let (prompt_in_model_history, model_history, history) = if persist_model_history {
+        let history = match existing_model_history {
+            Some(raw) => match crate::conversation::parse_model_history(raw) {
+                Ok(history) => Some(history),
+                Err(error) => {
+                    tracing::warn!("Failed to append failed prompt to model history: {}", error);
+                    None
+                }
+            },
+            None => Some(Vec::new()),
+        }
+        .map(|mut history| {
+            history.push(Message::user(turn.model_prompt));
+            history
+        });
+        let appended = history
+            .as_ref()
+            .and_then(|history| serde_json::to_string(history).ok());
+        let ok = appended.is_some();
+        let history = history.filter(|_| ok);
+        (
+            ok,
+            appended.or_else(|| existing_model_history.map(str::to_string)),
+            history,
+        )
+    } else {
+        (false, None, None)
+    };
 
     // A retried prompt is already the transcript's last entry.
     if !transcript.last().is_some_and(|entry| {

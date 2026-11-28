@@ -113,6 +113,7 @@ pub enum ModelFetchKind {
     CustomGrok,
     CustomXai,
     CustomOpenCodeGo,
+    AcpFactoryDroid,
     StaticHardcoded,
 }
 
@@ -225,7 +226,53 @@ pub const CREDENTIALED_PROVIDERS: &[CredentialedProviderRegistration] = &[
         model_cache_scope: ModelCacheScope::ApiKey,
         oauth: None,
     },
+    CredentialedProviderRegistration {
+        id: crate::acp::droid::FACTORY_DROID_PROVIDER_ID,
+        display_name: "Factory Droid",
+        auth_kind: ProviderAuthKind::Oauth,
+        model_fetch: ModelFetchKind::AcpFactoryDroid,
+        model_cache_scope: ModelCacheScope::Shared,
+        oauth: Some(OauthProviderHooks {
+            auth_complete_event: "factory-droid-auth-complete",
+            has_session: crate::acp::droid::is_credentialed_sync,
+            delete_session: clear_factory_droid_cached_auth,
+        }),
+    },
 ];
+
+fn clear_factory_droid_cached_auth() -> Result<(), KeychainError> {
+    crate::acp::droid::set_cached_authenticated(Some(false));
+    Ok(())
+}
+
+/// Resolves a fallback Rig-backed provider for utility work (session titles,
+/// verification) when the session's own provider is an external agent backend
+/// that Rig cannot drive. Returns the first credentialed non-ACP provider with
+/// its first catalog model, or `None` when only ACP is active.
+pub fn fallback_rig_credentials() -> Option<(String, String, String)> {
+    for id in provider_ids() {
+        if is_acp_provider(id) {
+            continue;
+        }
+        if !crate::provider_credentials::is_credentialed(id) {
+            continue;
+        }
+        let api_key = crate::provider_credentials::api_key_for_rig(id).unwrap_or_default();
+        let Some(model) = crate::models::ModelRegistry::hardcoded_models_for(id)
+            .into_iter()
+            .map(|m| m.model)
+            .next()
+        else {
+            continue;
+        };
+        return Some((id.to_string(), model, api_key));
+    }
+    None
+}
+
+pub fn is_acp_provider(id: &str) -> bool {
+    id == crate::acp::droid::FACTORY_DROID_PROVIDER_ID
+}
 
 pub fn provider(id: &str) -> Option<&'static CredentialedProviderRegistration> {
     CREDENTIALED_PROVIDERS.iter().find(|entry| entry.id == id)
@@ -350,19 +397,25 @@ mod tests {
                 "gemini",
                 "groq",
                 "mistral",
-                "opencode_go"
+                "opencode_go",
+                "factory_droid"
             ]
         );
     }
 
     #[test]
     fn oauth_provider_ids_match_oauth_registrations() {
-        assert_eq!(oauth_provider_ids(), ["chatgpt", "github_copilot", "grok"]);
+        assert_eq!(
+            oauth_provider_ids(),
+            ["chatgpt", "github_copilot", "grok", "factory_droid"]
+        );
         for id in oauth_provider_ids() {
             assert!(is_oauth_provider(id));
             assert_eq!(provider_auth_type(id), "oauth");
             assert!(provider(id).unwrap().oauth.is_some());
         }
+        assert!(is_acp_provider("factory_droid"));
+        assert!(!is_acp_provider("chatgpt"));
     }
 
     #[test]

@@ -306,6 +306,8 @@ pub struct StreamCompletionResult {
     pub prompt_tokens: usize,
     pub response_tokens: usize,
     pub tool_calls: usize,
+    pub acp_session_id: Option<String>,
+    pub acp_turn_blocks: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

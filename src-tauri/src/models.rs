@@ -352,6 +352,13 @@ static ANTHROPIC_FALLBACK_MODELS: LazyLock<Vec<&'static str>> = LazyLock::new(||
     })
 });
 
+static FACTORY_DROID_FALLBACK_MODELS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    crate::acp::droid::FACTORY_DROID_CURATED_MODELS
+        .iter()
+        .map(|entry| entry.id)
+        .collect()
+});
+
 /// Models the signed-in ChatGPT account listed on its last fetch, which may
 /// include models newer than the bundled catalog.
 static LIVE_CHATGPT_MODELS: LazyLock<StdRwLock<HashSet<String>>> =
@@ -748,6 +755,10 @@ impl ModelRegistry {
     }
 
     fn reasoning_effort_levels(provider: &str, model: &str) -> Option<Vec<Effort>> {
+        if provider == crate::acp::droid::FACTORY_DROID_PROVIDER_ID {
+            return crate::acp::droid::effort_levels_for_model(model);
+        }
+
         if provider == "chatgpt"
             && (model == "gpt-5.6-luna" || !Self::is_chatgpt_subscription_model(model))
         {
@@ -773,6 +784,7 @@ impl ModelRegistry {
             "groq" => GROQ_MODELS,
             "mistral" => MISTRAL_MODELS,
             "opencode_go" => OPENCODE_GO_MODELS,
+            "factory_droid" => FACTORY_DROID_FALLBACK_MODELS.as_slice(),
             _ => &[],
         }
     }
@@ -1822,7 +1834,7 @@ mod tests {
     fn oauth_provider_ids_are_the_registered_credentialed_oauth_providers() {
         assert_eq!(
             crate::providers::oauth_provider_ids(),
-            ["chatgpt", "github_copilot", "grok"]
+            ["chatgpt", "github_copilot", "grok", "factory_droid"]
         );
         assert_eq!(
             ModelRegistry::all_providers(),
@@ -1836,16 +1848,23 @@ mod tests {
                 "gemini",
                 "groq",
                 "mistral",
-                "opencode_go"
+                "opencode_go",
+                "factory_droid"
             ]
         );
         assert!(ModelRegistry::is_oauth_provider("chatgpt"));
         assert!(ModelRegistry::is_oauth_provider("github_copilot"));
         assert!(ModelRegistry::is_oauth_provider("grok"));
+        assert!(ModelRegistry::is_oauth_provider("factory_droid"));
         assert!(!ModelRegistry::is_oauth_provider("openai"));
         assert_eq!(ModelRegistry::provider_auth_type("chatgpt"), "oauth");
         assert_eq!(ModelRegistry::provider_auth_type("grok"), "oauth");
+        assert_eq!(ModelRegistry::provider_auth_type("factory_droid"), "oauth");
         assert_eq!(ModelRegistry::provider_auth_type("openai"), "api_key");
+        assert_eq!(
+            ModelRegistry::provider_display_name("factory_droid"),
+            "Factory Droid"
+        );
         assert_eq!(
             ModelRegistry::provider_display_name("chatgpt"),
             "ChatGPT Plus/Pro"

@@ -480,7 +480,7 @@ fn http_method_is_read_only(method: &str) -> bool {
     matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD")
 }
 
-fn executable_name(program: &str) -> &str {
+pub(crate) fn executable_name(program: &str) -> &str {
     program
         .rsplit(['/', '\\'])
         .next()
@@ -889,7 +889,7 @@ fn has_path_escape(args: &[String], workspace_root: &Path) -> Option<String> {
     )
 }
 
-fn has_shell_path_escape(program: &str, args: &[String], workspace_root: &Path) -> Option<String> {
+pub(crate) fn has_shell_path_escape(program: &str, args: &[String], workspace_root: &Path) -> Option<String> {
     has_path_escape_for_values(
         args.iter().enumerate().filter_map(|(index, _)| {
             shell_path_argument_value(program, args, index).filter(|value| !value.is_empty())

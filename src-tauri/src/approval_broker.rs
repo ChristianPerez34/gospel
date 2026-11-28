@@ -393,7 +393,7 @@ pub fn split_compound_commands(command: &str) -> Vec<&str> {
 }
 
 struct PendingEntry {
-    sender: oneshot::Sender<ApprovalOutcome>,
+    sender: oneshot::Sender<(ApprovalOutcome, Option<ApprovalDecision>)>,
     summary: String,
     kind: ApprovalKind,
     workspace_scoped: bool,
@@ -686,7 +686,7 @@ impl ApprovalBroker {
                 .collect::<Vec<_>>()
         };
         for (entry, outcome) in settled {
-            let _ = entry.sender.send(outcome);
+            let _ = entry.sender.send((outcome, None));
         }
     }
 
@@ -769,7 +769,20 @@ impl ApprovalBroker {
     /// user.
     ///
     /// Otherwise, waits for the frontend decision or timeout.
-    pub async fn request(&self, mut request: ApprovalRequest) -> bool {
+    pub async fn request(&self, request: ApprovalRequest) -> bool {
+        let (outcome, _) = self.request_with_decision(request).await;
+        matches!(
+            outcome,
+            ApprovalOutcome::Approved | ApprovalOutcome::AutoApproved
+        )
+    }
+
+    /// Like [`ApprovalBroker::request`], also returning the explicit user decision
+    /// when a human resolved the prompt (e.g., `Approve` vs `AlwaysAllow`).
+    pub async fn request_with_decision(
+        &self,
+        mut request: ApprovalRequest,
+    ) -> (ApprovalOutcome, Option<ApprovalDecision>) {
         let id = request.id.clone();
         let run_id = request.run_id.clone();
 
@@ -787,7 +800,7 @@ impl ApprovalBroker {
                 outcome,
                 run_id,
             });
-            return outcome == ApprovalOutcome::AutoApproved;
+            return (outcome, None);
         }
 
         let (sender, receiver) = oneshot::channel();
@@ -832,14 +845,14 @@ impl ApprovalBroker {
                 .expect("approval broker poisoned")
                 .remove(&id);
             if let Some(entry) = entry {
-                let _ = entry.sender.send(outcome);
+                let _ = entry.sender.send((outcome, None));
             }
         }
 
-        let outcome = match tokio::time::timeout_at(deadline, receiver).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_dropped)) => ApprovalOutcome::Denied,
-            Err(_elapsed) => ApprovalOutcome::TimedOut,
+        let (outcome, decision) = match tokio::time::timeout_at(deadline, receiver).await {
+            Ok(Ok((outcome, decision))) => (outcome, decision),
+            Ok(Err(_dropped)) => (ApprovalOutcome::Denied, None),
+            Err(_elapsed) => (ApprovalOutcome::TimedOut, None),
         };
 
         pending_guard.defuse();
@@ -855,10 +868,7 @@ impl ApprovalBroker {
             run_id,
         });
 
-        matches!(
-            outcome,
-            ApprovalOutcome::Approved | ApprovalOutcome::AutoApproved
-        )
+        (outcome, decision)
     }
 
     /// Frontend-driven decision. Returns `true` if a pending request was
@@ -890,7 +900,10 @@ impl ApprovalBroker {
                 }
                 entry
                     .sender
-                    .send(ApprovalOutcome::from_decision(Some(decision), false))
+                    .send((
+                        ApprovalOutcome::from_decision(Some(decision), false),
+                        Some(decision),
+                    ))
                     .is_ok()
             }
             None => false,

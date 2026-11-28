@@ -718,7 +718,7 @@ pub async fn run_streaming_turn(
                 .then_some(EMPTY_RESPONSE_FALLBACK);
             if let (Some(sid), Some(store)) = (&request.session_id, deps.store) {
                 match crate::conversation::Conversation::for_session(store, sid)
-                    .record_success(&stream_result)
+                    .record_turn_success(Some(&request.prompt), &stream_result)
                 {
                     Ok(Some(display_transcript)) => {
                         deps.memory.schedule_ingest(MemoryIngestJobRequest {
@@ -1208,10 +1208,19 @@ pub fn verification_job_request(
         return None;
     }
 
+    // External agent backends cannot run Rig verification loops; delegate to a
+    // fallback Rig provider when one is configured (ADR-0020), otherwise skip
+    // verification rather than faking it.
+    let (provider, model, api_key) = if crate::providers::is_acp_provider(provider) {
+        crate::providers::fallback_rig_credentials()?
+    } else {
+        (provider.to_string(), model.to_string(), api_key.to_string())
+    };
+
     Some(VerificationJobRequest {
-        provider: provider.to_string(),
-        model: model.to_string(),
-        api_key: api_key.to_string(),
+        provider,
+        model,
+        api_key,
         workspace: workspace.cloned()?,
         response_to_verify: response_to_verify.to_string(),
         user_prompt: user_prompt.to_string(),
@@ -2940,6 +2949,8 @@ mod tests {
             prompt_tokens: 18,
             response_tokens: 6,
             tool_calls: 1,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
         adapters.seed_store("session-1", "[]", None);
 
@@ -3075,6 +3086,8 @@ mod tests {
             prompt_tokens: 1,
             response_tokens: 1,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
 
         let result = run_streaming_turn(
@@ -3127,6 +3140,8 @@ mod tests {
             prompt_tokens: 4,
             response_tokens: 1,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
 
         let result = run_streaming_turn(
@@ -3169,6 +3184,8 @@ mod tests {
             prompt_tokens: 3,
             response_tokens: 3,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
 
         let result = run_streaming_turn(
@@ -3294,6 +3311,8 @@ mod tests {
             prompt_tokens: 4,
             response_tokens: 2,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }
     }
 
@@ -3742,6 +3761,8 @@ mod tests {
             prompt_tokens: 1,
             response_tokens: 1,
             tool_calls: 0,
+            acp_session_id: None,
+            acp_turn_blocks: None,
         }));
         adapters.seed_store("session-1", "[]", None);
 
@@ -3888,6 +3909,8 @@ mod tests {
                 prompt_tokens: 10,
                 response_tokens: 15,
                 tool_calls: 0,
+                acp_session_id: None,
+                acp_turn_blocks: None,
             };
             Box::pin(async move { Ok(result) })
         }

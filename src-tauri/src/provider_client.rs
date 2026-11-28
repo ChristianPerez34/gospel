@@ -96,6 +96,11 @@ pub(crate) async fn completion_model(
                     .into(),
             }
         }
+        other if crate::providers::is_acp_provider(other) => {
+            return Err(ProviderClientError::Client(format!(
+                "Provider '{other}' uses ACP and does not support Rig completion operations."
+            )))
+        }
         other => match crate::providers::custom_provider(other) {
             Some(provider) => custom_openai_config(&provider.id, &provider.base_url, api_key)
                 .client()
