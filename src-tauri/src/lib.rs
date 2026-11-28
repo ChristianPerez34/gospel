@@ -1386,21 +1386,21 @@ impl session_turn::SessionTurnLlm for TauriSessionTurnAdapters<'_> {
                             .ok()
                             .flatten()
                             .and_then(|detail| detail.acp_session_id);
-                        let fallback = if existing_sid.is_none() {
-                            conversation::Conversation::for_session(store, sid)
-                                .acp_seed_context()
-                                .ok()
-                                .flatten()
-                        } else {
-                            None
-                        };
+                        // The seed is needed precisely when `session/load`
+                        // fails for an existing Droid session (expired or
+                        // evicted), so compute it regardless of whether an
+                        // ACP session id is stored.
+                        let fallback = conversation::Conversation::for_session(store, sid)
+                            .acp_seed_context()
+                            .ok()
+                            .flatten();
                         (existing_sid, fallback)
                     } else {
                         (None, None)
                     };
-                let acp_runs = Arc::clone(&*self.app.state::<Arc<acp::droid::AcpRunRegistry>>());
-                return acp::droid::run_acp_turn(
-                    acp::droid::AcpTurnRequest {
+                let acp_runs = Arc::clone(&*self.app.state::<Arc<acp::turn::AcpRunRegistry>>());
+                return acp::turn::run_acp_turn(
+                    acp::turn::AcpTurnRequest {
                         prompt: request.prompt,
                         model: request.model,
                         variant: request.variant,
@@ -1709,7 +1709,7 @@ async fn complete_streaming(
 #[tauri::command]
 fn cancel_streaming(
     streaming_handles: tauri::State<'_, StreamingRunHandles>,
-    acp_runs: tauri::State<'_, Arc<acp::droid::AcpRunRegistry>>,
+    acp_runs: tauri::State<'_, Arc<acp::turn::AcpRunRegistry>>,
     session_id: String,
 ) -> Result<(), String> {
     acp_runs.cancel_session(&session_id);
@@ -2794,7 +2794,12 @@ async fn generate_session_title(
     // The title is metadata: use a separate, tool-free request and retain the
     // persisted excerpt if credentials, the provider, or the deadline fail.
     let generated = if providers::is_acp_provider(&detail.provider) {
-        fallback.clone()
+        match providers::fallback_rig_credentials() {
+            Some((provider, model, api_key)) => llm::generate_session_title(&provider, &model, &api_key, &prompt)
+                .await
+                .unwrap_or_else(|_| fallback.clone()),
+            None => fallback.clone(),
+        }
     } else {
         match provider_credentials::api_key_for_rig(&detail.provider) {
             Ok(api_key) => {
@@ -2930,7 +2935,7 @@ async fn run_session_message_action(
                 .and_then(|cfg| cfg.get_active_workspace().ok().flatten())
                 .map(|ws| std::path::PathBuf::from(ws.path));
             if let Some(forked_acp_id) =
-                acp::droid::fork_acp_session(&src_acp_id, cwd.as_deref()).await
+                acp::turn::fork_acp_session(&src_acp_id, cwd.as_deref()).await
             {
                 let _ = store.set_acp_session_id(&forked.id, Some(&forked_acp_id));
             }
@@ -3715,7 +3720,7 @@ pub fn run() {
         .manage(AgentCache::new())
         .manage(ApprovalBrokerState::new())
         .manage(StreamingRunHandles::new())
-        .manage(Arc::new(acp::droid::AcpRunRegistry::new()))
+        .manage(Arc::new(acp::turn::AcpRunRegistry::new()))
         .manage(mcp_runtime::McpRuntime::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

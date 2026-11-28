@@ -130,7 +130,12 @@ pub fn ensure_oauth_session(provider_id: &str) -> Result<(), CredentialError> {
 }
 
 pub fn store_api_key(provider_id: &str, api_key: &str) -> Result<(), CredentialError> {
-    if find_provider(provider_id).is_some_and(|entry| entry.auth_kind == ProviderAuthKind::Oauth) {
+    // Factory Droid is OAuth-first (device pairing) but also accepts an
+    // optional FACTORY_API_KEY override, so its key may be stored alongside
+    // the OAuth session.
+    if provider_id != crate::acp::droid::FACTORY_DROID_PROVIDER_ID
+        && find_provider(provider_id).is_some_and(|entry| entry.auth_kind == ProviderAuthKind::Oauth)
+    {
         return Err(CredentialError::ApiKeyStorageUnsupported(
             provider_id.to_string(),
         ));
@@ -203,10 +208,22 @@ mod tests {
     #[test]
     fn factory_droid_credentials_follow_acp_auth_cache() {
         crate::acp::droid::set_cached_authenticated(Some(false));
-        assert!(matches!(
-            store_api_key("factory_droid", "should-not-store"),
-            Err(CredentialError::ApiKeyStorageUnsupported(_))
-        ));
+        // Factory Droid is OAuth-first but accepts an optional FACTORY_API_KEY
+        // override, so key storage must not be rejected as unsupported; only
+        // keychain/environment failures are tolerated in headless test runs.
+        // The keychain lock serializes against tests that isolate config home.
+        let _lock = crate::keychain::lock_config_home();
+        match store_api_key("factory_droid", "gospel-factory-droid-storage-probe") {
+            Ok(()) => {
+                let _ = crate::keychain::delete("factory_droid");
+            }
+            Err(CredentialError::Keychain(_)) => {}
+            Err(CredentialError::ApiKeyStorageUnsupported(_)) => {
+                panic!("factory_droid must accept an optional FACTORY_API_KEY override")
+            }
+            Err(_) => {}
+        }
+        drop(_lock);
 
         crate::acp::droid::set_cached_authenticated(Some(true));
         assert!(is_credentialed("factory_droid"));

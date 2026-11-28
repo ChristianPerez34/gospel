@@ -51,6 +51,7 @@ pub struct SessionDetail {
     pub model_history: Option<String>,
     #[serde(skip_serializing)]
     pub acp_session_id: Option<String>,
+    pub acp_backend: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -83,6 +84,7 @@ pub struct ArchivedSessionDetail {
     pub model_history: Option<String>,
     #[serde(skip_serializing)]
     pub acp_session_id: Option<String>,
+    pub acp_backend: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: String,
@@ -135,6 +137,7 @@ pub struct ArchivedSessionExportItem {
     pub model_history: Option<String>,
     #[serde(default)]
     pub acp_session_id: Option<String>,
+    pub acp_backend: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: String,
@@ -189,6 +192,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     display_transcript TEXT NOT NULL DEFAULT '[]',
     model_history TEXT,
     acp_session_id TEXT,
+    acp_backend TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -207,6 +211,7 @@ CREATE TABLE IF NOT EXISTS archived_sessions (
     display_transcript TEXT NOT NULL DEFAULT '[]',
     model_history TEXT,
     acp_session_id TEXT,
+    acp_backend TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     archived_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -378,7 +383,7 @@ impl SessionStore {
             .query_row(
                 "SELECT s.id, s.title, s.provider, s.model, s.variant, s.status, s.workspace_id,
                         s.display_transcript, s.model_history, s.acp_session_id,
-                        s.created_at, s.updated_at, sa.agent_id
+                        s.created_at, s.updated_at, sa.agent_id, s.acp_backend
                  FROM sessions s
                  LEFT JOIN session_agents sa ON sa.session_id = s.id
                  WHERE s.id = ?1",
@@ -395,6 +400,7 @@ impl SessionStore {
                         display_transcript: row.get(7)?,
                         model_history: row.get(8)?,
                         acp_session_id: row.get(9)?,
+                        acp_backend: row.get(13)?,
                         created_at: row.get(10)?,
                         updated_at: row.get(11)?,
                         agent_id: row.get(12)?,
@@ -743,9 +749,11 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
             "UPDATE sessions SET display_transcript = ?1, model_history = ?2,
-                    acp_session_id = ?3, status = 'active', updated_at = datetime('now')
+                    acp_session_id = ?3,
+                    acp_backend = CASE WHEN ?3 IS NULL THEN NULL ELSE COALESCE(acp_backend, ?5) END,
+                    status = 'active', updated_at = datetime('now')
              WHERE id = ?4",
-            params![display_transcript, model_history, acp_session_id, id],
+            params![display_transcript, model_history, acp_session_id, id, crate::acp::droid::FACTORY_DROID_PROVIDER_ID],
         )?;
         if rows == 0 {
             return Err(SessionStoreError::NotFound(id.to_string()));
@@ -760,8 +768,9 @@ impl SessionStore {
     ) -> Result<(), SessionStoreError> {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
-            "UPDATE sessions SET acp_session_id = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![acp_session_id, id],
+            "UPDATE sessions SET acp_session_id = ?1,
+                    acp_backend = CASE WHEN ?1 IS NULL THEN NULL ELSE COALESCE(acp_backend, ?3) END, updated_at = datetime('now') WHERE id = ?2",
+            params![acp_session_id, id, crate::acp::droid::FACTORY_DROID_PROVIDER_ID],
         )?;
         if rows == 0 {
             return Err(SessionStoreError::NotFound(id.to_string()));
@@ -789,8 +798,8 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
             "INSERT INTO sessions (id, title, provider, model, variant, status, workspace_id,
-                                   display_transcript, model_history, acp_session_id)
-             SELECT ?1, title || ' (fork)', provider, model, variant, 'active', workspace_id, ?2, ?3, ?4
+                                   display_transcript, model_history, acp_session_id, acp_backend)
+             SELECT ?1, title || ' (fork)', provider, model, variant, 'active', workspace_id, ?2, ?3, ?4, acp_backend
              FROM sessions WHERE id = ?5",
             params![id, display_transcript, model_history, acp_session_id, source_id],
         )?;
@@ -847,10 +856,10 @@ impl SessionStore {
             tx.execute(
                 "INSERT INTO archived_sessions (
                     id, title, provider, model, variant, status, workspace_id,
-                    display_transcript, model_history, acp_session_id, created_at, updated_at, archived_at
+                    display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at, archived_at
                  )
                  SELECT id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, acp_session_id, created_at, updated_at, datetime('now')
+                        display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at, datetime('now')
                  FROM sessions
                  WHERE id = ?1",
                 params![id],
@@ -897,10 +906,10 @@ impl SessionStore {
             tx.execute(
                 "INSERT INTO sessions (
                     id, title, provider, model, variant, status, workspace_id,
-                    display_transcript, model_history, acp_session_id, created_at, updated_at
+                    display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at
                  )
                  SELECT id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, acp_session_id, created_at, updated_at
+                        display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at
                  FROM archived_sessions
                  WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
@@ -1109,7 +1118,7 @@ impl SessionStore {
             .query_row(
                 "SELECT id, title, provider, model, variant, status, workspace_id,
                         display_transcript, model_history, acp_session_id, created_at, updated_at,
-                        archived_at, deleted_at
+                        archived_at, deleted_at, acp_backend
                  FROM archived_sessions WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
                 |row| {
@@ -1124,6 +1133,7 @@ impl SessionStore {
                         display_transcript: row.get(7)?,
                         model_history: row.get(8)?,
                         acp_session_id: row.get(9)?,
+                        acp_backend: row.get(14)?,
                         created_at: row.get(10)?,
                         updated_at: row.get(11)?,
                         archived_at: row.get(12)?,
@@ -1182,6 +1192,7 @@ impl SessionStore {
                 display_transcript: detail.display_transcript,
                 model_history: detail.model_history,
                 acp_session_id: detail.acp_session_id,
+                acp_backend: detail.acp_backend,
                 created_at: detail.created_at,
                 updated_at: detail.updated_at,
                 archived_at: detail.archived_at,
@@ -1250,10 +1261,10 @@ impl SessionStore {
                 tx.execute(
                     "INSERT INTO archived_sessions (
                         id, title, provider, model, variant, status, workspace_id,
-                        display_transcript, model_history, acp_session_id, created_at, updated_at,
+                        display_transcript, model_history, acp_session_id, acp_backend, created_at, updated_at,
                         archived_at, deleted_at
                      )
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL)
                      ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         provider = excluded.provider,
@@ -1264,6 +1275,7 @@ impl SessionStore {
                         display_transcript = excluded.display_transcript,
                         model_history = excluded.model_history,
                         acp_session_id = excluded.acp_session_id,
+                        acp_backend = excluded.acp_backend,
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at,
                         archived_at = excluded.archived_at,
@@ -1279,6 +1291,7 @@ impl SessionStore {
                         session.display_transcript,
                         session.model_history,
                         session.acp_session_id,
+                        session.acp_backend,
                         session.created_at,
                         session.updated_at,
                         session.archived_at
@@ -1548,6 +1561,18 @@ fn ensure_session_schema_columns(conn: &Connection) -> Result<(), SessionStoreEr
         "archived_sessions",
         "acp_session_id",
         "ALTER TABLE archived_sessions ADD COLUMN acp_session_id TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "sessions",
+        "acp_backend",
+        "ALTER TABLE sessions ADD COLUMN acp_backend TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "archived_sessions",
+        "acp_backend",
+        "ALTER TABLE archived_sessions ADD COLUMN acp_backend TEXT",
     )?;
     Ok(())
 }

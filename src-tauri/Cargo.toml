@@ -50,6 +50,8 @@ regex = "1"
 sha2 = "0.11.0"
 nix = { version = "0.31.3", features = ["signal", "process"] }
 async-trait = "0.1"
+shell-words = "1"
+agent-client-protocol = { version = "=5.5.1", default-features = false, features = ["process", "unstable_auth_status", "unstable_session_fork", "unstable_session_options"] }
 reqwest-rmcp = { package = "reqwest", version = "0.13.2" }
 http = "1"
 

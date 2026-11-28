@@ -1204,17 +1204,23 @@ pub fn verification_job_request(
     run_id: &str,
     source_edit_succeeded: bool,
 ) -> Option<VerificationJobRequest> {
-    if crate::providers::is_acp_provider(provider) {
-        return None;
-    }
     if !turn_requires_verification(response_to_verify, source_edit_succeeded) {
         return None;
     }
 
+    // External agent backends cannot run Rig verification loops; delegate to a
+    // fallback Rig provider when one is configured (ADR-0020), otherwise skip
+    // verification rather than faking it.
+    let (provider, model, api_key) = if crate::providers::is_acp_provider(provider) {
+        crate::providers::fallback_rig_credentials()?
+    } else {
+        (provider.to_string(), model.to_string(), api_key.to_string())
+    };
+
     Some(VerificationJobRequest {
-        provider: provider.to_string(),
-        model: model.to_string(),
-        api_key: api_key.to_string(),
+        provider,
+        model,
+        api_key,
         workspace: workspace.cloned()?,
         response_to_verify: response_to_verify.to_string(),
         user_prompt: user_prompt.to_string(),

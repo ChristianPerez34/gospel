@@ -45,6 +45,8 @@ pub(crate) enum ConversationError {
     UnwriteableDisplayTranscript(String),
     #[error("Unable to save conversation history")]
     UnwriteableModelHistory,
+    #[error("Retrying an earlier turn would discard later conversation state that only exists inside the external agent session. Use Fork to branch from that point instead — it preserves the exact session state.")]
+    MidThreadAcpRetryUnsupported,
 }
 
 /// Selection for a Retry. `prompt_index` is the zero-based position of the
@@ -241,6 +243,23 @@ impl<'store> Conversation<'store> {
                 target.expected_user_turns,
                 target.failed_response.then_some(target.prompt_index),
             )?;
+            // Mid-thread retry guard: ACP continuation lives inside Droid's
+            // external session, and turn-rollback semantics are unverified, so
+            // discarding later turns by reseeding a fresh session would
+            // silently rewrite history. Fork preserves exact state instead.
+            // Retrying the latest turn is safe: the transcript seed captures
+            // everything before it.
+            let user_turns = serde_json::from_str::<Vec<serde_json::Value>>(&detail.display_transcript)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter(|entry| entry.get("role").and_then(|role| role.as_str()) == Some("user"))
+                        .count()
+                })
+                .unwrap_or(0);
+            if target.prompt_index + 1 < user_turns {
+                return Err(ConversationError::MidThreadAcpRetryUnsupported);
+            }
             let display_transcript = slicing::transcript_through_prompt(
                 &detail.display_transcript,
                 target.prompt_index,
